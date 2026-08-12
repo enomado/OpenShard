@@ -165,11 +165,11 @@ fn placed(dir: &std::path::Path, art: &Art, cx: i32, cy: i32, radius: i32) {
         for y in cy - radius..=cy + radius {
             for item in map.statics_at(x as u16, y as u16) {
                 total += 1;
-                let tile = tiledata.static_tile(item.tile);
+                let tile = tiledata.static_tile(item.tile.0);
                 if tile.flags.is_climbable() || tile.flags.is_background() {
                     continue;
                 }
-                let Ok(Some(image)) = art.static_art(Graphic(item.tile)) else {
+                let Ok(Some(image)) = art.static_art(item.tile) else {
                     continue;
                 };
                 if facing::facing_of(&image).is_some() {
@@ -196,7 +196,7 @@ fn placed(dir: &std::path::Path, art: &Art, cx: i32, cy: i32, radius: i32) {
                     Err(why) => {
                         *reasons.entry(format!("{why:?}")).or_insert(0) += 1;
                         let seen = refused_by_graphic
-                            .entry(item.tile)
+                            .entry(item.tile.0)
                             .or_insert_with(|| (0, format!("{why:?} {:?}", tile.name)));
                         seen.0 += 1;
                     }

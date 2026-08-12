@@ -12,6 +12,7 @@
 
 use openshard_entities::EntityId;
 use openshard_gateway::ConnectionId;
+use openshard_protocol::casting::SpellId;
 use openshard_protocol::containers::{
     BOOK_GUMP, ContainedItem, ContainerContents, GridSlot, encode_add_to_container, encode_open_container,
 };

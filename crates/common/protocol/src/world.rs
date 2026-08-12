@@ -1171,6 +1171,43 @@ pub struct Facet(pub u8);
 #[serde(transparent)]
 pub struct Sight(pub u8);
 
+/// Physical damage absorbed by a mobile, as a percentage.
+///
+/// The value crosses scripting and persistence seams as the historic numeric
+/// percentage. Values above 100 have always been capped when a mobile enters
+/// the world; doing that at this boundary keeps every caller canonical.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Debug, Default)]
+pub struct PhysicalResistance(u8);
+
+impl PhysicalResistance {
+    /// The highest meaningful physical resistance percentage.
+    pub const MAX: u8 = 100;
+
+    /// Make a physical-resistance percentage, capping legacy out-of-range input.
+    #[must_use]
+    pub const fn new(value: u8) -> Self {
+        Self(if value > Self::MAX { Self::MAX } else { value })
+    }
+
+    /// The percentage used by combat.
+    #[must_use]
+    pub const fn get(self) -> u8 {
+        self.0
+    }
+}
+
+impl Serialize for PhysicalResistance {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_u8(self.get())
+    }
+}
+
+impl<'de> Deserialize<'de> for PhysicalResistance {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        Ok(Self::new(u8::deserialize(deserializer)?))
+    }
+}
+
 /// Whether a creature starts fights, only answers them, or runs from them.
 ///
 /// The numeric representation is part of the script and saved-world contract:

@@ -19,7 +19,7 @@
 use std::sync::Arc;
 use std::time::Instant;
 
-use openshard_client_render::atlas::AnimAtlas;
+use openshard_client_render::atlas::{AnimAtlas, AnimationKey};
 use openshard_client_render::blit::{self, Blit, ViewportRect};
 use openshard_client_render::camera::{Camera, ViewPixel};
 use openshard_client_render::cutaway::Cutaway;
@@ -39,12 +39,15 @@ use openshard_protocol::wire::Hue;
 use crate::app::App;
 use crate::chat::draw_chat_and_speech;
 use crate::crowd::{Crowd, Who};
+use crate::diagnostics::Pick;
 use crate::frame_geometry::{FrameFacts, assemble_geometry};
-use crate::picking::{Pick, SelectedIdentity};
+use crate::graphics::HighlightTarget;
+use crate::picking::SelectedIdentity;
+use crate::profile;
 use crate::render_passes::{draw_gump_windows, encode_world_passes};
 use crate::window::ready_atlases;
 use crate::windows::{Drawn, WindowSubject};
-use crate::{profile, shell};
+use crate::world::advance_presentation_to;
 
 /// The immutable boundary between advancing the client and presenting one
 /// frame. It contains the one camera and the read-only facts every pass,
@@ -137,11 +140,11 @@ impl App {
         Self::advance_groups(crowd, drawn);
         for (who, mobile) in drawn.iter_mut() {
             let (direction, _) = openshard_uofiles::anim::facing(mobile.facing);
-            let frame_count = atlas.frame_count(
+            let frame_count = atlas.frame_count(AnimationKey::new(
                 openshard_uofiles::anim::animation_body(mobile.body),
                 mobile.group,
                 direction,
-            );
+            ));
             mobile.frame = crowd.frame_for(*who, frame_count);
             if let Some(at) = crowd.drawn_for(*who) {
                 mobile.drawn = at;
@@ -245,18 +248,7 @@ impl App {
             let viewport = shell.viewport();
             self.control.resize(viewport.width, viewport.height);
         }
-        self.world.presentation.crowd.advance(elapsed);
-        // The statics that move on their own, on the same span as everybody
-        // else. Its own clock inside — a fire's cycle has nothing to do with a
-        // walk's — and one *sample*, which is the whole rule: two clocks read
-        // from two `Instant::now()`s a few hundred microseconds apart would put
-        // a torch and the body that walks past it on two different instants.
-        self.world.presentation.tile_animations.advance(elapsed);
-        // And the flames, off the same span: a fire's animation frame and the
-        // brightness of the pool it casts are two clocks describing one fire,
-        // and they are advanced together or they describe two.
-        self.world.presentation.flame_clock += elapsed;
-        self.last_advance = started;
+        advance_presentation_to(&mut self.world.presentation, &mut self.last_advance, started);
         // Whatever scenario is being walked delivers its knots for the span that
         // just passed, before the eye is asked where the body is: a step that
         // arrived this frame is one the camera has to answer this frame.
@@ -414,8 +406,8 @@ impl App {
         };
         // What the mode allows to light up. `Tiles` lights neither, which is the
         // whole of that setting; the facts above are unchanged by it.
-        let lit_mobile = on_mobile.filter(|_| self.graphics.highlight != shell::HighlightTarget::Tiles);
-        let lit_item = on_item.filter(|_| self.graphics.highlight != shell::HighlightTarget::Tiles);
+        let lit_mobile = on_mobile.filter(|_| self.graphics.highlight != HighlightTarget::Tiles);
+        let lit_item = on_item.filter(|_| self.graphics.highlight != HighlightTarget::Tiles);
 
         // What a click is *holding*, turned from identity back into this
         // frame's index — the reverse of `on_mobile`/`on_item` just above.

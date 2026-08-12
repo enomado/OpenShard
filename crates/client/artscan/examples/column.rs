@@ -3,7 +3,6 @@
 
 use openshard_client_render::atlas::StaticAtlas;
 use openshard_client_render::occlusion;
-use openshard_protocol::wire::Graphic;
 use openshard_uofiles::art::Art;
 use openshard_uofiles::map::Map;
 use openshard_uofiles::tiledata::TileData;
@@ -34,13 +33,13 @@ fn main() {
         let mut open: std::collections::BTreeMap<u16, usize> = std::collections::BTreeMap::new();
         for &(x, y) in &spots {
             for item in map.statics_at(x, y) {
-                let tile = tiledata.static_tile(item.tile);
+                let tile = tiledata.static_tile(item.tile.0);
                 if !tile.flags.is_background() {
                     continue;
                 }
                 lids += 1;
-                match occlusion::opacity(Graphic(item.tile), tile) == 0 {
-                    true => *open.entry(item.tile).or_default() += 1,
+                match occlusion::opacity(item.tile, tile) == 0 {
+                    true => *open.entry(item.tile.0).or_default() += 1,
                     false => opaque += 1,
                 }
                 if tile.height > 0 {
@@ -54,23 +53,23 @@ fn main() {
     }
     for (x, y) in spots {
         let land = map.land(x, y).expect("land");
-        let ground = tiledata.land(land.tile);
+        let ground = tiledata.land(land.tile.0);
         println!(
             "tile {x},{y}  land {} (0x{:04X})  z {}  {:?}  {:?}",
-            land.tile, land.tile, land.z, ground.name, ground.flags,
+            land.tile.0, land.tile.0, land.z, ground.name, ground.flags,
         );
         for item in map.statics_at(x, y) {
-            let tile = tiledata.static_tile(item.tile);
-            let atlas = StaticAtlas::build(&art, [Graphic(item.tile)]).expect("atlas");
-            let facing = atlas.sprite(Graphic(item.tile)).and_then(|s| s.facing);
+            let tile = tiledata.static_tile(item.tile.0);
+            let atlas = StaticAtlas::build(&art, [item.tile]).expect("atlas");
+            let facing = atlas.sprite(item.tile).and_then(|s| s.facing);
             println!(
                 "  static {:>5} (0x{:04X})  z {:>4}  h {:>3}  {:?}  opacity {:>3}  facing {:?}  edges {:#06b}  {:?}",
-                item.tile,
-                item.tile,
+                item.tile.0,
+                item.tile.0,
                 item.z,
                 tile.height,
                 tile.name,
-                occlusion::opacity(Graphic(item.tile), tile),
+                occlusion::opacity(item.tile, tile),
                 facing,
                 match tile.flags.is_background() {
                     true => occlusion::Edges::NONE,

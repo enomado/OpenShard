@@ -34,6 +34,8 @@
 //! night would stop working exactly when the picture is hardest to read. So this
 //! draws on the surface, in screen pixels, over what the blit has lit.
 
+use openshard_movement::Tile;
+
 /// What one selection looks like, and where it is.
 ///
 /// A value the caller builds each frame rather than state this module keeps: what
@@ -46,7 +48,7 @@ pub struct Selection {
     /// `None` washes the sprite alone. There is no caller for that today; it is
     /// what the type says about a selected thing that stands nowhere, rather
     /// than a coordinate of `(0, 0)` meaning two things.
-    pub tile: Option<(u16, u16)>,
+    pub tile: Option<Tile>,
     /// The wash over the selected thing's own pixels: colour, and `a` is how
     /// much of it replaces what is under it.
     pub sprite: [f32; 4],
@@ -74,7 +76,7 @@ impl Selection {
     };
 
     /// The same wash over `tile`'s ground.
-    pub fn on(self, tile: (u16, u16)) -> Self {
+    pub fn on(self, tile: Tile) -> Self {
         Self {
             tile: Some(tile),
             ..self
@@ -278,8 +280,13 @@ impl Select {
         for value in [frame.size.0 as f32, frame.size.1 as f32, 0.0, 0.0] {
             bytes.extend_from_slice(&value.to_le_bytes());
         }
-        let (x, y) = selection.tile.unwrap_or((0, 0));
-        for value in [u32::from(x), u32::from(y), u32::from(selection.tile.is_some()), 0] {
+        let tile = selection.tile.unwrap_or(Tile::new(0, 0));
+        for value in [
+            u32::from(tile.x),
+            u32::from(tile.y),
+            u32::from(selection.tile.is_some()),
+            0,
+        ] {
             bytes.extend_from_slice(&value.to_le_bytes());
         }
         for channel in selection.sprite.into_iter().chain(selection.ground) {
@@ -366,7 +373,7 @@ mod tests {
     #[test]
     fn a_selection_without_a_tile_says_so_rather_than_naming_nought() {
         assert_eq!(Selection::DEFAULT.tile, None);
-        assert_eq!(Selection::DEFAULT.on((0, 0)).tile, Some((0, 0)));
+        assert_eq!(Selection::DEFAULT.on(Tile::new(0, 0)).tile, Some(Tile::new(0, 0)));
     }
 
     /// The ground's wash is the weaker of the two. It is a number a person picks

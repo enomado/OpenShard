@@ -418,7 +418,7 @@ fn drop_onto_runebook(state: &mut WorldState, connection: ConnectionId, held: He
 }
 
 /// Recall's spell id — what a scroll has to be to recharge a runebook.
-const RECALL_SPELL: u8 = 31;
+const RECALL_SPELL: SpellId = SpellId(31);
 
 /// A Magery scroll dropped on a spellbook is learned into it and spent. A
 /// non-scroll, a book out of reach, or a spell the book already holds bounces
@@ -460,7 +460,7 @@ fn drop_scroll_on_book(state: &mut WorldState, connection: ConnectionId, held: H
             content: mask.0,
         }),
     );
-    debug!(spell, "learned a spell from a scroll");
+    debug!(spell = spell.0, "learned a spell from a scroll");
 }
 
 /// Put a held item back where it was lifted and tell the client the drag is

@@ -153,7 +153,9 @@ impl Scripts {
             for e in bus.read(&mut self.cast_requested) {
                 events.push(ScriptEvent::SpellRequested {
                     serial: e.serial.raw(),
-                    spell: e.spell,
+                    // The script bridge is a serialization seam; the typed id
+                    // becomes the JSON number a pack API exposes here.
+                    spell: e.spell.0,
                 });
             }
             for e in bus.read(&mut self.moved) {
@@ -200,7 +202,7 @@ impl Scripts {
             for e in bus.read(&mut self.cast) {
                 events.push(ScriptEvent::SpellCast {
                     serial: e.serial.raw(),
-                    spell: e.spell,
+                    spell: e.spell.0,
                     // Out through the same serialization seam the commands come
                     // in by: a spell with no mark is the script's `0`.
                     target: e.target.map_or(0, Serial::raw),
@@ -470,7 +472,9 @@ fn into_world(command: ScriptCommand) -> Option<Command> {
             reagents,
         } => Command::CastSpell {
             serial: script_serial(serial)?,
-            spell,
+            // JSON is a serialization boundary; once the number has crossed it,
+            // the tick carries the named spell identity rather than a loose u16.
+            spell: openshard_protocol::casting::SpellId(spell),
             // A spell that needs neither a target nor reagents says so with a
             // zero, which `Serial::new` reads as absent.
             target: Serial::new(target),
@@ -1089,7 +1093,7 @@ mod tests {
             hits: 5,
             notoriety: Notoriety::from_bits(5),
             damage: 5,
-            resistance: 0,
+            resistance: openshard_protocol::world::PhysicalResistance::new(0),
             swing: 0,
             sight: Sight(0),
             aggression: Aggression::from_bits(2),
@@ -1164,7 +1168,7 @@ mod tests {
             hits: 5,
             notoriety: Notoriety::from_bits(5),
             damage: 0,
-            resistance: 0,
+            resistance: openshard_protocol::world::PhysicalResistance::new(0),
             swing: 0,
             sight: Sight(0),
             aggression: Aggression::from_bits(2),
@@ -1319,7 +1323,7 @@ mod tests {
         // deals the damage on success.
         world.queue(Command::CastSpell {
             serial: caster,
-            spell: 18, // a fireball, say
+            spell: openshard_protocol::casting::SpellId(18), // a fireball, say
             target: Some(target),
             mana: 10,
             min_skill: 0,

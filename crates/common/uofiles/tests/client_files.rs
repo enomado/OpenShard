@@ -17,7 +17,7 @@
 
 use openshard_protocol::speech::Font;
 use openshard_protocol::wire::{Graphic, Hue};
-use openshard_uofiles::anim::{Anim, BodyKind, DIRECTIONS};
+use openshard_uofiles::anim::{Anim, AnimationKey, BodyKind, DIRECTIONS};
 use openshard_uofiles::art::Art;
 use openshard_uofiles::equipconv::EquipConv;
 use openshard_uofiles::font::{AsciiFonts, CHARS_PER_FONT, FONT_COUNT, GLYPH_BASE};
@@ -339,14 +339,14 @@ fn the_corner_of_felucca_is_ocean_and_britain_is_not() {
 
     let corner = map.land(0, 0).expect("(0,0) is on the map");
     assert!(
-        data.land(corner.tile).flags.is_water(),
+        data.land(corner.tile.0).flags.is_water(),
         "the north-west corner of Felucca is ocean, not tile {}",
-        corner.tile
+        corner.tile.0
     );
 
     let britain = map.land(1495, 1629).expect("Britain is on the map");
     assert!(
-        !data.land(britain.tile).flags.is_water(),
+        !data.land(britain.tile.0).flags.is_water(),
         "the middle of Britain came out as water, so the blocks are misplaced"
     );
 }
@@ -706,7 +706,7 @@ fn a_humans_standing_animation_is_where_the_index_says() {
     // 400 is the male human body, and 4 is `PeopleAnimationGroup.Stand`.
     for direction in 0..DIRECTIONS {
         let frames = anim
-            .frames(Graphic(400), 4, direction)
+            .frames(AnimationKey::new(Graphic(400), 4, direction))
             .expect("a well-formed entry")
             .unwrap_or_else(|| panic!("body 400 has no standing animation facing {direction}"));
         assert!(
@@ -765,7 +765,7 @@ fn the_animation_index_is_sparse_but_the_bodies_that_exist_are_dense() {
                 BodyKind::Animal => 2,
                 BodyKind::Human => 4,
             };
-            anim.has_frames(Graphic(*body), group, 0)
+            anim.has_frames(AnimationKey::new(Graphic(*body), group, 0))
         })
         .count();
     assert!(

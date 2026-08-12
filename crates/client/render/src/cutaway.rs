@@ -356,7 +356,7 @@ pub fn stack<'a>(map: &Map, tiledata: &'a TileData, x: u16, y: u16) -> Vec<Piece
         });
     }
     for item in map.statics_at(x, y) {
-        let tile = tiledata.static_tile(item.tile);
+        let tile = tiledata.static_tile(item.tile.0);
         pieces.push(Piece {
             z: item.z,
             tile: Some(tile),

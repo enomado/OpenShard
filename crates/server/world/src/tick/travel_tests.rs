@@ -15,6 +15,7 @@ use super::tests::{
     packets_for, serial_of, walk, world,
 };
 use super::*;
+use openshard_protocol::casting::SpellId;
 use openshard_protocol::items::DropDestination;
 use openshard_protocol::serial::RawSerial;
 use openshard_state::components::{
@@ -456,7 +457,10 @@ fn caster_with_rune(now: Instant) -> (World, ConnectionId, EntityId, Serial) {
 
 /// Cast `spell` and answer its cursor with `target`.
 fn cast_at(world: &mut World, connection: ConnectionId, spell: u16, target: Serial, now: Instant) {
-    world.queue(Command::RequestCast { connection, spell });
+    world.queue(Command::RequestCast {
+        connection,
+        spell: SpellId(spell),
+    });
     world.tick(now);
     let cursor_id = serial_of(world, connection);
     world.queue(Command::TargetResponse {

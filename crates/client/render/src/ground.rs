@@ -134,7 +134,7 @@ pub fn visible_graphics(map: &Map, camera: &Camera) -> BTreeSet<Graphic> {
 /// several bands and one atlas.
 pub fn graphics_in(map: &Map, bounds: TileBounds, out: &mut BTreeSet<Graphic>) {
     for_each_cell_in(map, bounds, |_, _, cell| {
-        out.insert(Graphic(cell.tile));
+        out.insert(Graphic(cell.tile.0));
     });
 }
 
@@ -164,12 +164,12 @@ pub fn collect(
         if !cutaway.shows_land(cell.z) {
             return;
         }
-        let Some(region) = atlas.region(Graphic(cell.tile)) else {
+        let Some(region) = atlas.region(Graphic(cell.tile.0)) else {
             return;
         };
         // `None` here is not a failure to find anything: most land graphics have
         // no texture, and the shader draws those from the art.
-        let texmap = texmaps.region(Graphic(cell.tile));
+        let texmap = texmaps.region(Graphic(cell.tile.0));
         let corners = corner_heights(map, x, y, cell.z);
         // Height deliberately left at zero: the shader lifts each corner by its
         // own, and folding a representative height in here would count one of
@@ -269,11 +269,11 @@ mod tests {
     /// changed between runs would make every count below a different number.
     fn hillside() -> Map {
         Map::from_blocks(8, 8, |x, y| LandCell {
-            tile: if (x + y).is_multiple_of(17) {
+            tile: openshard_movement::LandTile(if (x + y).is_multiple_of(17) {
                 MISSING.0
             } else {
                 GRASS.0
-            },
+            }),
             z: (((i32::from(x) * 3 + i32::from(y) * 7) % 41) - 20) as i8,
         })
     }
@@ -327,7 +327,7 @@ mod tests {
         let mut dropped = 0;
         for y in ys {
             for x in xs.clone() {
-                if map.land(x, y).unwrap().tile == MISSING.0 {
+                if map.land(x, y).unwrap().tile == openshard_movement::LandTile(MISSING.0) {
                     dropped += 1;
                     continue;
                 }

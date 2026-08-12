@@ -12,7 +12,6 @@ use openshard_client_render::statics::PickedStatic;
 use openshard_protocol::serial::Serial;
 
 use crate::crowd::Who;
-use crate::diagnostics::PickedTile;
 
 /// What a left click named, kept as identity rather than as data — see
 /// [`Picking::selected`] for why. [`crate::App::resolve_selection`] is the
@@ -81,7 +80,7 @@ pub struct Picking {
     /// It is also the tile marker's reason for going out: a wall under the
     /// cursor is what the click would take, so the diamond on the ground
     /// behind it must not be drawn as well. See
-    /// [`shell::Hud::hover_lit`](crate::shell::Hud::hover_lit).
+    /// [`diagnostics::Hud::hover_lit`](crate::diagnostics::Hud::hover_lit).
     pub on_static: Option<PickedStatic>,
     /// The same, one rung up the pick order: a creature under the cursor, by
     /// identity rather than by the frame's own transient index — [`Who`]
@@ -100,36 +99,4 @@ pub struct Picking {
     /// walking, and a selected item's row goes away the moment it is picked
     /// up, instead of the panel quietly lying about where either still is.
     pub selected: Option<SelectedIdentity>,
-}
-
-/// Everything this frame's cursor is over, answered once in
-/// [`crate::App::frame_facts`] and carried whole into
-/// [`shell::Hud`](crate::shell::Hud) rather than unpacked into a handful of
-/// its fields: `tile`/`static_`/`mobile` are exactly the "picked tile +
-/// picked static + picked mobile" three the HUD used to gather separately,
-/// one of them (`tile`) computed a second time under a different name
-/// (`hover`) by `App::hud` itself. One pick, one place, one reader at a time
-/// can disagree with itself.
-#[derive(Clone)]
-pub struct Pick {
-    /// The ground tile under the cursor — the fact the HUD's tile marker,
-    /// route preview and terrain overlay all read, whether or not a mobile,
-    /// item or static also took the highlight this frame. See
-    /// [`crate::App::pick_tile`].
-    pub tile: Option<PickedTile>,
-    /// The eight tiles around [`Pick::tile`], for the wireframe ring drawn
-    /// beside it.
-    pub neighbours: Vec<PickedTile>,
-    /// The map's own static the cursor is over, when no mobile or item is.
-    /// Statics have no highlight mode to filter through: a wall is either
-    /// under the cursor or it is not.
-    pub static_: Option<PickedStatic>,
-    /// The creature under the cursor, filtered by whether the highlight mode
-    /// allows one to light up at all — the unfiltered form is
-    /// `FrameFacts::on_mobile`, read back into [`Picking::on_mobile`]
-    /// regardless of the mode: what a click selects is not a question about
-    /// lighting.
-    pub mobile: Option<openshard_client_render::mobiles::MobileIndex>,
-    /// The item under the cursor, filtered the same way.
-    pub item: Option<openshard_client_render::items::ItemIndex>,
 }

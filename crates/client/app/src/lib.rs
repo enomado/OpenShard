@@ -771,9 +771,9 @@ pub fn run<D: Dial + Send + 'static>(
             solids_drawn: 0,
             occlusion_bake: occlusion::bake::Bake::new(),
             // The item under the cursor, ringed and lit, and the ground
-            // otherwise: see `shell::HighlightTarget` and `shell::HighlightStyle`.
-            highlight: shell::HighlightTarget::default(),
-            highlight_style: shell::HighlightStyle::default(),
+            // otherwise: see `graphics::HighlightTarget` and `graphics::HighlightStyle`.
+            highlight: graphics::HighlightTarget::default(),
+            highlight_style: graphics::HighlightStyle::default(),
             covered: None,
         },
         // The device's own limit replaces WebGL2's floor once there is a device

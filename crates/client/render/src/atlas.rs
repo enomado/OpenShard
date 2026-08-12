@@ -1201,31 +1201,10 @@ struct Packed {
     origin: (u32, u32),
 }
 
-/// A whole animation in the file: body, action group and stored direction.
-///
-/// This is the key used to ask an [`AnimAtlas`] to pack an animation.  It is
-/// deliberately distinct from [`FrameKey`]: the atlas reads every frame of one
-/// animation at once, and giving the partial key a name keeps group and stored
-/// direction from being silently exchanged at that boundary.
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
-pub struct AnimationKey {
-    /// The body id.
-    pub body: Graphic,
-    /// Which animation group — standing, walking, attacking.
-    pub group: u8,
-    /// The stored direction, 0 to 4.
-    pub direction: u8,
-}
-
-impl AnimationKey {
-    pub const fn new(body: Graphic, group: u8, direction: u8) -> Self {
-        Self {
-            body,
-            group,
-            direction,
-        }
-    }
-}
+/// The client-file key for a whole animation, re-exported where the atlas uses
+/// it. The reader and renderer must agree on this triple; keeping one shared
+/// type avoids each side accepting the same three unlabelled integers.
+pub use openshard_uofiles::anim::AnimationKey;
 
 /// Which picture of an animation this is.
 ///
@@ -1241,14 +1220,17 @@ impl AnimationKey {
 /// and it happens where the quad is built.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub struct FrameKey {
-    /// The body id.
-    pub body: Graphic,
-    /// Which animation group — standing, walking, attacking.
-    pub group: u8,
-    /// The stored direction, 0 to 4.
-    pub direction: u8,
+    /// The animation this picture belongs to.
+    pub animation: AnimationKey,
     /// Which frame of that animation.
     pub frame: u16,
+}
+
+impl FrameKey {
+    #[must_use]
+    pub const fn new(animation: AnimationKey, frame: u16) -> Self {
+        Self { animation, frame }
+    }
 }
 
 /// One packed animation frame: where it is, how big, and where the feet are.
@@ -1364,13 +1346,8 @@ impl AnimAtlas {
             return Ok(());
         }
         let mut images = Vec::new();
-        for AnimationKey {
-            body,
-            group,
-            direction,
-        } in fresh.iter().copied()
-        {
-            let Some(frames) = anim.frames(body, group, direction)? else {
+        for animation in fresh.iter().copied() {
+            let Some(frames) = anim.frames(animation)? else {
                 continue;
             };
             for (index, frame) in frames.into_iter().enumerate() {
@@ -1380,15 +1357,7 @@ impl AnimAtlas {
                 if frame.image.width() == 0 || frame.image.height() == 0 {
                     continue;
                 }
-                images.push((
-                    FrameKey {
-                        body,
-                        group,
-                        direction,
-                        frame: index as u16,
-                    },
-                    frame,
-                ));
+                images.push((FrameKey::new(animation, index as u16), frame));
             }
         }
         self.insert(images)?;
@@ -1410,11 +1379,7 @@ impl AnimAtlas {
     pub fn pack(frames: impl IntoIterator<Item = (FrameKey, AnimFrame)>) -> Result<Self, AtlasError> {
         let mut atlas = Self::empty();
         let frames: Vec<(FrameKey, AnimFrame)> = frames.into_iter().collect();
-        atlas.asked.extend(frames.iter().map(|(key, _)| AnimationKey {
-            body: key.body,
-            group: key.group,
-            direction: key.direction,
-        }));
+        atlas.asked.extend(frames.iter().map(|(key, _)| key.animation));
         atlas.insert(frames)?;
         atlas.dirty.take();
         Ok(atlas)
@@ -1427,11 +1392,7 @@ impl AnimAtlas {
         frames: impl IntoIterator<Item = (FrameKey, AnimFrame)>,
     ) -> Result<(), AtlasError> {
         let frames: Vec<(FrameKey, AnimFrame)> = frames.into_iter().collect();
-        self.asked.extend(frames.iter().map(|(key, _)| AnimationKey {
-            body: key.body,
-            group: key.group,
-            direction: key.direction,
-        }));
+        self.asked.extend(frames.iter().map(|(key, _)| key.animation));
         self.insert(frames)
     }
 
@@ -1455,7 +1416,7 @@ impl AnimAtlas {
                 return Err(AtlasError::Oversized {
                     // Reported as the body, which is the only part of the key
                     // a `Graphic` can carry and the part worth naming.
-                    graphic: key.body,
+                    graphic: key.animation.body,
                     width,
                     height,
                 });
@@ -1546,19 +1507,9 @@ impl AnimAtlas {
     /// What a caller needs to advance one: the count is the animation's, not a
     /// constant, and asking the atlas rather than remembering it is what keeps
     /// "frame 7 of a 6-frame walk" from being expressible.
-    pub fn frame_count(&self, body: Graphic, group: u8, direction: u8) -> u16 {
-        let first = FrameKey {
-            body,
-            group,
-            direction,
-            frame: 0,
-        };
-        let last = FrameKey {
-            body,
-            group,
-            direction,
-            frame: u16::MAX,
-        };
+    pub fn frame_count(&self, animation: AnimationKey) -> u16 {
+        let first = FrameKey::new(animation, 0);
+        let last = FrameKey::new(animation, u16::MAX);
         self.frames.range(first..=last).count() as u16
     }
 }

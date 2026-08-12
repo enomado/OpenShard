@@ -150,7 +150,7 @@ fn a_wall_at_walking_height_is_a_wall_however_deep_the_pit() {
 fn clear_of_solids(scene: &Scene, x: u16, y: u16, landing: i32, from_z: i32) -> bool {
     let head = landing.max(from_z) + PLAYER_HEIGHT;
     !scene.map().statics_at(x, y).any(|item| {
-        let tile = scene.tiles().static_tile(item.tile);
+        let tile = scene.tiles().static_tile(item.tile.0);
         let platform = tile.flags.is_platform();
         if !platform && !tile.flags.is_blocking() {
             return false;
@@ -199,7 +199,7 @@ fn surfaces(scene: &Scene, x: u16, y: u16) -> Vec<(i32, i32, i32, i32)> {
         .map()
         .statics_at(x, y)
         .filter_map(|item| {
-            let tile = scene.tiles().static_tile(item.tile);
+            let tile = scene.tiles().static_tile(item.tile.0);
             if !tile.flags.is_platform() {
                 return None;
             }
@@ -295,7 +295,7 @@ fn stands(terrain: &MapTerrain<&Map, &TileData>, scene: &Scene, x: u16, y: u16) 
         candidates.push(i32::from(openshard_uofiles::map::average_corner_z(corners)));
     }
     for item in scene.map().statics_at(x, y) {
-        let tile = scene.tiles().static_tile(item.tile);
+        let tile = scene.tiles().static_tile(item.tile.0);
         if tile.flags.is_platform() {
             let (base, height) = (i32::from(item.z), i32::from(tile.height));
             candidates.push(match tile.flags.is_climbable() {
@@ -387,7 +387,7 @@ fn a_random_scene_is_walked_the_way_the_rules_say() {
                         let tiles_here: Vec<_> = scene
                             .map()
                             .statics_at(to.x, to.y)
-                            .map(|item| scene.tiles().static_tile(item.tile))
+                            .map(|item| scene.tiles().static_tile(item.tile.0))
                             .collect();
                         if tiles_here.iter().any(|t| t.flags.is_climbable()) {
                             over_stairs += 1;

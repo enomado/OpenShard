@@ -22,6 +22,14 @@ track work:
 - health-bar facts moved from the egui shell into `diagnostics.rs`;
 - `openshard-playground --mailbox-load --stall-app-ms 5000` provides an opt-in
   live moving-crowd exercise, with a unit test for its script.
+- `PresentationWorld::advance` now advances crowd, static-animation and flame
+  clocks together. `advance_presentation_to` owns both the measured interval
+  and `last_advance`, and is used by update delivery, frame advancement and
+  offline movement before those paths mutate presentation state.
+- `diagnostics.rs` now owns the remaining read-only dev-inspection snapshots:
+  the complete `Hud` and its one-frame `Pick`. `shell.rs` only adapts those
+  facts to egui and returns `Request`; `HighlightTarget` and `HighlightStyle`
+  live with their `GraphicsSettings` owner rather than the UI adapter.
 
 Preserve unrelated concurrent changes, especially the server and protocol
 work visible in `git status`. `AGENTS.md` is also untracked user guidance, not
@@ -53,7 +61,7 @@ cargo test -p openshard-client-net --lib
 cargo test -p openshard-client-render --lib
 ```
 
-Result: 173 app tests passed, 2 ignored; 77 net tests passed; 483 render
+Result: 174 app tests passed, 2 ignored; 77 net tests passed; 483 render
 tests passed, 1 ignored. `git diff --check` also passes. The touched Rust files
 pass `rustfmt --check`; a workspace-wide `cargo fmt --check` is currently
 affected by unrelated worktree formatting changes and must not be used as
@@ -100,11 +108,11 @@ evidence for this client track.
 
 ## Follow-on: UI, frame, and outgoing-wire boundaries
 
-- `app/src/diagnostics.rs` owns read-only inspection DTOs: `PickedTile`,
-  selection results, terrain overlay, route, and health bars. `picking.rs` and
-  `picking_query.rs` now depend on that module instead of `shell`, so a future
-  non-egui inspector can use the same answers. The egui adapter alone resolves
-  notoriety to its health-bar colour.
+- `app/src/diagnostics.rs` owns read-only inspection DTOs: the complete `Hud`,
+  its one-frame `Pick`, `PickedTile`, selection results, terrain overlay, route,
+  and health bars. `picking.rs` and `picking_query.rs` depend on that module
+  instead of `shell`, so a future non-egui inspector can use the same answers.
+  The egui adapter alone resolves notoriety to its health-bar colour.
 - `presentation.rs` names the staged snapshot as `PreparedFrame`. It freezes
   the camera and `FrameFacts`; `publish_frame_picks` is the one explicit bridge
   that records the current picture's identities for the next input event.
@@ -151,6 +159,13 @@ evidence for this client track.
   post-patch smoke run entered the world without the validation error. Remove
   that pin once the backport reaches crates.io. It remains separate from
   mailbox-capacity tuning.
+- The presentation-clock handoff is now explicit. A network delivery and a
+  frame both call `advance_presentation_to`, which derives one elapsed interval
+  from `last_advance`, advances every presentation clock, then records the new
+  instant. The offline movement path uses it as well before it timestamps a
+  local step. The `world` regression verifies that an update-time interval is
+  retained by both static animation and the flame clock, rather than being
+  lost when the next frame sees almost no elapsed time.
 
 ## Frame ownership and allocation result
 
@@ -167,24 +182,13 @@ copies are on a rare eviction path. Do not reintroduce `Arc<WorldView>`.
 
 ## Next work items
 
-1. Fix the presentation-clock handoff in `App::on_update` before doing further
-   mailbox capacity work. It currently advances only `Crowd` and writes
-   `last_advance`; the next `App::advance` then sees almost no elapsed time, so
-   `tile_animations` and `flame_clock` can lose the interval that arrived with
-   a network update (most visibly after a stalled mailbox drains). Extract one
-   helper that advances all presentation clocks for the measured interval and
-   call it from both update delivery and frame advancement. Add a regression
-   test that proves the static/flame clocks retain an update-time interval.
-2. If the dev HUD grows again, move its remaining read-only snapshot types out
-   of `shell.rs`; keep `Shell` as the egui adapter that returns `Request`, not
-   an owner of world-query types.
-3. Exercise the staged mailbox against sustained production-like stalled-window
+1. Exercise the staged mailbox against sustained production-like stalled-window
    traffic before tuning its ordered-update capacity. Start from the
    reproducible `openshard-playground --mailbox-load --stall-app-ms 5000`
    diagnostic, then collect a real externally observed traffic profile. The
    controlled in-process run and headless regression establish the mechanism,
    not a production capacity number.
-4. Keep the three state boundaries explicit as new fields are added:
+2. Keep the three state boundaries explicit as new fields are added:
 
    ```text
    authoritative world state
@@ -192,7 +196,7 @@ copies are on a rare eviction path. Do not reintroduce `Arc<WorldView>`.
    presentation projection
    ```
 
-5. Keep commits small and run the client app check/tests after each stage.
+3. Keep commits small and run the client app check/tests after each stage.
 
 ## Important caution
 

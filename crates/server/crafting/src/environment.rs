@@ -121,7 +121,7 @@ pub fn around(state: &WorldState, crafter: EntityId) -> Facilities {
             terrain.statics_at(Tile::new(x, y), &mut statics);
             for (id, z) in &statics {
                 if in_z_band(i32::from(at.z), i32::from(*z)) {
-                    found.add(Graphic(*id));
+                    found.add(*id);
                 }
             }
         }

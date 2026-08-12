@@ -118,6 +118,14 @@ impl StaticAnimations {
         self.elapsed += dt;
     }
 
+    /// Real time this animation set has been playing.
+    ///
+    /// This is primarily useful to keep higher-level presentation-clock tests
+    /// independent of a particular tile's animation sequence.
+    pub fn elapsed(&self) -> Duration {
+        self.elapsed
+    }
+
     /// What is on screen for `graphic` at this instant.
     ///
     /// The graphic itself when it does not animate, which is the answer for all

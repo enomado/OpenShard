@@ -171,7 +171,10 @@ fn draw(
     at: Point,
     items: &[GroundItem],
 ) -> Drawn {
-    let map = Map::from_blocks(2, 2, |_, _| LandCell { tile: 0, z: 27 });
+    let map = Map::from_blocks(2, 2, |_, _| LandCell {
+        tile: openshard_uofiles::map::LandTile(0),
+        z: 27,
+    });
     let camera = Camera::new(at, VIEWPORT.0, VIEWPORT.1);
     let cutaway = Cutaway::at(&map, tiledata, at, true);
 

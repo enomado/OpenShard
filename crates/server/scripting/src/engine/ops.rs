@@ -1,6 +1,6 @@
 use super::*;
 use openshard_protocol::mobile::Notoriety;
-use openshard_protocol::world::{Aggression, DamageType, RangedRange, Sight};
+use openshard_protocol::world::{Aggression, DamageType, PhysicalResistance, RangedRange, Sight};
 
 /// serial the engine has never been told about.
 ///
@@ -120,7 +120,7 @@ struct MobileSpec {
     #[serde(default)]
     damage: u16,
     #[serde(default)]
-    resistance: u8,
+    resistance: PhysicalResistance,
     #[serde(default)]
     swing: u64,
     #[serde(default)]
@@ -699,7 +699,7 @@ struct CreatureSpec {
     #[serde(default)]
     damage: u16,
     #[serde(default)]
-    resistance: u8,
+    resistance: PhysicalResistance,
     #[serde(default)]
     fame: i32,
     #[serde(default)]

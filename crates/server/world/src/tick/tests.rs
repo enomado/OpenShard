@@ -4,6 +4,7 @@ use openshard_combat::{MobileDamaged, MobileDied, WRESTLING_SPEED, swing_ticks};
 use openshard_events::Cursor;
 use openshard_magic::SpellCast;
 use openshard_movement::WALK_INTERVAL;
+use openshard_protocol::casting::SpellId;
 use openshard_protocol::containers::GridSlot;
 use openshard_protocol::gump::GumpPoint;
 use openshard_protocol::items::DropDestination;
@@ -2348,7 +2349,7 @@ fn spawn_mobile_full(
         hits,
         notoriety: Notoriety::from_bits(notoriety),
         damage,
-        resistance,
+        resistance: openshard_protocol::world::PhysicalResistance::new(resistance),
         swing: 0,        // the default pace
         sight: Sight(0), // passive by default; tests that want a brain set it
         aggression: Aggression::from_bits(2),
@@ -2672,6 +2673,26 @@ fn resurrection_brings_a_ghost_back() {
             .is_some_and(|h| h.current > 0),
         "and it is not standing at zero hits"
     );
+    let equipment = world.state.equipment_of(serial);
+    for (graphic, layer) in [
+        (Graphic(0x1F03), Layer(0x16)),
+        (Graphic(0x0F52), openshard_state::weapon::LAYER_ONE_HANDED),
+        (Graphic(0x0F49), openshard_state::weapon::LAYER_TWO_HANDED),
+    ] {
+        assert!(
+            equipment
+                .iter()
+                .any(|item| item.graphic == graphic && item.layer == layer),
+            "the revived player wears 0x{:04X} on layer {}",
+            graphic.0,
+            layer.0,
+        );
+    }
+    assert_eq!(
+        openshard_combat::weapons::equipped_weapon(&world.state, player_entity).map(|weapon| weapon.graphic),
+        Some(Graphic(0x0F52)),
+        "the one-handed resurrection dagger is the active weapon"
+    );
     let packets = packets_for(&mut world, player);
     assert!(
         packets.iter().any(|p| p.as_slice() == [0x2C, 0x02]),
@@ -2686,7 +2707,7 @@ fn spawn_healer(world: &mut World, at: Point, now: Instant) -> (EntityId, Serial
         hits: 100,
         notoriety: Notoriety::from_bits(1),
         damage: 0,
-        resistance: 0,
+        resistance: openshard_protocol::world::PhysicalResistance::new(0),
         swing: 0,
         sight: Sight(0),
         aggression: Aggression::from_bits(2),
@@ -3098,7 +3119,7 @@ fn a_creature_dies_with_its_own_voice() {
         hits: 1, // one blow fells it
         notoriety: Notoriety::from_bits(5),
         damage: 5,
-        resistance: 0,
+        resistance: openshard_protocol::world::PhysicalResistance::new(0),
         swing: 0,
         sight: Sight(0),
         aggression: Aggression::from_bits(2),
@@ -3740,7 +3761,7 @@ fn a_creature_can_be_given_combat_skills() {
         hits: 50,
         notoriety: Notoriety::from_bits(5),
         damage: 8,
-        resistance: 0,
+        resistance: openshard_protocol::world::PhysicalResistance::new(0),
         swing: 0,
         sight: Sight(0),
         aggression: Aggression::from_bits(2),
@@ -4607,7 +4628,7 @@ fn a_sphere_cast_resolves_at_once() {
 
     world.queue(Command::RequestCast {
         connection,
-        spell: 17,
+        spell: SpellId(17),
     }); // Fireball
     world.tick(now);
 
@@ -4637,7 +4658,7 @@ fn a_servuo_cast_waits_out_its_delay_then_targets() {
 
     world.queue(Command::RequestCast {
         connection,
-        spell: 17,
+        spell: SpellId(17),
     });
     world.tick(now);
     assert!(
@@ -4696,7 +4717,7 @@ fn a_travel_spell_asks_for_an_object_and_not_a_patch_of_ground() {
     // Recall aims at a rune, so the client itself must refuse bare ground.
     world.queue(Command::RequestCast {
         connection,
-        spell: 31,
+        spell: SpellId(31),
     });
     world.tick(now);
     let cursor = packets_for(&mut world, connection)
@@ -4709,7 +4730,7 @@ fn a_travel_spell_asks_for_an_object_and_not_a_patch_of_ground() {
     // is to the travel family and not to targeting at large.
     world.queue(Command::RequestCast {
         connection,
-        spell: 17, // Magic Arrow
+        spell: SpellId(17), // Magic Arrow
     });
     world.tick(now);
     let cursor = packets_for(&mut world, connection)
@@ -4726,7 +4747,7 @@ fn stepping_breaks_a_cast() {
     let (connection, entity) = ready_caster(&mut world, BLACK_PEARL, now);
     world.queue(Command::RequestCast {
         connection,
-        spell: 17,
+        spell: SpellId(17),
     });
     world.tick(now);
     assert!(
@@ -4758,7 +4779,7 @@ fn a_blow_disturbs_a_cast_when_the_shard_says_so() {
     let serial = serial_of(&world, connection);
     world.queue(Command::RequestCast {
         connection,
-        spell: 17,
+        spell: SpellId(17),
     });
     world.tick(now);
     assert!(
@@ -4793,7 +4814,7 @@ fn a_fireball_damages_the_mobile_it_is_aimed_at() {
 
     world.queue(Command::RequestCast {
         connection,
-        spell: 17,
+        spell: SpellId(17),
     });
     world.tick(now);
     world.queue(Command::TargetResponse {
@@ -5243,7 +5264,7 @@ fn protection_holds_a_cast_against_a_blow() {
     );
     world.queue(Command::RequestCast {
         connection,
-        spell: 17,
+        spell: SpellId(17),
     });
     world.tick(now);
     assert!(world.registry().get::<Casting>(entity).is_some());
@@ -5277,7 +5298,7 @@ fn magic_reflection_bounces_a_spell_back_at_the_caster() {
 
     world.queue(Command::RequestCast {
         connection,
-        spell: 17,
+        spell: SpellId(17),
     }); // Fireball
     world.tick(now);
     world.queue(Command::TargetResponse {
@@ -5322,7 +5343,10 @@ fn night_sight_lights_the_targets_screen() {
     let caster_serial = serial_of(&world, connection);
     let _ = packets_for(&mut world, connection);
 
-    world.queue(Command::RequestCast { connection, spell: 5 }); // Night Sight
+    world.queue(Command::RequestCast {
+        connection,
+        spell: SpellId(5),
+    }); // Night Sight
     world.tick(now);
     world.queue(Command::TargetResponse {
         connection,
@@ -5462,7 +5486,7 @@ fn fire_field_lays_a_row_and_burns_who_stands_in_it() {
 
     world.queue(Command::RequestCast {
         connection,
-        spell: 27,
+        spell: SpellId(27),
     }); // Fire Field
     world.tick(now);
     world.queue(Command::TargetResponse {
@@ -5507,7 +5531,7 @@ fn poison_field_poisons_who_stands_in_it() {
 
     world.queue(Command::RequestCast {
         connection,
-        spell: 38,
+        spell: SpellId(38),
     }); // Poison Field
     world.tick(now);
     world.queue(Command::TargetResponse {
@@ -5731,7 +5755,7 @@ fn the_paralyze_spell_freezes_its_target() {
 
     world.queue(Command::RequestCast {
         connection,
-        spell: 37,
+        spell: SpellId(37),
     }); // Paralyze
     world.tick(now);
     world.queue(Command::TargetResponse {
@@ -5866,7 +5890,7 @@ fn paralyze_field_freezes_who_stands_in_it() {
 
     world.queue(Command::RequestCast {
         connection,
-        spell: 46,
+        spell: SpellId(46),
     }); // Paralyze Field
     world.tick(now);
     world.queue(Command::TargetResponse {
@@ -5913,7 +5937,7 @@ fn the_bless_spell_raises_the_targets_stats() {
 
     world.queue(Command::RequestCast {
         connection,
-        spell: 16,
+        spell: SpellId(16),
     }); // Bless
     world.tick(now);
     world.queue(Command::TargetResponse {
@@ -5944,7 +5968,7 @@ fn the_poison_spell_poisons_what_it_is_aimed_at() {
 
     world.queue(Command::RequestCast {
         connection,
-        spell: 19,
+        spell: SpellId(19),
     }); // Poison
     world.tick(now);
     world.queue(Command::TargetResponse {
@@ -5979,7 +6003,7 @@ fn a_resolved_cast_plays_its_sound_and_shows_its_bolt() {
 
     world.queue(Command::RequestCast {
         connection,
-        spell: 17,
+        spell: SpellId(17),
     }); // Fireball
     world.tick(now);
     world.queue(Command::TargetResponse {
@@ -6021,7 +6045,7 @@ fn a_cast_without_reagents_fizzles() {
 
     world.queue(Command::RequestCast {
         connection,
-        spell: 17,
+        spell: SpellId(17),
     });
     world.tick(now);
     assert_eq!(
@@ -6057,7 +6081,7 @@ fn with_reagents_off_a_cast_needs_no_reagents() {
 
     world.queue(Command::RequestCast {
         connection,
-        spell: 17,
+        spell: SpellId(17),
     }); // Fireball — normally needs a black pearl
     world.tick(now);
     assert!(
@@ -6097,7 +6121,7 @@ fn mana_loss_on_fail_off_refunds_a_fizzle() {
     let mut cast: Cursor<SpellCast> = world.bus().cursor();
     world.queue(Command::RequestCast {
         connection,
-        spell: 17,
+        spell: SpellId(17),
     }); // Fireball, a targeted spell
     world.tick(now);
     world.queue(Command::TargetResponse {
@@ -6842,7 +6866,7 @@ fn casting_a_spell_pays_mana_and_announces_it() {
     let mut cast: Cursor<SpellCast> = world.bus().cursor();
     world.queue(Command::CastSpell {
         serial,
-        spell: 5,
+        spell: SpellId(5),
         target: None,
         mana: 10,
         min_skill: 0,
@@ -6855,7 +6879,7 @@ fn casting_a_spell_pays_mana_and_announces_it() {
 
     let events: Vec<SpellCast> = world.bus().read(&mut cast).copied().collect();
     assert_eq!(events.len(), 1);
-    assert_eq!(events[0].spell, 5);
+    assert_eq!(events[0].spell, SpellId(5));
     assert!(events[0].success, "a mana-full grandmaster casts it");
     assert_eq!(
         world.state.registry.get::<Mana>(entity).unwrap().current,
@@ -6907,7 +6931,7 @@ fn reagents_are_consumed_on_a_cast_and_a_short_pack_fizzles() {
 
     let spell = |reagents: Vec<(Graphic, u16)>| Command::CastSpell {
         serial,
-        spell: 5,
+        spell: SpellId(5),
         target: None,
         mana: 10,
         min_skill: 0,
@@ -6999,7 +7023,7 @@ fn consuming_a_reagent_redraws_an_open_pack() {
     // Cast, burning the reagent out of the open pack.
     world.queue(Command::CastSpell {
         serial,
-        spell: 5,
+        spell: SpellId(5),
         target: None,
         mana: 10,
         min_skill: 0,
@@ -7029,7 +7053,7 @@ fn a_spell_beyond_the_mana_fizzles() {
     let mut cast: Cursor<SpellCast> = world.bus().cursor();
     world.queue(Command::CastSpell {
         serial,
-        spell: 1,
+        spell: SpellId(1),
         target: None,
         mana: 200, // more than the 100 on hand
         min_skill: 0,
@@ -7089,7 +7113,7 @@ fn mana_trickles_back() {
     world.tick(now);
     world.queue(Command::CastSpell {
         serial,
-        spell: 1,
+        spell: SpellId(1),
         target: None,
         mana: 20,
         min_skill: 0,
@@ -7150,7 +7174,7 @@ fn spawn_creature(world: &mut World, point: Point, sight: u8, wander: bool, now:
         hits: 50,
         notoriety: Notoriety::from_bits(5),
         damage: combat::SWING_DAMAGE,
-        resistance: 0,
+        resistance: openshard_protocol::world::PhysicalResistance::new(0),
         swing: 0,
         sight: Sight(sight),
         aggression: Aggression::from_bits(2),
@@ -7873,9 +7897,9 @@ impl Terrain for FrameTerrain {
     fn can_step(&self, _from: Point, to: Point) -> Option<Point> {
         Some(to)
     }
-    fn statics_at(&self, tile: Tile, out: &mut Vec<(u16, i8)>) {
+    fn statics_at(&self, tile: Tile, out: &mut Vec<(Graphic, i8)>) {
         if tile.y == 100 && (tile.x == 100 || tile.x == 102) {
-            out.push((0x0007, 0)); // 0x0007 is both a west and an east frame
+            out.push((Graphic(0x0007), 0)); // 0x0007 is both a west and an east frame
         }
     }
     fn can_fit(&self, tile: Tile, _z: i32, _height: i32) -> bool {
@@ -8092,7 +8116,7 @@ fn a_spawner_fills_to_its_ceiling_and_clear_empties_it() {
         hits: 10,
         notoriety: openshard_protocol::mobile::Notoriety::Neutral,
         damage: 0,
-        resistance: 0,
+        resistance: openshard_protocol::world::PhysicalResistance::new(0),
         swing: 0,
         sight: Sight(0),
         aggression: Aggression::from_bits(2),
@@ -8150,7 +8174,7 @@ fn clear_also_removes_placed_npcs_and_their_gear_but_not_players() {
         hits: 50,
         notoriety: Notoriety::from_bits(1),
         damage: 0,
-        resistance: 0,
+        resistance: openshard_protocol::world::PhysicalResistance::new(0),
         swing: 0,
         sight: Sight(0),
         aggression: Aggression::from_bits(0),
@@ -8731,7 +8755,7 @@ fn a_vendor_and_its_priced_stock_survive_a_restart() {
         hits: 50,
         notoriety: Notoriety::from_bits(7),
         damage: 0,
-        resistance: 0,
+        resistance: openshard_protocol::world::PhysicalResistance::new(0),
         swing: 0,
         sight: Sight(0),
         aggression: Aggression::from_bits(0),
@@ -8860,7 +8884,7 @@ fn a_wounded_spawner_creature_survives_a_restart_and_is_counted() {
         hits: 10,
         notoriety: openshard_protocol::mobile::Notoriety::Neutral,
         damage: 0,
-        resistance: 0,
+        resistance: openshard_protocol::world::PhysicalResistance::new(0),
         swing: 0,
         sight: Sight(0),
         aggression: Aggression::from_bits(2),
@@ -9110,7 +9134,7 @@ fn spawn_banker(world: &mut World, at: Point, now: Instant) {
         hits: 100,
         notoriety: Notoriety::from_bits(7), // invulnerable
         damage: 0,
-        resistance: 0,
+        resistance: openshard_protocol::world::PhysicalResistance::new(0),
         swing: 0,
         sight: Sight(0),
         aggression: Aggression::from_bits(2),
@@ -9211,7 +9235,7 @@ pub(super) fn spawn_townsperson(world: &mut World, trade: &str, at: Point, now: 
         hits: 100,
         notoriety: Notoriety::from_bits(7),
         damage: 0,
-        resistance: 0,
+        resistance: openshard_protocol::world::PhysicalResistance::new(0),
         swing: 0,
         sight: Sight(0),
         aggression: Aggression::from_bits(2),
@@ -9383,7 +9407,7 @@ fn spawn_creature_with_standing(world: &mut World, fame: i32, karma: i32, now: I
         hits: 10,
         notoriety: openshard_protocol::mobile::Notoriety::Neutral,
         damage: 0,
-        resistance: 0,
+        resistance: openshard_protocol::world::PhysicalResistance::new(0),
         swing: 0,
         sight: Sight(0),
         aggression: Aggression::from_bits(0),
@@ -9651,7 +9675,7 @@ fn a_non_human_townsperson_keeps_its_own_body() {
         hits: 100,
         notoriety: Notoriety::from_bits(7),
         damage: 0,
-        resistance: 0,
+        resistance: openshard_protocol::world::PhysicalResistance::new(0),
         swing: 0,
         sight: Sight(0),
         aggression: Aggression::from_bits(2),
@@ -9910,7 +9934,7 @@ fn a_criminal_is_refused_at_every_door_into_a_shop() {
         hits: 100,
         notoriety: Notoriety::from_bits(7),
         damage: 0,
-        resistance: 0,
+        resistance: openshard_protocol::world::PhysicalResistance::new(0),
         swing: 0,
         sight: Sight(0),
         aggression: Aggression::from_bits(2),
@@ -10000,7 +10024,7 @@ fn spawn_shopkeeper(world: &mut World, now: Instant) -> (EntityId, Serial) {
         hits: 100,
         notoriety: Notoriety::from_bits(7),
         damage: 0,
-        resistance: 0,
+        resistance: openshard_protocol::world::PhysicalResistance::new(0),
         swing: 0,
         sight: Sight(0),
         aggression: Aggression::from_bits(2),
@@ -10216,7 +10240,7 @@ fn a_townsperson_walks_home_at_night_when_the_shard_asks_for_it() {
         hits: 100,
         notoriety: Notoriety::from_bits(7),
         damage: 0,
-        resistance: 0,
+        resistance: openshard_protocol::world::PhysicalResistance::new(0),
         swing: 0,
         sight: Sight(0),
         aggression: Aggression::from_bits(2),
@@ -10527,7 +10551,7 @@ fn a_spawn_stands_on_the_floor_not_under_it() {
         hits: 100,
         notoriety: Notoriety::from_bits(7),
         damage: 0,
-        resistance: 0,
+        resistance: openshard_protocol::world::PhysicalResistance::new(0),
         swing: 0,
         sight: Sight(0),
         aggression: Aggression::from_bits(0),
@@ -10576,7 +10600,7 @@ fn an_unnamed_creature_takes_its_body_default_name() {
         hits: 10,
         notoriety: Notoriety::from_bits(1),
         damage: 0,
-        resistance: 0,
+        resistance: openshard_protocol::world::PhysicalResistance::new(0),
         swing: 0,
         sight: Sight(0),
         aggression: Aggression::from_bits(0),
@@ -10757,7 +10781,7 @@ pub(super) fn spawn_stocked_vendor(world: &mut World, point: Point, now: Instant
         hits: 50,
         notoriety: Notoriety::from_bits(1),
         damage: 0,
-        resistance: 0,
+        resistance: openshard_protocol::world::PhysicalResistance::new(0),
         swing: 0,
         sight: Sight(0),
         aggression: Aggression::from_bits(0),
@@ -11741,7 +11765,7 @@ fn a_creature_does_not_notice_prey_through_a_shut_door() {
         hits: 50,
         notoriety: Notoriety::from_bits(5),
         damage: 5,
-        resistance: 0,
+        resistance: openshard_protocol::world::PhysicalResistance::new(0),
         swing: 0,
         sight: Sight(5),
         aggression: Aggression::from_bits(2),
@@ -11810,7 +11834,7 @@ fn spawn_brained(world: &mut World, body: u16, at: Point, sight: u8, now: Instan
         hits: 50,
         notoriety: Notoriety::from_bits(5),
         damage: 5,
-        resistance: 0,
+        resistance: openshard_protocol::world::PhysicalResistance::new(0),
         swing: 0,
         sight: Sight(sight),
         aggression: Aggression::from_bits(2),
@@ -11997,7 +12021,7 @@ fn spawn_postured(world: &mut World, at: Point, sight: u8, aggression: u8, now: 
         hits: 50,
         notoriety: Notoriety::from_bits(1),
         damage: 5,
-        resistance: 0,
+        resistance: openshard_protocol::world::PhysicalResistance::new(0),
         swing: 0,
         sight: Sight(sight),
         aggression: Aggression::from_bits(aggression),
@@ -12165,7 +12189,7 @@ fn spawn_horse(world: &mut World, at: Point, now: Instant) -> (EntityId, Serial)
         hits: 30,
         notoriety: Notoriety::from_bits(1),
         damage: 3,
-        resistance: 0,
+        resistance: openshard_protocol::world::PhysicalResistance::new(0),
         swing: 0,
         sight: Sight(0),
         aggression: Aggression::from_bits(0),
@@ -12503,7 +12527,7 @@ fn a_shop_sells_goods_and_buys_them_back() {
         hits: 50,
         notoriety: Notoriety::from_bits(1),
         damage: 0,
-        resistance: 0,
+        resistance: openshard_protocol::world::PhysicalResistance::new(0),
         swing: 0,
         sight: Sight(0),
         aggression: Aggression::from_bits(0),
@@ -12670,7 +12694,7 @@ fn a_shop_keyword_needs_the_vendor_named_and_an_empty_sell_answers_overhead() {
         hits: 50,
         notoriety: Notoriety::from_bits(1),
         damage: 0,
-        resistance: 0,
+        resistance: openshard_protocol::world::PhysicalResistance::new(0),
         swing: 0,
         sight: Sight(0),
         aggression: Aggression::from_bits(0),
@@ -12792,7 +12816,7 @@ fn a_bought_out_shelf_refills_when_its_hour_is_up() {
         hits: 50,
         notoriety: Notoriety::from_bits(1),
         damage: 0,
-        resistance: 0,
+        resistance: openshard_protocol::world::PhysicalResistance::new(0),
         swing: 0,
         sight: Sight(0),
         aggression: Aggression::from_bits(0),
@@ -12912,7 +12936,7 @@ fn spawn_archer_bodied(world: &mut World, body: u16, at: Point, now: Instant) ->
         hits: 50,
         notoriety: Notoriety::from_bits(5),
         damage: 7,
-        resistance: 0,
+        resistance: openshard_protocol::world::PhysicalResistance::new(0),
         swing: 10,
         sight: Sight(10),
         aggression: Aggression::from_bits(2),
@@ -13255,7 +13279,7 @@ fn lod_a_spawner_with_no_player_near_stays_dormant_then_wakes() {
         hits: 10,
         notoriety: openshard_protocol::mobile::Notoriety::Neutral,
         damage: 0,
-        resistance: 0,
+        resistance: openshard_protocol::world::PhysicalResistance::new(0),
         swing: 0,
         sight: Sight(0),
         aggression: Aggression::from_bits(2),

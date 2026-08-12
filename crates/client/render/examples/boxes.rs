@@ -851,7 +851,7 @@ fn main() {
     let blocks = (bounds.max_x as u32).div_ceil(openshard_uofiles::map::BLOCK_SIZE) + 1;
     let synthetic_map =
         openshard_uofiles::map::Map::from_blocks(blocks, blocks, |_x, _y| openshard_uofiles::map::LandCell {
-            tile: FLOOR_GRAPHIC.0,
+            tile: openshard_uofiles::map::LandTile(FLOOR_GRAPHIC.0),
             z: 0,
         });
     let land = LandAtlas::pack([(FLOOR_GRAPHIC, floor_image)]).expect("one flat tile always fits");

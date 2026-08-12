@@ -54,6 +54,33 @@ const END_OF_FRAME: u32 = 0x7FFF_7FFF;
 /// An index entry the file uses to say "nothing here".
 const NO_ENTRY: u32 = 0xFFFF_FFFF;
 
+/// One animation in the client's files: body, action group and stored direction.
+///
+/// The index is addressed by exactly this triple.  Keeping it as one value
+/// prevents a caller from passing a direction where a group belongs — both are
+/// bytes, but the file answers that mix-up with another animation rather than
+/// an error.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+pub struct AnimationKey {
+    /// The body graphic the file stores.
+    pub body: Graphic,
+    /// The body-specific action group.
+    pub group: u8,
+    /// The stored direction, zero through four.
+    pub direction: u8,
+}
+
+impl AnimationKey {
+    #[must_use]
+    pub const fn new(body: Graphic, group: u8, direction: u8) -> Self {
+        Self {
+            body,
+            group,
+            direction,
+        }
+    }
+}
+
 /// What can go wrong reading an animation.
 #[derive(Debug)]
 #[non_exhaustive]
@@ -74,12 +101,8 @@ pub enum AnimError {
     },
     /// An entry's bytes are not a body's frames.
     Malformed {
-        /// Which body.
-        body: u16,
-        /// Which group.
-        group: u8,
-        /// Which stored direction.
-        direction: u8,
+        /// Which animation's entry was malformed.
+        key: AnimationKey,
         /// What was wrong.
         detail: String,
     },
@@ -95,12 +118,11 @@ impl fmt::Display for AnimError {
                  it is not anim.idx",
                 path.display(),
             ),
-            Self::Malformed {
-                body,
-                group,
-                direction,
-                detail,
-            } => write!(f, "body {body} group {group} direction {direction}: {detail}"),
+            Self::Malformed { key, detail } => write!(
+                f,
+                "body {} group {} direction {}: {detail}",
+                key.body.0, key.group, key.direction
+            ),
         }
     }
 }
@@ -444,14 +466,13 @@ impl Anim {
         self.entries.len()
     }
 
-    /// Whether a body, group and stored direction has any frames at all.
+    /// Whether one animation has any frames at all.
     ///
     /// Cheap — it reads the index only — and worth having separately: most of
     /// the index is empty, and "does this body exist" is a question a caller
     /// asks far more often than it asks for pixels.
-    pub fn has_frames(&self, body: Graphic, group: u8, direction: u8) -> bool {
-        self.entry(body, group, direction)
-            .is_some_and(IdxEntry::is_present)
+    pub fn has_frames(&self, key: AnimationKey) -> bool {
+        self.entry(key).is_some_and(IdxEntry::is_present)
     }
 
     /// The frames of one body, group and *stored* direction.
@@ -464,13 +485,8 @@ impl Anim {
     /// `None` means the client ships no animation there, which is the ordinary
     /// answer for most of the index: a group a body does not have, or a body id
     /// nothing uses.
-    pub fn frames(
-        &mut self,
-        body: Graphic,
-        group: u8,
-        direction: u8,
-    ) -> Result<Option<Vec<AnimFrame>>, AnimError> {
-        let Some(entry) = self.entry(body, group, direction) else {
+    pub fn frames(&mut self, key: AnimationKey) -> Result<Option<Vec<AnimFrame>>, AnimError> {
+        let Some(entry) = self.entry(key) else {
             return Ok(None);
         };
         if !entry.is_present() {
@@ -491,16 +507,18 @@ impl Anim {
                 source,
             })?;
 
-        decode_body(body.0, group, direction, &raw).map(Some)
+        decode_body(key, &raw).map(Some)
     }
 
-    /// The index entry for a body, group and stored direction.
-    fn entry(&self, body: Graphic, group: u8, direction: u8) -> Option<IdxEntry> {
-        let kind = BodyKind::of(body);
-        if group >= kind.groups() || direction >= DIRECTIONS {
+    /// The index entry for one animation.
+    fn entry(&self, key: AnimationKey) -> Option<IdxEntry> {
+        let kind = BodyKind::of(key.body);
+        if key.group >= kind.groups() || key.direction >= DIRECTIONS {
             return None;
         }
-        let block = kind.base(body.0) + usize::from(group) * usize::from(DIRECTIONS) + usize::from(direction);
+        let block = kind.base(key.body.0)
+            + usize::from(key.group) * usize::from(DIRECTIONS)
+            + usize::from(key.direction);
         self.entries.get(block).copied()
     }
 }
@@ -510,13 +528,8 @@ impl Anim {
 /// Split out so the format can be exercised on bytes built by hand — the
 /// failures worth catching are an offset past the end and a run that draws
 /// outside its own frame, and a shipped file offers neither on demand.
-fn decode_body(body: u16, group: u8, direction: u8, raw: &[u8]) -> Result<Vec<AnimFrame>, AnimError> {
-    let malformed = |detail: String| AnimError::Malformed {
-        body,
-        group,
-        direction,
-        detail,
-    };
+fn decode_body(key: AnimationKey, raw: &[u8]) -> Result<Vec<AnimFrame>, AnimError> {
+    let malformed = |detail: String| AnimError::Malformed { key, detail };
 
     let palette_bytes = raw
         .get(..PALETTE_BYTES)
@@ -777,14 +790,14 @@ mod tests {
         let mut anim = Anim::open(&dir).expect("anim.idx and anim.mul");
         for ghost in [0x0192u16, 0x0193] {
             assert!(
-                anim.frames(Graphic(ghost), BodyKind::Human.standing(), 0)
+                anim.frames(AnimationKey::new(Graphic(ghost), BodyKind::Human.standing(), 0))
                     .expect("reading the index")
                     .is_none(),
                 "body {ghost:#06x} has frames after all, and the remap is hiding them",
             );
             let drawn = animation_body(Graphic(ghost));
             assert!(
-                anim.frames(drawn, BodyKind::Human.standing(), 0)
+                anim.frames(AnimationKey::new(drawn, BodyKind::Human.standing(), 0))
                     .expect("reading the index")
                     .is_some_and(|frames| !frames.is_empty()),
                 "body {:#06x} is what a ghost is drawn from and has no frames either",
@@ -866,7 +879,7 @@ mod tests {
         entry.extend_from_slice(&8u32.to_le_bytes());
         entry.extend_from_slice(&frame);
 
-        let frames = decode_body(400, 4, 0, &entry).expect("a well-formed entry");
+        let frames = decode_body(AnimationKey::new(Graphic(400), 4, 0), &entry).expect("a well-formed entry");
         assert_eq!(frames.len(), 1);
         let frame = &frames[0];
         assert_eq!((frame.center_x, frame.center_y), (2, -1));
@@ -896,7 +909,7 @@ mod tests {
         entry.extend_from_slice(&END_OF_FRAME.to_le_bytes());
 
         assert!(matches!(
-            decode_body(400, 4, 0, &entry),
+            decode_body(AnimationKey::new(Graphic(400), 4, 0), &entry),
             Err(AnimError::Malformed { .. })
         ));
     }

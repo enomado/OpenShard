@@ -13,8 +13,9 @@
 use std::path::PathBuf;
 
 use openshard_client_render::animate::StaticAnimations;
-use openshard_client_render::atlas::FrameKey;
-use openshard_client_render::atlas::{AnimAtlas, LandAtlas, StaticAtlas, TexmapAtlas};
+use openshard_client_render::atlas::{
+    AnimAtlas, AnimationKey, FrameKey, LandAtlas, StaticAtlas, TexmapAtlas,
+};
 use openshard_client_render::blit::{Blit, ViewportRect};
 use openshard_client_render::camera::ViewPoint;
 use openshard_client_render::camera::{Camera, Projection, RealPixel, WorldPoint, Zoom};
@@ -2593,16 +2594,8 @@ fn a_walking_billboard_is_lit_where_it_is_drawn_not_where_it_is_going() {
             vec![Color16(0b0_00000_11111_00000); usize::from(SIZE) * usize::from(SIZE)],
         ),
     };
-    let atlas = AnimAtlas::pack([(
-        FrameKey {
-            body: Graphic(BODY),
-            group: 4,
-            direction: 0,
-            frame: 0,
-        },
-        frame,
-    )])
-    .expect("one frame fits");
+    let atlas = AnimAtlas::pack([(FrameKey::new(AnimationKey::new(Graphic(BODY), 4, 0), 0), frame)])
+        .expect("one frame fits");
 
     let land = LandAtlas::pack([]).expect("nothing always fits");
     let texmaps = TexmapAtlas::pack([]).expect("nothing always fits");
@@ -4388,16 +4381,8 @@ fn a_mobile_is_drawn_over_the_ground_and_mirrors_with_its_facing() {
         center_y: 0,
         image: Image::new(2, 1, vec![red, green]),
     };
-    let atlas = AnimAtlas::pack([(
-        FrameKey {
-            body: Graphic(BODY),
-            group: 4,
-            direction: 1,
-            frame: 0,
-        },
-        frame,
-    )])
-    .expect("one frame fits");
+    let atlas = AnimAtlas::pack([(FrameKey::new(AnimationKey::new(Graphic(BODY), 4, 1), 0), frame)])
+        .expect("one frame fits");
 
     // Ground under it, at the same tile: the mobile has to win, and the ground
     // is what makes that a claim rather than a drawing on an empty frame.

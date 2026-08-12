@@ -5,7 +5,6 @@ use openshard_client_render::atlas::StaticAtlas;
 use openshard_client_render::camera::Camera;
 use openshard_client_render::cutaway::Cutaway;
 use openshard_client_render::occlusion::{self, Edges};
-use openshard_protocol::wire::Graphic;
 use openshard_protocol::world::Point;
 use openshard_uofiles::art::Art;
 use openshard_uofiles::map::Map;
@@ -28,7 +27,7 @@ fn main() {
     for tx in bounds.min_x..=bounds.max_x {
         for ty in bounds.min_y..=bounds.max_y {
             for item in map.statics_at(tx as u16, ty as u16) {
-                wanted.push(Graphic(item.tile));
+                wanted.push(item.tile);
             }
         }
     }

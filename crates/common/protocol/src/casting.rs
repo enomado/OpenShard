@@ -39,6 +39,16 @@ impl CastSpellRequest {
     }
 }
 
+/// A spell id after the wire's one-based numbering is normalized.
+///
+/// The value is deliberately not limited to the 64 spells the core Magery table
+/// currently knows. The protocol names a spell; the table that receives it owns
+/// the separate question whether it has an entry. Keeping that distinction is
+/// what lets a future spellbook family share the wire type without teaching this
+/// dependency-free crate about gameplay data.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+pub struct SpellId(pub u16);
+
 /// A spell id exactly as a `0xBF 0x1C` carried it: one-based on the wire, so
 /// `1` is the first spell and `0` is not a spell at all — no legitimate
 /// client ever sends it.
@@ -54,7 +64,7 @@ impl CastSpellRequest {
 pub struct RawSpellId(pub u16);
 
 impl RawSpellId {
-    /// The zero-based spell number this names, or `None` for the wire's `0`.
+    /// The zero-based [`SpellId`] this names, or `None` for the wire's `0`.
     ///
     /// Total: every `u16` has an answer, so this may run right at the network
     /// seam rather than waiting for a tick system to have the domain in hand
@@ -64,10 +74,10 @@ impl RawSpellId {
     /// at whatever seam already asks it.
     #[inline]
     #[must_use]
-    pub const fn interpret(self) -> Option<u16> {
+    pub const fn interpret(self) -> Option<SpellId> {
         match self.0 {
             0 => None,
-            n => Some(n - 1),
+            n => Some(SpellId(n - 1)),
         }
     }
 }
@@ -109,7 +119,7 @@ mod tests {
                 ExtendedRequest::Cast(cast) => cast.spell.interpret(),
                 _ => None,
             },
-            Some(5)
+            Some(SpellId(5))
         );
     }
 
@@ -138,6 +148,10 @@ mod tests {
             ExtendedRequest::Cast(CastSpellRequest { spell: RawSpellId(0) })
         );
         assert_eq!(RawSpellId(0).interpret(), None);
-        assert_eq!(RawSpellId(1).interpret(), Some(0), "distinct from the wire's 0");
+        assert_eq!(
+            RawSpellId(1).interpret(),
+            Some(SpellId(0)),
+            "distinct from the wire's 0"
+        );
     }
 }

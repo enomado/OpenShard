@@ -13,7 +13,7 @@
 use crate::{Terrain, Tile};
 use openshard_protocol::wire::Graphic;
 use openshard_protocol::world::Point;
-use openshard_uofiles::map::Map;
+use openshard_uofiles::map::{LandTile, Map};
 use openshard_uofiles::tiledata::{TileData, TileFlags};
 
 /// How far a walking human can step up.
@@ -150,7 +150,7 @@ where
             candidates.push(land_center);
         }
         for item in self.map().statics_at(x, y) {
-            let tile = self.tiles().static_tile(item.tile);
+            let tile = self.tiles().static_tile(item.tile.0);
             if tile.flags.is_platform() {
                 let (_, our_z) = platform_surface(
                     i32::from(item.z),
@@ -187,8 +187,8 @@ where
     /// so the surface underfoot tops out exactly at the feet on it. Anything
     /// else is its art, and at least one unit: walls often carry zero height in
     /// tiledata, and a zero-tall wall that blocks nothing is not a wall.
-    fn static_top(&self, tile: u16, base: i32) -> i32 {
-        let tile = self.tiles().static_tile(tile);
+    fn static_top(&self, tile: Graphic, base: i32) -> i32 {
+        let tile = self.tiles().static_tile(tile.0);
         match tile.flags.is_platform() {
             true => platform_surface(base, i32::from(tile.height), tile.flags.is_climbable()).1,
             false => base + i32::from(tile.height).max(1),
@@ -249,7 +249,7 @@ where
         // Then the tallest static surface at or below your feet: what you are
         // really standing on if you climbed onto something.
         for item in self.map().statics_at(x, y) {
-            let tile = self.tiles().static_tile(item.tile);
+            let tile = self.tiles().static_tile(item.tile.0);
             if !tile.flags.is_platform() {
                 continue;
             }
@@ -315,7 +315,7 @@ where
         let mut move_ok = false;
 
         for item in self.map().statics_at(x, y) {
-            let tile = self.tiles().static_tile(item.tile);
+            let tile = self.tiles().static_tile(item.tile.0);
             if !tile.flags.is_platform() {
                 continue;
             }
@@ -371,7 +371,7 @@ where
         let Some(land) = self.map().land(x, y) else {
             return false;
         };
-        let flags = self.tiles().land(land.tile).flags;
+        let flags = self.tiles().land(land.tile.0).flags;
         if flags.is_water() {
             self.swimming
         } else {
@@ -446,7 +446,7 @@ where
     /// all, and the step is refused — which is what the client does.
     fn is_obstructed(&self, x: u16, y: u16, z: i32, top: i32) -> bool {
         self.map().statics_at(x, y).any(|item| {
-            let tile = self.tiles().static_tile(item.tile);
+            let tile = self.tiles().static_tile(item.tile.0);
             let platform = tile.flags.is_platform();
             if !tile.flags.is_blocking() && !platform {
                 return false;
@@ -491,7 +491,7 @@ where
         let land_flags = self
             .map()
             .land(x, y)
-            .map(|cell| self.tiles().land(cell.tile).flags);
+            .map(|cell| self.tiles().land(cell.tile.0).flags);
         let land_impassable = land_flags.is_some_and(|f| f.is_blocking());
         // Impassable land (water, a mountain) in the object's body blocks it.
         if land_impassable && avg_z > z && z + height > low_z {
@@ -501,7 +501,7 @@ where
         let mut has_surface = land_flags.is_some() && !land_impassable && z == avg_z;
 
         for item in self.map().statics_at(x, y) {
-            let tile = self.tiles().static_tile(item.tile);
+            let tile = self.tiles().static_tile(item.tile.0);
             let surface = tile.flags.is_platform();
             let impassable = tile.flags.is_blocking();
             let base = i32::from(item.z);
@@ -579,11 +579,11 @@ where
         i8::try_from(self.average_land_z(tile.x, tile.y)).ok()
     }
 
-    fn land_tile(&self, tile: Tile) -> Option<u16> {
+    fn land_tile(&self, tile: Tile) -> Option<LandTile> {
         self.map().land(tile.x, tile.y).map(|cell| cell.tile)
     }
 
-    fn statics_at(&self, tile: Tile, out: &mut Vec<(u16, i8)>) {
+    fn statics_at(&self, tile: Tile, out: &mut Vec<(Graphic, i8)>) {
         // `tile` is the static's graphic id — for statics it is the item graphic
         // itself, which is what the door-frame tables match against.
         out.extend(
@@ -642,7 +642,7 @@ where
                 return false;
             }
             for item in self.map().statics_at(tile.x, tile.y) {
-                let static_tile = self.tiles().static_tile(item.tile);
+                let static_tile = self.tiles().static_tile(item.tile.0);
                 let flags = static_tile.flags;
                 // Windows are the deliberate hole in a wall — Sphere's
                 // `LOS_NB_WINDOWS`, and the one place `UFLAG2_WINDOW` is read at
@@ -715,7 +715,7 @@ mod tests {
                 }
                 let (_, land_center, _) = t.land_heights(x, y);
                 for item in t.map().statics_at(x, y) {
-                    let tile = t.tiles().static_tile(item.tile);
+                    let tile = t.tiles().static_tile(item.tile.0);
                     if !tile.flags.is_platform() {
                         continue;
                     }
@@ -801,7 +801,7 @@ mod tests {
                     .map()
                     .statics_at(x, y)
                     .filter_map(|item| {
-                        let tile = t.tiles().static_tile(item.tile);
+                        let tile = t.tiles().static_tile(item.tile.0);
                         tile.flags.is_platform().then(|| {
                             platform_surface(
                                 i32::from(item.z),
@@ -916,7 +916,7 @@ mod tests {
         for y in 1500..1900u16 {
             for x in 1350..1650u16 {
                 let stair = t.map().statics_at(x, y).any(|item| {
-                    let tile = t.tiles().static_tile(item.tile);
+                    let tile = t.tiles().static_tile(item.tile.0);
                     tile.flags.is_platform() && tile.flags.is_climbable()
                 });
                 if !stair {
@@ -982,7 +982,7 @@ mod tests {
                 let (_, land_center, _) = t.land_heights(x, y);
                 // Is anything's body in the way of a body standing on the land?
                 let buried = t.map().statics_at(x, y).any(|item| {
-                    let tile = t.tiles().static_tile(item.tile);
+                    let tile = t.tiles().static_tile(item.tile.0);
                     if !tile.flags.is_platform() && !tile.flags.is_blocking() {
                         return false;
                     }
@@ -1031,7 +1031,7 @@ mod tests {
         let mut surfaces = 0;
         let mut walls = 0;
         for item in t.map().statics_at(x, y) {
-            let tile = t.tiles().static_tile(item.tile);
+            let tile = t.tiles().static_tile(item.tile.0);
             match tile.flags.is_platform() {
                 true => surfaces += 1,
                 false if tile.flags.is_blocking() => walls += 1,
@@ -1106,7 +1106,7 @@ mod tests {
             t.map()
                 .statics_at(x, 1713)
                 .filter_map(|item| {
-                    let tile = t.tiles().static_tile(item.tile);
+                    let tile = t.tiles().static_tile(item.tile.0);
                     tile.flags.is_platform().then(|| {
                         platform_surface(
                             i32::from(item.z),
@@ -1243,7 +1243,7 @@ mod tests {
         for y in (1600..1900u16).step_by(7) {
             for x in (1350..1600u16).step_by(7) {
                 let cell = terrain.map().land(x, y).unwrap();
-                let flags = terrain.tiles().land(cell.tile).flags;
+                let flags = terrain.tiles().land(cell.tile.0).flags;
                 if flags.is_blocking() || flags.is_water() {
                     continue;
                 }
@@ -1317,7 +1317,7 @@ mod tests {
         for x in 60..160u16 {
             for y in 60..160u16 {
                 let cell = terrain.map().land(x, y).unwrap();
-                if terrain.tiles().land(cell.tile).flags.is_water() {
+                if terrain.tiles().land(cell.tile.0).flags.is_water() {
                     wet += 1;
                     assert_eq!(
                         terrain.surface_at(x, y, i32::from(cell.z)),
@@ -1344,7 +1344,7 @@ mod tests {
         for x in 60..160u16 {
             for y in 60..160u16 {
                 let cell = terrain.map().land(x, y).unwrap();
-                if !terrain.tiles().land(cell.tile).flags.is_water() {
+                if !terrain.tiles().land(cell.tile.0).flags.is_water() {
                     continue;
                 }
                 let z = i32::from(cell.z);
@@ -1473,7 +1473,7 @@ mod tests {
                 // A window-flagged static that also blocks, standing in the way at
                 // ground level. That is a wall with a window, not an open archway.
                 let is_window_wall = terrain.map().statics_at(x, y).any(|item| {
-                    let tile = terrain.tiles().static_tile(item.tile);
+                    let tile = terrain.tiles().static_tile(item.tile.0);
                     let base = i32::from(item.z);
                     let top = base + i32::from(tile.height).max(1);
                     tile.flags.has(TileFlags::WINDOW)

@@ -20,17 +20,18 @@ use openshard_client_render::{light, occlusion};
 use openshard_movement::{Terrain, Tile};
 use openshard_protocol::direction::Direction;
 use openshard_protocol::mobile::Notoriety;
-use openshard_protocol::wire::{Graphic, Hue};
+use openshard_protocol::wire::Graphic;
 use openshard_protocol::world::Point;
 use openshard_uofiles::map::Map;
 
 use crate::app::App;
 use crate::crowd::Who;
 use crate::diagnostics::{
-    HealthBar, Height, PickedItem, PickedMobile, PickedTile, PriorityZ, Route, Selection, TerrainOverlay,
-    TileDepth,
+    HealthBar, Height, Hud, Pick, PickedItem, PickedMobile, PickedTile, PriorityZ, Route, Selection,
+    TerrainOverlay, TileDepth,
 };
-use crate::picking::{Pick, SelectedIdentity};
+use crate::graphics::HighlightTarget;
+use crate::picking::SelectedIdentity;
 use crate::world::{cluttered, cluttered_with_doors_open, terrain};
 use crate::{desk, frames, shell, steer};
 
@@ -56,18 +57,10 @@ impl App {
             .resources
             .map
             .statics_at(x, y)
-            // Wrapped here rather than in `uofiles`: `StaticItem` holds bare
-            // `u16`s, and typing the format reader is a `common/` decision of
-            // its own. This is the boundary the HUD's own types start at.
             .map(|item| {
                 let priority_z =
-                    depth::static_priority_z(item.z, self.resources.tiledata.static_tile(item.tile));
-                (
-                    Graphic(item.tile),
-                    Height(item.z),
-                    Hue(item.hue),
-                    PriorityZ(priority_z),
-                )
+                    depth::static_priority_z(item.z, self.resources.tiledata.static_tile(item.tile.0));
+                (item.tile, Height(item.z), item.hue, PriorityZ(priority_z))
             })
             .collect();
         // A server item (the shard's own decoration, not the client's map art)
@@ -170,7 +163,7 @@ impl App {
         levels.dedup();
         PickedTile {
             at: tile,
-            land: land.map(|cell| Graphic(cell.tile)),
+            land: land.map(|cell| Graphic(cell.tile.0)),
             land_z: Height(land.map_or(0, |cell| cell.z)),
             stand_z: Height(stand_z),
             corners: corners.map(Height),
@@ -632,8 +625,8 @@ impl App {
         pick: &Pick,
         cutaway: &Cutaway,
         drawn_mobiles: Option<&[(Who, Mobile)]>,
-    ) -> shell::Hud {
-        shell::Hud {
+    ) -> Hud {
+        Hud {
             locked: self.control.follow() == Follow::Body,
             rig: self.control.rig(),
             perf: self.perf(),
@@ -655,11 +648,11 @@ impl App {
                 // being taller than the cell it stands on — is the client
                 // pointing at two tiles at once. That is the disagreement this
                 // arm exists to stop, and it had one more source than it knew.
-                shell::HighlightTarget::Auto => {
+                HighlightTarget::Auto => {
                     pick.item.is_none() && pick.mobile.is_none() && pick.static_.is_none()
                 }
-                shell::HighlightTarget::Items => false,
-                shell::HighlightTarget::Tiles => true,
+                HighlightTarget::Items => false,
+                HighlightTarget::Tiles => true,
             },
             highlight: self.graphics.highlight,
             highlight_style: self.graphics.highlight_style,

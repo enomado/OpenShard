@@ -10,6 +10,7 @@
 //! is whether the *world* allows it, which is `magic::may_travel` plus the
 //! handful of things ServUO checks at the moment of arrival.
 
+use openshard_protocol::casting::SpellId;
 use openshard_protocol::gump::{
     ButtonId, CloseGump, GUMP_WHITE, GumpAnswer, GumpButton, GumpDisplay, GumpId, GumpKey, GumpLayout,
     GumpPoint,
@@ -305,9 +306,9 @@ const fn book_button(base: u32, slot: u32) -> ButtonId {
 }
 
 /// Recall's spell id, for the mana and reagents a book's paid buttons spend.
-const RECALL_SPELL: u16 = 31;
+const RECALL_SPELL: SpellId = SpellId(31);
 /// Gate Travel's.
-const GATE_SPELL: u16 = 51;
+const GATE_SPELL: SpellId = SpellId(51);
 
 /// How long a book rests between openings — ServUO's `NextUse`, in ticks.
 const BOOK_COOLDOWN: u64 = 2 * TICKS_PER_SECOND;
@@ -544,7 +545,7 @@ impl World {
     /// here. What it *does* reuse is the one place cost is decided
     /// (`magic::pay_and_roll`), so a shard that turns reagents off or makes a
     /// fizzle free gets the same behaviour through a book as through a rune.
-    fn cast_from_book(&mut self, player: EntityId, spell: u16, entry: &RunebookEntry) {
+    fn cast_from_book(&mut self, player: EntityId, spell: SpellId, entry: &RunebookEntry) {
         let Some(info) = magic::info(spell) else {
             return;
         };

@@ -52,7 +52,7 @@ use openshard_client_render::renderer::{self, GroundRenderer, MeshFaceRenderer, 
 use openshard_client_render::statics::StaticGeometry;
 use openshard_client_render::{dump, ground, statics};
 use openshard_protocol::direction::Direction;
-use openshard_protocol::wire::{Graphic, Hue};
+use openshard_protocol::wire::Graphic;
 use openshard_protocol::world::Point;
 use openshard_uofiles::animdata::AnimData;
 use openshard_uofiles::art::Art;
@@ -136,7 +136,10 @@ fn synthetic_map_covering(real: &Map, places: &[Point], tuning: &Tuning) -> Map 
     let blocks_wide = (furthest.0.max(0) as u32) / 8 + 4;
     let blocks_down = (furthest.1.max(0) as u32) / 8 + 4;
     Map::from_blocks(blocks_wide, blocks_down, |x, y| {
-        real.land(x, y).unwrap_or(LandCell { tile: 0, z: 0 })
+        real.land(x, y).unwrap_or(LandCell {
+            tile: openshard_uofiles::map::LandTile(0),
+            z: 0,
+        })
     })
 }
 
@@ -164,8 +167,8 @@ fn pull_map_statics(real: &Map, camera: &Camera, tuning: &Tuning) -> Vec<GroundI
             for s in real.statics_at(x, y) {
                 items.push(GroundItem {
                     at: Point::new(x, y, s.z),
-                    graphic: Graphic(s.tile),
-                    hue: Hue(s.hue),
+                    graphic: s.tile,
+                    hue: s.hue,
                 });
             }
         }

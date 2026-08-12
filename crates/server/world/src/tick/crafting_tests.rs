@@ -46,8 +46,8 @@ impl Terrain for Shop {
         Some(to)
     }
 
-    fn statics_at(&self, _tile: Tile, out: &mut Vec<(u16, i8)>) {
-        out.extend(self.0.iter().copied());
+    fn statics_at(&self, _tile: Tile, out: &mut Vec<(Graphic, i8)>) {
+        out.extend(self.0.iter().map(|&(graphic, z)| (Graphic(graphic), z)));
     }
 }
 

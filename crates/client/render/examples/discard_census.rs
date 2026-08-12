@@ -134,7 +134,7 @@ fn grid(
     for x in at.0 - radius..=at.0 + radius {
         for y in at.1 - radius..=at.1 + radius {
             for item in map.statics_at(x as u16, y as u16) {
-                let graphic = Graphic(item.tile);
+                let graphic = item.tile;
                 let shape = occlusion::shape_of(Some(atlas), graphic);
                 let shape = match footprints {
                     true => shape,
@@ -696,7 +696,7 @@ fn main() {
     for x in cx - radius..=cx + radius {
         for y in cy - radius..=cy + radius {
             for item in map.statics_at(x as u16, y as u16) {
-                graphics.push(Graphic(item.tile));
+                graphics.push(item.tile);
             }
         }
     }
@@ -730,7 +730,7 @@ fn main() {
     for x in cx - radius..=cx + radius {
         for y in cy - radius..=cy + radius {
             for item in map.statics_at(x as u16, y as u16) {
-                let graphic = Graphic(item.tile);
+                let graphic = item.tile;
                 let Some(image) = images.get(&graphic.0) else {
                     continue;
                 };

@@ -83,23 +83,23 @@ const OFFSETS: [(i16, i16); 12] = [
 ];
 
 /// Whether a static graphic is a west-side door frame.
-pub(crate) fn is_west_frame(id: u16) -> bool {
-    WEST_FRAMES.binary_search(&id).is_ok()
+pub(crate) fn is_west_frame(id: Graphic) -> bool {
+    WEST_FRAMES.binary_search(&id.0).is_ok()
 }
 
 /// Whether a static graphic is an east-side door frame.
-pub(crate) fn is_east_frame(id: u16) -> bool {
-    EAST_FRAMES.binary_search(&id).is_ok()
+pub(crate) fn is_east_frame(id: Graphic) -> bool {
+    EAST_FRAMES.binary_search(&id.0).is_ok()
 }
 
 /// Whether a static graphic is a north-side door frame.
-pub(crate) fn is_north_frame(id: u16) -> bool {
-    NORTH_FRAMES.binary_search(&id).is_ok()
+pub(crate) fn is_north_frame(id: Graphic) -> bool {
+    NORTH_FRAMES.binary_search(&id.0).is_ok()
 }
 
 /// Whether a static graphic is a south-side door frame.
-pub(crate) fn is_south_frame(id: u16) -> bool {
-    SOUTH_FRAMES.binary_search(&id).is_ok()
+pub(crate) fn is_south_frame(id: Graphic) -> bool {
+    SOUTH_FRAMES.binary_search(&id.0).is_ok()
 }
 
 const WEST_FRAMES: &[u16] = &[

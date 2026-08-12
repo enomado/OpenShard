@@ -50,7 +50,6 @@
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 
-use openshard_protocol::wire::Graphic;
 use openshard_uofiles::map::{BLOCK_SIZE, Map};
 use openshard_uofiles::tiledata::TileData;
 
@@ -123,16 +122,7 @@ impl Baked {
             max_y: origin_y + SIDE - 1,
         });
         for item in map.statics_in_block(block_x, block_y) {
-            super::place(
-                &mut grid,
-                map,
-                tiledata,
-                atlas,
-                item.x,
-                item.y,
-                item.z,
-                Graphic(item.tile),
-            );
+            super::place(&mut grid, map, tiledata, atlas, item.x, item.y, item.z, item.tile);
         }
 
         // The same read-out `Builder::finish` makes and for the same reason: the
@@ -491,9 +481,9 @@ fn collect_ring(
 
 #[cfg(test)]
 mod tests {
-    use openshard_protocol::wire::Hue;
+    use openshard_protocol::wire::{Graphic, Hue};
     use openshard_protocol::world::Point;
-    use openshard_uofiles::map::{LandCell, StaticItem};
+    use openshard_uofiles::map::{LandCell, LandTile, StaticItem};
     use openshard_uofiles::tiledata::{StaticTile, TileFlags};
 
     use super::*;
@@ -515,7 +505,10 @@ mod tests {
     /// disagreement between the two builds names a tile rather than a
     /// coordinate in Britain.
     fn town() -> (Map, TileData) {
-        let mut map = Map::from_blocks(2, 2, |_, _| LandCell { tile: 3, z: 0 });
+        let mut map = Map::from_blocks(2, 2, |_, _| LandCell {
+            tile: LandTile(3),
+            z: 0,
+        });
         // A run of wall along one row, crossing the boundary between the two
         // block columns at x = 8: the case a per-block bake could get wrong and a
         // whole-rectangle walk cannot.
@@ -524,8 +517,8 @@ mod tests {
                 x,
                 y: 6,
                 z: 0,
-                tile: WALL.0,
-                hue: 0,
+                tile: WALL,
+                hue: Hue(0),
             });
         }
         // Two statics on one tile, at two heights: the list has to keep both, in
@@ -534,15 +527,15 @@ mod tests {
             x: 3,
             y: 3,
             z: 0,
-            tile: WALL.0,
-            hue: 0,
+            tile: WALL,
+            hue: Hue(0),
         });
         map.place_static(StaticItem {
             x: 3,
             y: 3,
             z: 30,
-            tile: OTHER.0,
-            hue: 0,
+            tile: OTHER,
+            hue: Hue(0),
         });
         // One in the far block, so that a bake that only ever built the first
         // block would be caught.
@@ -550,8 +543,8 @@ mod tests {
             x: 12,
             y: 13,
             z: 0,
-            tile: WALL.0,
-            hue: 0,
+            tile: WALL,
+            hue: Hue(0),
         });
 
         let mut tiledata = TileData::empty();
@@ -783,7 +776,10 @@ mod tests {
     /// closed some other way.
     #[test]
     fn a_solid_anchored_outside_the_frame_still_occludes_through_the_ring() {
-        let map = Map::from_blocks(3, 1, |_, _| LandCell { tile: 3, z: 0 });
+        let map = Map::from_blocks(3, 1, |_, _| LandCell {
+            tile: LandTile(3),
+            z: 0,
+        });
         let tiledata = TileData::empty();
         // Anchored at the last tile of block (0, 0) and authored two tiles
         // wide, so its footprint's second tile — (8, 7) — lands in block
@@ -829,7 +825,10 @@ mod tests {
     /// radius rather than choosing it.
     #[test]
     fn a_wider_reach_needs_a_wider_ring() {
-        let map = Map::from_blocks(3, 1, |_, _| LandCell { tile: 3, z: 0 });
+        let map = Map::from_blocks(3, 1, |_, _| LandCell {
+            tile: LandTile(3),
+            z: 0,
+        });
         let tiledata = TileData::empty();
         // Anchored at (7, 7) in block (0, 0) and authored ten tiles wide, so
         // its footprint's far tile — (16, 7) — lands in block (2, 0).

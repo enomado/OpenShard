@@ -48,21 +48,26 @@ pub fn combat_skill_id(state: &WorldState, mobile: EntityId) -> Skill {
     equipped_weapon(state, mobile).map_or(WRESTLING_SKILL, |weapon| weapon.skill.skill())
 }
 
-/// The weapon `mobile` wields, if any — the item on a weapon layer. Its stats are
-/// the core table's for the item's graphic, unless the item carries a [`Weapon`]
-/// override (the pack's magic sword), which replaces speed and damage while
-/// keeping the graphic's skill. Read fresh each swing (no mirror on the mobile),
-/// so a weapon coming off reverts the bearer to wrestling with nothing to undo.
+/// The weapon `mobile` wields, if any — the item on a weapon layer. The
+/// one-handed slot takes priority when both are occupied, so a weapon and a
+/// shield work naturally and a shard-issued secondary item cannot make combat
+/// depend on registry iteration order. Its stats are the core table's for the
+/// item's graphic, unless the item carries a [`Weapon`] override (the pack's
+/// magic sword), which replaces speed and damage while keeping the graphic's
+/// skill. Read fresh each swing (no mirror on the mobile), so a weapon coming
+/// off reverts the bearer to wrestling with nothing to undo.
 #[must_use]
 pub fn equipped_weapon(state: &WorldState, mobile: EntityId) -> Option<WeaponData> {
     let serial = state.registry.serial_of(mobile)?;
-    let item = state
-        .registry
-        .query::<Equipped>()
-        .find(|(_, worn)| {
-            worn.mobile == serial && (worn.layer == LAYER_ONE_HANDED || worn.layer == LAYER_TWO_HANDED)
-        })
-        .map(|(entity, _)| entity)?;
+    let item = [LAYER_ONE_HANDED, LAYER_TWO_HANDED]
+        .into_iter()
+        .find_map(|layer| {
+            state
+                .registry
+                .query::<Equipped>()
+                .find(|(_, worn)| worn.mobile == serial && worn.layer == layer)
+                .map(|(entity, _)| entity)
+        })?;
     let base = state
         .registry
         .get::<Drawn>(item)

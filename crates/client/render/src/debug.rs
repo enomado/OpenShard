@@ -16,6 +16,7 @@
 
 use crate::camera::TileBounds;
 use crate::light::{self, Lighting, Spot};
+use openshard_movement::Tile;
 
 /// What the blit puts on the screen.
 ///
@@ -350,12 +351,12 @@ fn cell(lighting: &Lighting, x: i32, y: i32, z: f32) -> char {
 ///
 /// A diagram wants a small, stated rectangle — a camera's own bounds are two
 /// hundred tiles across at the widest zoom and would print a wall of spaces.
-pub fn around(centre: (u16, u16), half: i32) -> TileBounds {
+pub fn around(centre: Tile, half: i32) -> TileBounds {
     TileBounds {
-        min_x: i32::from(centre.0) - half,
-        max_x: i32::from(centre.0) + half,
-        min_y: i32::from(centre.1) - half,
-        max_y: i32::from(centre.1) + half,
+        min_x: i32::from(centre.x) - half,
+        max_x: i32::from(centre.x) + half,
+        min_y: i32::from(centre.y) - half,
+        max_y: i32::from(centre.y) + half,
     }
 }
 

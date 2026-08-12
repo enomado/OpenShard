@@ -551,7 +551,7 @@ pub fn resolve_harvest_target(
     if graphic == 0 {
         return Some(HarvestTarget {
             at,
-            tile: terrain.land_tile(Tile::new(at.x, at.y))?,
+            tile: terrain.land_tile(Tile::new(at.x, at.y))?.0,
             source: TileSource::Land,
         });
     }
@@ -559,7 +559,7 @@ pub fn resolve_harvest_target(
     terrain.statics_at(Tile::new(at.x, at.y), &mut statics);
     statics
         .iter()
-        .any(|&(id, z)| id == graphic && i32::from(z) == i32::from(at.z))
+        .any(|&(id, z)| id == Graphic(graphic) && i32::from(z) == i32::from(at.z))
         .then_some(HarvestTarget {
             at,
             tile: graphic,

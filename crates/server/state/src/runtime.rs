@@ -18,6 +18,7 @@ use openshard_entities::{EntityId, Registry};
 use openshard_events::EventBus;
 use openshard_gateway::ConnectionId;
 use openshard_movement::{Terrain, Tile};
+use openshard_protocol::casting::SpellId;
 use openshard_protocol::combat::HealthBar;
 use openshard_protocol::feedback::{Animation, NewAnimation, PlaySound};
 use openshard_protocol::items::WorldItem;
@@ -699,7 +700,7 @@ pub enum TargetPurpose {
     /// so a fumbled cast that still raises a cursor simply lands no effect.
     Spell {
         /// Which spell, by id.
-        spell: u16,
+        spell: SpellId,
         /// Whether the cast's skill roll passed.
         success: bool,
     },

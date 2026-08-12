@@ -200,7 +200,7 @@ fn make_guard(state: &mut WorldState, target: EntityId) {
             hits: 1000,
             notoriety: Notoriety::Innocent,
             damage: 0,
-            resistance: 0,
+            resistance: openshard_protocol::world::PhysicalResistance::new(0),
             swing: 0,
             sight: GUARD_SIGHT,
             aggression: Aggression::Defensive,

@@ -18,18 +18,14 @@ use openshard_protocol::server_packet::ServerPacket;
 use openshard_uofiles::anim::is_ghost;
 
 use crate::app::App;
-use crate::world::cluttered;
+use crate::world::{advance_presentation_to, cluttered};
 use crate::{clutter, crowd, link};
 
 impl App {
     /// Reduce one cross-thread update at the event-loop boundary.
     pub(crate) fn on_update(&mut self, update: link::Update) -> bool {
         let now = Instant::now();
-        self.world
-            .presentation
-            .crowd
-            .advance(now.saturating_duration_since(self.last_advance));
-        self.last_advance = now;
+        advance_presentation_to(&mut self.world.presentation, &mut self.last_advance, now);
         match update {
             link::Update::World { view, body } => self.entered(*view, body, None),
             link::Update::Mutation { packet, body } => self.apply_mutation(&packet, body),

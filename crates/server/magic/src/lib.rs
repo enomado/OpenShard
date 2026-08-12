@@ -12,6 +12,7 @@
 
 use openshard_entities::EntityId;
 use openshard_items::{count_in_container, take_from_container};
+use openshard_protocol::casting::SpellId;
 use openshard_protocol::serial::Serial;
 use openshard_protocol::wire::Graphic;
 use openshard_state::components::{
@@ -50,7 +51,7 @@ pub struct SpellCast {
     /// Its wire identity.
     pub serial: Serial,
     /// Which spell, by id.
-    pub spell: u16,
+    pub spell: SpellId,
     /// The target, or `None` for a spell that needs none.
     pub target: Option<Serial>,
     /// Whether the cast succeeded (mana paid and the skill check passed).
@@ -64,7 +65,7 @@ pub struct Cast<'a> {
     /// The caster.
     pub serial: Serial,
     /// Which spell, by id.
-    pub spell: u16,
+    pub spell: SpellId,
     /// The target, or `None` for a spell that needs none.
     pub target: Option<Serial>,
     /// The mana it costs.

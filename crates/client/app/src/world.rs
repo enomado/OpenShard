@@ -8,7 +8,7 @@
 //! fields here change together, on every `Update::World`, and a method that
 //! only touches this half can be written and tested against it alone.
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use openshard_client_net::view::WorldView;
 use openshard_client_render::animate::StaticAnimations;
@@ -56,7 +56,8 @@ pub struct WorldState {
 /// Render-facing data rebuilt from the authoritative view and local prediction.
 /// This is the only `WorldState` section a frame reads.
 pub struct PresentationWorld {
-    /// Static animation state and its flame clock, advanced with the frame.
+    /// Static animation state and its flame clock, advanced whenever
+    /// presentation time progresses.
     pub tile_animations: StaticAnimations,
     pub flame_clock: Duration,
     /// The player's rendered body. Its position and facing are projected from
@@ -74,6 +75,34 @@ pub struct PresentationWorld {
     /// Animation and glide history, which belongs to presentation rather than
     /// authoritative state.
     pub crowd: Crowd,
+}
+
+impl PresentationWorld {
+    /// Advance every clock that changes a presentation independently of a
+    /// newly received world view.
+    ///
+    /// A packet can arrive between frames. It has to age the complete picture
+    /// before its mutation is projected, or moving `last_advance` there would
+    /// silently discard that span from static and flame animation.
+    pub(crate) fn advance(&mut self, elapsed: Duration) {
+        self.crowd.advance(elapsed);
+        self.tile_animations.advance(elapsed);
+        self.flame_clock += elapsed;
+    }
+}
+
+/// Move a presentation to one measured instant.
+///
+/// The App calls this before applying a network update as well as before it
+/// prepares a frame. Keeping the instant beside the clock update makes it
+/// impossible for one caller to move `last_advance` while forgetting a clock.
+pub(crate) fn advance_presentation_to(
+    presentation: &mut PresentationWorld,
+    last_advance: &mut Instant,
+    now: Instant,
+) {
+    presentation.advance(now.saturating_duration_since(*last_advance));
+    *last_advance = now;
 }
 
 /// The one authoritative record the shard updates, kept apart from the
@@ -184,6 +213,45 @@ pub(crate) fn cluttered_with_doors_open<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use openshard_client_render::mobiles::Mobile;
+    use openshard_protocol::direction::Direction;
+    use openshard_protocol::wire::Hue;
+    use openshard_uofiles::anim::BodyKind;
+
+    #[test]
+    fn presentation_clocks_retain_the_interval_delivered_with_an_update() {
+        let at = Point::new(10, 10, 0);
+        let mut presentation = PresentationWorld {
+            tile_animations: StaticAnimations::default(),
+            flame_clock: Duration::ZERO,
+            player: Mobile {
+                at,
+                body: openshard_protocol::wire::Graphic(400),
+                group: BodyKind::of(openshard_protocol::wire::Graphic(400)).standing(),
+                facing: Direction::SouthEast,
+                frame: 0,
+                from: None,
+                hue: Hue::NONE,
+                drawn: Gaze::on(at),
+                equipment: Vec::new().into(),
+            },
+            cutaway_at: at,
+            others: Vec::new(),
+            items: Vec::new(),
+            item_serials: Vec::new(),
+            clutter: clutter::Clutter::default(),
+            crowd: Crowd::default(),
+        };
+        let update_interval = Duration::from_millis(750);
+        let mut last_advance = Instant::now();
+        let update_arrived = last_advance + update_interval;
+
+        advance_presentation_to(&mut presentation, &mut last_advance, update_arrived);
+
+        assert_eq!(presentation.tile_animations.elapsed(), update_interval);
+        assert_eq!(presentation.flame_clock, update_interval);
+        assert_eq!(last_advance, update_arrived);
+    }
 
     #[test]
     fn prediction_keeps_its_position_outside_the_authoritative_view() {

@@ -100,7 +100,7 @@ pub fn graphics_in(
     out: &mut BTreeSet<Graphic>,
 ) {
     for_each_static_in(map, bounds, |item| {
-        out.extend(animations.cycle(Graphic(item.tile)));
+        out.extend(animations.cycle(item.tile));
     });
 }
 
@@ -260,7 +260,7 @@ pub fn collect(
         let at = Point::new(item.x, item.y, item.z);
         let Some(placed) = place(
             at,
-            Graphic(item.tile),
+            item.tile,
             camera,
             tiledata,
             animations,
@@ -276,8 +276,8 @@ pub fn collect(
         // The *placed* graphic and not `placed.showing`: the grid keyed its
         // owner off the same one, and an animated static would otherwise change
         // owner every hundred milliseconds. See `occlusion::Owner`.
-        let key = crate::occlusion::Owner::new(at.z, Graphic(item.tile));
-        let owner = occlusion.owner_at(i32::from(at.x), i32::from(at.y), at.z, Graphic(item.tile));
+        let key = crate::occlusion::Owner::new(at.z, item.tile);
+        let owner = occlusion.owner_at(i32::from(at.x), i32::from(at.y), at.z, item.tile);
         // The boxes this static's own pixels will be met against — phase 6, and
         // built in the same walk as everything else about this static for
         // `for_each_static_in`'s own reason. The tile and the shape are the two
@@ -287,12 +287,12 @@ pub fn collect(
         let volumes = push_volumes(
             &mut boxes,
             at,
-            tiledata.static_tile(item.tile),
-            &crate::occlusion::shape_of(Some(atlas), Graphic(item.tile)),
+            tiledata.static_tile(item.tile.0),
+            &crate::occlusion::shape_of(Some(atlas), item.tile),
             key,
             occlusion,
         );
-        let quad = quad_of(at, &placed, base, u32::from(item.hue), owner, volumes);
+        let quad = quad_of(at, &placed, base, u32::from(item.hue.0), owner, volumes);
         quads.push((placed.order, quad));
     });
 
@@ -581,7 +581,7 @@ pub fn pick(
     let mut hit: Option<(depth::Order, PickedStatic)> = None;
     for_each_static_in(map, camera.visible_tiles(), |item| {
         let at = Point::new(item.x, item.y, item.z);
-        let graphic = Graphic(item.tile);
+        let graphic = item.tile;
         // Never hides a foliage tile from a click: it is still there to point
         // at, matching what the reference does with a faded rather than
         // vanished tile.
@@ -699,16 +699,20 @@ pub(crate) fn for_each_static_in(
 
 #[cfg(test)]
 mod tests {
+    use openshard_protocol::wire::Hue;
     use openshard_uofiles::color::Color16;
     use openshard_uofiles::image::Image;
-    use openshard_uofiles::map::{LandCell, StaticItem};
+    use openshard_uofiles::map::{LandCell, LandTile, StaticItem};
 
     use super::*;
 
     /// A map big enough for a camera at (100, 100), with flat ground and nothing
     /// standing on it. Statics are placed by the tests that want them.
     fn field() -> Map {
-        Map::from_blocks(16, 16, |_, _| LandCell { tile: 3, z: 0 })
+        Map::from_blocks(16, 16, |_, _| LandCell {
+            tile: LandTile(3),
+            z: 0,
+        })
     }
 
     /// The rectangle every occlusion fixture below stands in.
@@ -875,11 +879,11 @@ mod tests {
         let tiledata = TileData::empty();
         let mut map = field();
         map.place_static(StaticItem {
-            tile: graphic.0,
+            tile: graphic,
             x: 100,
             y: 100,
             z: 0,
-            hue: 0,
+            hue: Hue(0),
         });
         let sprite = atlas.sprite(graphic).expect("packed");
         let at = stand_on(&camera, Point::new(100, 100, 0), &sprite);
@@ -924,11 +928,11 @@ mod tests {
         let mut map = field();
         for (x, y) in [(100, 100), (101, 101)] {
             map.place_static(StaticItem {
-                tile: graphic.0,
+                tile: graphic,
                 x,
                 y,
                 z: 0,
-                hue: 0,
+                hue: Hue(0),
             });
         }
         let sprite = atlas.sprite(graphic).expect("packed");
@@ -966,11 +970,11 @@ mod tests {
         let tiledata = TileData::empty();
         let mut map = field();
         map.place_static(StaticItem {
-            tile: graphic.0,
+            tile: graphic,
             x: 100,
             y: 100,
             z: 20,
-            hue: 0,
+            hue: Hue(0),
         });
         let sprite = atlas.sprite(graphic).expect("packed");
         let at = stand_on(&camera, Point::new(100, 100, 20), &sprite);
@@ -1019,11 +1023,11 @@ mod tests {
         let mut map = field();
         let stands = Point::new(100, 100, 0);
         map.place_static(StaticItem {
-            tile: graphic.0,
+            tile: graphic,
             x: stands.x,
             y: stands.y,
             z: stands.z,
-            hue: 0,
+            hue: Hue(0),
         });
         let sprite = atlas.sprite(graphic).expect("packed");
         let at = stand_on(&camera, stands, &sprite);
@@ -1074,11 +1078,11 @@ mod tests {
         let tiledata = TileData::empty();
         let mut map = field();
         map.place_static(StaticItem {
-            tile: graphic.0,
+            tile: graphic,
             x: 101,
             y: 99,
             z: 5,
-            hue: 0,
+            hue: Hue(0),
         });
         let animations = StaticAnimations::default();
         let drawn = collect(

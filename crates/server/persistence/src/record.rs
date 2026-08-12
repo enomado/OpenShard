@@ -20,7 +20,7 @@
 use openshard_protocol::identity::{AccountName, CharacterName};
 use openshard_protocol::mobile::Notoriety;
 use openshard_protocol::serial::Serial;
-use openshard_protocol::world::{Aggression, DamageType, RangedRange, Sight};
+use openshard_protocol::world::{Aggression, DamageType, PhysicalResistance, RangedRange, Sight};
 use serde::{Deserialize, Serialize};
 
 /// The persisted state of a container trap.
@@ -726,7 +726,7 @@ pub struct CreatureData {
     /// Melee damage before resistance.
     pub damage: u16,
     /// Physical resistance, a percentage.
-    pub resistance: u8,
+    pub resistance: PhysicalResistance,
     /// How widely known it is — what its killer inherits. Defaulted, so an older
     /// saved region restores creatures that give up no standing.
     #[serde(default)]
@@ -832,7 +832,7 @@ pub struct MobileRecord {
     /// Melee damage before resistance.
     pub damage: u16,
     /// Physical resistance, a percentage.
-    pub resistance: u8,
+    pub resistance: PhysicalResistance,
     /// Swing cadence in ticks; `0` derives it from dexterity.
     pub swing: u64,
     /// How far it notices a target; `0` never picks a fight (and no brain).
@@ -1067,6 +1067,17 @@ mod tests {
         assert_eq!(
             serde_json::from_str::<Sight>(&json).expect("sight deserialises"),
             Sight(8)
+        );
+    }
+
+    #[test]
+    fn physical_resistance_keeps_its_numeric_saved_representation() {
+        let json = serde_json::to_string(&PhysicalResistance::new(35)).expect("resistance serialises");
+        assert_eq!(json, "35", "a named resistance must not change saved JSON");
+        assert_eq!(
+            serde_json::from_str::<PhysicalResistance>("255").expect("legacy resistance deserialises"),
+            PhysicalResistance::new(100),
+            "out-of-range legacy input keeps the runtime's historic 100% cap"
         );
     }
 

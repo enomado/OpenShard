@@ -66,7 +66,7 @@ pub trait Terrain {
     /// when a *static* was clicked, and a click on bare land arrives with a
     /// graphic of zero (ServUO `PacketHandlers.cs`, the `LandTarget` branch), so
     /// the server has to look the tile up itself.
-    fn land_tile(&self, _tile: Tile) -> Option<u16> {
+    fn land_tile(&self, _tile: Tile) -> Option<crate::LandTile> {
         None
     }
 
@@ -77,7 +77,7 @@ pub trait Terrain {
     /// nothing. The primitive tuple keeps this trait — which lives below `world` —
     /// free of the map's own types. Used to find door frames when generating the
     /// functional doors a building's static art only implies.
-    fn statics_at(&self, _tile: Tile, _out: &mut Vec<(u16, i8)>) {}
+    fn statics_at(&self, _tile: Tile, _out: &mut Vec<(Graphic, i8)>) {}
 
     /// The z a mobile stands at on `tile`, reached from near `near_z` — the top
     /// of the walkable surface there, a building's raised floor and all.

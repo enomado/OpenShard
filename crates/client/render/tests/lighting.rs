@@ -122,7 +122,11 @@ fn picture(scene: &Scene, lighting: &Lighting) -> String {
     format!(
         "\n{}:\n{}",
         scene.name,
-        debug::diagram(lighting, debug::around(CENTRE, 6), 0.0)
+        debug::diagram(
+            lighting,
+            debug::around(openshard_movement::Tile::new(CENTRE.0, CENTRE.1), 6),
+            0.0,
+        )
     )
 }
 
@@ -1421,7 +1425,11 @@ fn a_window_is_worth_more_sky_than_the_wall_it_replaces() {
 fn every_scene_prints_a_diagram_that_is_not_blank() {
     for scene in scene::all() {
         let lighting = scene.lighting(STILL);
-        let drawn = debug::diagram(&lighting, debug::around(CENTRE, 6), 0.0);
+        let drawn = debug::diagram(
+            &lighting,
+            debug::around(openshard_movement::Tile::new(CENTRE.0, CENTRE.1), 6),
+            0.0,
+        );
         // A flame, an occluder, or lit ground: every scene has at least one of
         // the three, and a sunlit one has no flame at all.
         assert!(

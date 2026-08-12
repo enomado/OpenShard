@@ -516,7 +516,7 @@ mod tests {
                     hits: 34,
                     notoriety: openshard_protocol::mobile::Notoriety::Murderer,
                     damage: 0,
-                    resistance: 0,
+                    resistance: openshard_protocol::world::PhysicalResistance::new(0),
                     swing: 0,
                     sight: Sight(8),
                     aggression: Aggression::from_bits(2),

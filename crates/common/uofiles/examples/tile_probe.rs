@@ -45,10 +45,10 @@ fn main() {
     let tiles = TileData::load(dir.join("tiledata.mul")).expect("tiledata should load");
 
     if let Some(land) = map.land(x, y) {
-        let data = tiles.land(land.tile);
+        let data = tiles.land(land.tile.0);
         println!(
             "land 0x{:04X} z {} {:?} blocking {} name {:?}",
-            land.tile,
+            land.tile.0,
             land.z,
             data.flags,
             data.flags.is_blocking(),
@@ -58,10 +58,10 @@ fn main() {
         println!("no land: off the map");
     }
     for item in map.statics_at(x, y) {
-        let data = tiles.static_tile(item.tile);
+        let data = tiles.static_tile(item.tile.0);
         println!(
             "static 0x{:04X} z {} height {} blocking {} platform {} name {:?}",
-            item.tile,
+            item.tile.0,
             item.z,
             data.height,
             data.flags.is_blocking(),

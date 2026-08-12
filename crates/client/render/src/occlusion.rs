@@ -2749,7 +2749,7 @@ pub fn collect(
             item.x,
             item.y,
             item.z,
-            Graphic(item.tile),
+            item.tile,
         );
     });
     put_items(&mut occlusion, map, items, tiledata, atlas);
@@ -4771,7 +4771,10 @@ mod tests {
     /// daylight into every building they enter.
     #[test]
     fn the_cutaway_takes_a_roof_from_the_eye_and_not_from_the_sky() {
-        let map = Map::from_blocks(1, 1, |_, _| LandCell { tile: 0, z: 0 });
+        let map = Map::from_blocks(1, 1, |_, _| LandCell {
+            tile: openshard_movement::LandTile(0),
+            z: 0,
+        });
         let graphic = Graphic(0x000A);
         let mut tiledata = TileData::empty();
         tiledata.set_static_tile(graphic.0, tile(TileFlags::NO_SHOOT, 5));
@@ -4839,7 +4842,10 @@ mod tests {
     /// picture is worse than the light leaking.
     #[test]
     fn a_hidden_wall_occludes_nothing() {
-        let map = Map::from_blocks(1, 1, |_, _| LandCell { tile: 0, z: 0 });
+        let map = Map::from_blocks(1, 1, |_, _| LandCell {
+            tile: openshard_movement::LandTile(0),
+            z: 0,
+        });
         let graphic = Graphic(0x0006);
         let mut tiledata = TileData::empty();
         tiledata.set_static_tile(graphic.0, tile(TileFlags::NO_SHOOT, 20));
@@ -4986,7 +4992,7 @@ mod tests {
                     false => indoors.push(sky),
                 }
                 for item in map.statics_at(x, y) {
-                    let tile = tiledata.static_tile(item.tile);
+                    let tile = tiledata.static_tile(item.tile.0);
                     if !tile.flags.is_roof() {
                         continue;
                     }
@@ -5099,39 +5105,18 @@ mod tests {
         let shaded = fastest(Box::new(|| {
             let mut grid = Builder::new(bounds);
             crate::statics::for_each_static_in(&map, bounds, |item| {
-                let tile = tiledata.static_tile(item.tile);
-                grid.shade(
-                    item.x,
-                    item.y,
-                    item.z,
-                    floor(item.x, item.y),
-                    Graphic(item.tile),
-                    tile,
-                );
+                let tile = tiledata.static_tile(item.tile.0);
+                grid.shade(item.x, item.y, item.z, floor(item.x, item.y), item.tile, tile);
             });
             std::hint::black_box(grid.sky_at(bounds.min_x, bounds.min_y));
         }));
         let added = fastest(Box::new(|| {
             let mut grid = Builder::new(bounds);
             crate::statics::for_each_static_in(&map, bounds, |item| {
-                let tile = tiledata.static_tile(item.tile);
-                grid.shade(
-                    item.x,
-                    item.y,
-                    item.z,
-                    floor(item.x, item.y),
-                    Graphic(item.tile),
-                    tile,
-                );
+                let tile = tiledata.static_tile(item.tile.0);
+                grid.shade(item.x, item.y, item.z, floor(item.x, item.y), item.tile, tile);
                 if cutaway::shows(&Cutaway::OPEN, item.z, tile) {
-                    grid.add(
-                        item.x,
-                        item.y,
-                        item.z,
-                        Graphic(item.tile),
-                        tile,
-                        shape(Graphic(item.tile)),
-                    );
+                    grid.add(item.x, item.y, item.z, item.tile, tile, shape(item.tile));
                 }
             });
             std::hint::black_box(grid.sky_at(bounds.min_x, bounds.min_y));
@@ -5147,24 +5132,10 @@ mod tests {
         let built = {
             let mut grid = Builder::new(bounds);
             crate::statics::for_each_static_in(&map, bounds, |item| {
-                let tile = tiledata.static_tile(item.tile);
-                grid.shade(
-                    item.x,
-                    item.y,
-                    item.z,
-                    floor(item.x, item.y),
-                    Graphic(item.tile),
-                    tile,
-                );
+                let tile = tiledata.static_tile(item.tile.0);
+                grid.shade(item.x, item.y, item.z, floor(item.x, item.y), item.tile, tile);
                 if cutaway::shows(&Cutaway::OPEN, item.z, tile) {
-                    grid.add(
-                        item.x,
-                        item.y,
-                        item.z,
-                        Graphic(item.tile),
-                        tile,
-                        shape(Graphic(item.tile)),
-                    );
+                    grid.add(item.x, item.y, item.z, item.tile, tile, shape(item.tile));
                 }
             });
             grid

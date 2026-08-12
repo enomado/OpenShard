@@ -622,7 +622,7 @@ mod tests {
             hits_max: 30,
             notoriety: openshard_protocol::mobile::Notoriety::Neutral,
             damage: 3,
-            resistance: 0,
+            resistance: openshard_protocol::world::PhysicalResistance::new(0),
             swing: 0,
             sight: Sight(8),
             aggression: Aggression::from_bits(0),

@@ -46,7 +46,7 @@ fn main() {
     for x in cx - AROUND..=cx + AROUND {
         for y in cy - AROUND..=cy + AROUND {
             for item in map.statics_at(x as u16, y as u16) {
-                graphics.push(Graphic(item.tile));
+                graphics.push(item.tile);
             }
         }
     }
@@ -58,7 +58,7 @@ fn main() {
         for y in cy - AROUND..=cy + AROUND {
             println!("tile {x}, {y}");
             for item in map.statics_at(x as u16, y as u16) {
-                let graphic = Graphic(item.tile);
+                let graphic = item.tile;
                 let tile = tiledata.static_tile(graphic.0);
                 let shape = occlusion::shape_of(Some(&atlas), graphic);
                 print!(

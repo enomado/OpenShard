@@ -11,7 +11,6 @@ use openshard_client_render::cutaway::Cutaway;
 use openshard_client_render::facing::Face;
 use openshard_client_render::geometry::Vec2;
 use openshard_client_render::light::{self, Spot};
-use openshard_protocol::wire::Graphic;
 use openshard_protocol::world::Point;
 use openshard_uofiles::art::Art;
 use openshard_uofiles::map::Map;
@@ -36,7 +35,7 @@ fn main() {
     for tile_x in x - 12..=x + 12 {
         for tile_y in y - 12..=y + 12 {
             for item in map.statics_at(tile_x, tile_y) {
-                wanted.push(Graphic(item.tile));
+                wanted.push(item.tile);
             }
         }
     }

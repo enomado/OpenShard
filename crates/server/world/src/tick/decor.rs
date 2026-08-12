@@ -167,7 +167,7 @@ impl World {
                 return;
             };
             // Is there a frame of the given side at (tx, ty) sharing height z?
-            let frame_at = |tx: u16, ty: u16, tz: i8, pred: fn(u16) -> bool| -> bool {
+            let frame_at = |tx: u16, ty: u16, tz: i8, pred: fn(Graphic) -> bool| -> bool {
                 let mut here = Vec::new();
                 terrain.statics_at(Tile::new(tx, ty), &mut here);
                 here.iter().any(|&(id, z)| z == tz && pred(id))

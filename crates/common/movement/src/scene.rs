@@ -44,8 +44,9 @@
 use std::collections::BTreeMap;
 
 use openshard_protocol::direction::Direction;
+use openshard_protocol::wire::{Graphic, Hue};
 use openshard_protocol::world::Point;
-use openshard_uofiles::map::{LandCell, Map, StaticItem};
+use openshard_uofiles::map::{LandCell, LandTile, Map, StaticItem};
 use openshard_uofiles::tiledata::{StaticTile, TileData, TileFlags};
 
 use crate::terrain::MapTerrain;
@@ -80,7 +81,7 @@ impl Scene {
     pub fn flat(z: i8) -> Self {
         // Land tile 0 with the default (empty) tiledata: not water, not
         // blocking, so it is ordinary walkable ground.
-        let map = Map::from_blocks(1, 1, |_, _| LandCell { tile: 0, z });
+        let map = Map::from_blocks(1, 1, |_, _| LandCell { tile: LandTile(0), z });
         Self {
             map,
             tiles: TileData::empty(),
@@ -92,7 +93,7 @@ impl Scene {
     /// also how a scene gets a slope — a land tile's corners are its neighbours'
     /// heights, exactly as on the real map.
     pub fn ground(&mut self, x: u16, y: u16, z: i8) -> &mut Self {
-        self.map.set_land(x, y, LandCell { tile: 0, z });
+        self.map.set_land(x, y, LandCell { tile: LandTile(0), z });
         self
     }
 
@@ -125,11 +126,11 @@ impl Scene {
             },
         );
         self.map.place_static(StaticItem {
-            tile: graphic,
+            tile: Graphic(graphic),
             x,
             y,
             z: base,
-            hue: 0,
+            hue: Hue(0),
         });
         self
     }
@@ -218,7 +219,7 @@ mod tests {
         assert_eq!(scene.map().land(3, 3).unwrap().z, -7);
         let item = scene.map().statics_at(3, 3).next().expect("the stair is there");
         assert_eq!(item.z, -7);
-        let tile = scene.tiles().static_tile(item.tile);
+        let tile = scene.tiles().static_tile(item.tile.0);
         assert_eq!(tile.height, 10);
         assert!(tile.flags.is_platform() && tile.flags.is_climbable());
         // And it is walkable ground rather than a hole: standing on the flat.

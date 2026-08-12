@@ -30,6 +30,7 @@
 use std::fmt;
 use std::path::{Path, PathBuf};
 
+use openshard_protocol::wire::{Graphic, Hue};
 use openshard_protocol::world::Point;
 
 /// Tiles along each side of a map block.
@@ -51,16 +52,24 @@ const STATIC_BYTES: usize = 7;
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub struct LandCell {
     /// Index into the land table of `tiledata.mul`.
-    pub tile: u16,
+    pub tile: LandTile,
     /// The ground's height here.
     pub z: i8,
 }
+
+/// An index into `tiledata.mul`'s land table.
+///
+/// Land and static entries both look like `u16` in the files, but are indexed
+/// into different halves of tiledata. Keeping them distinct prevents a static
+/// art graphic from quietly becoming a mountain, or the reverse.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Debug, Default)]
+pub struct LandTile(pub u16);
 
 /// One thing standing on the ground.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct StaticItem {
     /// Index into the static table of `tiledata.mul`.
-    pub tile: u16,
+    pub tile: Graphic,
     /// Where in the world, not in the block: resolved on load.
     pub x: u16,
     /// Where in the world.
@@ -68,7 +77,7 @@ pub struct StaticItem {
     /// Its base height. What you stand on is this plus the tile's height.
     pub z: i8,
     /// Its colour.
-    pub hue: u16,
+    pub hue: Hue,
 }
 
 /// The known sizes of a Britannia facet, in tiles.
@@ -375,7 +384,7 @@ impl Map {
                 let at = base + cell * CELL_BYTES;
                 cells.push(LandCell {
                     // Little-endian: the files are, the network is not.
-                    tile: u16::from_le_bytes([bytes[at], bytes[at + 1]]),
+                    tile: LandTile(u16::from_le_bytes([bytes[at], bytes[at + 1]])),
                     z: bytes[at + 2] as i8,
                 });
             }
@@ -442,13 +451,13 @@ impl Map {
             let mut items = Vec::with_capacity(chunk.len() / STATIC_BYTES);
             for entry in chunk.chunks_exact(STATIC_BYTES) {
                 items.push(StaticItem {
-                    tile: u16::from_le_bytes([entry[0], entry[1]]),
+                    tile: Graphic(u16::from_le_bytes([entry[0], entry[1]])),
                     // The file stores an offset within the block; a world
                     // coordinate is more use to everyone downstream.
                     x: (block_x + u32::from(entry[2] & 0x7)) as u16,
                     y: (block_y + u32::from(entry[3] & 0x7)) as u16,
                     z: entry[4] as i8,
-                    hue: u16::from_le_bytes([entry[5], entry[6]]),
+                    hue: Hue(u16::from_le_bytes([entry[5], entry[6]])),
                 });
             }
             // Sorted by tile, which is [`Map::statics_at`]'s index — and
@@ -931,7 +940,7 @@ mod tests {
             for cell in 0..CELLS_PER_BLOCK {
                 let at = base + cell * CELL_BYTES;
                 cells.push(LandCell {
-                    tile: u16::from_le_bytes([bytes[at], bytes[at + 1]]),
+                    tile: LandTile(u16::from_le_bytes([bytes[at], bytes[at + 1]])),
                     z: bytes[at + 2] as i8,
                 });
             }
@@ -951,11 +960,14 @@ mod tests {
         let map = map_16x16();
 
         // (0,0) is block 0, cell 0.
-        assert_eq!(map.land(0, 0).unwrap().tile, 0);
+        assert_eq!(map.land(0, 0).unwrap().tile, LandTile(0));
         // (8,0) is block *2*: bx=1, by=0, blocks_down=2 -> 1*2+0 = 2.
-        assert_eq!(map.land(8, 0).unwrap().tile, (2 * CELLS_PER_BLOCK) as u16);
+        assert_eq!(
+            map.land(8, 0).unwrap().tile,
+            LandTile((2 * CELLS_PER_BLOCK) as u16)
+        );
         // (0,8) is block 1: bx=0, by=1 -> 0*2+1 = 1.
-        assert_eq!(map.land(0, 8).unwrap().tile, CELLS_PER_BLOCK as u16);
+        assert_eq!(map.land(0, 8).unwrap().tile, LandTile(CELLS_PER_BLOCK as u16));
     }
 
     #[test]
@@ -963,9 +975,13 @@ mod tests {
         // Sphere: `m_Meter[yo * UO_BLOCK_SIZE + xo]`. The opposite of the block
         // order, which is exactly why it is worth a test.
         let map = map_16x16();
-        assert_eq!(map.land(1, 0).unwrap().tile, 1, "x moves by one");
-        assert_eq!(map.land(0, 1).unwrap().tile, 8, "y moves by a row");
-        assert_eq!(map.land(7, 7).unwrap().tile, 63, "the block's far corner");
+        assert_eq!(map.land(1, 0).unwrap().tile, LandTile(1), "x moves by one");
+        assert_eq!(map.land(0, 1).unwrap().tile, LandTile(8), "y moves by a row");
+        assert_eq!(
+            map.land(7, 7).unwrap().tile,
+            LandTile(63),
+            "the block's far corner"
+        );
     }
 
     #[test]
@@ -1046,7 +1062,7 @@ mod tests {
         }
         // The fixture's tiles are all distinct, so the comparison above could not
         // have passed on a map that happens to be uniform.
-        let distinct: std::collections::HashSet<u16> = (0..16u16)
+        let distinct: std::collections::HashSet<LandTile> = (0..16u16)
             .flat_map(|y| (0..16u16).map(move |x| (x, y)))
             .map(|(x, y)| built.land(x, y).unwrap().tile)
             .collect();
@@ -1059,7 +1075,7 @@ mod tests {
     fn a_tiles_corners_are_its_neighbours_own_heights() {
         // A ramp running south-east: z is x + y.
         let map = Map::from_blocks(1, 1, |x, y| LandCell {
-            tile: 3,
+            tile: LandTile(3),
             z: (x + y) as i8,
         });
         assert_eq!(map.land_corners(2, 3), Some([5, 6, 6, 7]));
@@ -1097,7 +1113,7 @@ mod tests {
     #[test]
     fn the_maps_average_is_the_average_of_its_corners() {
         let map = Map::from_blocks(1, 1, |x, y| LandCell {
-            tile: 3,
+            tile: LandTile(3),
             z: ((x * 3) as i8).wrapping_sub((y * 2) as i8),
         });
         for y in 0..8u16 {
@@ -1160,20 +1176,24 @@ mod tests {
         // middle one. The `tile` is what identifies each below.
         for (tile, x, y) in [(10, 3, 5), (20, 1, 2), (30, 3, 5), (40, 0, 7), (50, 3, 4)] {
             map.place_static(StaticItem {
-                tile,
+                tile: Graphic(tile),
                 x,
                 y,
                 z: 0,
-                hue: 0,
+                hue: Hue(0),
             });
         }
 
         let at = |x, y| map.statics_at(x, y).map(|item| item.tile).collect::<Vec<_>>();
-        assert_eq!(at(3, 5), vec![10, 30], "the two on one tile lost their order");
-        assert_eq!(at(1, 2), vec![20]);
-        assert_eq!(at(0, 7), vec![40]);
-        assert_eq!(at(3, 4), vec![50]);
-        assert_eq!(at(2, 2), Vec::<u16>::new(), "a tile nothing stands on");
+        assert_eq!(
+            at(3, 5),
+            vec![Graphic(10), Graphic(30)],
+            "the two on one tile lost their order"
+        );
+        assert_eq!(at(1, 2), vec![Graphic(20)]);
+        assert_eq!(at(0, 7), vec![Graphic(40)]);
+        assert_eq!(at(3, 4), vec![Graphic(50)]);
+        assert_eq!(at(2, 2), Vec::<Graphic>::new(), "a tile nothing stands on");
         assert_eq!(map.static_count(), 5, "the sort dropped or duplicated one");
     }
 
@@ -1195,11 +1215,11 @@ mod tests {
             for x in [23u16, 0, 8, 15, 7, 16, 9] {
                 tile += 1;
                 map.place_static(StaticItem {
-                    tile,
+                    tile: Graphic(tile),
                     x,
                     y,
                     z: 0,
-                    hue: 0,
+                    hue: Hue(0),
                 });
             }
         }
@@ -1239,11 +1259,11 @@ mod tests {
             for x in [23u16, 0, 8, 15, 7, 9] {
                 tile += 1;
                 map.place_static(StaticItem {
-                    tile,
+                    tile: Graphic(tile),
                     x,
                     y,
                     z: 0,
-                    hue: 0,
+                    hue: Hue(0),
                 });
             }
         }

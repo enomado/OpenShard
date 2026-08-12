@@ -61,7 +61,7 @@ use openshard_client_render::bench::{Metrics, Reading};
 
 /// What the perf panels are allowed to know, gathered each frame.
 ///
-/// Self-contained on purpose: unlike the rest of [`crate::shell::Hud`], nothing
+/// Self-contained on purpose: unlike the rest of [`crate::diagnostics::Hud`], nothing
 /// here is a per-frame answer about the camera or the world — it comes entirely
 /// off the scope, the frame ring, the GPU's own passes and the atlas counter, so
 /// it can be built without the camera or the picks that frame's `hud()` call

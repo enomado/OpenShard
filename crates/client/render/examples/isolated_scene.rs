@@ -644,10 +644,16 @@ fn main() {
     let blocks = |along: u16| u32::from(along / 8 + 9).max(16);
     let synthetic = Map::from_blocks(blocks(syn.0), blocks(syn.1), |sx, sy| {
         if !want_ground {
-            return LandCell { tile: 0, z: at.z };
+            return LandCell {
+                tile: openshard_uofiles::map::LandTile(0),
+                z: at.z,
+            };
         }
         let (rx, ry) = unshift(anchor, (sx, sy));
-        real_map.land(rx, ry).unwrap_or(LandCell { tile: 0, z: at.z })
+        real_map.land(rx, ry).unwrap_or(LandCell {
+            tile: openshard_uofiles::map::LandTile(0),
+            z: at.z,
+        })
     });
 
     // The real map's own statics within the radius, translated onto the
@@ -663,15 +669,15 @@ fn main() {
                 for s in real_map.statics_at(x, y) {
                     if tile_filter
                         .as_ref()
-                        .is_some_and(|allowed| !allowed.contains(&s.tile))
+                        .is_some_and(|allowed| !allowed.contains(&s.tile.0))
                     {
                         continue;
                     }
                     let (sx, sy) = shift(anchor, (x, y));
                     items.push(GroundItem {
                         at: Point::new(sx, sy, s.z),
-                        graphic: Graphic(s.tile),
-                        hue: Hue(s.hue),
+                        graphic: s.tile,
+                        hue: s.hue,
                     });
                 }
             }

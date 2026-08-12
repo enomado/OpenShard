@@ -32,7 +32,7 @@
 mod engine;
 
 use openshard_protocol::mobile::Notoriety;
-use openshard_protocol::world::{Aggression, DamageType, Facet, RangedRange, Sight};
+use openshard_protocol::world::{Aggression, DamageType, Facet, PhysicalResistance, RangedRange, Sight};
 
 pub use engine::DenoEngine;
 
@@ -349,7 +349,7 @@ pub enum Command {
         /// How hard it hits in melee, before the target's armour.
         damage: u16,
         /// Its physical resistance, 0–100.
-        resistance: u8,
+        resistance: PhysicalResistance,
         /// Ticks between its swings; 0 takes the default.
         swing: u64,
         /// How far it notices a foe, in tiles; 0 is passive.
@@ -954,7 +954,7 @@ pub struct SpawnCreature {
     /// Melee damage before the target's resistance.
     pub damage: u16,
     /// Physical resistance, 0–100.
-    pub resistance: u8,
+    pub resistance: PhysicalResistance,
     /// How widely known it is — what its killer inherits.
     pub fame: i32,
     /// Which way it is known. Negative is evil, so killing it earns karma.

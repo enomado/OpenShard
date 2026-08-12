@@ -15,7 +15,33 @@ use openshard_client_render::frame;
 use openshard_client_render::impostor::Fringe;
 use openshard_client_render::occlusion;
 
-use crate::shell;
+/// What the cursor is allowed to light up.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum HighlightTarget {
+    #[default]
+    Auto,
+    Items,
+    Tiles,
+}
+
+/// How an item or creature says it is the one under the cursor.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum HighlightStyle {
+    Hue,
+    #[default]
+    Outline,
+    Both,
+}
+
+impl HighlightStyle {
+    pub fn hues(self) -> bool {
+        matches!(self, Self::Hue | Self::Both)
+    }
+
+    pub fn rings(self) -> bool {
+        matches!(self, Self::Outline | Self::Both)
+    }
+}
 
 /// What this run draws and how, as a person's own choices rather than a fact
 /// about the world — see the module docs.
@@ -184,9 +210,9 @@ pub struct GraphicsSettings {
     /// make that a change to one line.
     pub occlusion_bake: occlusion::bake::Bake,
     /// What the cursor is allowed to light up, and how an item says it is the
-    /// one lit. Both are the HUD's to set — see [`shell::HighlightTarget`].
-    pub highlight: shell::HighlightTarget,
-    pub highlight_style: shell::HighlightStyle,
+    /// one lit. Both are the HUD's to set.
+    pub highlight: HighlightTarget,
+    pub highlight_style: HighlightStyle,
     /// The tile rectangle whose land and statics have been offered to the
     /// atlases, or `None` when nothing has.
     ///

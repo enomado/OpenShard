@@ -65,6 +65,7 @@ use std::collections::HashMap;
 use openshard_client_render::doors;
 use openshard_client_render::items::GroundItem;
 use openshard_movement::{MapTerrain, Terrain, Tile};
+use openshard_protocol::wire::Graphic;
 use openshard_protocol::world::Point;
 use openshard_uofiles::map::Map;
 use openshard_uofiles::tiledata::TileData;
@@ -285,11 +286,11 @@ impl<M: Terrain> Terrain for Cluttered<'_, M> {
         self.map.ground_z(tile)
     }
 
-    fn land_tile(&self, tile: Tile) -> Option<u16> {
+    fn land_tile(&self, tile: Tile) -> Option<openshard_movement::LandTile> {
         self.map.land_tile(tile)
     }
 
-    fn statics_at(&self, tile: Tile, out: &mut Vec<(u16, i8)>) {
+    fn statics_at(&self, tile: Tile, out: &mut Vec<(Graphic, i8)>) {
         self.map.statics_at(tile, out);
     }
 

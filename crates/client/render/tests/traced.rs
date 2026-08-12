@@ -535,9 +535,11 @@ fn render(device: &wgpu::Device, queue: &wgpu::Queue, shot: Shot<'_>) -> Rendere
         vec![floor_pixel; usize::from(openshard_uofiles::art::LAND_TILE_SIZE).pow(2)],
     );
     let blocks = (bounds.max_x as u32).div_ceil(openshard_uofiles::map::BLOCK_SIZE) + 1;
-    let synthetic_map = openshard_uofiles::map::Map::from_blocks(blocks, blocks, |_x, _y| {
-        openshard_uofiles::map::LandCell { tile: FLOOR.0, z: 0 }
-    });
+    let synthetic_map =
+        openshard_uofiles::map::Map::from_blocks(blocks, blocks, |_x, _y| openshard_uofiles::map::LandCell {
+            tile: openshard_uofiles::map::LandTile(FLOOR.0),
+            z: 0,
+        });
     let land = openshard_client_render::atlas::LandAtlas::pack([(FLOOR, floor_image)])
         .expect("one flat tile always fits");
     let texmaps = openshard_client_render::atlas::TexmapAtlas::pack([]).expect("nothing always fits");

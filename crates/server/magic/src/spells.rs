@@ -13,6 +13,7 @@
 //! delay, target all resolve), but its effect is left to the pack until the
 //! subsystem lands.
 
+use openshard_protocol::casting::SpellId;
 use openshard_state::{DamageType, FieldKind, Skill};
 
 /// A reagent's item graphic — the eight classic Magery reagents.
@@ -544,8 +545,8 @@ pub static MAGERY: [SpellInfo; 64] = [
 
 /// The spell at a zero-based spellbook id, or `None` past the eighth circle.
 #[must_use]
-pub fn info(spell: u16) -> Option<&'static SpellInfo> {
-    MAGERY.get(spell as usize)
+pub fn info(spell: SpellId) -> Option<&'static SpellInfo> {
+    MAGERY.get(usize::from(spell.0))
 }
 
 /// The skill every Magery cast rolls and trains.
@@ -606,19 +607,19 @@ mod tests {
 
     #[test]
     fn the_classic_ids_name_the_classic_spells() {
-        assert_eq!(info(4).unwrap().name, "Magic Arrow");
-        assert_eq!(info(17).unwrap().name, "Fireball");
-        assert_eq!(info(50).unwrap().name, "Flamestrike");
-        assert_eq!(info(21).unwrap().name, "Teleport");
+        assert_eq!(info(SpellId(4)).unwrap().name, "Magic Arrow");
+        assert_eq!(info(SpellId(17)).unwrap().name, "Fireball");
+        assert_eq!(info(SpellId(50)).unwrap().name, "Flamestrike");
+        assert_eq!(info(SpellId(21)).unwrap().name, "Teleport");
         // The field spells, whose ids the field tests cast by.
-        assert_eq!(info(23).unwrap().name, "Wall of Stone");
-        assert_eq!(info(27).unwrap().name, "Fire Field");
-        assert_eq!(info(38).unwrap().name, "Poison Field");
-        assert_eq!(info(49).unwrap().name, "Energy Field");
+        assert_eq!(info(SpellId(23)).unwrap().name, "Wall of Stone");
+        assert_eq!(info(SpellId(27)).unwrap().name, "Fire Field");
+        assert_eq!(info(SpellId(38)).unwrap().name, "Poison Field");
+        assert_eq!(info(SpellId(49)).unwrap().name, "Energy Field");
         // Paralysis, whose ids the paralyze tests cast by.
-        assert_eq!(info(37).unwrap().name, "Paralyze");
-        assert_eq!(info(46).unwrap().name, "Paralyze Field");
-        assert!(info(64).is_none(), "there is no 65th spell");
+        assert_eq!(info(SpellId(37)).unwrap().name, "Paralyze");
+        assert_eq!(info(SpellId(46)).unwrap().name, "Paralyze Field");
+        assert!(info(SpellId(64)).is_none(), "there is no 65th spell");
     }
 
     /// The travel family's rows, pinned against ServUO's own `SpellInfo`.
@@ -631,15 +632,15 @@ mod tests {
     /// nothing in the suite pointed at the table when it was.
     #[test]
     fn the_travel_spells_cost_what_the_reference_says() {
-        let recall = info(31).unwrap();
+        let recall = info(SpellId(31)).unwrap();
         assert_eq!(recall.name, "Recall");
         assert_eq!(recall.reagents, &[BLOOD_MOSS, BLACK_PEARL, MANDRAKE_ROOT]);
 
-        let mark = info(44).unwrap();
+        let mark = info(SpellId(44)).unwrap();
         assert_eq!(mark.name, "Mark");
         assert_eq!(mark.reagents, &[BLOOD_MOSS, BLACK_PEARL, MANDRAKE_ROOT]);
 
-        let gate = info(51).unwrap();
+        let gate = info(SpellId(51)).unwrap();
         assert_eq!(gate.name, "Gate Travel");
         assert_eq!(
             gate.reagents,
@@ -656,8 +657,19 @@ mod tests {
 
     #[test]
     fn mana_and_delay_climb_with_the_circle() {
-        assert_eq!(mana(info(4).unwrap()), 4, "a first-circle spell is cheap");
-        assert_eq!(mana(info(50).unwrap()), 40, "a seventh-circle one is not");
-        assert!(cast_delay_ticks(info(50).unwrap(), 20) > cast_delay_ticks(info(4).unwrap(), 20));
+        assert_eq!(
+            mana(info(SpellId(4)).unwrap()),
+            4,
+            "a first-circle spell is cheap"
+        );
+        assert_eq!(
+            mana(info(SpellId(50)).unwrap()),
+            40,
+            "a seventh-circle one is not"
+        );
+        assert!(
+            cast_delay_ticks(info(SpellId(50)).unwrap(), 20)
+                > cast_delay_ticks(info(SpellId(4)).unwrap(), 20)
+        );
     }
 }

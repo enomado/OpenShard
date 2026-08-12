@@ -285,7 +285,10 @@ impl Scene {
 /// The land graphic is `0`, which the scenes' `tiledata` gives no flags, so the
 /// ground itself neither burns nor stops anything.
 fn ground() -> Map {
-    Map::from_blocks(16, 16, |_, _| LandCell { tile: 0, z: 0 })
+    Map::from_blocks(16, 16, |_, _| LandCell {
+        tile: openshard_uofiles::map::LandTile(0),
+        z: 0,
+    })
 }
 
 /// The flags the graphics above carry, and no others.

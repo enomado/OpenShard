@@ -11,6 +11,12 @@ const CORPSE_DECAY_TICKS: u64 = 7 * 60 * TICKS_PER_SECOND;
 
 /// The outer-torso layer the death shroud wears at — ServUO's `Layer.OuterTorso`.
 const OUTER_TORSO_LAYER: Layer = Layer(0x16);
+/// The outer-torso robe issued to a player brought back to life.
+const RESURRECTION_ROBE_GRAPHIC: Graphic = Graphic(0x1F03);
+/// The dagger carried in the one-handed weapon slot after resurrection.
+const RESURRECTION_DAGGER_GRAPHIC: Graphic = Graphic(0x0F52);
+/// The axe carried in the two-handed weapon slot after resurrection.
+const RESURRECTION_AXE_GRAPHIC: Graphic = Graphic(0x0F49);
 
 impl World {
     /// Dispose of every mobile that died this tick: a creature becomes a corpse
@@ -233,6 +239,7 @@ impl World {
         self.state.registry.remove::<Ghost>(entity);
         self.state.registry.insert(entity, living);
         self.strip_death_shroud(serial);
+        self.equip_resurrection_kit(serial);
 
         // A healer's offer may still be standing (a bandage or a spell can land
         // while a ghost has not yet answered "wouldst thou like to be
@@ -310,6 +317,35 @@ impl World {
                 mobile,
                 layer: OUTER_TORSO_LAYER,
             },
+        );
+    }
+
+    /// Give a resurrected player the shard's minimal fighting kit. Their former
+    /// equipment remains on the corpse, so these fresh items are intentionally
+    /// separate from it: a robe plus a dagger and axe are immediately usable and
+    /// occupy the paperdoll's outer-torso, one-handed and two-handed layers.
+    fn equip_resurrection_kit(&mut self, mobile: Serial) {
+        let hue = Hue(0);
+        let _ = items::equip_worn_item(
+            &mut self.state,
+            mobile,
+            RESURRECTION_ROBE_GRAPHIC,
+            hue,
+            OUTER_TORSO_LAYER,
+        );
+        let _ = items::equip_worn_item(
+            &mut self.state,
+            mobile,
+            RESURRECTION_DAGGER_GRAPHIC,
+            hue,
+            openshard_state::weapon::LAYER_ONE_HANDED,
+        );
+        let _ = items::equip_worn_item(
+            &mut self.state,
+            mobile,
+            RESURRECTION_AXE_GRAPHIC,
+            hue,
+            openshard_state::weapon::LAYER_TWO_HANDED,
         );
     }
 

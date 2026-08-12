@@ -13,7 +13,7 @@
 
 use openshard_protocol::mobile::Notoriety;
 use openshard_protocol::wire::{Graphic, Hue};
-use openshard_protocol::world::{Aggression, DamageType, Facet, RangedRange, Sight};
+use openshard_protocol::world::{Aggression, DamageType, Facet, PhysicalResistance, RangedRange, Sight};
 
 /// One creature a spawn region may put down. The fields a spawn needs beyond the
 /// where — mirrors [`crate::tick::Command::SpawnMobile`] minus the position, which
@@ -31,7 +31,7 @@ pub struct CreatureTemplate {
     /// Melee damage before the target's resistance.
     pub damage: u16,
     /// Physical resistance, a percentage.
-    pub resistance: u8,
+    pub resistance: PhysicalResistance,
     /// How widely known it is — what its killer inherits.
     pub fame: i32,
     /// Which way it is known. **Negative is evil**, so killing it earns karma.

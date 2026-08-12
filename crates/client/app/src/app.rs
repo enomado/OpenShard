@@ -82,10 +82,10 @@ pub(crate) struct App {
     pub(crate) next_tick: Instant,
     /// When it last did.
     ///
-    /// The crowd is moved by *measured* time and not by the interval that was
-    /// waited for: `WaitUntil` is a floor and the compositor overshoots it, so a
-    /// clock fed the nominal step would run slow by however much it did — which
-    /// a stepping animation hides and a glide does not.
+    /// Presentation clocks are moved by *measured* time and not by the interval
+    /// that was waited for: `WaitUntil` is a floor and the compositor overshoots
+    /// it, so a clock fed the nominal step would run slow by however much it did
+    /// — which a stepping animation hides and a glide does not.
     pub(crate) last_advance: Instant,
     /// When the last frame was *drawn*, for the frame panel's interval.
     ///

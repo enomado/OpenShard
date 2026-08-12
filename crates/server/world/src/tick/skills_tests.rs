@@ -1345,7 +1345,7 @@ fn spawn_mobile_body(world: &mut World, body: u16, at: Point, now: Instant) -> S
         hits: 50,
         notoriety: Notoriety::from_bits(5),
         damage: 5,
-        resistance: 0,
+        resistance: openshard_protocol::world::PhysicalResistance::new(0),
         swing: 0,
         sight: Sight(0),
         aggression: Aggression::from_bits(0),

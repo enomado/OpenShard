@@ -14,7 +14,7 @@
 
 use super::tests::{START, enter, packets_for, world};
 use super::*;
-use openshard_movement::{Terrain, Tile};
+use openshard_movement::{LandTile, Terrain, Tile};
 use openshard_protocol::containers::GridSlot;
 use openshard_protocol::gump::GumpPoint;
 use openshard_protocol::serial::RawSerial;
@@ -54,12 +54,12 @@ impl Terrain for Ground {
         Some(to)
     }
 
-    fn land_tile(&self, _tile: Tile) -> Option<u16> {
-        Some(self.land)
+    fn land_tile(&self, _tile: Tile) -> Option<LandTile> {
+        Some(LandTile(self.land))
     }
 
-    fn statics_at(&self, _tile: Tile, out: &mut Vec<(u16, i8)>) {
-        out.extend(self.static_at);
+    fn statics_at(&self, _tile: Tile, out: &mut Vec<(Graphic, i8)>) {
+        out.extend(self.static_at.map(|(graphic, z)| (Graphic(graphic), z)));
     }
 }
 

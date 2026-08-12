@@ -7,7 +7,7 @@ use openshard_protocol::direction::{Direction, Facing};
 use openshard_protocol::mobile::Notoriety;
 use openshard_protocol::serial::{Serial, SerialKind};
 use openshard_protocol::wire::{Graphic, Hue, Layer};
-use openshard_protocol::world::{DamageType, Facet, Point, RangedRange, Sight};
+use openshard_protocol::world::{DamageType, Facet, PhysicalResistance, Point, RangedRange, Sight};
 use openshard_state::WorldState;
 use openshard_state::components::{
     Aggression, Banker, Body, Brain, Fame, Heading, Healer, Hitpoints, Karma, MeleeDamage, Movement, Name,
@@ -51,7 +51,7 @@ pub struct SpawnSpec {
     pub hits: u16,
     pub notoriety: Notoriety,
     pub damage: u16,
-    pub resistance: u8,
+    pub resistance: PhysicalResistance,
     pub swing: u64,
     pub sight: Sight,
     /// Whether it starts fights (2), answers them (1), or only runs (0).
@@ -231,7 +231,7 @@ pub fn spawn(state: &mut WorldState, spec: SpawnSpec) -> Option<EntityId> {
     state.registry.insert(
         entity,
         Resistance {
-            physical: resistance.min(100),
+            physical: resistance.get(),
             ..Default::default()
         },
     );

@@ -44,9 +44,7 @@ use openshard_uofiles::tiledata::AnimId;
 
 use std::rc::Rc;
 
-#[cfg(test)]
-use crate::atlas::AnimationKey;
-use crate::atlas::{AnimAtlas, FrameKey};
+use crate::atlas::{AnimAtlas, AnimationKey, FrameKey};
 use crate::camera::{Camera, RealPixel, ViewPixel, ViewPoint, WorldPoint};
 use crate::cutaway::Cutaway;
 use crate::depth;
@@ -266,18 +264,14 @@ pub fn needed_animations(mobiles: &[Mobile], equip_conv: &EquipConv) -> Vec<crat
         // The body the *file* holds, which for a ghost is the living body it is
         // drawn from — see `anim::animation_body`. Packed under that key, so
         // `place` below finds it under the same one.
-        wanted.push(crate::atlas::AnimationKey {
-            body: openshard_uofiles::anim::animation_body(mobile.body),
-            group: mobile.group,
+        wanted.push(crate::atlas::AnimationKey::new(
+            openshard_uofiles::anim::animation_body(mobile.body),
+            mobile.group,
             direction,
-        });
+        ));
         for layer in drawn_layers(mobile) {
             if let Some((graphic, _)) = worn_graphic(mobile, layer, equip_conv) {
-                wanted.push(crate::atlas::AnimationKey {
-                    body: graphic,
-                    group: mobile.group,
-                    direction,
-                });
+                wanted.push(crate::atlas::AnimationKey::new(graphic, mobile.group, direction));
             }
         }
     }
@@ -394,12 +388,7 @@ struct Placement {
 /// caller passes the key it packed with, so this never re-derives either.
 fn place(mobile: &Mobile, body: Graphic, camera: &Camera, atlas: &AnimAtlas) -> Option<Placement> {
     let (direction, mirrored) = openshard_uofiles::anim::facing(mobile.facing);
-    let key = FrameKey {
-        body,
-        group: mobile.group,
-        direction,
-        frame: mobile.frame,
-    };
+    let key = FrameKey::new(AnimationKey::new(body, mobile.group, direction), mobile.frame);
     let packed = atlas.frame(key)?;
 
     // Tiles and not the pixels it is between: the order steps once, at the tile
@@ -759,12 +748,7 @@ mod tests {
     /// A frame packed at a known size, for placing.
     fn atlas(body: u16, direction: u8, width: u16, height: u16, center: (i16, i16)) -> AnimAtlas {
         AnimAtlas::pack([(
-            FrameKey {
-                body: Graphic(body),
-                group: 4,
-                direction,
-                frame: 0,
-            },
+            FrameKey::new(AnimationKey::new(Graphic(body), 4, direction), 0),
             AnimFrame {
                 center_x: center.0,
                 center_y: center.1,
@@ -848,12 +832,7 @@ mod tests {
             }
         }
         AnimAtlas::pack([(
-            FrameKey {
-                body: Graphic(body),
-                group: 4,
-                direction,
-                frame: 0,
-            },
+            FrameKey::new(AnimationKey::new(Graphic(body), 4, direction), 0),
             AnimFrame {
                 center_x: 12,
                 center_y: -3,
@@ -937,12 +916,7 @@ mod tests {
         let mut atlas = holed(400, 0, 40, 60);
         atlas
             .pack_more([(
-                FrameKey {
-                    body: Graphic(7005),
-                    group: 4,
-                    direction: 0,
-                    frame: 0,
-                },
+                FrameKey::new(AnimationKey::new(Graphic(7005), 4, 0), 0),
                 AnimFrame {
                     center_x: 12,
                     center_y: -3,
@@ -1005,12 +979,7 @@ mod tests {
         let mut atlas = atlas(400, 0, 40, 60, (12, -3));
         atlas
             .pack_more([(
-                FrameKey {
-                    body: Graphic(7005),
-                    group: 4,
-                    direction: 0,
-                    frame: 0,
-                },
+                FrameKey::new(AnimationKey::new(Graphic(7005), 4, 0), 0),
                 AnimFrame {
                     center_x: 12,
                     center_y: -3,
@@ -1479,12 +1448,7 @@ mod tests {
         let camera = Camera::new(Point::new(100, 100, 0), 800, 600);
         let frame = |body: u16| {
             (
-                FrameKey {
-                    body: Graphic(body),
-                    group: 4,
-                    direction: 0,
-                    frame: 0,
-                },
+                FrameKey::new(AnimationKey::new(Graphic(body), 4, 0), 0),
                 AnimFrame {
                     center_x: 12,
                     center_y: -3,
@@ -1528,12 +1492,7 @@ mod tests {
         let camera = Camera::new(Point::new(100, 100, 0), 800, 600);
         let frame = |body: u16| {
             (
-                FrameKey {
-                    body: Graphic(body),
-                    group: 4,
-                    direction: 0,
-                    frame: 0,
-                },
+                FrameKey::new(AnimationKey::new(Graphic(body), 4, 0), 0),
                 AnimFrame {
                     center_x: 12,
                     center_y: -3,
@@ -1594,12 +1553,7 @@ mod tests {
         // would have a frame to draw and the test would see it.
         let atlas = AnimAtlas::pack([
             (
-                FrameKey {
-                    body: Graphic(400),
-                    group: 4,
-                    direction: 0,
-                    frame: 0,
-                },
+                FrameKey::new(AnimationKey::new(Graphic(400), 4, 0), 0),
                 AnimFrame {
                     center_x: 12,
                     center_y: -3,
@@ -1607,12 +1561,7 @@ mod tests {
                 },
             ),
             (
-                FrameKey {
-                    body: Graphic(0),
-                    group: 4,
-                    direction: 0,
-                    frame: 0,
-                },
+                FrameKey::new(AnimationKey::new(Graphic(0), 4, 0), 0),
                 AnimFrame {
                     center_x: 4,
                     center_y: -1,
@@ -1659,12 +1608,7 @@ mod tests {
         // the atlas is packed under — `anim::animation_body`.
         let atlas = AnimAtlas::pack([
             (
-                FrameKey {
-                    body: Graphic(0x0190),
-                    group: 4,
-                    direction: 0,
-                    frame: 0,
-                },
+                FrameKey::new(AnimationKey::new(Graphic(0x0190), 4, 0), 0),
                 AnimFrame {
                     center_x: 20,
                     center_y: -2,
@@ -1672,12 +1616,7 @@ mod tests {
                 },
             ),
             (
-                FrameKey {
-                    body: Graphic(7005),
-                    group: 4,
-                    direction: 0,
-                    frame: 0,
-                },
+                FrameKey::new(AnimationKey::new(Graphic(7005), 4, 0), 0),
                 AnimFrame {
                     center_x: 20,
                     center_y: -2,
@@ -1731,12 +1670,7 @@ mod tests {
         let camera = Camera::new(Point::new(100, 100, 0), 800, 600);
         let frame = |body: u16| {
             (
-                FrameKey {
-                    body: Graphic(body),
-                    group: 4,
-                    direction: 0,
-                    frame: 0,
-                },
+                FrameKey::new(AnimationKey::new(Graphic(body), 4, 0), 0),
                 AnimFrame {
                     center_x: 12,
                     center_y: -3,

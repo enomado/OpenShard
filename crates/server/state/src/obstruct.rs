@@ -23,7 +23,8 @@
 use std::collections::HashMap;
 
 use openshard_entities::EntityId;
-use openshard_movement::{OpenWorld, Terrain, Tile};
+use openshard_movement::{LandTile, OpenWorld, Terrain, Tile};
+use openshard_protocol::wire::Graphic;
 use openshard_protocol::world::Point;
 
 /// A mobile's body height in z-units, for deciding what overlaps it. Matches the
@@ -214,11 +215,11 @@ impl Terrain for LiveTerrain<'_> {
         self.map.and_then(|m| m.ground_z(tile))
     }
 
-    fn land_tile(&self, tile: Tile) -> Option<u16> {
+    fn land_tile(&self, tile: Tile) -> Option<LandTile> {
         self.map.and_then(|m| m.land_tile(tile))
     }
 
-    fn statics_at(&self, tile: Tile, out: &mut Vec<(u16, i8)>) {
+    fn statics_at(&self, tile: Tile, out: &mut Vec<(Graphic, i8)>) {
         if let Some(map) = self.map {
             map.statics_at(tile, out);
         }

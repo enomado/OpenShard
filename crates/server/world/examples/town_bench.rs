@@ -86,7 +86,7 @@ fn populate(gameplay: Gameplay, folk: u32, decor: u32, players: u32) -> World {
                 hits: 100,
                 notoriety: Notoriety::from_bits(7),
                 damage: 0,
-                resistance: 0,
+                resistance: openshard_protocol::world::PhysicalResistance::new(0),
                 swing: 0,
                 sight: Sight(0),
                 aggression: Aggression::from_bits(2),

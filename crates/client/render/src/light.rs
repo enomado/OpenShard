@@ -950,15 +950,11 @@ pub fn collect(
     let mut lights = Vec::new();
 
     crate::statics::for_each_static_in(map, bounds, |item| {
-        let tile = tiledata.static_tile(item.tile);
-        if !burns(Graphic(item.tile), tile) || !cutaway::shows(cutaway, item.z, tile) {
+        let tile = tiledata.static_tile(item.tile.0);
+        if !burns(item.tile, tile) || !cutaway::shows(cutaway, item.z, tile) {
             return;
         }
-        lights.push(tuning.applied(place(
-            Point::new(item.x, item.y, item.z),
-            flame(Graphic(item.tile)),
-            time,
-        )));
+        lights.push(tuning.applied(place(Point::new(item.x, item.y, item.z), flame(item.tile), time)));
     });
 
     for item in items {
@@ -3658,7 +3654,10 @@ mod tests {
     /// come from the item list, which is the half a test can build without a
     /// client install.
     fn bare() -> Map {
-        Map::from_blocks(1, 1, |_, _| LandCell { tile: 0, z: 0 })
+        Map::from_blocks(1, 1, |_, _| LandCell {
+            tile: openshard_movement::LandTile(0),
+            z: 0,
+        })
     }
 
     /// A lid stops a ray that goes through it and nothing that runs along it.

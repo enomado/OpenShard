@@ -2859,30 +2859,34 @@ Still open, ranked by how strong the case is:
   spawns, attacks, scripting and persistence carry it directly. A ranged
   reach is likewise `Option<RangedRange>`, preserving saved numeric `0` as no
   ranged attack.
-- **No `SpellId` exists anywhere in the codebase.** `magic::spells::info`
-  indexes its table with a bare `spell: u16`, and the same untyped `u16`
-  names a spell on `SpellCast`, `Cast`, `Command::RequestCast` and
-  `ScriptEvent::SpellCast`. `protocol::casting::RawSpellId::interpret`'s own
-  doc comment already says the number is left bare because `magic` has
-  nowhere typed to hand it — this is that missing destination.
-- **The animation triple `(body: u16, group: u8, direction: u8)` is
-  duplicated four ways with no shared name.** `uofiles::anim::{has_frames,
-  frames}`, `client_render::atlas::{frame_count, FrameKey}` (a named struct,
-  but with public bare fields), `client_render::mobiles::needed_animations`
-  (an unnamed tuple) and `client_render::mobiles::Mobile{body, group}` (whose
-  very next field, `facing: Direction`, is typed) all carry the same three
-  values apart. Root cause: `uofiles::equipconv::resolve(body, item_anim_id)`
-  and `client_render::paperdoll::gump_of(body, anim_id, ...)`, one call
-  removed from each other, both bare.
-- **`uofiles::map::StaticItem{tile: u16, hue: u16}` unwraps `Graphic`/`Hue`
-  at the one struct every static on the map is read into.** Both types are
-  already used consistently by neighbours in the same workspace
-  (`Hues::get(hue: Hue)`, `Gumps::gump(graphic: Graphic)`); the leak radiates
-  into `movement::Terrain::{land_tile, statics_at}`, bare in a trait where
-  `item_blocks`/`item_layer` two methods over already take `Graphic`.
-  `uofiles::map::LandCell::tile: u16` is the same shape in the *other* tile-id
-  space (land, not static) — distinct sibling types would close both leaks
-  and stop the two id spaces being interchangeable at a call site.
+- ~~**No `SpellId` exists anywhere in the codebase.**~~ Fixed:
+  `protocol::casting::SpellId(pub u16)` is the zero-based identity on the far
+  side of `RawSpellId`'s one-based wire number. It deliberately does not know
+  Magery's 64-row limit — `magic::info` owns that separate, fallible lookup —
+  so the dependency-free protocol type can name a later spellbook family too.
+  `SpellRequested`, `RequestCast`, `Casting`, `TargetPurpose::Spell`,
+  `Cast`/`SpellCast`, the Magery lookup and the spellbook/scroll paths now
+  carry it. The scripting event and command stay `u16` only at the JSON
+  serialization seam; `server::scripting` unwraps or wraps there, exactly as
+  it does for serials and other typed world values.
+- ~~**The animation triple `(body: u16, group: u8, direction: u8)` is
+  duplicated four ways with no shared name.**~~ Fixed:
+  `uofiles::anim::AnimationKey` owns the file-addressing triple, and the
+  renderer re-exports that same type instead of maintaining its own copy.
+  `Anim::{has_frames,frames}`, `AnimAtlas` and `needed_animations` now pass it
+  whole; `FrameKey` embeds it rather than exposing three public bare fields.
+  `Mobile` still keeps its wire body, action group and a typed *facing*: it is
+  not a stored-file triple until `facing()` resolves the mirror, which is the
+  one point that builds `AnimationKey`. The alleged root calls already use
+  `Graphic` and `AnimId`, so they needed no sibling wrapper.
+- ~~**`uofiles::map::StaticItem{tile: u16, hue: u16}` unwraps `Graphic`/`Hue`
+  at the one struct every static on the map is read into.**~~ Fixed:
+  `StaticItem` now carries `Graphic` and `Hue`, while `LandCell` carries the
+  distinct `LandTile` newtype for the other id space. `movement::Terrain` and
+  its map-backed implementations carry those names through their land/static
+  queries; `.0` remains only at tiledata, map-file and deliberately raw
+  compatibility boundaries. This makes a land id and a static graphic
+  unassignable to each other at an ordinary call site.
 - **`state::harvest`'s sibling gap, `items::trade`'s sibling gap and
   `quests`'s sibling gap all had one thing in common that a fourth case does
   not yet: `client_render`'s `Option<usize>` "index into `items`"**, repeated

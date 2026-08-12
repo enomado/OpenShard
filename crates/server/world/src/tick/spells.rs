@@ -18,6 +18,7 @@
 
 use super::*;
 use openshard_magic::{MAGERY_SKILL, SpellEffect, SpellTarget};
+use openshard_protocol::casting::SpellId;
 use openshard_protocol::feedback::{EffectKind, GraphicalEffect, PlaySound};
 use openshard_protocol::server_packet::ServerPacket;
 use openshard_protocol::target::{TargetCursor, TargetKind};
@@ -29,7 +30,7 @@ impl World {
     /// A client asked to cast a spell (`0xBF`). Begin it: right away in the
     /// Sphere style, or as a rooted [`Casting`] with a cast delay in the ServUO
     /// style. An unknown spell id or a dead caster is ignored.
-    pub(super) fn begin_cast(&mut self, connection: ConnectionId, spell: u16) {
+    pub(super) fn begin_cast(&mut self, connection: ConnectionId, spell: SpellId) {
         let Some(&caster) = self.state.players.get(&connection) else {
             return;
         };
@@ -108,7 +109,7 @@ impl World {
         }
         // Then the casts whose delay is up.
         let now = self.state.ticks;
-        let ready: Vec<(EntityId, u16)> = self
+        let ready: Vec<(EntityId, SpellId)> = self
             .state
             .registry
             .query::<Casting>()
@@ -124,7 +125,7 @@ impl World {
     /// Pay for a cast and roll it, then either land a self-cast now or raise the
     /// target cursor a targeted spell waits on. A fizzle (short mana or a
     /// reagent) says so and stops.
-    fn resolve_cast(&mut self, caster: EntityId, spell: u16) {
+    fn resolve_cast(&mut self, caster: EntityId, spell: SpellId) {
         let Some(info) = magic::info(spell) else {
             return;
         };
@@ -216,7 +217,7 @@ impl World {
     pub(super) fn apply_spell_effect(
         &mut self,
         caster: EntityId,
-        spell: u16,
+        spell: SpellId,
         mut target_serial: Option<Serial>,
         mut target_location: Point,
     ) {
@@ -596,7 +597,7 @@ impl World {
 
     /// Whether the caster carries a spellbook that holds `spell` — a book in its
     /// backpack with the spell's bit set. The gate `begin_cast` reads.
-    pub(super) fn caster_has_spell(&self, caster: EntityId, spell: u16) -> bool {
+    pub(super) fn caster_has_spell(&self, caster: EntityId, spell: SpellId) -> bool {
         let Some(serial) = self.state.registry.serial_of(caster) else {
             return false;
         };
@@ -604,7 +605,7 @@ impl World {
             return false;
         };
         self.state.registry.query::<Spellbook>().any(|(book, mask)| {
-            mask.has(spell as u8)
+            mask.has(spell)
                 && self
                     .state
                     .registry

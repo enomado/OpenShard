@@ -6,7 +6,7 @@ use openshard_persistence::{
 use openshard_protocol::containers::GridSlot;
 use openshard_protocol::identity::CharacterName;
 use openshard_protocol::wire::{Graphic, Hue, Layer};
-use openshard_protocol::world::Aggression;
+use openshard_protocol::world::{Aggression, PhysicalResistance};
 use openshard_state::components::{
     Banker, BehaviourBuff, BehaviourBuffs, Corpse, CraftedBy, DoneQuest, Escortable, Field, Frozen, Healer,
     Moongate, NightHome, Npc, Pet, PetOrder, PoisonCharges, Poisoned, Price, Quality, QuestGiver, QuestLog,
@@ -558,7 +558,11 @@ impl World {
                     .copied()
                     .unwrap_or(Notoriety::Neutral),
                 damage: registry.get::<MeleeDamage>(entity).map_or(0, |d| d.amount),
-                resistance: registry.get::<Resistance>(entity).map_or(0, |r| r.physical),
+                resistance: registry
+                    .get::<Resistance>(entity)
+                    .map_or(PhysicalResistance::default(), |r| {
+                        PhysicalResistance::new(r.physical)
+                    }),
                 swing: registry.get::<SwingSpeed>(entity).map_or(0, |s| s.ticks),
                 sight,
                 aggression,
@@ -1309,7 +1313,7 @@ impl World {
             registry.insert(
                 entity,
                 Resistance {
-                    physical: record.resistance.min(100),
+                    physical: record.resistance.get(),
                     ..Default::default()
                 },
             );

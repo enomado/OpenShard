@@ -1,9 +1,10 @@
 use super::*;
+use openshard_protocol::casting::SpellId;
 use openshard_protocol::identity::RawCharacterName;
 use openshard_protocol::items::DropDestination;
 use openshard_protocol::mobile::Notoriety;
 use openshard_protocol::wire::{Graphic, Hue, RawCharacterSlot};
-use openshard_protocol::world::{Aggression, DamageType, RangedRange, Sight};
+use openshard_protocol::world::{Aggression, DamageType, PhysicalResistance, RangedRange, Sight};
 
 /// How a character looks: its body graphic and hue. Chosen on the creation
 /// screen, or restored from the save.
@@ -545,7 +546,7 @@ pub enum Command {
         /// How hard it hits in melee, before the target's armour.
         damage: u16,
         /// Its physical resistance, 0–100.
-        resistance: u8,
+        resistance: PhysicalResistance,
         /// Ticks between its swings; 0 takes the default.
         swing: u64,
         /// How far it notices a foe, in tiles; 0 hunts nothing.
@@ -615,7 +616,7 @@ pub enum Command {
         /// The caster.
         serial: Serial,
         /// Which spell, by id.
-        spell: u16,
+        spell: SpellId,
         /// The target, or `None` for a spell that needs none.
         target: Option<Serial>,
         /// The mana it costs.
@@ -1030,7 +1031,7 @@ pub enum Command {
         /// Which connection asked.
         connection: ConnectionId,
         /// Which spell, zero-based.
-        spell: u16,
+        spell: SpellId,
     },
     /// Fill a vendor's stock crate with priced goods. From a script.
     StockVendor {

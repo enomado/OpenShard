@@ -14,7 +14,8 @@ use openshard_client_render::sprite::{SpriteQuad, split_corners};
 use openshard_client_render::{ground, items, light, mobiles, statics};
 
 use crate::crowd::Who;
-use crate::picking::{self, Pick, SelectedIdentity};
+use crate::diagnostics::Pick;
+use crate::picking::{self, SelectedIdentity};
 use crate::window::Screen;
 use crate::{graphics, resources, world};
 

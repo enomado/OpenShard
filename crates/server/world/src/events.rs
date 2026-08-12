@@ -12,6 +12,7 @@
 
 use openshard_entities::EntityId;
 use openshard_gateway::ConnectionId;
+use openshard_protocol::casting::SpellId;
 use openshard_protocol::direction::Facing;
 use openshard_protocol::gump::{RawButtonId, RawGumpId, RawSwitchId};
 use openshard_protocol::serial::Serial;
@@ -93,7 +94,7 @@ pub struct SpellRequested {
     /// Its wire identity.
     pub serial: Serial,
     /// Which spell, zero-based.
-    pub spell: u16,
+    pub spell: SpellId,
 }
 
 // `MobileSpawned` moved to `openshard-npc` with the spawn rule that emits it.

@@ -124,8 +124,8 @@ fn what_the_lighting_knows_about_a_place() {
         for x in at_x as i32 - AROUND..=at_x as i32 + AROUND {
             let (x, y) = (x as u16, y as u16);
             for item in map.statics_at(x, y) {
-                let graphic = Graphic(item.tile);
-                let tile = tiledata.static_tile(item.tile);
+                let graphic = item.tile;
+                let tile = tiledata.static_tile(item.tile.0);
                 let facing = atlas.sprite(graphic).and_then(|sprite| sprite.facing);
                 println!(
                     "({x}, {y}) z {:>4}  {graphic:?}  h {:>3}  facing {:?}  stance {:?}  \

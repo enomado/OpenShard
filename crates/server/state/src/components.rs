@@ -17,6 +17,7 @@ use std::collections::HashMap;
 use openshard_entities::EntityId;
 use openshard_gateway::ConnectionId;
 use openshard_movement::Walker;
+use openshard_protocol::casting::SpellId;
 use openshard_protocol::containers::GridSlot;
 use openshard_protocol::gump::GumpPoint;
 use openshard_protocol::identity::AccountName;
@@ -1186,7 +1187,7 @@ pub struct Meditating;
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct Casting {
     /// The spell being cast, by id.
-    pub spell: u16,
+    pub spell: SpellId,
     /// The tick the cast finishes and resolves.
     pub complete_at: u64,
 }
@@ -1232,14 +1233,14 @@ pub struct Spellbook(pub u64);
 impl Spellbook {
     /// Whether the book holds spell `n` (0-based).
     #[must_use]
-    pub const fn has(self, spell: u8) -> bool {
-        spell < SPELL_COUNT && self.0 & (1u64 << spell) != 0
+    pub const fn has(self, spell: SpellId) -> bool {
+        spell.0 < SPELL_COUNT as u16 && self.0 & (1u64 << spell.0) != 0
     }
 
     /// Add spell `n` (0-based); a no-op past the eighth circle.
-    pub fn learn(&mut self, spell: u8) {
-        if spell < SPELL_COUNT {
-            self.0 |= 1u64 << spell;
+    pub fn learn(&mut self, spell: SpellId) {
+        if spell.0 < SPELL_COUNT as u16 {
+            self.0 |= 1u64 << spell.0;
         }
     }
 
@@ -1403,18 +1404,18 @@ pub const fn ghost_body(body: Graphic) -> Graphic {
 /// The item graphic of the scroll for a Magery spell, `0-based` — the classic
 /// run `0x1F2D..` (Reactive Armor, Clumsy, …), one per spell.
 #[must_use]
-pub const fn spell_scroll_graphic(spell: u8) -> u16 {
-    0x1F2D + spell as u16
+pub const fn spell_scroll_graphic(spell: SpellId) -> u16 {
+    0x1F2D + spell.0
 }
 
 /// The Magery spell a scroll graphic teaches, if it is a Magery scroll.
 #[must_use]
-pub const fn scroll_spell(graphic: Graphic) -> Option<u8> {
+pub const fn scroll_spell(graphic: Graphic) -> Option<SpellId> {
     // Opened once, so the scroll table below stays terse.
     let graphic = graphic.0;
     let base = 0x1F2D;
     if graphic >= base && graphic < base + SPELL_COUNT as u16 {
-        Some((graphic - base) as u8)
+        Some(SpellId(graphic - base))
     } else {
         None
     }

@@ -101,7 +101,7 @@ fn populate(gameplay: Gameplay, creatures: u32, players: u32) -> (World, u32) {
                 hits: 50,
                 notoriety: Notoriety::from_bits(5),
                 damage: 5,
-                resistance: 0,
+                resistance: openshard_protocol::world::PhysicalResistance::new(0),
                 swing: 0,
                 sight: Sight(10),
                 aggression: Aggression::from_bits(2),

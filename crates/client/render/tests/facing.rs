@@ -225,12 +225,12 @@ fn britain_s_walls_are_read_where_they_stand() {
     for y in ys {
         for x in xs.clone() {
             for item in map.statics_at(x, y) {
-                if !is_wall(&tiledata, item.tile) {
+                if !is_wall(&tiledata, item.tile.0) {
                     continue;
                 }
                 standing += 1;
-                let shape = *known.entry(item.tile).or_insert_with(|| {
-                    art.static_art(Graphic(item.tile))
+                let shape = *known.entry(item.tile.0).or_insert_with(|| {
+                    art.static_art(item.tile)
                         .ok()
                         .flatten()
                         .map_or(Shape::UNREAD, |image| Shape::of(&image))
@@ -241,7 +241,7 @@ fn britain_s_walls_are_read_where_they_stand() {
                         decided += 1;
                         *faces.entry(label(facing)).or_default() += 1;
                     }
-                    None => *worst.entry(item.tile).or_default() += 1,
+                    None => *worst.entry(item.tile.0).or_default() += 1,
                 }
             }
         }

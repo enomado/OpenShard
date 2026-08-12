@@ -23,7 +23,7 @@ use openshard_protocol::direction::{Direction, Facing};
 use openshard_protocol::world::Point;
 
 use crate::app::App;
-use crate::world::{cluttered, cluttered_with_doors_open, terrain};
+use crate::world::{advance_presentation_to, cluttered, cluttered_with_doors_open, terrain};
 use crate::{DEAD_ZONE, TURN_ZONE, steer};
 
 impl App {
@@ -94,20 +94,16 @@ impl App {
         let terrain = terrain(&self.resources);
         let ground = i8::try_from(terrain.predict_step(self.world.presentation.player.at, x, y))
             .unwrap_or(self.world.presentation.player.at.z);
-        // The crowd's clock first, before the step is folded in, and for the
-        // same reason `App::user_event` does it for a step off the wire: a step
-        // is timestamped with `Crowd`'s own `now`, and this is called from
+        // The presentation clocks first, before the step is folded in, and for
+        // the same reason `App::user_event` does it for a step off the wire: a
+        // step is timestamped with `Crowd`'s own `now`, and this is called from
         // `about_to_wait` — where that clock is as old as the last frame. A step
         // recorded up to a frame in the past starts its crossing there, and
         // `crowd::crossing` then measures the time it has left from the same
         // stale instant. This is the offline half of the walk and it had the
         // defect the online half was already fixed for.
         let now = Instant::now();
-        self.world
-            .presentation
-            .crowd
-            .advance(now.saturating_duration_since(self.last_advance));
-        self.last_advance = now;
+        advance_presentation_to(&mut self.world.presentation, &mut self.last_advance, now);
         // Through the crowd like anyone else, so the placeholder walks when it
         // walks and stands when it stops. `None` is who it is: no shard has
         // named it, so it has no serial.
