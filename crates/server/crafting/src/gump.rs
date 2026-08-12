@@ -425,7 +425,7 @@ fn details(state: &WorldState, player: EntityId, def: &CraftSystemDef, recipe: &
     layout.html_localized_colored(50, 390, 150, 18, ClilocId(1_044_150), LABEL, false, false); // BACK
 
     label(&mut layout, 330, 40, 180, recipe.name, "");
-    layout.item(90, 110, u32::from(recipe.graphic.0), u32::from(recipe.hue.0));
+    layout.item(90, 110, recipe.graphic, recipe.hue);
 
     let mut other = 0;
     if recipe.use_all_res {

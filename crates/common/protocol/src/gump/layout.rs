@@ -463,6 +463,7 @@ fn switch(args: &[i64]) -> Option<Switch> {
 mod tests {
     use super::*;
     use crate::gump::{ButtonId, GumpLayout, SwitchId};
+    use crate::wire::{Graphic, Hue};
 
     /// The one test that matters, and the reason the parser lives beside the
     /// builder: what this engine *sends* is what it must be able to read. A
@@ -484,8 +485,8 @@ mod tests {
         layout.image_tiled(0, 0, 10, 10, 2624);
         layout.alpha_region(1, 2, 3, 4);
         layout.cropped_label(66, 56, 200, 20, 1153, "Populate");
-        layout.item(50, 50, 0x0EED, 0);
-        layout.item(50, 70, 0x0EED, 33);
+        layout.item(50, 50, Graphic(0x0EED), Hue::NONE);
+        layout.item(50, 70, Graphic(0x0EED), Hue(33));
         layout.text_entry(60, 60, 100, 20, 1153, 3, "name");
 
         let (string, _) = layout.finish();

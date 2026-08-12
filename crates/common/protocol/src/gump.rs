@@ -20,7 +20,7 @@ use crate::error::DecodeError;
 use crate::packet::{DecodePacket, EncodePacket, PacketLength};
 use crate::serial::Serial;
 use crate::version::ClientVersion;
-use crate::wire::ClilocId;
+use crate::wire::{ClilocId, Graphic, Hue};
 
 /// Which dialog: the id the server gives a gump and the client echoes back in
 /// its `0xB1`, so a reply can be routed to whoever drew the window.
@@ -616,13 +616,13 @@ impl GumpLayout {
     }
 
     /// An item, drawn from the art the world uses rather than the gump art.
-    pub fn item(&mut self, x: i32, y: i32, graphic: u32, hue: u32) {
-        if hue == 0 {
-            self.element("tilepic", &[i64::from(x), i64::from(y), i64::from(graphic)]);
+    pub fn item(&mut self, x: i32, y: i32, graphic: Graphic, hue: Hue) {
+        if hue == Hue::NONE {
+            self.element("tilepic", &[i64::from(x), i64::from(y), i64::from(graphic.0)]);
         } else {
             self.element(
                 "tilepichue",
-                &[i64::from(x), i64::from(y), i64::from(graphic), i64::from(hue)],
+                &[i64::from(x), i64::from(y), i64::from(graphic.0), i64::from(hue.0)],
             );
         }
     }

@@ -222,7 +222,7 @@ fn dialog(client: &Client, out: &Path) {
     layout.label(66, 86, 1153, "Wipe spawners");
     layout.check(30, 120, 210, 211, false, SwitchId(1));
     layout.label(66, 122, 1153, "Include dungeons");
-    layout.item(200, 150, 0x0E75, 0);
+    layout.item(200, 150, Graphic(0x0E75), Hue::NONE);
     layout.cropped_label(30, 200, 120, 20, 1153, "cropped to its own box");
     let (string, lines) = layout.finish();
     let lines: Vec<String> = lines.to_vec();
