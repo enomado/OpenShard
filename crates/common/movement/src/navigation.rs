@@ -11,9 +11,13 @@ use std::time::Instant;
 use openshard_protocol::direction::Direction;
 use openshard_protocol::world::Point;
 
-use crate::{Terrain, Tile, find_path, step_allowed};
+use crate::{Terrain, Tile, find_path, find_path_toward, step_allowed};
 
 const WIDE_PORTAL: usize = 6;
+/// A region stays well inside the normal 600-cell refinement budget, while the
+/// whole facet has only a few thousand regions. Obstacles inside one are live
+/// terrain, not graph boundaries, so a forest does not emit a node per tree.
+const REGION_SIZE: u32 = 32;
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct NavigationGraph {
@@ -163,45 +167,27 @@ impl NavigationGraph {
     }
 
     fn partition(&mut self, points: &[Option<Point>]) {
-        let mut previous = Vec::<(u16, u16, RegionId)>::new();
-        for y in 0..self.height as u16 {
-            let mut current = Vec::new();
-            let mut x = 0;
-            while x < self.width as u16 {
-                if points[self.index(x, y)].is_none() {
-                    x += 1;
-                    continue;
+        for top in (0..self.height).step_by(REGION_SIZE as usize) {
+            for left in (0..self.width).step_by(REGION_SIZE as usize) {
+                let id = RegionId(self.regions.len());
+                let width = REGION_SIZE.min(self.width - left) as u16;
+                let height = REGION_SIZE.min(self.height - top) as u16;
+                self.regions.push(Region {
+                    left: left as u16,
+                    top: top as u16,
+                    width,
+                    height,
+                });
+                self.region_nodes.push(Vec::new());
+                for y in top as u16..top as u16 + height {
+                    for x in left as u16..left as u16 + width {
+                        let index = self.index(x, y);
+                        if points[index].is_some() {
+                            self.at[index] = Some(id);
+                        }
+                    }
                 }
-                let left = x;
-                while x < self.width as u16 && points[self.index(x, y)].is_some() {
-                    x += 1;
-                }
-                let width = x - left;
-                let region = previous
-                    .iter()
-                    .find(|&&(old_left, old_width, _)| old_left == left && old_width == width)
-                    .map(|&(_, _, id)| {
-                        self.regions[id.0].height += 1;
-                        id
-                    })
-                    .unwrap_or_else(|| {
-                        let id = RegionId(self.regions.len());
-                        self.regions.push(Region {
-                            left,
-                            top: y,
-                            width,
-                            height: 1,
-                        });
-                        self.region_nodes.push(Vec::new());
-                        id
-                    });
-                for column in left..x {
-                    let index = self.index(column, y);
-                    self.at[index] = Some(region);
-                }
-                current.push((left, width, region));
             }
-            previous = current;
         }
     }
 
@@ -539,25 +525,15 @@ fn region_route(
     let mut route = Vec::new();
     let mut at = from;
     while distance(at, to) > u32::from(hop) {
-        let next = toward(at, to, hop);
-        let segment = find_path(&local, at, next, budget)?;
+        // Aim at the real destination and keep the closest result when the
+        // bounded search runs out. A synthetic point exactly `hop` tiles away
+        // can itself be a tree, which must not make a whole forest unroutable.
+        let segment = find_path_toward(&local, at, to, budget)?;
         at = append(terrain, at, &segment, &mut route)?;
     }
     let segment = find_path(&local, at, to, budget)?;
     append(terrain, at, &segment, &mut route)?;
     Some(route)
-}
-
-fn toward(from: Point, to: Point, limit: u16) -> Point {
-    let dx = i32::from(to.x) - i32::from(from.x);
-    let dy = i32::from(to.y) - i32::from(from.y);
-    let distance = dx.unsigned_abs().max(dy.unsigned_abs()).max(1);
-    let limit = u32::from(limit).min(distance);
-    Point::new(
-        (i32::from(from.x) + dx * limit as i32 / distance as i32) as u16,
-        (i32::from(from.y) + dy * limit as i32 / distance as i32) as u16,
-        from.z,
-    )
 }
 
 fn append(
@@ -616,11 +592,11 @@ mod tests {
     }
 
     #[test]
-    fn an_open_facet_is_one_region_not_a_grid_of_squares() {
+    fn an_open_facet_has_only_bounded_coarse_regions() {
         let terrain = Grid::open(704, 32);
         let graph = NavigationGraph::build(&terrain, 704, 32).unwrap();
-        assert_eq!(graph.regions.len(), 1);
-        assert!(graph.nodes.is_empty());
+        assert_eq!(graph.regions.len(), 22);
+        assert_eq!(graph.nodes.len(), 84);
         let from = Point::new(1, 1, 0);
         let to = Point::new(702, 30, 0);
         let route = find_long_path(&terrain, &terrain, &graph, from, to, 100).unwrap();
@@ -645,6 +621,27 @@ mod tests {
             at = step_allowed(&terrain, at, direction).unwrap();
             assert!(at.x != 48 || at.y == 40);
         }
+    }
+
+    #[test]
+    fn a_forest_does_not_put_portals_around_every_tree() {
+        let mut terrain = Grid::open(128, 128);
+        for y in (4..124).step_by(4) {
+            for x in (4..124).step_by(4) {
+                terrain.block(x, y);
+            }
+        }
+        let graph = NavigationGraph::build(&terrain, 128, 128).unwrap();
+        assert_eq!(graph.regions.len(), 16);
+        assert!(
+            graph.nodes.len() < 500,
+            "{} nodes for 900 trees",
+            graph.nodes.len()
+        );
+        let from = Point::new(1, 1, 0);
+        let to = Point::new(126, 126, 0);
+        let route = find_long_path(&terrain, &terrain, &graph, from, to, 600).unwrap();
+        assert_eq!(end(&terrain, from, &route), to);
     }
 
     proptest! {

@@ -133,7 +133,8 @@ impl AnimationDirection {
     }
 
     #[must_use]
-    pub const fn raw(self) -> u8 {
+    /// Its zero-based index among the five directions stored in `anim.mul`.
+    pub const fn index(self) -> u8 {
         self.0
     }
 }
@@ -155,7 +156,8 @@ impl AnimationFrameIndex {
     }
 
     #[must_use]
-    pub const fn raw(self) -> u16 {
+    /// Its zero-based position in this animation group's frame list.
+    pub const fn index(self) -> u16 {
         self.0
     }
 }
@@ -592,12 +594,12 @@ impl Anim {
     /// The index entry for one animation.
     fn entry(&self, key: AnimationKey) -> Option<IdxEntry> {
         let kind = BodyKind::of(key.body);
-        if key.group.index() >= kind.groups() || key.direction.raw() >= DIRECTIONS {
+        if key.group.index() >= kind.groups() || key.direction.index() >= DIRECTIONS {
             return None;
         }
         let block = kind.base(key.body.0)
             + usize::from(key.group.index()) * usize::from(DIRECTIONS)
-            + usize::from(key.direction.raw());
+            + usize::from(key.direction.index());
         self.entries.get(block).copied()
     }
 }
@@ -729,6 +731,11 @@ const fn sign_extend_10(value: u16) -> i16 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn frame_index_names_a_pictures_position_in_its_group() {
+        assert_eq!(AnimationFrameIndex::new(37).index(), 37);
+    }
 
     /// The three index shapes, at their boundaries. Each constant is one the
     /// file cannot confirm — a body read with the wrong one lands on another

@@ -14,7 +14,7 @@ use crate::navigation::{Edge, Node, NodeId, Region, RegionId};
 const MAGIC: &[u8; 8] = b"OSNAV\0\r\n";
 const FORMAT_VERSION: u32 = 1;
 /// Increment whenever graph construction or static movement semantics change.
-pub const ROUTING_VERSION: u32 = 1;
+pub const ROUTING_VERSION: u32 = 3;
 const MAX_COLLECTION: usize = 100_000_000;
 
 /// Metadata for one input selected by the client-file loader.
@@ -646,5 +646,12 @@ mod tests {
         fs::write(&path, &data).unwrap();
         assert!(matches!(load(&path, &s), Err(Error::Corrupt { .. })));
         let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn an_absent_artifact_is_reported_as_absent() {
+        let path = temp("absent.bin");
+        let _ = fs::remove_file(&path);
+        assert!(matches!(load(&path, &stamp()), Err(Error::Missing { .. })));
     }
 }
