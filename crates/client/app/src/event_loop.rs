@@ -40,7 +40,7 @@ impl ApplicationHandler<link::Update> for App {
             .advance(now.saturating_duration_since(self.last_advance));
         self.last_advance = now;
         match update {
-            link::Update::World { view, body } => self.entered(&view, body),
+            link::Update::World { view, body } => self.entered(*view, body, None),
             link::Update::Mutation { packet, body } => self.apply_mutation(&packet, body),
             link::Update::Prediction(body) => self.apply_prediction(body),
             link::Update::CloseWindow(target) => self.apply_close_window(target),

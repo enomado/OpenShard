@@ -7,7 +7,7 @@
 //! keeps this file apart from `ui_command.rs`: everything here answers to a
 //! packet, and everything there answers to a key or a click.
 
-use openshard_client_net::view::WorldView;
+use openshard_client_net::view::{Heard, WorldView};
 use openshard_client_render::control::Follow;
 use openshard_client_render::items::GroundItem;
 use openshard_client_render::mobiles;
@@ -35,13 +35,13 @@ impl App {
     /// Apply one network mutation on the event-loop thread. This is the only
     /// place after connection setup that mutates the client-owned view.
     pub(crate) fn apply_mutation(&mut self, packet: &ServerPacket, body: link::Body) {
-        let Some(view) = self.world.view.as_mut() else {
+        let Some(mut view) = self.world.view.take() else {
             return;
         };
+        let previous_latest = view.journal.back().cloned();
         view.apply(packet);
         view.player_stepped(body.predicted.position, body.predicted.facing);
-        let snapshot = view.clone();
-        self.entered(&snapshot, body);
+        self.entered(*view, body, previous_latest);
     }
 
     /// Apply prediction without changing authoritative server state.
@@ -61,7 +61,7 @@ impl App {
     /// A projection of the whole [`WorldView`], rebuilt each time rather than
     /// patched: the view is the record of what arrived, and anything kept in
     /// step with it by hand would be a second record that could disagree.
-    pub(crate) fn entered(&mut self, view: &WorldView, body: link::Body) {
+    pub(crate) fn entered(&mut self, view: WorldView, body: link::Body, previous_latest: Option<Heard>) {
         // The facet is chosen at startup and `0x1B` names only its size, so a
         // shard serving a different one draws this client the wrong ground with
         // no complaint from either end. Said once, because it is a
@@ -212,11 +212,7 @@ impl App {
         // (`serial: None`) has no mobile to hang over and is left for the
         // HUD's world window instead, which is not built yet.
         if let Some(latest) = view.journal.back() {
-            let already_heard = self
-                .world
-                .view
-                .as_ref()
-                .is_some_and(|previous| previous.journal.back() == Some(latest));
+            let already_heard = previous_latest.as_ref() == Some(latest);
             if !already_heard {
                 if let Some(serial) = latest.serial {
                     self.world
@@ -227,7 +223,7 @@ impl App {
         }
         // Whole, for the HUD's world window: the three projections above are
         // what the renderer wants, and none of them keeps a serial.
-        self.world.view = Some(Box::new(view.clone()));
+        self.world.view = Some(Box::new(view));
         // The camera follows the body, which is what `0x20` is for — unless it
         // has been unlocked, in which case the eye is the mouse's and the body
         // is free to walk off the screen. `Home` puts it back. After the view is
