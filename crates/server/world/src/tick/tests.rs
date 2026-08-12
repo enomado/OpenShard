@@ -393,6 +393,7 @@ fn a_server_step_turns_first_then_moves() {
     let connection = enter(&mut world, now);
     let entity = world.state.players[&connection];
     let serial = serial_of(&world, connection);
+    let _ = packets_for(&mut world, connection);
 
     let facing0 = world.state.registry.get::<Heading>(entity).unwrap().0.direction;
     let dir = if facing0 == Direction::North {
@@ -430,6 +431,12 @@ fn a_server_step_turns_first_then_moves() {
     assert_eq!(
         world.state.registry.get::<Position>(entity).unwrap().0,
         step_from(from, dir).unwrap(),
+    );
+    assert!(
+        packets_for(&mut world, connection)
+            .iter()
+            .any(|packet| packet.first() == Some(&0x20)),
+        "a server-decreed player step synchronizes the owning client"
     );
 }
 

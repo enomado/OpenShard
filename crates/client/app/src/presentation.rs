@@ -584,7 +584,7 @@ impl App {
             return;
         };
         let atlases_started = Instant::now();
-        let repacked = ready_atlases(
+        let (repacked, atlas_work) = ready_atlases(
             &mut self.resources,
             &mut self.graphics,
             &mut self.world,
@@ -1219,6 +1219,7 @@ impl App {
                     items: assembly_costs.items,
                     encode: encode_cost,
                 },
+                atlas_work,
                 gpu_passes,
             );
         }

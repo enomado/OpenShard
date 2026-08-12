@@ -243,9 +243,13 @@ impl World {
         self.state.disrupt(entity);
         self.state.step_while_hidden(entity, false, false);
         self.state.registry.insert(entity, Movement(walker));
-        self.state.registry.insert(entity, Position(landed));
         self.state.registry.insert(entity, Heading(facing));
-        self.state.facet_state_mut(facet).sectors.insert(entity, landed);
+        // A script may control a player as well as an NPC. `move_to` sends that
+        // player's own client the 0x20 position update a client-side prediction
+        // would otherwise supply, then refreshes both sides' interest sets. A
+        // bare position write leaves the player camera at the old tile while
+        // the server has already moved its world around them.
+        self.state.move_to(entity, facet, landed);
         self.state.bus.send(MobileMoved {
             entity,
             serial,
@@ -253,6 +257,5 @@ impl World {
             to: landed,
             facing,
         });
-        self.state.refresh_around(entity);
     }
 }

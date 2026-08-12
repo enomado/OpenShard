@@ -8,6 +8,7 @@
 
 use crate::frames::{Frame, JANK_BUDGET};
 use crate::profile::Pass;
+use crate::window::AtlasWork;
 use std::fs::{File, OpenOptions};
 use std::io::{self, Write};
 use std::path::Path;
@@ -60,7 +61,7 @@ pub fn start_log(path: &Path) -> io::Result<()> {
 /// budget. GPU timestamps belong to an earlier submitted frame; they remain in
 /// the record because a standing GPU cost, rather than exact per-frame pairing,
 /// is what identifies a saturated device.
-pub fn record(frame: Frame, cpu: CpuPasses, gpu_passes: &[Pass]) {
+pub fn record(frame: Frame, cpu: CpuPasses, atlas: AtlasWork, gpu_passes: &[Pass]) {
     if !frame.janks() {
         return;
     }
@@ -83,12 +84,15 @@ pub fn record(frame: Frame, cpu: CpuPasses, gpu_passes: &[Pass]) {
         ("items", ms(cpu.items)),
         ("encode", ms(cpu.encode)),
     ];
+    let atlas_overflowed = atlas.overflow.map(|overflow| overflow.atlas);
+    let atlas_packed_graphics = atlas.overflow.map(|overflow| overflow.packed_graphics);
+    let atlas_newly_requested_graphics = atlas.overflow.map(|overflow| overflow.newly_requested_graphics);
     if let Some(log) = LOG.get() {
         if let Ok(mut log) = log.lock() {
             let _ = writeln!(
                 log,
                 "jank frame budget_ms={:.3} interval_ms={:.3} build_ms={:.3} ui_ms={:.3} \
-                 scene_ms={:.3} wait_ms={:.3} gpu_ms={gpu_ms:?} repacked={} cpu_passes={cpu_passes:?} gpu_passes={passes:?}",
+                 scene_ms={:.3} wait_ms={:.3} gpu_ms={gpu_ms:?} repacked={} atlas_uploaded_bytes={} atlas_overflowed={atlas_overflowed:?} atlas_packed_graphics={atlas_packed_graphics:?} atlas_newly_requested_graphics={atlas_newly_requested_graphics:?} cpu_passes={cpu_passes:?} gpu_passes={passes:?}",
                 ms(JANK_BUDGET),
                 ms(frame.interval),
                 ms(frame.build()),
@@ -96,6 +100,7 @@ pub fn record(frame: Frame, cpu: CpuPasses, gpu_passes: &[Pass]) {
                 ms(frame.scene),
                 ms(frame.wait),
                 frame.repacked,
+                atlas.uploaded_bytes,
             );
             let _ = log.flush();
         }
@@ -110,6 +115,10 @@ pub fn record(frame: Frame, cpu: CpuPasses, gpu_passes: &[Pass]) {
         wait_ms = ms(frame.wait),
         gpu_ms = ?gpu_ms,
         repacked = frame.repacked,
+        atlas_uploaded_bytes = atlas.uploaded_bytes,
+        atlas_overflowed = ?atlas_overflowed,
+        atlas_packed_graphics = ?atlas_packed_graphics,
+        atlas_newly_requested_graphics = ?atlas_newly_requested_graphics,
         cpu_passes = ?cpu_passes,
         gpu_passes = ?passes,
         "jank frame"

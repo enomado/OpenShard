@@ -9,6 +9,12 @@
 //! playground's script only for that process; it does not alter a configured
 //! world's database.
 //!
+//! To reproduce static-atlas exhaustion, add `--atlas-scroll`. It has the
+//! in-process shard drive the logged-in player around an expanding square, so
+//! the normal player-follow camera crosses fresh map tiles without hand input.
+//! Leave it running until the jank log reports
+//! `atlas_overflowed=Some("statics")`.
+//!
 //! Every option is also an environment variable, so the install can be named
 //! once — exported, or written into a `.env` beside the workspace root, which
 //! this binary reads before it parses anything. `--help` lists both spellings.
@@ -122,6 +128,17 @@ struct Cli {
     #[arg(long, env = "OPENSHARD_MAILBOX_LOAD")]
     mailbox_load: bool,
 
+    /// Drive the logged-in player through a reproducible map scroll that fills
+    /// the static atlas.
+    ///
+    /// This diagnostic replaces the configured gameplay script for this
+    /// process, as `--mailbox-load` does. The path follows the player through
+    /// the ordinary server movement and client camera code; stop it by closing
+    /// the playground window after the jank log records a static-atlas
+    /// overflow.
+    #[arg(long, env = "OPENSHARD_ATLAS_SCROLL", conflicts_with = "mailbox_load")]
+    atlas_scroll: bool,
+
     /// Draw overhead speech through this TrueType or OpenType face instead of
     /// `fonts.mul`. See `openshard_client_app`'s own flag of the same name.
     #[arg(long, env = "OPENSHARD_TTF_FONT", value_name = "FILE")]
@@ -175,6 +192,7 @@ fn main() -> ExitCode {
     // the install and an operator's config may name none.
     let files = dir.to_string_lossy().into_owned();
     let mailbox_load = cli.mailbox_load;
+    let atlas_scroll = cli.atlas_scroll;
     let (dial, shard) = openshard_e2e_shard::in_process::spawn(move |stated| {
         let mut config = operator.unwrap_or_else(|| openshard_e2e_shard::stock_config(stated));
         // Both addresses, whichever config this is: nothing binds a port here,
@@ -185,7 +203,9 @@ fn main() -> ExitCode {
         config.server.listen = stated;
         config.server.advertise = stated;
         config.world.client_files = files;
-        if mailbox_load {
+        if atlas_scroll {
+            config.scripting.main = concat!(env!("CARGO_MANIFEST_DIR"), "/atlas_scroll.js").to_owned();
+        } else if mailbox_load {
             config.scripting.main = concat!(env!("CARGO_MANIFEST_DIR"), "/mailbox_load.js").to_owned();
         }
         config
@@ -277,6 +297,47 @@ mod tests {
         engine.tick(walker).expect("the controlled NPC ticks");
         assert!(
             matches!(engine.take_commands().as_slice(), [Command::Move { serial, direction: 2 }] if *serial == walker)
+        );
+    }
+
+    #[test]
+    fn the_atlas_scroll_script_controls_the_player_and_turns_after_a_blocked_step() {
+        let mut engine = DenoEngine::new();
+        engine
+            .load(include_str!("../atlas_scroll.js"))
+            .expect("the shipped atlas-scroll script loads");
+        let player = Serial::new(0x0000_002A).expect("the fixture uses a valid mobile serial");
+        engine
+            .deliver(&Event::PlayerEntered {
+                serial: player,
+                x: 1363,
+                y: 1600,
+                z: 0,
+            })
+            .expect("the player-entry hook runs");
+        assert!(
+            matches!(engine.take_commands().as_slice(), [Command::Control { serial }] if *serial == player),
+            "the scenario takes control of the logged-in player"
+        );
+
+        engine
+            .tick(player)
+            .expect("the first scripted movement tick runs");
+        assert!(
+            matches!(engine.take_commands().as_slice(), [Command::Move { serial, direction: 2 }] if *serial == player),
+            "the route begins east"
+        );
+
+        engine
+            .deliver(&Event::StepRefused {
+                serial: player,
+                reason: 0,
+            })
+            .expect("the blocked-step hook runs");
+        engine.tick(player).expect("the redirected movement tick runs");
+        assert!(
+            matches!(engine.take_commands().as_slice(), [Command::Move { serial, direction: 4 }] if *serial == player),
+            "a blocked leg turns south instead of repeatedly walking into the same tile"
         );
     }
 }

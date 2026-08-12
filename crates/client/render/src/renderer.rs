@@ -501,13 +501,22 @@ impl GroundRenderer {
     /// Nothing to upload is the ordinary frame — a camera standing still
     /// introduces no graphics — and a growth is a band of rows rather than the
     /// 16MB texture.
-    pub fn upload_changes(&self, queue: &wgpu::Queue, land: &mut LandAtlas, texmaps: &mut TexmapAtlas) {
+    pub fn upload_changes(
+        &self,
+        queue: &wgpu::Queue,
+        land: &mut LandAtlas,
+        texmaps: &mut TexmapAtlas,
+    ) -> u64 {
+        let mut uploaded = 0;
         if let Some(rows) = land.take_dirty() {
+            uploaded += u64::from(rows.end - rows.start) * u64::from(LandAtlas::side()) * 4;
             write_rows(queue, &self.land_texture, land.pixels(), rows);
         }
         if let Some(rows) = texmaps.take_dirty() {
+            uploaded += u64::from(rows.end - rows.start) * u64::from(TexmapAtlas::side()) * 4;
             write_rows(queue, &self.texmap_texture, texmaps.pixels(), rows);
         }
+        uploaded
     }
 
     /// This pass's own instance buffer, as `blit.wgsl`/`select.wgsl` need it:

@@ -57,6 +57,18 @@ pub enum AtlasError {
         /// How many would have fitted, at best.
         capacity: usize,
     },
+    /// More immutable static-atlas pages were needed than the client permits.
+    ///
+    /// This is deliberately distinct from [`Full`](Self::Full): a page filling
+    /// is normal for [`StaticAtlasPages`], while reaching this limit is the
+    /// memory policy that keeps an unbounded walk from retaining every static
+    /// picture it has ever passed.
+    PageLimit {
+        /// Pages needed to hold the requested pictures.
+        wanted: usize,
+        /// Pages this atlas family is allowed to retain.
+        limit: usize,
+    },
     /// A sprite is bigger than the whole atlas, so no packing could hold it.
     ///
     /// Separate from [`Full`](Self::Full) because it is not a capacity problem:
@@ -99,6 +111,9 @@ impl fmt::Display for AtlasError {
             Self::Full { wanted, capacity } => {
                 write!(f, "{wanted} pictures do not fit in an atlas of {capacity}")
             }
+            Self::PageLimit { wanted, limit } => {
+                write!(f, "{wanted} static atlas pages exceed the limit of {limit}")
+            }
             Self::Oversized {
                 graphic,
                 width,
@@ -121,7 +136,10 @@ impl fmt::Display for AtlasError {
 impl std::error::Error for AtlasError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            Self::Full { .. } | Self::Oversized { .. } | Self::OversizedGlyph { .. } => None,
+            Self::Full { .. }
+            | Self::PageLimit { .. }
+            | Self::Oversized { .. }
+            | Self::OversizedGlyph { .. } => None,
             Self::Art(source) => Some(source),
             Self::Anim(source) => Some(source),
             Self::TexMaps(source) => Some(source),
@@ -240,6 +258,14 @@ impl LandAtlas {
         // [`LandAtlas::take_dirty`].
         atlas.dirty.take();
         Ok(atlas)
+    }
+
+    /// How many graphics in `wanted` this atlas has not been asked for before.
+    pub fn newly_requested(&self, wanted: impl IntoIterator<Item = Graphic>) -> usize {
+        wanted
+            .into_iter()
+            .filter(|graphic| !self.asked.contains(graphic))
+            .count()
     }
 
     /// An atlas holding nothing, ready to be grown into.
@@ -496,6 +522,14 @@ impl TexmapAtlas {
         Ok(atlas)
     }
 
+    /// How many land-graphic requests have not reached this atlas before.
+    pub fn newly_requested(&self, wanted: impl IntoIterator<Item = Graphic>) -> usize {
+        wanted
+            .into_iter()
+            .filter(|graphic| !self.asked.contains(graphic))
+            .count()
+    }
+
     /// An atlas holding nothing, ready to be grown into.
     fn empty() -> Self {
         let side = ATLAS_SIDE as usize;
@@ -725,6 +759,32 @@ pub struct Sprite {
     /// different graphic every few frames.
     pub facing: Option<crate::facing::Facing>,
 }
+
+/// A stable index of one immutable static-atlas page.
+///
+/// It is intentionally not an index into a GPU texture array. Work 4 can use
+/// an array where the adapter permits it or issue bounded page batches where it
+/// does not; the CPU-side page identity is the same in both cases.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+pub struct StaticAtlasPage(pub u8);
+
+/// The page and ordinary sprite data a paged static lookup returns.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct PagedSprite {
+    /// Texture page to bind before sampling `sprite.region`.
+    pub page: StaticAtlasPage,
+    /// The page-local sprite placement and geometry facts.
+    pub sprite: Sprite,
+}
+
+/// Maximum retained static pages in the first paged path.
+///
+/// Each page is a 2048×2048 RGBA8 texture (16 MiB), so eight pages retain at
+/// most 128 MiB of texture pixels. The bound is chosen before renderer support
+/// exists: it makes the future page-batch path finite on WebGL2 as well as on
+/// native WebGPU, and turns a pathological map into a named limit rather than
+/// an unbounded GPU-memory leak.
+pub const MAX_STATIC_ATLAS_PAGES: usize = 8;
 
 /// Static art, packed into one texture.
 ///
@@ -1043,6 +1103,31 @@ impl StaticAtlas {
         Ok(())
     }
 
+    /// How many images at the front of a growth this page can accept without
+    /// changing it.
+    ///
+    /// [`StaticAtlasPages`] uses this before it touches an active page. A failed
+    /// `insert` would otherwise leave a partially changed page and make the
+    /// remaining images ambiguous; a preflight keeps a sealed page byte-for-byte
+    /// stable while its successors are allocated.
+    fn fitting_prefix(&self, images: &[(Graphic, Image)]) -> Result<usize, AtlasError> {
+        let mut shelf = self.shelf.clone();
+        for (index, (graphic, image)) in images.iter().enumerate() {
+            let (width, height) = (image.width(), image.height());
+            if u32::from(width) > ATLAS_SIDE || u32::from(height) > ATLAS_SIDE {
+                return Err(AtlasError::Oversized {
+                    graphic: *graphic,
+                    width,
+                    height,
+                });
+            }
+            if shelf.take(u32::from(width), u32::from(height)).is_none() {
+                return Ok(index);
+            }
+        }
+        Ok(images.len())
+    }
+
     /// The atlas texture's side in pixels. Square, and the same as the others'.
     pub const fn side() -> u32 {
         ATLAS_SIDE
@@ -1056,6 +1141,19 @@ impl StaticAtlas {
     /// How many graphics landed in it.
     pub fn len(&self) -> usize {
         self.sprites.len()
+    }
+
+    /// How many of `wanted` have not been offered to this atlas before.
+    ///
+    /// This is deliberately about requests rather than packed sprites: an
+    /// absent art file is still remembered in `asked`, otherwise it would be
+    /// read again on every frame. Overflow diagnostics need the same boundary
+    /// to say how much genuinely new work caused the fill.
+    pub fn newly_requested(&self, wanted: impl IntoIterator<Item = Graphic>) -> usize {
+        wanted
+            .into_iter()
+            .filter(|graphic| !self.asked.contains(graphic))
+            .count()
     }
 
     /// Largest packed sprite dimensions, in the image's pixels.
@@ -1218,6 +1316,304 @@ struct Packed {
     origin: (u32, u32),
 }
 
+/// A dirty row band belonging to one [`StaticAtlasPages`] texture page.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct DirtyStaticAtlasPage {
+    /// Texture page whose rows changed.
+    pub page: StaticAtlasPage,
+    /// Pixel rows in that page, half-open.
+    pub rows: std::ops::Range<u32>,
+}
+
+/// Static art spread over a bounded sequence of immutable texture pages.
+///
+/// Each page uses the established 2048px shelf format. While a page can still
+/// accept a growth it behaves like [`StaticAtlas`]; as soon as the next ordered
+/// image does not fit, that page is sealed forever and the remainder goes into
+/// a fresh page. No visible graphic is evicted or decoded a second time merely
+/// because an older page filled.
+///
+/// This is deliberately a CPU atlas and lookup API only. The existing renderer
+/// still consumes [`StaticAtlas`] for its one texture. Work 4 will consume the
+/// `StaticAtlasPage` on [`PagedSprite`] to choose a texture-array layer or a
+/// bounded page batch without changing this allocation policy.
+pub struct StaticAtlasPages {
+    pages: Vec<StaticAtlas>,
+    page_of: BTreeMap<Graphic, StaticAtlasPage>,
+    /// Requests belong to the family rather than to one page: absent art must
+    /// not be re-read after a later page is allocated.
+    asked: BTreeSet<Graphic>,
+    table: Option<crate::arttable::ArtTable>,
+    page_limit: usize,
+    revision: u64,
+}
+
+impl fmt::Debug for StaticAtlasPages {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("StaticAtlasPages")
+            .field("pages", &self.pages.len())
+            .field("graphics", &self.page_of.len())
+            .field("page_limit", &self.page_limit)
+            .finish()
+    }
+}
+
+impl StaticAtlasPages {
+    /// Pack pictures into the default bounded family of pages.
+    pub fn pack(images: impl IntoIterator<Item = (Graphic, Image)>) -> Result<Self, AtlasError> {
+        Self::pack_with_limit(images, MAX_STATIC_ATLAS_PAGES)
+    }
+
+    /// Same as [`pack`](Self::pack), with a smaller bound available to tests
+    /// and to a memory-constrained embedding.
+    pub fn pack_with_limit(
+        images: impl IntoIterator<Item = (Graphic, Image)>,
+        page_limit: usize,
+    ) -> Result<Self, AtlasError> {
+        Self::pack_from_with_limit(images, None, page_limit)
+    }
+
+    /// Pack decoded pictures while reusing a precomputed art-surface table.
+    pub fn pack_from(
+        images: impl IntoIterator<Item = (Graphic, Image)>,
+        table: Option<crate::arttable::ArtTable>,
+    ) -> Result<Self, AtlasError> {
+        Self::pack_from_with_limit(images, table, MAX_STATIC_ATLAS_PAGES)
+    }
+
+    /// Page-limited version of [`pack_from`](Self::pack_from).
+    pub fn pack_from_with_limit(
+        images: impl IntoIterator<Item = (Graphic, Image)>,
+        table: Option<crate::arttable::ArtTable>,
+        page_limit: usize,
+    ) -> Result<Self, AtlasError> {
+        let mut atlas = Self::empty_with_limit(table, page_limit)?;
+        atlas.pack_more(images)?;
+        // A caller that constructs pages hands each initial texture to its
+        // renderer whole, exactly as [`StaticAtlas::pack`] does.
+        atlas.take_dirty();
+        Ok(atlas)
+    }
+
+    /// Read and pack every available static image in `wanted`.
+    pub fn build(art: &Art, wanted: impl IntoIterator<Item = Graphic>) -> Result<Self, AtlasError> {
+        Self::build_from(art, wanted, None)
+    }
+
+    /// [`build`](Self::build) with a precomputed art-surface table.
+    pub fn build_from(
+        art: &Art,
+        wanted: impl IntoIterator<Item = Graphic>,
+        table: Option<crate::arttable::ArtTable>,
+    ) -> Result<Self, AtlasError> {
+        let mut atlas = Self::empty_with_limit(table, MAX_STATIC_ATLAS_PAGES)?;
+        atlas.add(art, wanted)?;
+        atlas.take_dirty();
+        Ok(atlas)
+    }
+
+    fn empty_with_limit(
+        table: Option<crate::arttable::ArtTable>,
+        page_limit: usize,
+    ) -> Result<Self, AtlasError> {
+        // `StaticAtlasPage` is intentionally compact enough to travel with an
+        // instance, so do not accept a limit it cannot name.
+        if page_limit == 0 || page_limit > usize::from(u8::MAX) + 1 {
+            return Err(AtlasError::PageLimit {
+                wanted: 1,
+                limit: page_limit,
+            });
+        }
+        let mut first = StaticAtlas::empty();
+        first.table = table.clone();
+        Ok(Self {
+            pages: vec![first],
+            page_of: BTreeMap::new(),
+            asked: BTreeSet::new(),
+            table,
+            page_limit,
+            revision: 0,
+        })
+    }
+
+    /// Add static-file images the family has not already been asked for.
+    pub fn add(&mut self, art: &Art, wanted: impl IntoIterator<Item = Graphic>) -> Result<(), AtlasError> {
+        let fresh: Vec<Graphic> = wanted
+            .into_iter()
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .filter(|graphic| !self.asked.contains(graphic))
+            .collect();
+        if fresh.is_empty() {
+            return Ok(());
+        }
+        let mut images = Vec::with_capacity(fresh.len());
+        for graphic in &fresh {
+            if let Some(image) = art.static_art(*graphic)? {
+                images.push((*graphic, image));
+            }
+        }
+        self.insert_fresh(images)?;
+        self.asked.extend(fresh);
+        Ok(())
+    }
+
+    /// Add already-decoded pictures, without rebuilding or moving prior pages.
+    pub fn pack_more(
+        &mut self,
+        images: impl IntoIterator<Item = (Graphic, Image)>,
+    ) -> Result<(), AtlasError> {
+        let images: BTreeMap<Graphic, Image> = images.into_iter().collect();
+        self.asked.extend(images.keys().copied());
+        self.insert_fresh(images.into_iter().collect())
+    }
+
+    fn insert_fresh(&mut self, images: Vec<(Graphic, Image)>) -> Result<(), AtlasError> {
+        // Same total order as `StaticAtlas::insert`: reproducing it means a
+        // preflight and the subsequent page insertion cannot disagree.
+        let mut pending: Vec<(Graphic, Image)> = images
+            .into_iter()
+            .filter(|(graphic, _)| !self.page_of.contains_key(graphic))
+            .collect();
+        pending.sort_by_key(|(_, image)| std::cmp::Reverse(image.height()));
+
+        while !pending.is_empty() {
+            let fit = self
+                .pages
+                .last()
+                .expect("a paged atlas always has a first page")
+                .fitting_prefix(&pending)?;
+            if fit == 0 {
+                if self.pages.len() == self.page_limit {
+                    return Err(AtlasError::PageLimit {
+                        wanted: self.pages.len() + 1,
+                        limit: self.page_limit,
+                    });
+                }
+                let mut page = StaticAtlas::empty();
+                page.table = self.table.clone();
+                self.pages.push(page);
+                continue;
+            }
+
+            let packed: Vec<(Graphic, Image)> = pending.drain(..fit).collect();
+            let page_index = self.pages.len() - 1;
+            self.pages[page_index].pack_more(packed.iter().cloned())?;
+            let page = StaticAtlasPage(page_index as u8);
+            for (graphic, _) in packed {
+                self.page_of.insert(graphic, page);
+                self.revision += 1;
+            }
+        }
+        Ok(())
+    }
+
+    /// How many texture pages are currently retained, including an empty first
+    /// page before any static art is discovered.
+    pub fn page_count(&self) -> usize {
+        self.pages.len()
+    }
+
+    /// The configured hard page limit.
+    pub fn page_limit(&self) -> usize {
+        self.page_limit
+    }
+
+    /// Total packed graphics across all pages.
+    pub fn len(&self) -> usize {
+        self.page_of.len()
+    }
+
+    /// Whether no graphic has been packed.
+    pub fn is_empty(&self) -> bool {
+        self.page_of.is_empty()
+    }
+
+    /// The per-page atlas a renderer will turn into one texture and bind group.
+    pub fn page(&self, page: StaticAtlasPage) -> Option<&StaticAtlas> {
+        self.pages.get(usize::from(page.0))
+    }
+
+    /// The page and sprite data for a graphic, or `None` when it has no art.
+    pub fn sprite(&self, graphic: Graphic) -> Option<PagedSprite> {
+        let page = *self.page_of.get(&graphic)?;
+        Some(PagedSprite {
+            page,
+            sprite: self.page(page)?.sprite(graphic)?,
+        })
+    }
+
+    /// Dirty bands from every page that changed since the prior call.
+    pub fn take_dirty(&mut self) -> Vec<DirtyStaticAtlasPage> {
+        self.pages
+            .iter_mut()
+            .enumerate()
+            .filter_map(|(index, atlas)| {
+                atlas.take_dirty().map(|rows| DirtyStaticAtlasPage {
+                    page: StaticAtlasPage(index as u8),
+                    rows,
+                })
+            })
+            .collect()
+    }
+
+    /// How many graphics in `wanted` have never been offered to this family.
+    pub fn newly_requested(&self, wanted: impl IntoIterator<Item = Graphic>) -> usize {
+        wanted
+            .into_iter()
+            .filter(|graphic| !self.asked.contains(graphic))
+            .count()
+    }
+
+    /// The largest sprite across all pages, for the same conservative picking
+    /// margin an ordinary [`StaticAtlas`] exposes.
+    pub fn max_sprite_size(&self) -> (u16, u16) {
+        self.pages.iter().fold((0, 0), |max, page| {
+            let size = page.max_sprite_size();
+            (max.0.max(size.0), max.1.max(size.1))
+        })
+    }
+
+    /// A monotonic family revision for consumers whose cached geometry depends
+    /// on static shape facts. Pages never move a packed graphic, so this only
+    /// changes when a newly packed graphic makes an answer available.
+    pub fn revision(&self) -> u64 {
+        self.revision
+    }
+
+    /// The CPU picking question, delegated to the page holding the graphic.
+    pub fn opaque_at(&self, graphic: Graphic, x: u16, y: u16) -> bool {
+        self.page_of
+            .get(&graphic)
+            .and_then(|page| self.page(*page))
+            .is_some_and(|page| page.opaque_at(graphic, x, y))
+    }
+
+    /// The measured hole, if the graphic's page supplied one.
+    pub fn hole(&self, graphic: Graphic) -> Option<crate::facing::Hole> {
+        self.page_of
+            .get(&graphic)
+            .and_then(|page| self.page(*page))
+            .and_then(|page| page.hole(graphic))
+    }
+
+    /// The measured prism, if the graphic's page supplied one.
+    pub fn prism(&self, graphic: Graphic) -> Option<crate::facing::Prism> {
+        self.page_of
+            .get(&graphic)
+            .and_then(|page| self.page(*page))
+            .and_then(|page| page.prism(graphic))
+    }
+
+    /// The measured horizontal footprint, if the graphic's page supplied one.
+    pub fn footprint(&self, graphic: Graphic) -> Option<crate::facing::Footprint> {
+        self.page_of
+            .get(&graphic)
+            .and_then(|page| self.page(*page))
+            .and_then(|page| page.footprint(graphic))
+    }
+}
+
 /// The client-file key for a whole animation, re-exported where the atlas uses
 /// it. The reader and renderer must agree on this triple; keeping one shared
 /// type avoids each side accepting the same three unlabelled integers.
@@ -1325,6 +1721,14 @@ impl AnimAtlas {
         atlas.add(anim, wanted)?;
         atlas.dirty.take();
         Ok(atlas)
+    }
+
+    /// How many animation groups in `wanted` have not been requested before.
+    pub fn newly_requested(&self, wanted: impl IntoIterator<Item = AnimationKey>) -> usize {
+        wanted
+            .into_iter()
+            .filter(|animation| !self.asked.contains(animation))
+            .count()
     }
 
     /// An atlas holding nothing, ready to be grown into.
@@ -1937,7 +2341,7 @@ fn region_at(origin_x: u32, origin_y: u32, width: u16, height: u16) -> Region {
 /// difference *within* a row, and sorted input keeps that small. A better
 /// packer would buy a few percent of one texture and cost a data structure
 /// nobody can check by hand.
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct Shelf {
     /// Where the current row starts, from the top of the atlas.
     top: u32,
@@ -2757,6 +3161,87 @@ mod growth_tests {
         assert!(
             atlas.asked.contains(&Graphic(99)),
             "a graphic with no art has to stay asked, or the question never ends",
+        );
+    }
+
+    /// Pages split only when an ordered picture cannot fit the active shelf;
+    /// after that split, the earlier page is sealed and a later growth can only
+    /// touch the newer one. This is the no-eviction invariant Work 4 will draw.
+    #[test]
+    fn a_sealed_static_page_never_changes_when_a_later_page_grows() {
+        // One of these occupies a 2048px-wide, 1025px-tall shelf, leaving no
+        // vertical room for a second. The test gets a page boundary without
+        // relying on a count-based capacity that shelf packing does not have.
+        let tall = |color| sprite(ATLAS_SIDE as u16, 1025, color);
+        let mut atlas = StaticAtlasPages::pack_with_limit([(Graphic(1), tall(1)), (Graphic(2), tall(2))], 2)
+            .expect("two pages fit under the test limit");
+        assert_eq!(atlas.page_count(), 2);
+        assert_eq!(
+            atlas.sprite(Graphic(1)).expect("first picture").page,
+            StaticAtlasPage(0)
+        );
+        assert_eq!(
+            atlas.sprite(Graphic(2)).expect("second picture").page,
+            StaticAtlasPage(1)
+        );
+        let first_page = atlas
+            .page(StaticAtlasPage(0))
+            .expect("first page")
+            .pixels()
+            .to_vec();
+
+        atlas
+            .pack_more([(Graphic(3), sprite(10, 10, 3))])
+            .expect("the active second page still has room");
+
+        assert_eq!(
+            atlas
+                .page(StaticAtlasPage(0))
+                .expect("sealed first page")
+                .pixels(),
+            first_page,
+            "growing page one rewrote the sealed page zero"
+        );
+        assert_eq!(
+            atlas.sprite(Graphic(3)).expect("late picture").page,
+            StaticAtlasPage(1)
+        );
+        assert_eq!(
+            atlas.take_dirty(),
+            vec![DirtyStaticAtlasPage {
+                page: StaticAtlasPage(1),
+                rows: 1025..1035,
+            }],
+            "only the new page's changed rows are uploaded"
+        );
+    }
+
+    /// The policy is bounded rather than an accidental cache of every graphic
+    /// ever walked past. Reaching it preserves the completed pages untouched.
+    #[test]
+    fn a_static_page_limit_keeps_existing_pages_and_names_the_limit() {
+        let tall = |color| sprite(ATLAS_SIDE as u16, 1025, color);
+        let mut atlas = StaticAtlasPages::pack_with_limit([(Graphic(1), tall(1)), (Graphic(2), tall(2))], 2)
+            .expect("two pages fit under the test limit");
+        let first_page = atlas
+            .page(StaticAtlasPage(0))
+            .expect("first page")
+            .pixels()
+            .to_vec();
+
+        assert!(matches!(
+            atlas.pack_more([(Graphic(3), tall(3))]),
+            Err(AtlasError::PageLimit { wanted: 3, limit: 2 })
+        ));
+        assert_eq!(atlas.page_count(), 2);
+        assert!(
+            atlas.sprite(Graphic(3)).is_none(),
+            "a limited page did not partly pack"
+        );
+        assert_eq!(
+            atlas.page(StaticAtlasPage(0)).expect("first page").pixels(),
+            first_page,
+            "the limit rewrote an already complete page"
         );
     }
 }

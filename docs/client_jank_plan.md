@@ -49,6 +49,22 @@ Scrolling must not synchronously rebuild all atlas pixels after an atlas fills.
 5. Retain the existing one-page implementation as the baseline until image,
    selection and g-buffer tests cover the paged path.
 
+### Atlas-page decision (Work 3)
+
+`StaticAtlasPages` keeps the established 2048×2048 RGBA8 shelf format as an
+immutable sequence. The active page accepts ordered new images until the next
+one would not fit; that page is then sealed, and the remaining images start a
+fresh page. Lookups return both a `StaticAtlasPage` and the page-local sprite,
+while dirty uploads are reported as `(page, rows)`. Thus filling a page neither
+evicts nor re-reads graphics still visible on older pages.
+
+The first path retains at most eight pages: 8 × 2048 × 2048 × 4 = 128 MiB of
+static texture pixels. The renderer integration remains deliberately deferred:
+Work 4 may use a texture array when the adapter permits it or bounded per-page
+batches otherwise, but consumes the same page id. Until its image, selection,
+and g-buffer coverage exists, the production renderer remains on the current
+one-page `StaticAtlas` baseline.
+
 ### Done when
 
 - a scroll produces no `repacked=true` frame above 50 ms;
@@ -56,7 +72,48 @@ Scrolling must not synchronously rebuild all atlas pixels after an atlas fills.
 - all atlas, static-render and screenshot tests remain green;
 - memory use is explicitly recorded for the selected page limit.
 
-## Session 2 — incremental static geometry
+## Session 2 — far-zoom LOD and chunk composites
+
+### Goal
+
+At scales where a map block covers only a small screen area, stop constructing
+and drawing every ground and map-static quad in that block. The client can zoom
+farther out than the classic client, so this is a rendering mode, not a
+last-mile optimisation.
+
+### Work
+
+1. Define LOD from projected block size in pixels, rather than one magic zoom
+   rung. Give each threshold hysteresis so small zoom or resize changes cannot
+   alternate a block between the detailed and composite paths every frame.
+2. Keep the present ground/static renderer as LOD 0. Add a cached composite
+   texture for a map block at LOD 1/2: it contains only immutable map ground
+   and map statics, at the required zoom tier. Draw it as one quad (or a small
+   fixed mesh) per visible block.
+3. Build and refresh composites through the same bounded, prioritised cell
+   queue used for streaming: visible blocks first, then blocks ahead of camera
+   movement. A newly visible block may temporarily use its next-more-detailed
+   representation; it must never synchronously compose a large block in the
+   camera frame.
+4. Keep server items, mobiles, effects, selection, cursor picking and UI out
+   of the composite. The source map remains the authority for picking and game
+   logic, regardless of which visual LOD was drawn.
+5. Invalidate only a block and its affected LOD levels for map/static mutation,
+   art/atlas revision, cutaway state or an output-format change. Establish a
+   bounded GPU-memory policy with an LRU tail outside the viewport hysteresis
+   margin.
+6. Add fixed-camera screenshot tests around each LOD threshold and regression
+   tests that compare map picking and dynamic-object placement with LOD 0.
+
+### Done when
+
+- far zoom scales with visible blocks rather than visible tiles/statics;
+- a steady far-zoom scroll builds or uploads only entered block composites;
+- crossing an LOD threshold produces no visible flashing or per-frame
+  rebuilds;
+- dynamic entities and picking agree with the detailed renderer.
+
+## Session 3 — incremental static geometry
 
 ### Goal
 
@@ -84,7 +141,7 @@ moves by one or a few tiles.
 - equal-depth map statics preserve their existing file order;
 - no stale sprites, volume ranges or cutaway rows remain after invalidation.
 
-## Session 3 — incremental ground and instance uploads
+## Session 4 — incremental ground and instance uploads
 
 ### Goal
 
@@ -110,7 +167,7 @@ Remove the per-frame CPU encoding and GPU upload of the full visible world.
 - ground collection is below 1.5 ms on the same profile;
 - GPU frame time does not regress above the current 6–7 ms baseline.
 
-## Session 4 — performance guardrails
+## Session 5 — performance guardrails
 
 ### Goal
 
@@ -135,4 +192,3 @@ Make the gains observable and prevent silent regressions.
   documented;
 - p99 excludes atlas-repack pauses during the scroll scenario;
 - each performance change cites before/after samples from the same scenario.
-

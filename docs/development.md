@@ -66,6 +66,25 @@ client install is not anyone else's. Then the command above is just
 cargo run -p openshard-playground
 ```
 
+### Reproduce a static-atlas overflow while scrolling
+
+The playground can drive its logged-in player around a fixed, expanding route.
+The ordinary player-follow camera then crosses fresh Felucca map tiles without
+mouse input, which is the repeatable path for the static-atlas repack hitch:
+
+```sh
+cargo run -p openshard-playground -- --atlas-scroll
+```
+
+`OPENSHARD_ATLAS_SCROLL=1` is the equivalent environment setting. The route
+uses the in-process shard's normal movement commands (not teleports), turns
+when a local obstacle refuses a step, and takes roughly six minutes to cross
+more than 7,000 tiles. Leave the window open until
+`target/openshard-playground-jank.log` contains
+`atlas_overflowed=Some("statics")`; that is the static atlas boundary. The
+option replaces a configured gameplay script for that run and cannot be paired
+with `--mailbox-load`.
+
 The art table and navigation graph are separate, explicit preparation steps.
 Run both after installing or updating the client files; normal shard and client
 startup never rebuilds the navigation graph:

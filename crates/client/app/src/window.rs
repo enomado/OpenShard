@@ -101,6 +101,28 @@ pub(crate) struct Atlases {
     pub(crate) mobiles: AnimAtlas,
 }
 
+/// Atlas work paid by one frame.
+///
+/// Kept separate from the renderer's timing: an upload can be cheap while the
+/// CPU packing that preceded it is not, and an overflow is the diagnosis that
+/// makes a one-off long atlas phase actionable in the jank trace.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct AtlasWork {
+    /// Bytes submitted to atlas textures this frame. This counts the dirty row
+    /// bands, including their deliberately conservative over-coverage.
+    pub(crate) uploaded_bytes: u64,
+    /// The atlas that ran out of room, when this frame had to rebuild it.
+    pub(crate) overflow: Option<AtlasOverflow>,
+}
+
+/// The state at the point a growing atlas could no longer accept graphics.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct AtlasOverflow {
+    pub(crate) atlas: &'static str,
+    pub(crate) packed_graphics: usize,
+    pub(crate) newly_requested_graphics: usize,
+}
+
 /// What a frame wants packed, gathered before anything is read from disk.
 ///
 /// Three sets rather than three arguments, because they travel together
@@ -164,14 +186,22 @@ impl Atlases {
         tiledata: &TileData,
         anim: &mut Anim,
         wanted: &Wanted,
-    ) -> Result<(), AtlasError> {
+    ) -> Result<(), (&'static str, AtlasError)> {
         // Both halves of a ground quad from the same set, in the same growth: a
         // land graphic in one atlas and not the other draws a slope textured
         // with the terrain next door.
-        self.land.add(art, wanted.land.iter().copied())?;
-        self.texmaps.add(texmaps, tiledata, wanted.land.iter().copied())?;
-        self.statics.add(art, wanted.statics.iter().copied())?;
-        self.mobiles.add(anim, wanted.animations.iter().copied())?;
+        self.land
+            .add(art, wanted.land.iter().copied())
+            .map_err(|error| ("land", error))?;
+        self.texmaps
+            .add(texmaps, tiledata, wanted.land.iter().copied())
+            .map_err(|error| ("texmaps", error))?;
+        self.statics
+            .add(art, wanted.statics.iter().copied())
+            .map_err(|error| ("statics", error))?;
+        self.mobiles
+            .add(anim, wanted.animations.iter().copied())
+            .map_err(|error| ("mobiles", error))?;
         Ok(())
     }
 
@@ -185,14 +215,17 @@ impl Atlases {
         ground: &GroundRenderer,
         statics: &SpriteRenderer,
         mobiles: &SpriteRenderer,
-    ) {
-        ground.upload_changes(queue, &mut self.land, &mut self.texmaps);
+    ) -> u64 {
+        let mut uploaded = ground.upload_changes(queue, &mut self.land, &mut self.texmaps);
         if let Some(rows) = self.statics.take_dirty() {
+            uploaded += u64::from(rows.end - rows.start) * u64::from(StaticAtlas::side()) * 4;
             statics.upload_rows(queue, self.statics.pixels(), rows);
         }
         if let Some(rows) = self.mobiles.take_dirty() {
+            uploaded += u64::from(rows.end - rows.start) * u64::from(AnimAtlas::side()) * 4;
             mobiles.upload_rows(queue, self.mobiles.pixels(), rows);
         }
+        uploaded
     }
 }
 
@@ -237,7 +270,8 @@ pub(crate) fn wanted_in(
 /// [`crate::picking::SelectedIdentity::as_static`]'s doc gives for being a
 /// free function rather than a method.
 ///
-/// Returns whether a full rebuild ran, for [`crate::frames::Frame::repacked`].
+/// Returns whether a full rebuild ran plus the upload and overflow facts for
+/// this frame's jank record.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn ready_atlases(
     resources: &mut resources::Resources,
@@ -248,11 +282,12 @@ pub(crate) fn ready_atlases(
     want: TileBounds,
     wanted: &Wanted,
     drawn: &[(Who, Mobile)],
-) -> bool {
+) -> (bool, AtlasWork) {
     // Set only on a successful rebuild — the counter `docs/camera.md`
     // asks for, so the frame that stalled for one can be told apart from
     // one that is merely heavy. See [`Frame::repacked`](crate::frames::Frame).
     let mut repacked = false;
+    let mut work = AtlasWork::default();
     // Full rebuild and not grow, either because the atlas just filled up
     // (the ordinary eviction) or because a debug edit changed a shape the
     // atlas already has packed and `grow` cannot see that on its own — it
@@ -269,6 +304,33 @@ pub(crate) fn ready_atlases(
         // already bound, a band of rows at a time, and a frame where the
         // camera stood still reads four `BTreeSet`s and touches no file
         // and no GPU.
+        let newly_requested = [
+            (
+                "land",
+                window.atlases.land.newly_requested(wanted.land.iter().copied()),
+            ),
+            (
+                "texmaps",
+                window
+                    .atlases
+                    .texmaps
+                    .newly_requested(wanted.land.iter().copied()),
+            ),
+            (
+                "statics",
+                window
+                    .atlases
+                    .statics
+                    .newly_requested(wanted.statics.iter().copied()),
+            ),
+            (
+                "mobiles",
+                window
+                    .atlases
+                    .mobiles
+                    .newly_requested(wanted.animations.iter().copied()),
+            ),
+        ];
         let grown = window.atlases.grow(
             &resources.art,
             &resources.texmaps,
@@ -282,7 +344,7 @@ pub(crate) fn ready_atlases(
         // whatever was there before. Cheap to do unconditionally — the
         // band is empty when nothing grew — and it is one fewer path
         // where an atlas and its texture can disagree.
-        window.atlases.upload(
+        work.uploaded_bytes += window.atlases.upload(
             &window.queue,
             &window.renderer,
             &window.statics,
@@ -293,8 +355,24 @@ pub(crate) fn ready_atlases(
                 graphics.covered = Some(want);
                 false
             }
-            Err(AtlasError::Full { .. }) => true,
-            Err(error) => {
+            Err((atlas, AtlasError::Full { .. })) => {
+                work.overflow = Some(AtlasOverflow {
+                    atlas,
+                    packed_graphics: match atlas {
+                        "land" => window.atlases.land.len(),
+                        "texmaps" => window.atlases.texmaps.len(),
+                        "statics" => window.atlases.statics.len(),
+                        "mobiles" => window.atlases.mobiles.len(),
+                        _ => unreachable!("Atlas::grow names its own atlas"),
+                    },
+                    newly_requested_graphics: newly_requested
+                        .iter()
+                        .find_map(|(name, count)| (*name == atlas).then_some(*count))
+                        .expect("Atlas::grow names an atlas counted above"),
+                });
+                true
+            }
+            Err((_, error)) => {
                 eprintln!("growing the atlases: {error}");
                 false
             }
@@ -328,6 +406,14 @@ pub(crate) fn ready_atlases(
             ),
         ) {
             Ok(atlases) => {
+                // `install_atlases` creates fresh textures and uploads every
+                // byte once. Count that replacement upload as well as dirty
+                // row uploads above, otherwise the trace would understate the
+                // very hitch its overflow record identifies.
+                work.uploaded_bytes += (atlases.land.pixels().len()
+                    + atlases.texmaps.pixels().len()
+                    + atlases.statics.pixels().len()
+                    + atlases.mobiles.pixels().len()) as u64;
                 window.install_atlases(atlases, &resources.hue_ramp);
                 graphics.covered = Some(want);
                 repacked = true;
@@ -341,7 +427,7 @@ pub(crate) fn ready_atlases(
             Err(error) => eprintln!("packing the art on screen: {error}"),
         }
     }
-    repacked
+    (repacked, work)
 }
 
 /// Everything a window needs, built once the window exists.
