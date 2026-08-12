@@ -22,6 +22,9 @@ use crate::{graphics, resources, world};
 /// Everything `frame::assemble` and its neighbours collected for one frame —
 /// see [`assemble_geometry`]'s own doc.
 pub(crate) struct FrameGeometry {
+    /// The map-walk portion of this frame's CPU cost. It travels with the
+    /// geometry solely so the app can put it into a jank record.
+    pub(crate) assembly_costs: frame::AssemblyCosts,
     /// The flames, the grid they are occluded by, the ambient, and the two
     /// per-fragment knobs the lighting pass reads — `frame::assemble`'s own.
     pub(crate) lighting: light::Lighting,
@@ -207,6 +210,7 @@ pub(crate) fn assemble_geometry(
     // arguments were readable until now only by reading this function. Only
     // when a dump is armed — `summary` walks every field and allocates.
     let asked_for = graphics.frame_dump.as_ref().map(|_| inputs.summary());
+    let (assembled, assembly_costs) = frame::assemble_profiled(inputs);
     let frame::Frame {
         lighting,
         ground: quads,
@@ -219,7 +223,7 @@ pub(crate) fn assemble_geometry(
                 mesh_rows,
                 boxes,
             },
-    } = frame::assemble(inputs);
+    } = assembled;
     let mesh = statics::StaticMesh {
         mesh_vertices,
         mesh_rows,
@@ -300,6 +304,7 @@ pub(crate) fn assemble_geometry(
         mobile_hued,
     );
     FrameGeometry {
+        assembly_costs,
         lighting,
         quads,
         static_instances,

@@ -24,6 +24,7 @@ use openshard_client_net::session::{Pick, Plan};
 use openshard_client_net::transport::Tcp;
 use openshard_movement::Tile;
 use openshard_protocol::identity::{RawAccountName, RawPlaintextPassword};
+use tracing_subscriber::EnvFilter;
 
 /// Where a shard is, when one is asked for and no address is given.
 const DEFAULT_SHARD: SocketAddrV4 = SocketAddrV4::new(Ipv4Addr::LOCALHOST, 2593);
@@ -125,6 +126,9 @@ fn main() -> ExitCode {
     // Before the command line is parsed, because what the file holds is the
     // environment those `env =` options fall back to.
     openshard_client_app::load_env();
+    tracing_subscriber::fmt()
+        .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("warn")))
+        .init();
     let cli = Cli::parse();
 
     // A real client on a real network. `Tcp` is where the address goes: past

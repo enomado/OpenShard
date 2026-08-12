@@ -1,0 +1,15 @@
+[package]
+name = "openshard-client-model"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Client read models shared by the wire and presentation layers."
+
+[dependencies]
+openshard-protocol.workspace = true
+
+[lints]
+workspace = true

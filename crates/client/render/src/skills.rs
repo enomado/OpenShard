@@ -36,6 +36,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use openshard_client_model::Skill as SkillLine;
 use openshard_protocol::skill::SkillLock;
 use openshard_protocol::speech::Font;
 use openshard_protocol::wire::{Graphic, Hue};
@@ -45,18 +46,11 @@ use openshard_uofiles::skills::{Skill, SkillId, Skills};
 use crate::gump::{GumpArt, GumpPixel, Picture, PictureIndex, Scissor};
 use crate::text::GumpLabel;
 
-/// One line of a skill's standing, as much of it as this window draws.
-///
-/// The wire's numbers without the id — `openshard_client_net::view::Skill` is
-/// the same four fields, and this is not that type because a renderer does not
-/// depend on the crate that owns a socket. The caller converts, which is one
-/// `match` at the seam and is where every other client type crosses too.
+/// One line of a skill's standing, plus the local lock face drawn over it.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Standing {
-    /// What the skill is worth in play, in tenths: 75.5 is 755.
-    pub value: u16,
-    /// This character's ceiling for it, in tenths.
-    pub cap: u16,
+    /// The wire-derived values, with its id deliberately held by the caller's map.
+    pub skill: SkillLine,
     /// Which way the shard is training it.
     pub lock: SkillLock,
 }
@@ -530,7 +524,7 @@ pub fn window(
     let total: u32 = names
         .iter()
         .filter_map(|(id, _)| standing(id))
-        .map(|line| u32::from(line.value))
+        .map(|line| u32::from(line.skill.value))
         .sum();
     let mut y = VIEWPORT_AT.y - tree.offset();
     for row in rows(names, groups, tree) {
@@ -680,7 +674,7 @@ fn skill_row(
     let Some(standing) = standing else {
         return;
     };
-    let value = tenths(standing.value);
+    let value = tenths(standing.skill.value);
     let width = width_of(&value, ROW_FONT);
     sheet.lines.push(Line {
         at: at.offset(GumpPixel::new(VIEWPORT_AT.x + VALUE_RIGHT - width, y)),
@@ -847,8 +841,12 @@ mod tests {
 
     fn standing(value: u16) -> Standing {
         Standing {
-            value,
-            cap: 1000,
+            skill: SkillLine {
+                value,
+                base: value,
+                lock: SkillLock::Up,
+                cap: 1000,
+            },
             lock: SkillLock::Up,
         }
     }

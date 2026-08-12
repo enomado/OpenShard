@@ -30,13 +30,14 @@ use openshard_protocol::containers::ContainedItem;
 use openshard_protocol::direction::Facing;
 use openshard_protocol::gump::layout::{Element, parse};
 use openshard_protocol::gump::{GumpId, GumpKey, GumpPoint};
-use openshard_protocol::mobile::{Equipment, MobileStatus, Notoriety, PaperdollFlags, StatusFlags, Vitals};
+use openshard_protocol::mobile::{Equipment, Notoriety, PaperdollFlags, StatusFlags, Vitals};
 use openshard_protocol::serial::Serial;
 use openshard_protocol::server_packet::ServerPacket;
-use openshard_protocol::skill::{SkillEntry, SkillLock};
 use openshard_protocol::speech::{Font, SpokenMessage, TalkMode, UnicodeMessage};
 use openshard_protocol::wire::{Graphic, Hue};
 use openshard_protocol::world::{MapSize, PlayerStart, Point};
+
+pub use openshard_client_model::{Skill, Status};
 
 /// How many lines of speech the journal keeps.
 ///
@@ -137,98 +138,6 @@ pub struct Player {
     pub skills: BTreeMap<u8, Skill>,
 }
 
-/// One skill's line, as the shard last stated it — every value in tenths, so
-/// 75.5 arrives as 755.
-///
-/// The wire's [`SkillEntry`] without its id, which is the key it is filed under.
-/// A view type rather than the packet's own for that reason alone: two copies of
-/// the id, one of them able to disagree with where the row is filed, is the
-/// shape this crate has already refused twice (see [`Paperdoll`]).
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub struct Skill {
-    /// What the skill is worth in play: trained, plus what the body's stats lend
-    /// it, capped. The number the window's right-hand column shows.
-    pub value: u16,
-    /// What is trained, before any of that.
-    pub base: u16,
-    /// Which way the shard is training it.
-    pub lock: SkillLock,
-    /// This character's own ceiling for it.
-    pub cap: u16,
-}
-
-/// The non-positional half of a `0x11` status reply.
-///
-/// The packet's serial is the connection's own player serial and has already
-/// decided where this belongs; carrying it again would make two identities for
-/// one status. Hits similarly live in [`Player::hits`], which is also updated
-/// by `0xA1`. Everything below has no other packet that can state it.
-#[derive(Clone, PartialEq, Eq, Debug)]
-pub struct Status {
-    /// The character name the status window displays.
-    pub name: String,
-    /// Whether the character is female.
-    pub female: bool,
-    /// Strength.
-    pub strength: u16,
-    /// Dexterity.
-    pub dexterity: u16,
-    /// Intelligence.
-    pub intelligence: u16,
-    /// Stamina, current and maximum.
-    pub stamina: Vitals,
-    /// Mana, current and maximum.
-    pub mana: Vitals,
-    /// Gold held in the pack.
-    pub gold: u32,
-    /// Physical resistance, or armour for the older packet shape.
-    pub armor: u16,
-    /// Carried weight.
-    pub weight: u16,
-    /// The weight the character can carry before becoming overloaded.
-    pub max_weight: u16,
-    /// The combined stat cap.
-    pub stat_cap: u16,
-    /// Pets currently following.
-    pub followers: u8,
-    /// The greatest number of pets that may follow.
-    pub followers_max: u8,
-}
-
-impl Status {
-    fn of(status: &MobileStatus) -> Self {
-        Self {
-            name: status.name.clone(),
-            female: status.female,
-            strength: status.strength,
-            dexterity: status.dexterity,
-            intelligence: status.intelligence,
-            stamina: status.stamina,
-            mana: status.mana,
-            gold: status.gold,
-            armor: status.armor,
-            weight: status.weight,
-            max_weight: status.max_weight,
-            stat_cap: status.stat_cap,
-            followers: status.followers,
-            followers_max: status.followers_max,
-        }
-    }
-}
-
-impl Skill {
-    /// The line an entry states, minus the id it is filed under.
-    #[must_use]
-    fn of(entry: &SkillEntry) -> Self {
-        Self {
-            value: entry.value,
-            base: entry.base,
-            lock: entry.lock,
-            cap: entry.cap,
-        }
-    }
-}
-
 /// Another mobile, as `0x77` or `0x78` last described it.
 ///
 /// Not the client's own character — see [`Player`] for that, and
@@ -310,10 +219,9 @@ pub struct Heard {
     pub text: String,
 }
 
-impl Heard {
-    /// From a `0x1C` — Latin-1 speech.
-    #[must_use]
-    pub fn ascii(message: &SpokenMessage) -> Self {
+impl From<&SpokenMessage> for Heard {
+    /// `0x1C` — Latin-1 speech.
+    fn from(message: &SpokenMessage) -> Self {
         Self {
             serial: message.serial,
             graphic: message.graphic,
@@ -324,16 +232,17 @@ impl Heard {
             text: message.text.clone(),
         }
     }
+}
 
-    /// From a `0xAE` — Unicode speech.
+impl From<&UnicodeMessage> for Heard {
+    /// `0xAE` — Unicode speech.
     ///
     /// The four-byte language tag on the wire is dropped here rather than
     /// carried into the journal: nothing downstream reads it, and it names a
     /// property of the *sender* (what client locale sent this), not of the
     /// line itself — keeping it would be a field every future consumer has to
     /// notice does nothing.
-    #[must_use]
-    pub fn unicode(message: &UnicodeMessage) -> Self {
+    fn from(message: &UnicodeMessage) -> Self {
         Self {
             serial: message.serial,
             graphic: message.graphic,
@@ -697,7 +606,7 @@ impl WorldView {
             // Speech, a system line, an NPC — all one journal, whichever of the
             // two wire shapes it arrived as.
             ServerPacket::SpokenMessage(line) => {
-                self.heard(Heard::ascii(line));
+                self.heard(Heard::from(line));
                 // Always a change: the same sentence said twice is two lines in
                 // a journal, unlike a position that is set twice to one tile.
                 true
@@ -705,7 +614,7 @@ impl WorldView {
             // `0xAE`: the shape a client that spoke `0xAD` gets its own words
             // back as — see `Heard`'s docs for why this cannot be skipped.
             ServerPacket::UnicodeMessage(line) => {
-                self.heard(Heard::unicode(line));
+                self.heard(Heard::from(line));
                 true
             }
             ServerPacket::PlayerUpdate(update) => {
@@ -934,7 +843,7 @@ impl WorldView {
             // belongs on the one player the connection is about, and its hits
             // join `0xA1` in Player::hits so the two pictures have one value.
             ServerPacket::MobileStatus(status) if status.serial == self.player.serial => {
-                let fresh = Status::of(status);
+                let fresh = Status::from(status);
                 let changed =
                     self.player.status.as_ref() != Some(&fresh) || self.player.hits != Some(status.hits);
                 self.player.status = Some(fresh);
@@ -959,7 +868,7 @@ impl WorldView {
                 let fresh: BTreeMap<u8, Skill> = list
                     .entries
                     .iter()
-                    .map(|entry| (entry.id, Skill::of(entry)))
+                    .map(|entry| (entry.id, Skill::from(entry)))
                     .collect();
                 let changed = self.player.skills != fresh;
                 self.player.skills = fresh;
@@ -970,7 +879,7 @@ impl WorldView {
             // into the table rather than replacing it, which is the whole of the
             // difference between the two packets on this side of the wire.
             ServerPacket::SkillUpdate(update) => {
-                let fresh = Skill::of(&update.entry);
+                let fresh = Skill::from(&update.entry);
                 let changed = self.player.skills.get(&update.entry.id) != Some(&fresh);
                 self.player.skills.insert(update.entry.id, fresh);
                 changed
@@ -1016,6 +925,7 @@ mod tests {
     use openshard_protocol::direction::Direction;
     use openshard_protocol::items::WorldItem;
     use openshard_protocol::mobile::{MobileIncoming, MobileMove, MobileStatus, Remove};
+    use openshard_protocol::skill::SkillLock;
     use openshard_protocol::world::{DeathStatus, PlayerUpdate};
 
     use super::*;

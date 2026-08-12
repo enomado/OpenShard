@@ -5,33 +5,13 @@
 //! which player supplied them — the caller joins those facts at the app/render
 //! boundary, as it does for [`crate::skills`].
 
+use openshard_client_model::Status;
 use openshard_protocol::mobile::Vitals;
 use openshard_protocol::speech::Font;
 use openshard_protocol::wire::{Graphic, Hue};
 
 use crate::gump::{GumpArt, GumpPixel, Picture};
 use crate::text::GumpLabel;
-
-/// The values a status window displays.
-///
-/// Borrowed name, copied numbers: the window formats its values into its own
-/// lines, while the one string it does not transform remains owned by the
-/// authoritative status record.
-#[derive(Clone, Copy, Debug)]
-pub struct Standing<'a> {
-    pub name: &'a str,
-    pub female: bool,
-    pub strength: u16,
-    pub dexterity: u16,
-    pub intelligence: u16,
-    pub hits: Vitals,
-    pub stamina: Vitals,
-    pub mana: Vitals,
-    pub gold: u32,
-    pub armor: u16,
-    pub weight: u16,
-    pub max_weight: u16,
-}
 
 /// One line the status window writes, already placed in gump pixels.
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -77,7 +57,7 @@ const HUE: Hue = Hue(0x0386);
 /// the same rows. The art itself carries the labels and no caller supplies a
 /// second localized copy of them.
 #[must_use]
-pub fn window(standing: Standing<'_>, at: GumpPixel) -> Window {
+pub fn window(status: &Status, hits: Vitals, at: GumpPixel) -> Window {
     let left = 86;
     let right = 171;
     let row = |x, y, text: String| Line {
@@ -87,21 +67,17 @@ pub fn window(standing: Standing<'_>, at: GumpPixel) -> Window {
     Window {
         pictures: vec![Picture::plain(GumpArt::Gump(FRAME), at)],
         lines: vec![
-            row(left, 42, standing.name.to_owned()),
-            row(left, 62, standing.strength.to_string()),
-            row(left, 74, standing.dexterity.to_string()),
-            row(left, 86, standing.intelligence.to_string()),
-            row(
-                left,
-                98,
-                if standing.female { "Female" } else { "Male" }.to_owned(),
-            ),
-            row(left, 110, standing.armor.to_string()),
-            row(right, 62, vitals(standing.hits)),
-            row(right, 74, vitals(standing.mana)),
-            row(right, 86, vitals(standing.stamina)),
-            row(right, 98, standing.gold.to_string()),
-            row(right, 110, format!("{}/{}", standing.weight, standing.max_weight)),
+            row(left, 42, status.name.clone()),
+            row(left, 62, status.strength.to_string()),
+            row(left, 74, status.dexterity.to_string()),
+            row(left, 86, status.intelligence.to_string()),
+            row(left, 98, if status.female { "Female" } else { "Male" }.to_owned()),
+            row(left, 110, status.armor.to_string()),
+            row(right, 62, vitals(hits)),
+            row(right, 74, vitals(status.mana)),
+            row(right, 86, vitals(status.stamina)),
+            row(right, 98, status.gold.to_string()),
+            row(right, 110, format!("{}/{}", status.weight, status.max_weight)),
         ],
     }
 }
@@ -114,29 +90,35 @@ fn vitals(vitals: Vitals) -> String {
 mod tests {
     use super::*;
 
-    fn standing() -> Standing<'static> {
-        Standing {
-            name: "Lord British",
+    fn status() -> Status {
+        Status {
+            name: "Lord British".to_owned(),
             female: false,
             strength: 100,
             dexterity: 50,
             intelligence: 75,
-            hits: Vitals {
-                current: 98,
-                max: 100,
-            },
             stamina: Vitals { current: 49, max: 50 },
             mana: Vitals { current: 72, max: 75 },
             gold: 1_234,
             armor: 42,
             weight: 12,
             max_weight: 450,
+            stat_cap: 225,
+            followers: 0,
+            followers_max: 5,
         }
     }
 
     #[test]
     fn the_status_frame_carries_its_own_numbers_at_the_reference_positions() {
-        let window = window(standing(), GumpPixel::new(300, 200));
+        let window = window(
+            &status(),
+            Vitals {
+                current: 98,
+                max: 100,
+            },
+            GumpPixel::new(300, 200),
+        );
         assert_eq!(
             window.pictures,
             vec![Picture::plain(GumpArt::Gump(FRAME), GumpPixel::new(300, 200))]

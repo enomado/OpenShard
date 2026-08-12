@@ -2956,6 +2956,7 @@ dependencies = [
  "tokio",
  "toml",
  "tracing",
+ "tracing-subscriber",
  "wgpu",
  "wgpu-profiler",
  "winit",
@@ -2972,9 +2973,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "openshard-client-model"
+version = "0.0.1"
+dependencies = [
+ "openshard-protocol",
+]
+
+[[package]]
 name = "openshard-client-net"
 version = "0.0.1"
 dependencies = [
+ "openshard-client-model",
  "openshard-movement",
  "openshard-protocol",
  "tokio",
@@ -2992,6 +3001,7 @@ dependencies = [
 name = "openshard-client-render"
 version = "0.0.1"
 dependencies = [
+ "openshard-client-model",
  "openshard-client-pathtrace",
  "openshard-config",
  "openshard-movement",

@@ -16,6 +16,7 @@
 //! from the corner instead of the centre.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::time::{Duration, Instant};
 
 use openshard_protocol::wire::Graphic;
 use openshard_protocol::world::Point;
@@ -24,7 +25,7 @@ use openshard_uofiles::tiledata::TileData;
 
 use crate::animate::StaticAnimations;
 use crate::atlas::{Sprite, StaticAtlas};
-use crate::camera::{Camera, RealPixel, TILE_HEIGHT, TileBounds, ViewPoint};
+use crate::camera::{self, Camera, RealPixel, TILE_HEIGHT, TileBounds, ViewPoint, WorldPixel};
 use crate::cutaway::{self, Cutaway};
 use crate::depth;
 use crate::geometry::Rect;
@@ -179,6 +180,17 @@ pub struct StaticGeometry {
     pub boxes: Vec<crate::impostor::Volume>,
 }
 
+/// CPU time spent by [`collect_with_fades_profiled`] inside the map-static
+/// collector. Kept separate from server items: they share a renderer pass, but
+/// they are built from different sources and need separate profiling answers.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct CollectCosts {
+    /// Placement, culling, volume construction and collection of map statics.
+    pub walk: Duration,
+    /// The two stable back-to-front sorts after collection.
+    pub sort: Duration,
+}
+
 /// The opaque geometry left after the two picture lists have been spent.
 ///
 /// `sprite::split_corners` consumes [`StaticGeometry::quads`] while the app
@@ -297,6 +309,36 @@ pub fn collect_with_fades(
     player_mask: Option<&crate::mobiles::OpaqueMask>,
     fades: &mut crate::cutaway::Fades,
 ) -> StaticGeometry {
+    collect_with_fades_profiled(
+        map,
+        camera,
+        tiledata,
+        animations,
+        atlas,
+        cutaway,
+        occlusion,
+        player_rect,
+        player_mask,
+        fades,
+    )
+    .0
+}
+
+/// [`collect_with_fades`], with the expensive map-static phases measured for
+/// the app's jank log.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn collect_with_fades_profiled(
+    map: &Map,
+    camera: &Camera,
+    tiledata: &TileData,
+    animations: &StaticAnimations,
+    atlas: &StaticAtlas,
+    cutaway: &Cutaway,
+    occlusion: &crate::occlusion::Occlusion,
+    player_rect: Option<Rect>,
+    player_mask: Option<&crate::mobiles::OpaqueMask>,
+    fades: &mut crate::cutaway::Fades,
+) -> (StaticGeometry, CollectCosts) {
     let (eye_x, eye_y) = camera.eye_tile();
     let base = depth::base_for(eye_x, eye_y);
     let mut quads: Vec<(depth::Order, SpriteQuad)> = Vec::new();
@@ -315,6 +357,7 @@ pub fn collect_with_fades(
     let mesh_rows = Vec::new();
     let mut boxes = Vec::new();
 
+    let walk_started = Instant::now();
     for_each_static_in(map, camera.visible_tiles(), |item| {
         let at = Point::new(item.x, item.y, item.z);
         let is_foliage = tiledata.static_tile(item.tile.0).flags.is_foliage();
@@ -441,6 +484,8 @@ pub fn collect_with_fades(
         quads.push((placed.order, quad));
     });
 
+    let walk = walk_started.elapsed();
+    let sort_started = Instant::now();
     // Back to front, and a *stable* sort on the order alone: two statics on one
     // tile at one `PriorityZ` keep the order the file has them in, which is the
     // order the client inserted them into its per-tile list and therefore the
@@ -453,14 +498,18 @@ pub fn collect_with_fades(
     // renderer's back-to-front order, so the same stable sort is the one source
     // over needs for two translucent statics that overlap.
     cutaway_quads.sort_by_key(|(order, _)| *order);
-    StaticGeometry {
-        quads: quads.into_iter().map(|(_, quad)| quad).collect(),
-        cutaway_quads: cutaway_quads.into_iter().map(|(_, quad)| quad).collect(),
-        cutaway_boxes,
-        mesh_vertices,
-        mesh_rows,
-        boxes,
-    }
+    let sort = sort_started.elapsed();
+    (
+        StaticGeometry {
+            quads: quads.into_iter().map(|(_, quad)| quad).collect(),
+            cutaway_quads: cutaway_quads.into_iter().map(|(_, quad)| quad).collect(),
+            cutaway_boxes,
+            mesh_vertices,
+            mesh_rows,
+            boxes,
+        },
+        CollectCosts { walk, sort },
+    )
 }
 
 /// The boxes one drawn static stands as, appended to `out`, and the range they
@@ -751,10 +800,11 @@ pub(crate) fn quad_of(
 ///   goes to the one the map file has last, which is the one drawn last and so
 ///   the one on top.
 ///
-/// The cells walked are [`Camera::visible_tiles`]' — the same set [`collect`]
-/// draws — so what can be picked is what was drawn, cutaway included: a wall on
-/// a storey this frame is not showing is not something the player can have
-/// pointed at.
+/// The cells walked are the conservative subset of [`Camera::visible_tiles`]
+/// whose largest possible sprite could cover the cursor. A wall on a storey this
+/// frame is not showing is not something the player can have pointed at, and a
+/// tall sprite at either extreme of the map's `i8` height range remains in the
+/// subset.
 ///
 /// `cursor` is a viewport pixel, the pair `winit` reports and [`Camera::pick`]
 /// takes; the zoom is undone here, once.
@@ -770,7 +820,7 @@ pub fn pick(
 ) -> Option<PickedStatic> {
     let in_view = camera.to_view(camera.pick(cursor));
     let mut hit: Option<(depth::Order, PickedStatic)> = None;
-    for_each_static_in(map, camera.visible_tiles(), |item| {
+    for_each_static_in(map, pick_bounds(camera, atlas, cursor), |item| {
         let at = Point::new(item.x, item.y, item.z);
         let graphic = item.tile;
         // Never hides a foliage tile from a click: it is still there to point
@@ -797,6 +847,53 @@ pub fn pick(
         }
     });
     hit.map(|(_, picked)| picked)
+}
+
+/// A conservative tile rectangle for map statics whose sprite can cover a
+/// cursor position.
+///
+/// A static is anchored at the centre/bottom of its tile. Its width can extend
+/// to either side of that centre, and its height only above it; the tile's `z`
+/// shifts that anchor vertically. Convert the resulting world-pixel rectangle
+/// through both ends of the signed height range. The small extra tile is for
+/// rounding in [`camera::unproject`], so this may inspect a few more statics but
+/// can never reject one whose pixels contain the cursor.
+fn pick_bounds(camera: &Camera, atlas: &StaticAtlas, cursor: RealPixel) -> TileBounds {
+    let cursor = camera.pick(cursor);
+    let (width, height) = atlas.max_sprite_size();
+    let half_width = (i32::from(width) + 1) / 2;
+    let height = i32::from(height);
+    // `stand_on` places the sprite's bottom at the tile diamond's bottom:
+    // `TILE_HEIGHT / 2` below the projected centre.
+    let points = [
+        WorldPixel {
+            x: cursor.x - half_width,
+            y: cursor.y - height - TILE_HEIGHT / 2,
+        },
+        WorldPixel {
+            x: cursor.x + half_width,
+            y: cursor.y + TILE_HEIGHT / 2,
+        },
+    ];
+    let mut min_x = i32::MAX;
+    let mut max_x = i32::MIN;
+    let mut min_y = i32::MAX;
+    let mut max_y = i32::MIN;
+    for point in points {
+        for z in [i8::MIN, i8::MAX] {
+            let (x, y) = camera::unproject(point, z);
+            min_x = min_x.min(x);
+            max_x = max_x.max(x);
+            min_y = min_y.min(y);
+            max_y = max_y.max(y);
+        }
+    }
+    TileBounds {
+        min_x: min_x - 1,
+        max_x: max_x + 1,
+        min_y: min_y - 1,
+        max_y: max_y + 1,
+    }
 }
 
 /// The quads to draw a mask from, for a static that is selected.

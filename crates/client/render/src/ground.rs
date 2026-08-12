@@ -158,50 +158,68 @@ pub fn collect(
 ) -> Vec<GroundQuad> {
     let (eye_x, eye_y) = camera.eye_tile();
     let base = depth::base_for(eye_x, eye_y);
-    let mut quads: Vec<(depth::Order, GroundQuad)> = Vec::new();
+    let Some((xs, ys)) = camera.visible_tiles().clamp_to(map.width(), map.height()) else {
+        return Vec::new();
+    };
+    let mut quads = Vec::new();
+    let mut diagonal: Vec<(depth::Order, GroundQuad)> = Vec::new();
+    let (min_x, max_x) = (i32::from(*xs.start()), i32::from(*xs.end()));
+    let (min_y, max_y) = (i32::from(*ys.start()), i32::from(*ys.end()));
 
-    for_each_cell_in(map, camera.visible_tiles(), |x, y, cell| {
-        if !cutaway.shows_land(cell.z) {
-            return;
+    // `Order`'s primary key is `x + y`, so walking the rectangle by diagonals
+    // already gives the global depth order. The old whole-frame stable sort did
+    // useful work only inside one diagonal, where terrain heights differ. Keep
+    // that short stable sort: y grows in the same order as the old row-major
+    // walk, therefore equal priorities remain byte-for-byte deterministic.
+    for tile in min_x + min_y..=max_x + max_y {
+        diagonal.clear();
+        let first_y = min_y.max(tile - max_x);
+        let last_y = max_y.min(tile - min_x);
+        for y in first_y..=last_y {
+            let x = tile - y;
+            let (x, y) = (x as u16, y as u16);
+            let Some(cell) = map.land(x, y) else {
+                continue;
+            };
+            if !cutaway.shows_land(cell.z) {
+                continue;
+            }
+            let corners = corner_heights(map, x, y, cell.z);
+            let at = camera.to_screen(Point::new(x, y, 0));
+            let Some(region) = atlas.region(Graphic(cell.tile.0)) else {
+                continue;
+            };
+            // `None` here is not a failure to find anything: most land graphics have
+            // no texture, and the shader draws those from the art.
+            let texmap = texmaps.region(Graphic(cell.tile.0));
+            // Height deliberately left at zero: the shader lifts each corner by its
+            // own, and folding a representative height in here would count one of
+            // them twice.
+            // Where this tile sorts against everything else in the frame, statics
+            // included: `x + y` down the screen, and the client's own land priority
+            // — the tile's average height, less two — up it. The subtraction is
+            // what puts ground under the things standing on it; see `crate::depth`.
+            let order = depth::Order {
+                tile,
+                priority_z: depth::land_priority_z(corners.map(|z| z as i32)),
+            };
+            diagonal.push((
+                order,
+                GroundQuad {
+                    x: at.x as f32,
+                    y: at.y as f32,
+                    corners,
+                    region,
+                    texmap,
+                    depth: order.to_depth(base),
+                    place: crate::place::Place::land(x, y),
+                },
+            ));
         }
-        let Some(region) = atlas.region(Graphic(cell.tile.0)) else {
-            return;
-        };
-        // `None` here is not a failure to find anything: most land graphics have
-        // no texture, and the shader draws those from the art.
-        let texmap = texmaps.region(Graphic(cell.tile.0));
-        let corners = corner_heights(map, x, y, cell.z);
-        // Height deliberately left at zero: the shader lifts each corner by its
-        // own, and folding a representative height in here would count one of
-        // them twice.
-        let at = camera.to_screen(Point::new(x, y, 0));
-        // Where this tile sorts against everything else in the frame, statics
-        // included: `x + y` down the screen, and the client's own land priority
-        // — the tile's average height, less two — up it. The subtraction is
-        // what puts ground under the things standing on it; see `crate::depth`.
-        let order = depth::Order {
-            tile: i32::from(x) + i32::from(y),
-            priority_z: depth::land_priority_z(corners.map(|z| z as i32)),
-        };
-        quads.push((
-            order,
-            GroundQuad {
-                x: at.x as f32,
-                y: at.y as f32,
-                corners,
-                region,
-                texmap,
-                depth: order.to_depth(base),
-                place: crate::place::Place::land(x, y),
-            },
-        ));
-    });
-
-    // Back to front. The depth buffer is what actually decides overlap now, so
-    // this is here for determinism: the same camera has to produce the same
-    // instance buffer, byte for byte, or every frame test becomes a coin toss.
-    quads.sort_by_key(|(order, _)| *order);
-    quads.into_iter().map(|(_, quad)| quad).collect()
+        diagonal.sort_by_key(|(order, _)| *order);
+        quads.extend(diagonal.drain(..).map(|(_, quad)| quad));
+    }
+    quads
 }
 
 /// The heights of a tile's four corners, in [`GroundQuad::corners`] order.

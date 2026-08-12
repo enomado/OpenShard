@@ -55,12 +55,16 @@
 //! — a test that read the machine's config would pass on what somebody happened
 //! to have configured.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Duration;
 
 use clap::Parser;
 use tracing_subscriber::EnvFilter;
+
+/// A fresh trace from the last playground run. `target/` keeps the diagnostic
+/// out of source control while leaving it beside the command that produced it.
+const JANK_LOG: &str = "target/openshard-playground-jank.log";
 
 /// One process, both ends: a shard in a thread and a window logged in to it.
 ///
@@ -134,6 +138,11 @@ fn main() -> ExitCode {
     tracing_subscriber::fmt()
         .with_env_filter(EnvFilter::try_new(&cli.log).unwrap_or_else(|_| EnvFilter::new("info")))
         .init();
+    if let Err(error) = openshard_client_app::start_jank_log(Path::new(JANK_LOG)) {
+        eprintln!("opening {JANK_LOG}: {error}");
+        return ExitCode::FAILURE;
+    }
+    eprintln!("jank frames over 16 ms will be written to {JANK_LOG}");
 
     let dir = cli.client;
 

@@ -1,0 +1,138 @@
+# Client jank: plan of work
+
+## Context and baseline
+
+The playground writes every frame over the 16 ms budget to
+`target/openshard-playground-jank.log` when started with:
+
+```sh
+cargo run -p openshard-playground
+```
+
+The log separates UI, CPU scene construction, GPU passes, atlas work and the
+major geometry stages. The measurements below are from a debug build at a far
+zoom-out while scrolling Britain.
+
+| Phase | Typical cost | Notes |
+| --- | ---: | --- |
+| CPU build | 28–30 ms | Stable far-zoom frame, excluding atlas growth. |
+| GPU | 6–7 ms | Not the limiting side. |
+| Ground collection | 4.5–4.8 ms | Was about 8 ms before diagonal ordering. |
+| Static collection | about 7.7 ms | About 6 ms walk and 1.7 ms stable ordering. |
+| Instance encoding/upload | about 12 ms | Ground and sprites are rebuilt and sent each frame. |
+| Full atlas repack | 400–430 ms | The visible scroll hitch. |
+
+Completed work: route facts are cached after a destination is set; static
+picking is narrowed to the cursor's conservative tile bounds; ground ordering
+does not globally sort the whole frame; ordinary renderer staging buffers are
+reused; and the jank log records the phases above. A trial replacement of the
+stable static sort was measured and rejected because it regressed the far-zoom
+case.
+
+## Session 1 — eliminate atlas-repack hitches
+
+### Goal
+
+Scrolling must not synchronously rebuild all atlas pixels after an atlas fills.
+
+### Work
+
+1. Extend the jank record with the atlas that overflowed, its packed graphic
+   count, newly requested graphic count and uploaded byte count.
+2. Add a reproducible playground scroll path that crosses enough map tiles to
+   fill the current static atlas.
+3. Design atlas pages: keep full pages immutable and allocate a new page for
+   new graphics instead of evicting and re-reading every visible graphic.
+4. Update the sprite renderer to select the relevant page per instance (texture
+   array if device support and format limits permit it; otherwise a bounded set
+   of page bind groups/batches).
+5. Retain the existing one-page implementation as the baseline until image,
+   selection and g-buffer tests cover the paged path.
+
+### Done when
+
+- a scroll produces no `repacked=true` frame above 50 ms;
+- adding graphics uploads only the newly allocated page or changed rows;
+- all atlas, static-render and screenshot tests remain green;
+- memory use is explicitly recorded for the selected page limit.
+
+## Session 2 — incremental static geometry
+
+### Goal
+
+Avoid rebuilding all visible static quads and impostor volumes when the camera
+moves by one or a few tiles.
+
+### Work
+
+1. Split `static_walk` further in a benchmark-only profile into map walk,
+   placement/culling, occlusion lookup and volume construction. Do not put an
+   `Instant` around every static in production frames.
+2. Cache static geometry by map block and atlas revision. A cache entry owns
+   its quads, volumes and a conservative visibility bound.
+3. On scroll, remove blocks outside the visible bounds and build only newly
+   entered blocks; concatenate cached block output in the exact depth order.
+4. Invalidate an entry for atlas revision, cutaway/fade state, static animation
+   frame or world/item mutation as appropriate. Keep dynamic server items out
+   of the map-static cache.
+5. Establish byte-for-byte frame-output tests for a full rebuild versus the
+   incremental path at fixed camera positions.
+
+### Done when
+
+- far-zoom `static_walk` is below 2 ms during a steady scroll;
+- equal-depth map statics preserve their existing file order;
+- no stale sprites, volume ranges or cutaway rows remain after invalidation.
+
+## Session 3 — incremental ground and instance uploads
+
+### Goal
+
+Remove the per-frame CPU encoding and GPU upload of the full visible world.
+
+### Work
+
+1. Add upload counters to the jank record: bytes and instance count for ground,
+   opaque statics, cutaway statics and volumes.
+2. Store cacheable ground/static instances in persistent GPU buffers, indexed
+   by visible map blocks or viewport strips.
+3. On camera movement, upload only entered strips and update a small camera
+   transform/uniform for the common movement case.
+4. Keep a safe full-rebuild fallback for resize, zoom-rung change, atlas-page
+   change and cache invalidation; test it against the incremental buffer state.
+5. Re-evaluate the ground collector after this change. Its current 4.5–4.8 ms
+   is no longer the first bottleneck once most instances are retained.
+
+### Done when
+
+- far-zoom `encode` is below 3 ms;
+- normal scroll transfers proportional-to-edge data, not full viewport data;
+- ground collection is below 1.5 ms on the same profile;
+- GPU frame time does not regress above the current 6–7 ms baseline.
+
+## Session 4 — performance guardrails
+
+### Goal
+
+Make the gains observable and prevent silent regressions.
+
+### Work
+
+1. Add a repeatable benchmark scenario: start, zoom out, scroll across an
+   atlas boundary, stop and pan back.
+2. Parse the jank log into p50/p95/p99 and maxima for CPU build, GPU, atlas,
+   ground, static walk/sort and encode.
+3. Run the scenario in debug and release profiles; store only aggregate output
+   in CI artifacts, never a machine-specific performance assertion as a unit
+   test.
+4. Keep the log opt-in or bounded outside playground if it is enabled in other
+   binaries, so diagnostics cannot become a new I/O bottleneck.
+
+### Done when
+
+- debug steady-state frames at far zoom are within the 16 ms CPU budget on the
+  reference machine, or the remaining machine-dependent gap is measured and
+  documented;
+- p99 excludes atlas-repack pauses during the scroll scenario;
+- each performance change cites before/after samples from the same scenario.
+

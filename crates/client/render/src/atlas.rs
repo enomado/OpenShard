@@ -741,6 +741,10 @@ pub struct Sprite {
 /// which is exactly why they are separate atlases rather than one with a prefix.
 pub struct StaticAtlas {
     sprites: BTreeMap<Graphic, Packed>,
+    /// The largest packed sprite in each direction. Picking uses this as a
+    /// conservative screen-space margin, so it need not walk every visible
+    /// static just to find one under the cursor.
+    max_sprite: (u16, u16),
     /// The hole in each graphic that has one — see [`Hole`](crate::facing::Hole).
     ///
     /// Beside the sprites rather than on [`Sprite`], which is the opposite of
@@ -854,6 +858,7 @@ impl StaticAtlas {
         let side = ATLAS_SIDE as usize;
         Self {
             sprites: BTreeMap::new(),
+            max_sprite: (0, 0),
             holes: BTreeMap::new(),
             prisms: BTreeMap::new(),
             footprints: BTreeMap::new(),
@@ -1031,6 +1036,8 @@ impl StaticAtlas {
                     origin: (origin_x, origin_y),
                 },
             );
+            self.max_sprite.0 = self.max_sprite.0.max(width);
+            self.max_sprite.1 = self.max_sprite.1.max(height);
         }
 
         Ok(())
@@ -1049,6 +1056,15 @@ impl StaticAtlas {
     /// How many graphics landed in it.
     pub fn len(&self) -> usize {
         self.sprites.len()
+    }
+
+    /// Largest packed sprite dimensions, in the image's pixels.
+    ///
+    /// The empty atlas answers `(0, 0)`: with no art, a static cannot be
+    /// picked, and a caller's one-tile safety margin still leaves a valid
+    /// search rectangle.
+    pub fn max_sprite_size(&self) -> (u16, u16) {
+        self.max_sprite
     }
 
     /// Whether nothing did.

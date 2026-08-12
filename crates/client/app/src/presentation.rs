@@ -510,7 +510,9 @@ impl App {
         // stays a function that only asks, and the one write this frame still
         // owes `self.picking` is named where it happens rather than folded into
         // the asking.
+        let facts_started = Instant::now();
         let prepared = self.prepare_frame(started, camera);
+        let facts_cost = facts_started.elapsed();
         self.publish_frame_picks(&prepared.facts);
         let PreparedFrame {
             started,
@@ -581,6 +583,7 @@ impl App {
         let Some(window) = self.window.as_mut() else {
             return;
         };
+        let atlases_started = Instant::now();
         let repacked = ready_atlases(
             &mut self.resources,
             &mut self.graphics,
@@ -631,6 +634,7 @@ impl App {
             true => drawn.into_iter().map(|(_, mobile)| mobile).collect(),
             false => Vec::new(),
         };
+        let atlases_cost = atlases_started.elapsed();
 
         // The vsync wait, and the reason it is timed on its own: under
         // `PresentMode::Fifo` this call blocks until the display has taken the
@@ -689,6 +693,7 @@ impl App {
         // argument, and the short of it is that an image of virtual resolution
         // cannot express an offset of one real pixel — which is the whole of
         // what made a magnified scroll coarser than the screen it was on.
+        let targets_started = Instant::now();
         let (render_width, render_height) = camera.image_size();
         if window.world.width() != render_width || window.world.height() != render_height {
             window.world = blit::world_texture(&window.device, render_width, render_height);
@@ -711,6 +716,7 @@ impl App {
         let cutaway_world_view = window
             .cutaway_world
             .create_view(&wgpu::TextureViewDescriptor::default());
+        let targets_cost = targets_started.elapsed();
 
         // **The frame's occluders are built before its pictures are collected**,
         // and that ordering is `docs/lighting_height.md` phase 3's one real cost.
@@ -732,6 +738,7 @@ impl App {
         // `frame::Inputs::bake`), and every other field it reads is a plain
         // `&`, so the signature alone says this is not a place `self.world`
         // or `self.resources` change.
+        let geometry_started = Instant::now();
         let geometry = assemble_geometry(
             &self.resources,
             &mut self.graphics,
@@ -747,6 +754,8 @@ impl App {
             held_mobile,
             &drawn,
         );
+        let geometry_cost = geometry_started.elapsed();
+        let assembly_costs = geometry.assembly_costs;
         // `geometry` is kept whole rather than destructured here: it travels
         // to `encode_world_passes` and, on the F12 path below, to the dump —
         // both read it as the one value `assemble_geometry` built, not as a
@@ -762,6 +771,7 @@ impl App {
         // it into `hud_quads` for `Screen::ttf_gump_pass`'s one call — see
         // `text::ScreenLabel`'s doc for why the pass and `hud_quads`'s own
         // comment for why it has to be one call.
+        let encode_started = Instant::now();
         let (text_quads, screen_speech): (Vec<SpriteQuad>, Vec<text::ScreenLabel<'_>>) = match &self
             .resources
             .ttf_font
@@ -1026,6 +1036,7 @@ impl App {
             &screen_speech,
             &mut text_quads,
         );
+        let encode_cost = encode_started.elapsed();
         // The UI over it, with no depth attachment: the world's depth buffer
         // ordered the world, and this is drawn on the result.
         if let (Some(shell), Some((_, output, _))) = (self.shell.as_mut(), ui) {
@@ -1187,6 +1198,30 @@ impl App {
             gpu,
             repacked,
         );
+        if let Some(frame) = self.frames.frames().last().copied() {
+            let gpu_passes = self
+                .window
+                .as_ref()
+                .and_then(|window| window.gpu.as_ref())
+                .map_or(&[][..], crate::profile::Gpu::passes);
+            crate::jank::record(
+                frame,
+                crate::jank::CpuPasses {
+                    facts: facts_cost,
+                    atlases: atlases_cost,
+                    targets: targets_cost,
+                    geometry: geometry_cost,
+                    lighting: assembly_costs.lighting,
+                    ground: assembly_costs.ground,
+                    statics: assembly_costs.statics,
+                    static_walk: assembly_costs.static_walk,
+                    static_sort: assembly_costs.static_sort,
+                    items: assembly_costs.items,
+                    encode: encode_cost,
+                },
+                gpu_passes,
+            );
+        }
         self.last_frame = started;
     }
 }

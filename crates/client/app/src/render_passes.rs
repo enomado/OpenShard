@@ -133,8 +133,7 @@ pub(crate) fn draw_gump_windows(
                                 tree,
                                 |id| {
                                     view.player.skills.get(&id.0).map(|line| skills::Standing {
-                                        value: line.value,
-                                        cap: line.cap,
+                                        skill: *line,
                                         // The player's own click, held over
                                         // the shard's line — see
                                         // `Tree::lock_of`'s doc.
@@ -157,26 +156,8 @@ pub(crate) fn draw_gump_windows(
                         else {
                             continue;
                         };
-                        drawn_windows.push((
-                            open.subject,
-                            Drawn::Status(status::window(
-                                status::Standing {
-                                    name: &status.name,
-                                    female: status.female,
-                                    strength: status.strength,
-                                    dexterity: status.dexterity,
-                                    intelligence: status.intelligence,
-                                    hits,
-                                    stamina: status.stamina,
-                                    mana: status.mana,
-                                    gold: status.gold,
-                                    armor: status.armor,
-                                    weight: status.weight,
-                                    max_weight: status.max_weight,
-                                },
-                                open.at,
-                            )),
-                        ));
+                        drawn_windows
+                            .push((open.subject, Drawn::Status(status::window(status, hits, open.at))));
                     }
                     WindowSubject::Container(serial) => {
                         let Some(gump) = view.containers.get(&serial).copied() else {

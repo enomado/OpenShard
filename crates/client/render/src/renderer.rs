@@ -202,6 +202,9 @@ pub struct GroundRenderer {
     instances: wgpu::Buffer,
     /// Quads the instance buffer can hold before it has to be replaced.
     capacity: u64,
+    /// CPU staging bytes for the instance upload. Reused between frames so a
+    /// wide zoom does not allocate several megabytes for every redraw.
+    instance_bytes: Vec<u8>,
     /// The two atlas textures, kept rather than only viewed.
     ///
     /// A view is all a bind group needs, and holding the texture as well is what
@@ -483,6 +486,7 @@ impl GroundRenderer {
             quad,
             instances,
             capacity: INITIAL_QUADS,
+            instance_bytes: Vec::new(),
             land_texture,
             texmap_texture,
         }
@@ -548,12 +552,14 @@ impl GroundRenderer {
             self.capacity = (quads.len() as u64).next_power_of_two();
             self.instances = new_instance_buffer(device, self.capacity);
         }
-        let mut instance_bytes = Vec::with_capacity(quads.len() * GroundQuad::STRIDE as usize);
+        self.instance_bytes.clear();
+        self.instance_bytes
+            .reserve(quads.len() * GroundQuad::STRIDE as usize);
         for quad in quads {
-            quad.write(&mut instance_bytes);
+            quad.write(&mut self.instance_bytes);
         }
-        if !instance_bytes.is_empty() {
-            queue.write_buffer(&self.instances, 0, &instance_bytes);
+        if !self.instance_bytes.is_empty() {
+            queue.write_buffer(&self.instances, 0, &self.instance_bytes);
         }
 
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -671,6 +677,8 @@ pub struct SpriteRenderer {
     instances: wgpu::Buffer,
     /// Quads the instance buffer can hold before it has to be replaced.
     capacity: u64,
+    /// CPU staging bytes for the ordinary sprite pass's instance upload.
+    instance_bytes: Vec<u8>,
     /// The cutaway draw has its own buffer because `Queue::write_buffer` is
     /// applied before the frame's encoder is submitted: sharing `instances`
     /// would make the opaque draw read the private layer's rows as well.
@@ -712,6 +720,8 @@ pub struct SpriteRenderer {
     volumes: wgpu::Buffer,
     /// Boxes it can hold before it has to be replaced.
     volume_capacity: u64,
+    /// CPU staging bytes for the ordinary sprite pass's volume upload.
+    volume_bytes: Vec<u8>,
     cutaway_volumes: wgpu::Buffer,
     cutaway_volume_capacity: u64,
     /// Everything [`SpriteRenderer::new`] built the bind group out of, kept for
@@ -1292,6 +1302,7 @@ impl SpriteRenderer {
             quad,
             instances,
             capacity: INITIAL_QUADS,
+            instance_bytes: Vec::new(),
             cutaway_instances,
             cutaway_capacity: INITIAL_QUADS,
             mask_instances,
@@ -1306,6 +1317,7 @@ impl SpriteRenderer {
             fringe: crate::impostor::Fringe::default(),
             volumes,
             volume_capacity: 1,
+            volume_bytes: Vec::new(),
             cutaway_volumes,
             cutaway_volume_capacity: 1,
             layout,
@@ -1404,17 +1416,19 @@ impl SpriteRenderer {
             self.capacity = (quads.len() as u64).next_power_of_two();
             self.instances = new_static_instance_buffer(device, self.capacity);
         }
-        let mut instance_bytes = Vec::with_capacity(quads.len() * SpriteQuad::STRIDE as usize);
+        self.instance_bytes.clear();
+        self.instance_bytes
+            .reserve(quads.len() * SpriteQuad::STRIDE as usize);
         for quad in quads {
-            quad.write(&mut instance_bytes);
+            quad.write(&mut self.instance_bytes);
         }
-        if instance_bytes.is_empty() {
+        if self.instance_bytes.is_empty() {
             // Nothing to draw and nothing to clear: unlike the ground pass,
             // this one owns no pixels of its own, so an empty pass would only
             // cost a submission.
             return;
         }
-        queue.write_buffer(&self.instances, 0, &instance_bytes);
+        queue.write_buffer(&self.instances, 0, &self.instance_bytes);
 
         // The boxes, and the bind group again if they no longer fit. The buffer
         // is *in* the group, so growing it is not the one-line replacement the
@@ -1433,12 +1447,14 @@ impl SpriteRenderer {
                 &self.volumes,
             );
         }
-        let mut volume_bytes = Vec::with_capacity(boxes.len() * crate::impostor::Volume::STRIDE as usize);
+        self.volume_bytes.clear();
+        self.volume_bytes
+            .reserve(boxes.len() * crate::impostor::Volume::STRIDE as usize);
         for volume in boxes {
-            volume.write(&mut volume_bytes);
+            volume.write(&mut self.volume_bytes);
         }
-        if !volume_bytes.is_empty() {
-            queue.write_buffer(&self.volumes, 0, &volume_bytes);
+        if !self.volume_bytes.is_empty() {
+            queue.write_buffer(&self.volumes, 0, &self.volume_bytes);
         }
 
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {

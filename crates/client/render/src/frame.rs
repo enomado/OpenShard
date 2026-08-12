@@ -34,6 +34,7 @@ use openshard_protocol::direction::Direction;
 use openshard_protocol::world::Point;
 use openshard_uofiles::map::Map;
 use openshard_uofiles::tiledata::TileData;
+use std::time::{Duration, Instant};
 
 use crate::animate::StaticAnimations;
 use crate::atlas::{LandAtlas, StaticAtlas, TexmapAtlas};
@@ -386,6 +387,28 @@ pub struct Frame {
     pub statics: StaticGeometry,
 }
 
+/// CPU cost of the three map walks [`assemble_profiled`] makes.
+///
+/// This is diagnostic data rather than part of the picture: the ordinary
+/// [`assemble`] API deliberately keeps returning only its [`Frame`]. The app
+/// keeps these measurements beside a jank record to distinguish the lighting
+/// grid from ground and sprite collection at large zoom-outs.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct AssemblyCosts {
+    /// Lights and the occlusion grid.
+    pub lighting: Duration,
+    /// Land-tile quads.
+    pub ground: Duration,
+    /// Map statics and server items, including their impostor volumes.
+    pub statics: Duration,
+    /// Map-static placement, culling and volume construction.
+    pub static_walk: Duration,
+    /// Stable ordering of opaque and cutaway map statics.
+    pub static_sort: Duration,
+    /// Server-owned items folded into the static render pass.
+    pub items: Duration,
+}
+
 /// **Assemble one frame.** The only place the four collectors are called in
 /// sequence.
 ///
@@ -402,6 +425,15 @@ pub struct Frame {
 /// into them. The last two are one list because they are one pass over one
 /// atlas, and three of [`StaticGeometry`]'s four fields are addressed by index.
 pub fn assemble(inputs: Inputs<'_>) -> Frame {
+    assemble_profiled(inputs).0
+}
+
+/// [`assemble`], with the cost of each map walk kept for a caller's profiler.
+///
+/// The geometry is byte-for-byte the same as [`assemble`]'s: timing surrounds
+/// existing phases only. Most callers should use [`assemble`]; the client uses
+/// this when it needs a jank log that can tell which collection phase grew.
+pub fn assemble_profiled(inputs: Inputs<'_>) -> (Frame, AssemblyCosts) {
     let Inputs {
         map,
         items,
@@ -428,6 +460,7 @@ pub fn assemble(inputs: Inputs<'_>) -> Frame {
         fades,
     } = inputs;
 
+    let lighting_started = Instant::now();
     let mut lighting = match sky {
         Some(ambient) => light::collect(
             map,
@@ -459,15 +492,18 @@ pub fn assemble(inputs: Inputs<'_>) -> Frame {
     }
     lighting.view = view;
     lighting.dead = dead;
+    let lighting_cost = lighting_started.elapsed();
 
     // **The lighting above was collected from the whole world, and only the
     // drawing below is filtered** — see [`Draw`]. A frame with the crowd ticked
     // off is the same street, lit the same way, with nobody standing in front of
     // the wall a person is trying to look at.
+    let ground_started = Instant::now();
     let ground = match draw.land {
         true => crate::ground::collect(map, camera, land, texmaps, cutaway),
         false => Vec::new(),
     };
+    let ground_cost = ground_started.elapsed();
 
     // What the sprites are met against. `Occlusion::EMPTY` is not a second way
     // to assemble a frame — it is what [`Impostor::Billboards`] *is*, named at
@@ -486,8 +522,9 @@ pub fn assemble(inputs: Inputs<'_>) -> Frame {
     // the grid, the flames, the ambient the tiles were given — exactly as it was.
     // Reaching the same picture by handing this function fewer items would be a
     // different world, lit differently, and the summary would not say so.
-    let mut geometry = match draw.statics {
-        true => crate::statics::collect_with_fades(
+    let statics_started = Instant::now();
+    let (mut geometry, static_costs) = match draw.statics {
+        true => crate::statics::collect_with_fades_profiled(
             map,
             camera,
             tiledata,
@@ -499,11 +536,12 @@ pub fn assemble(inputs: Inputs<'_>) -> Frame {
             player_mask,
             fades,
         ),
-        false => StaticGeometry::default(),
+        false => (StaticGeometry::default(), crate::statics::CollectCosts::default()),
     };
     // Through the same pass as the map's statics, because they are the same
     // atlas: one draw call binds one texture, and what covers what is the depth
     // these carry rather than the order they are appended in.
+    let items_started = Instant::now();
     if draw.items {
         geometry.absorb(crate::items::collect_with_fades(
             items,
@@ -518,10 +556,22 @@ pub fn assemble(inputs: Inputs<'_>) -> Frame {
             fades,
         ));
     }
+    let items_cost = items_started.elapsed();
 
-    Frame {
-        lighting,
-        ground,
-        statics: geometry,
-    }
+    let statics_cost = statics_started.elapsed();
+    (
+        Frame {
+            lighting,
+            ground,
+            statics: geometry,
+        },
+        AssemblyCosts {
+            lighting: lighting_cost,
+            ground: ground_cost,
+            statics: statics_cost,
+            static_walk: static_costs.walk,
+            static_sort: static_costs.sort,
+            items: items_cost,
+        },
+    )
 }

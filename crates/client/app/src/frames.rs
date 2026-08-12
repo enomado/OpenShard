@@ -59,6 +59,11 @@ use std::time::Duration;
 
 use openshard_client_render::bench::{Metrics, Reading};
 
+/// The CPU or GPU time a 60 Hz frame has available before it misses the next
+/// refresh. Kept below the actual 16.67 ms period so a frame that merely waits
+/// for VSync is never reported as work that caused jank.
+pub const JANK_BUDGET: Duration = Duration::from_millis(16);
+
 /// What the perf panels are allowed to know, gathered each frame.
 ///
 /// Self-contained on purpose: unlike the rest of [`crate::diagnostics::Hud`], nothing
@@ -187,6 +192,13 @@ impl Frame {
     /// is a client keeping up, whatever the wait was.
     pub fn build(self) -> Duration {
         self.ui + self.scene
+    }
+
+    /// Whether work this client or its GPU performed exceeded one refresh's
+    /// budget. `wait` is deliberately excluded: under VSync it is normally the
+    /// display pacing an otherwise idle client, not time spent rendering.
+    pub fn janks(self) -> bool {
+        self.build() > JANK_BUDGET || self.gpu.is_some_and(|gpu| gpu > JANK_BUDGET)
     }
 }
 
@@ -437,5 +449,32 @@ mod tests {
         let held = frames.frames();
         assert!(!held[0].repacked, "an ordinary frame");
         assert!(held[1].repacked, "the frame that evicted the atlas");
+    }
+
+    #[test]
+    fn a_frame_is_jank_only_when_cpu_or_gpu_work_misses_the_budget() {
+        let on_budget = Frame {
+            at: Duration::ZERO,
+            interval: Duration::from_millis(17),
+            ui: Duration::from_millis(8),
+            scene: Duration::from_millis(8),
+            wait: Duration::from_millis(20),
+            gpu: Some(Duration::from_millis(16)),
+            repacked: false,
+        };
+        assert!(!on_budget.janks(), "VSync wait is not rendering work");
+
+        let cpu_jank = Frame {
+            scene: Duration::from_millis(9),
+            ..on_budget
+        };
+        assert!(cpu_jank.janks(), "17 ms of CPU build misses 60 Hz");
+
+        let gpu_jank = Frame {
+            scene: Duration::from_millis(8),
+            gpu: Some(Duration::from_millis(17)),
+            ..on_budget
+        };
+        assert!(gpu_jank.janks(), "17 ms of GPU work misses 60 Hz");
     }
 }

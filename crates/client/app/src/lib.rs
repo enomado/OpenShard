@@ -68,6 +68,7 @@ mod frames;
 mod graphics;
 mod gump;
 mod input;
+mod jank;
 mod keys;
 mod link;
 mod net_command;
@@ -128,6 +129,14 @@ pub fn load_env() {
         Err(error) if error.not_found() => {}
         Err(error) => eprintln!("ignoring .env: {error}"),
     }
+}
+
+/// Begin writing jank frames to `path` for this process.
+///
+/// The playground calls this before it opens a window, giving every manual
+/// performance run one log that can be inspected after the process exits.
+pub fn start_jank_log(path: &Path) -> std::io::Result<()> {
+    jank::start_log(path)
 }
 
 use app::App;

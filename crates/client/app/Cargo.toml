@@ -55,6 +55,7 @@ egui-wgpu = { version = "0.35", default-features = false }
 # between them. No `net`: the sockets belong to `client/net`.
 tokio = { workspace = true, features = ["rt", "sync", "macros"] }
 tracing.workspace = true
+tracing-subscriber.workspace = true
 # What the HUD remembers between runs — see `desk.rs`. TOML because it sits
 # beside `openshard.toml` and is meant to be read and deleted by hand.
 serde.workspace = true

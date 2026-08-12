@@ -28,6 +28,7 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use openshard_client_model::Skill as SkillLine;
 use openshard_client_render::atlas::FontAtlas;
 use openshard_client_render::gump::{self, ArtFiles, GumpAtlas, GumpPixel, Picture, Scissor};
 use openshard_client_render::mobiles::EquipmentLayer;
@@ -288,8 +289,12 @@ fn skill_window(client: &Client, out: &Path) {
         // differ.
         |id| {
             Some(Standing {
-                value: u16::from(id.0) * 10,
-                cap: 1000,
+                skill: SkillLine {
+                    value: u16::from(id.0) * 10,
+                    base: 0,
+                    lock: SkillLock::Up,
+                    cap: 1000,
+                },
                 lock: match id.0 % 3 {
                     0 => SkillLock::Up,
                     1 => SkillLock::Down,
