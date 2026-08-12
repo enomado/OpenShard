@@ -20,14 +20,33 @@ retain their existing behaviour.
 - [ ] Real-install verification: facet-0 bake/load measurements require the
   client data files and the dedicated 2 GiB cgroup environment.
 
-Validation completed so far: movement tests, client-app tests, workspace check,
-formatting, and diff validation pass. The full workspace test run is currently
-blocked by two existing client-render attachment tests on the available
-downlevel adapter: `Rgba32Float` cannot be used as a render attachment there.
-Workspace clippy with warnings denied remains blocked by the pre-existing
-`clippy::precedence` warning in unrelated `client-render/src/sprite.rs`.
+Validation completed so far: on 2026-08-13 formatting passed, all 109 movement
+unit tests, four movement integration tests, and five movement doc-tests passed,
+and `openshard-client-app` passed `cargo check`. The full workspace test run is
+currently blocked by two existing client-render attachment tests on the
+available downlevel adapter: `Rgba32Float` cannot be used as a render attachment
+there. Workspace clippy with warnings denied remains blocked by the
+pre-existing `clippy::precedence` warning in unrelated
+`client-render/src/sprite.rs`. The client-app library test target also passed on
+this run: 178 tests passed and two diagnostic tests were ignored.
 
 ## Backlog
+
+- 🚩 **Review finding (2026-08-13): HUD replay still bypasses the transition
+  cache.** `Steering::plan_for` shares the plan within a frame, but
+  `picking_query::route_shown` turns its directions into points with fresh
+  `step_allowed` calls. Return a replayable plan result (or a cached replay)
+  and consume it for both movement and HUD; keep the real and doors-open
+  snapshots separate. Add a mutation test proving that a replay cannot outlive
+  the terrain snapshot.
+
+- 🚩 **Review finding (2026-08-13): cache invalidation is keyed only by the
+  authoritative item set.** `net_command::entered` intentionally retains the
+  plan across mobile-only updates, but the assumption that `WorldView.items`
+  is the complete input to `Cluttered::can_step` is not covered by an
+  integration test. Enumerate every production update that can alter the
+  predicate, assert the invalidation boundary, and measure which remaining
+  updates can safely retain the cache.
 
 - 🚩 **Real-install facet-0 measurements are still outstanding.** The current
   workspace has no verified run of the post-ML `7168x4096` bake/load procedure
