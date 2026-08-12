@@ -44,22 +44,12 @@ pub enum WeaponSkill {
 }
 
 impl WeaponSkill {
-    /// The `Skills` id this weapon trains and rolls its to-hit against.
+    /// The skill this weapon trains and rolls its to-hit against.
     ///
-    /// Off [`Skill`] rather than written out, because five of the eight were
-    /// **wrong** while they were hand-written constants — Fencing sat on Cooking's
-    /// id, Macing on Discordance's, Tactics on Poisoning's, Wrestling on
-    /// Tailoring's and Swords on Mace Fighting's. Nothing in the engine noticed:
-    /// the roll trained whatever id it was handed, so a swordsman's gains appeared
-    /// on the client's Mace Fighting bar. The ids belong to the client, so they
-    /// come from the client's own table.
-    #[must_use]
-    pub const fn skill_id(self) -> u8 {
-        self.skill().id()
-    }
-
-    /// The same mapping as [`skill_id`](Self::skill_id), as the domain type rather
-    /// than its wire byte — what everything except a wire/test boundary wants.
+    /// The mapping is kept in [`Skill`] rather than written out as raw ids,
+    /// because five of the eight were **wrong** while they were hand-written
+    /// constants. The ids belong to the client, so they come from the client's
+    /// own table, and callers keep the domain type until a wire boundary.
     #[must_use]
     pub const fn skill(self) -> Skill {
         match self {
@@ -382,13 +372,13 @@ mod tests {
 
     #[test]
     fn a_skills_id_comes_from_the_clients_table() {
-        assert_eq!(WeaponSkill::Swords.skill_id(), Skill::Swords.id());
-        assert_eq!(WeaponSkill::Wrestling.skill_id(), Skill::Wrestling.id());
+        assert_eq!(WeaponSkill::Swords.skill(), Skill::Swords);
+        assert_eq!(WeaponSkill::Wrestling.skill(), Skill::Wrestling);
         // The five that were wrong as hand-written constants; pinned so a future
         // edit cannot quietly put Fencing back on Cooking's row.
-        assert_eq!(WeaponSkill::Swords.skill_id(), 40);
-        assert_eq!(WeaponSkill::Macing.skill_id(), 41);
-        assert_eq!(WeaponSkill::Fencing.skill_id(), 42);
-        assert_eq!(WeaponSkill::Archery.skill_id(), 31);
+        assert_eq!(WeaponSkill::Swords.skill().id(), 40);
+        assert_eq!(WeaponSkill::Macing.skill().id(), 41);
+        assert_eq!(WeaponSkill::Fencing.skill().id(), 42);
+        assert_eq!(WeaponSkill::Archery.skill().id(), 31);
     }
 }
