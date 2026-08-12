@@ -185,7 +185,11 @@ impl World {
                         ranged: c.ranged,
                         ranged_kind: c.ranged_kind,
                         wander: c.wander,
-                        skills: c.skills.clone(),
+                        skills: c
+                            .skills
+                            .iter()
+                            .map(|(skill, value)| (skill.id(), *value))
+                            .collect(),
                     })
                     .collect(),
             })
@@ -226,7 +230,13 @@ impl World {
                     ranged: c.ranged,
                     ranged_kind: c.ranged_kind,
                     wander: c.wander,
-                    skills: c.skills,
+                    skills: c
+                        .skills
+                        .into_iter()
+                        .filter_map(|(id, value)| {
+                            openshard_state::Skill::from_id(id).map(|skill| (skill, value))
+                        })
+                        .collect(),
                 })
                 .collect();
             let mut spawner = crate::spawner::Spawner::new(

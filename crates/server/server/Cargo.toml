@@ -31,6 +31,7 @@ openshard-persistence.workspace = true
 openshard-protocol.workspace = true
 openshard-quests.workspace = true
 openshard-scripting.workspace = true
+openshard-state.workspace = true
 openshard-uofiles.workspace = true
 openshard-world.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "signal", "sync", "time"] }

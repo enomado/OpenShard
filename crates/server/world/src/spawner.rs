@@ -14,6 +14,7 @@
 use openshard_protocol::mobile::Notoriety;
 use openshard_protocol::wire::{Graphic, Hue};
 use openshard_protocol::world::{Aggression, DamageType, Facet, PhysicalResistance, RangedRange, Sight};
+use openshard_state::Skill;
 
 /// One creature a spawn region may put down. The fields a spawn needs beyond the
 /// where — mirrors [`crate::tick::Command::SpawnMobile`] minus the position, which
@@ -52,7 +53,7 @@ pub struct CreatureTemplate {
     pub wander: bool,
     /// Trained combat skills, `(skill id, value in tenths)` — what makes a
     /// spawner's monsters roll to hit and scale damage like a player.
-    pub skills: Vec<(u8, u16)>,
+    pub skills: Vec<(Skill, u16)>,
 }
 
 /// The box a region spawns within: a top-left tile, a size, and a facet.

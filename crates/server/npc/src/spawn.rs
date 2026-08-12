@@ -8,12 +8,12 @@ use openshard_protocol::mobile::Notoriety;
 use openshard_protocol::serial::{Serial, SerialKind};
 use openshard_protocol::wire::{Graphic, Hue, Layer};
 use openshard_protocol::world::{DamageType, Facet, PhysicalResistance, Point, RangedRange, Sight};
-use openshard_state::WorldState;
 use openshard_state::components::{
     Aggression, Banker, Body, Brain, Fame, Heading, Healer, Hitpoints, Karma, MeleeDamage, Movement, Name,
     NightHome, Npc, Position, RangedAttack, Resistance, Skills, SwingSpeed, Title, body_opens_doors,
     creature_name,
 };
+use openshard_state::{Skill, WorldState};
 use tracing::{debug, warn};
 
 use openshard_items as items;
@@ -105,7 +105,7 @@ pub struct SpawnSpec {
     /// Anatomy and the weapon skills. Without these a creature has no `Skills`
     /// sheet, so its blows always land unscaled (the combat gate); with them it
     /// rolls to hit and scales damage like a player.
-    pub skills: Vec<(u8, u16)>,
+    pub skills: Vec<(Skill, u16)>,
 }
 
 /// Put a mobile in the world. See `Command::SpawnMobile`.
@@ -221,10 +221,8 @@ pub fn spawn(state: &mut WorldState, spec: SpawnSpec) -> Option<EntityId> {
     // roll and damage scaling for this creature (see `combat::check_hit`).
     if !skills.is_empty() {
         let mut sheet = Skills::default();
-        for (id, value) in skills {
-            if let Some(skill) = openshard_state::skill::Skill::from_id(id) {
-                sheet.set(skill, value);
-            }
+        for (skill, value) in skills {
+            sheet.set(skill, value);
         }
         state.registry.insert(entity, sheet);
     }

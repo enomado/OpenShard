@@ -3224,6 +3224,7 @@ dependencies = [
  "openshard-protocol",
  "openshard-quests",
  "openshard-scripting",
+ "openshard-state",
  "openshard-uofiles",
  "openshard-world",
  "tokio",

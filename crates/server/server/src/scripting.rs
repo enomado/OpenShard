@@ -21,6 +21,7 @@ use openshard_protocol::wire::{Graphic, Hue};
 #[cfg(test)]
 use openshard_protocol::world::{Aggression, DamageType};
 use openshard_scripting::{Command as ScriptCommand, DenoEngine, Event as ScriptEvent, ScriptEngine};
+use openshard_state::Skill;
 use openshard_world::events::{
     AdminMenuAction, CorpseCreated, GumpAnswered, MobileMoved, MobileSpawned, PlayerEntered, PlayerLeft,
     SpellRequested, StepRefused,
@@ -441,7 +442,10 @@ fn into_world(command: ScriptCommand) -> Option<Command> {
                     )
                 })
                 .collect(),
-            skills,
+            skills: skills
+                .into_iter()
+                .filter_map(|(id, value)| Skill::from_id(id).map(|skill| (skill, value)))
+                .collect(),
         },
         ScriptCommand::Damage {
             serial,
@@ -612,7 +616,11 @@ fn into_world(command: ScriptCommand) -> Option<Command> {
                         ranged: c.ranged,
                         ranged_kind: c.ranged_kind,
                         wander: c.wander,
-                        skills: c.skills,
+                        skills: c
+                            .skills
+                            .into_iter()
+                            .filter_map(|(id, value)| Skill::from_id(id).map(|skill| (skill, value)))
+                            .collect(),
                     })
                     .collect(),
                 max_count,

@@ -7,6 +7,7 @@ use openshard_protocol::wire::{Graphic, Hue, RawCharacterSlot};
 use openshard_protocol::world::{
     Aggression, DamageType, PhysicalResistance, PoisonLevel, RangedRange, Sight,
 };
+use openshard_state::Skill;
 
 /// How a character looks: its body graphic and hue. Chosen on the creation
 /// screen, or restored from the save.
@@ -595,7 +596,7 @@ pub enum Command {
         equipment: Vec<(Graphic, Layer, Hue)>,
         /// Trained combat skills, `(skill id, value in tenths)` — what turns on the
         /// to-hit roll and damage scaling for the creature.
-        skills: Vec<(u8, u16)>,
+        skills: Vec<(Skill, u16)>,
     },
     /// Deal damage to a mobile — a script or another mobile's blow.
     Damage {
