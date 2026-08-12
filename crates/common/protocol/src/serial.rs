@@ -131,6 +131,16 @@ impl fmt::Display for Serial {
     }
 }
 
+/// Serialising a protocol serial opens it only at the serialization boundary.
+///
+/// Script events are one such boundary: JavaScript sees the same raw number as
+/// the wire, while Rust keeps the checked identity typed up to that point.
+impl serde::Serialize for Serial {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_u32(self.raw())
+    }
+}
+
 /// The raw value an absent serial goes out as.
 ///
 /// Zero is what every reference writes for "no object": a `0xAA` that clears the

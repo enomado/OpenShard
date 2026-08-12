@@ -19,7 +19,7 @@
 
 use std::time::{Duration, Instant};
 
-use openshard_scripting::{DenoEngine, Event, ScriptEngine};
+use openshard_scripting::{DenoEngine, Event, ScriptEngine, Serial};
 
 /// One tick's budget: 50ms at 20Hz, mirrored from `world::TICK_INTERVAL` (not
 /// depended on, to keep this crate off the world graph).
@@ -80,7 +80,7 @@ fn bench(label: &str, hook: &str) {
     for serial in 1..=max {
         engine
             .deliver(&Event::PlayerEntered {
-                serial: serial.into(),
+                serial: Serial::new(serial).expect("benchmark serial is in the mobile pool"),
                 x: (serial % 6144) as u16,
                 y: (serial % 4096) as u16,
                 z: 0,
@@ -93,7 +93,9 @@ fn bench(label: &str, hook: &str) {
     // Warm up: let V8 tier the hook up to optimised code before timing.
     for _ in 0..3 {
         for serial in 1..=max {
-            engine.tick(serial.into()).expect("tick");
+            engine
+                .tick(Serial::new(serial).expect("benchmark serial is in the mobile pool"))
+                .expect("tick");
         }
         engine.take_commands();
     }
@@ -106,7 +108,9 @@ fn bench(label: &str, hook: &str) {
         let start = Instant::now();
         for _ in 0..rounds {
             for serial in 1..=count {
-                engine.tick(serial.into()).expect("tick");
+                engine
+                    .tick(Serial::new(serial).expect("benchmark serial is in the mobile pool"))
+                    .expect("tick");
             }
             engine.take_commands();
         }

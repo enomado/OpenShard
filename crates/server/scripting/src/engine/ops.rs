@@ -12,6 +12,7 @@ use openshard_protocol::world::{
 #[op2]
 #[serde]
 fn op_position(state: &mut OpState, serial: u32) -> Option<[i32; 3]> {
+    let serial = Serial::new(serial)?;
     state
         .borrow::<Host>()
         .entities
@@ -25,8 +26,11 @@ fn op_position(state: &mut OpState, serial: u32) -> Option<[i32; 3]> {
 /// value, just a push onto the outbox the engine drains after the hooks run.
 #[op2(fast)]
 fn op_move(state: &mut OpState, serial: u32, direction: u32) {
+    let Some(serial) = Serial::new(serial) else {
+        return;
+    };
     state.borrow_mut::<Host>().outbox.push(Command::Move {
-        serial: Serial::from(serial),
+        serial,
         direction: direction as u8,
     });
 }
@@ -237,8 +241,11 @@ fn op_spawn_mobile(state: &mut OpState, #[serde] spec: MobileSpec) {
 /// Deal damage to a mobile, of a kind (0 physical, 1 fire, …).
 #[op2(fast)]
 fn op_damage(state: &mut OpState, serial: u32, amount: u32, damage_type: u32, by: u32) {
+    let Some(serial) = Serial::new(serial) else {
+        return;
+    };
     state.borrow_mut::<Host>().outbox.push(Command::Damage {
-        serial: Serial::from(serial),
+        serial,
         amount: amount.min(u32::from(u16::MAX)) as u16,
         damage_type: damage_type.min(u32::from(u8::MAX)) as u8,
         by,
@@ -248,8 +255,11 @@ fn op_damage(state: &mut OpState, serial: u32, amount: u32, damage_type: u32, by
 /// Heal a mobile, up to its maximum.
 #[op2(fast)]
 fn op_heal(state: &mut OpState, serial: u32, amount: u32) {
+    let Some(serial) = Serial::new(serial) else {
+        return;
+    };
     state.borrow_mut::<Host>().outbox.push(Command::Heal {
-        serial: Serial::from(serial),
+        serial,
         amount: amount.min(u32::from(u16::MAX)) as u16,
     });
 }
@@ -283,8 +293,11 @@ struct CastSpec {
 /// the mana, reagents and skill roll happen on the tick.
 #[op2]
 fn op_cast_spell(state: &mut OpState, #[serde] spec: CastSpec) {
+    let Some(serial) = Serial::new(spec.serial) else {
+        return;
+    };
     state.borrow_mut::<Host>().outbox.push(Command::CastSpell {
-        serial: Serial::from(spec.serial),
+        serial,
         spell: spec.spell,
         target: spec.target,
         mana: spec.mana,
@@ -299,8 +312,11 @@ fn op_cast_spell(state: &mut OpState, #[serde] spec: CastSpec) {
 /// Set a mobile's skill value, in tenths.
 #[op2(fast)]
 fn op_set_skill(state: &mut OpState, serial: u32, skill: u32, value: u32) {
+    let Some(serial) = Serial::new(serial) else {
+        return;
+    };
     state.borrow_mut::<Host>().outbox.push(Command::SetSkill {
-        serial: Serial::from(serial),
+        serial,
         skill: skill as u8,
         value: value.min(u32::from(u16::MAX)) as u16,
     });
@@ -309,9 +325,12 @@ fn op_set_skill(state: &mut OpState, serial: u32, skill: u32, value: u32) {
 /// Override a weapon item's speed and damage — the pack's magic sword.
 #[op2(fast)]
 fn op_set_weapon(state: &mut OpState, serial: u32, speed: u32, min: u32, max: u32) {
+    let Some(serial) = Serial::new(serial) else {
+        return;
+    };
     let clamp = |v: u32| v.min(u32::from(u16::MAX)) as u16;
     state.borrow_mut::<Host>().outbox.push(Command::SetWeapon {
-        serial: Serial::from(serial),
+        serial,
         speed: clamp(speed),
         min: clamp(min),
         max: clamp(max),
@@ -321,8 +340,11 @@ fn op_set_weapon(state: &mut OpState, serial: u32, speed: u32, min: u32, max: u3
 /// Put poison on an item — a bottled dose, or a coating on a blade.
 #[op2(fast)]
 fn op_set_poison(state: &mut OpState, serial: u32, level: u32, charges: u32) {
+    let Some(serial) = Serial::new(serial) else {
+        return;
+    };
     state.borrow_mut::<Host>().outbox.push(Command::SetPoison {
-        serial: Serial::from(serial),
+        serial,
         level: PoisonLevel::new(level.min(u32::from(u8::MAX)) as u8),
         charges: charges.min(u32::from(u16::MAX)) as u16,
     });
@@ -331,9 +353,12 @@ fn op_set_poison(state: &mut OpState, serial: u32, level: u32, charges: u32) {
 /// Set a mobile's stats; strength re-caps hits, intelligence re-caps mana.
 #[op2(fast)]
 fn op_set_stats(state: &mut OpState, serial: u32, strength: u32, dexterity: u32, intelligence: u32) {
+    let Some(serial) = Serial::new(serial) else {
+        return;
+    };
     let clamp = |v: u32| v.min(u32::from(u16::MAX)) as u16;
     state.borrow_mut::<Host>().outbox.push(Command::SetStats {
-        serial: Serial::from(serial),
+        serial,
         strength: clamp(strength),
         dexterity: clamp(dexterity),
         intelligence: clamp(intelligence),
@@ -345,8 +370,11 @@ fn op_set_stats(state: &mut OpState, serial: u32, strength: u32, dexterity: u32,
 /// on the tick, not in the op.
 #[op2(fast)]
 fn op_use_skill(state: &mut OpState, serial: u32, skill: u32, min_skill: i32, max_skill: i32) {
+    let Some(serial) = Serial::new(serial) else {
+        return;
+    };
     state.borrow_mut::<Host>().outbox.push(Command::UseSkill {
-        serial: Serial::from(serial),
+        serial,
         skill: skill as u8,
         min_skill,
         max_skill,
@@ -356,8 +384,11 @@ fn op_use_skill(state: &mut OpState, serial: u32, skill: u32, min_skill: i32, ma
 /// Make a mobile speak — an NPC's line, a keyword answer.
 #[op2(fast)]
 fn op_say(state: &mut OpState, serial: u32, #[string] text: String, hue: u32) {
+    let Some(serial) = Serial::new(serial) else {
+        return;
+    };
     state.borrow_mut::<Host>().outbox.push(Command::Speak {
-        serial: Serial::from(serial),
+        serial,
         hue: hue.min(u32::from(u16::MAX)) as u16,
         text,
     });
@@ -367,9 +398,13 @@ fn op_say(state: &mut OpState, serial: u32, #[string] text: String, hue: u32) {
 /// brain. The world starts handing it to this script each tick.
 #[op2(fast)]
 fn op_control(state: &mut OpState, serial: u32) {
-    state.borrow_mut::<Host>().outbox.push(Command::Control {
-        serial: Serial::from(serial),
-    });
+    let Some(serial) = Serial::new(serial) else {
+        return;
+    };
+    state
+        .borrow_mut::<Host>()
+        .outbox
+        .push(Command::Control { serial });
 }
 
 /// Show a gump (a dialog window) to a mobile's client:
@@ -392,8 +427,11 @@ struct GumpSpec {
 /// Send a pack-built gump to a mobile's client.
 #[op2]
 fn op_gump(state: &mut OpState, #[serde] spec: GumpSpec) {
+    let Some(serial) = Serial::new(spec.serial) else {
+        return;
+    };
     state.borrow_mut::<Host>().outbox.push(Command::ShowGump {
-        serial: Serial::from(spec.serial),
+        serial,
         gump_id: spec.gump_id,
         x: spec.x,
         y: spec.y,
@@ -600,10 +638,13 @@ fn op_register_quests(state: &mut OpState, #[serde] spec: QuestsSpec) {
 /// exactly what a binding held in script memory did not.
 #[op2]
 fn op_bind_quest_giver(state: &mut OpState, serial: u32, #[serde] keys: Vec<String>) {
-    state.borrow_mut::<Host>().outbox.push(Command::BindQuestGiver {
-        serial: Serial::from(serial),
-        keys,
-    });
+    let Some(serial) = Serial::new(serial) else {
+        return;
+    };
+    state
+        .borrow_mut::<Host>()
+        .outbox
+        .push(Command::BindQuestGiver { serial, keys });
 }
 
 /// Make an NPC escortable: `op_make_escortable(serial, "Britain")`. An empty
@@ -611,10 +652,13 @@ fn op_bind_quest_giver(state: &mut OpState, serial: u32, #[serde] keys: Vec<Stri
 /// mobile.
 #[op2(fast)]
 fn op_make_escortable(state: &mut OpState, serial: u32, #[string] destination: String) {
-    state.borrow_mut::<Host>().outbox.push(Command::MakeEscortable {
-        serial: Serial::from(serial),
-        destination,
-    });
+    let Some(serial) = Serial::new(serial) else {
+        return;
+    };
+    state
+        .borrow_mut::<Host>()
+        .outbox
+        .push(Command::MakeEscortable { serial, destination });
 }
 
 /// Close an open gump on a player's client: `op_close_gump(serial, gumpId)`.
@@ -622,10 +666,13 @@ fn op_make_escortable(state: &mut OpState, serial: u32, #[string] destination: S
 /// client stacks them.
 #[op2(fast)]
 fn op_close_gump(state: &mut OpState, serial: u32, gump_id: u32) {
-    state.borrow_mut::<Host>().outbox.push(Command::CloseGump {
-        serial: Serial::from(serial),
-        gump_id,
-    });
+    let Some(serial) = Serial::new(serial) else {
+        return;
+    };
+    state
+        .borrow_mut::<Host>()
+        .outbox
+        .push(Command::CloseGump { serial, gump_id });
 }
 
 /// Send a player a private system line: `op_message(serial, text)`. The server
@@ -633,18 +680,24 @@ fn op_close_gump(state: &mut OpState, serial: u32, gump_id: u32) {
 /// for everyone in earshot.
 #[op2(fast)]
 fn op_message(state: &mut OpState, serial: u32, #[string] text: String) {
-    state.borrow_mut::<Host>().outbox.push(Command::Message {
-        serial: Serial::from(serial),
-        text,
-    });
+    let Some(serial) = Serial::new(serial) else {
+        return;
+    };
+    state
+        .borrow_mut::<Host>()
+        .outbox
+        .push(Command::Message { serial, text });
 }
 
 /// Play a sound for one player: `op_play_sound(serial, sound)` — feedback on
 /// something only they did.
 #[op2(fast)]
 fn op_play_sound(state: &mut OpState, serial: u32, sound: u32) {
+    let Some(serial) = Serial::new(serial) else {
+        return;
+    };
     state.borrow_mut::<Host>().outbox.push(Command::PlaySound {
-        serial: Serial::from(serial),
+        serial,
         sound: sound.min(u32::from(u16::MAX)) as u16,
     });
 }
@@ -666,8 +719,11 @@ struct GiveSpec {
 /// Put an item into a player's backpack.
 #[op2]
 fn op_give_item(state: &mut OpState, #[serde] spec: GiveSpec) {
+    let Some(serial) = Serial::new(spec.serial) else {
+        return;
+    };
     state.borrow_mut::<Host>().outbox.push(Command::GiveItem {
-        serial: Serial::from(spec.serial),
+        serial,
         graphic: spec.graphic,
         hue: spec.hue,
         amount: spec.amount,
@@ -679,8 +735,11 @@ fn op_give_item(state: &mut OpState, #[serde] spec: GiveSpec) {
 /// N" turn-in. All-or-nothing; the result returns as an `ItemsTaken` event.
 #[op2(fast)]
 fn op_take_item(state: &mut OpState, serial: u32, graphic: u32, amount: u32) {
+    let Some(serial) = Serial::new(serial) else {
+        return;
+    };
     state.borrow_mut::<Host>().outbox.push(Command::TakeItem {
-        serial: Serial::from(serial),
+        serial,
         graphic: graphic.min(u32::from(u16::MAX)) as u16,
         amount: amount.min(u32::from(u16::MAX)) as u16,
     });
@@ -1044,6 +1103,9 @@ struct StockSpec {
 /// Fill a vendor's stock crate with priced goods.
 #[op2]
 fn op_stock(state: &mut OpState, #[serde] spec: StockSpec) {
+    let Some(serial) = Serial::new(spec.serial) else {
+        return;
+    };
     let stock = spec
         .items
         .into_iter()
@@ -1055,10 +1117,10 @@ fn op_stock(state: &mut OpState, #[serde] spec: StockSpec) {
             name: line.name,
         })
         .collect();
-    state.borrow_mut::<Host>().outbox.push(Command::StockVendor {
-        serial: spec.serial,
-        stock,
-    });
+    state
+        .borrow_mut::<Host>()
+        .outbox
+        .push(Command::StockVendor { serial, stock });
 }
 
 /// Put an item into a container by serial — a pack dropping loot into a corpse
@@ -1066,6 +1128,9 @@ fn op_stock(state: &mut OpState, #[serde] spec: StockSpec) {
 /// pile; a discrete piece (a weapon) is placed whole.
 #[op2(fast)]
 fn op_add_loot(state: &mut OpState, container: u32, graphic: u32, hue: u32, amount: u32, stackable: bool) {
+    let Some(container) = Serial::new(container) else {
+        return;
+    };
     state.borrow_mut::<Host>().outbox.push(Command::AddLoot {
         container,
         graphic: graphic.min(u32::from(u16::MAX)) as u16,
@@ -1080,6 +1145,9 @@ fn op_add_loot(state: &mut OpState, container: u32, graphic: u32, hue: u32, amou
 /// the whole item; a smaller amount takes that many off a stackable pile.
 #[op2(fast)]
 fn op_consume_item(state: &mut OpState, serial: u32, amount: u32) {
+    let Some(serial) = Serial::new(serial) else {
+        return;
+    };
     state.borrow_mut::<Host>().outbox.push(Command::ConsumeItem {
         serial,
         amount: amount.min(u32::from(u16::MAX)) as u16,

@@ -32,47 +32,12 @@
 mod engine;
 
 use openshard_protocol::mobile::Notoriety;
+pub use openshard_protocol::serial::Serial;
 use openshard_protocol::world::{
     Aggression, DamageType, Facet, PhysicalResistance, PoisonLevel, RangedRange, Sight,
 };
 
 pub use engine::DenoEngine;
-
-/// A wire serial: the identity every packet about a mobile already carries, and
-/// so the identity a script names an entity by.
-///
-/// A plain `u32` on purpose. The scripting layer has no opinion about how the
-/// world stores entities — it speaks the same identity the protocol does, and
-/// the glue that owns both maps one to the other.
-#[repr(transparent)]
-#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Debug, Default, serde::Serialize)]
-pub struct Serial(u32);
-
-impl Serial {
-    /// The raw value sent to or received from the script runtime.
-    #[must_use]
-    pub const fn raw(self) -> u32 {
-        self.0
-    }
-}
-
-impl From<u32> for Serial {
-    fn from(value: u32) -> Self {
-        Self(value)
-    }
-}
-
-impl From<Serial> for u32 {
-    fn from(value: Serial) -> Self {
-        value.0
-    }
-}
-
-impl std::borrow::Borrow<u32> for Serial {
-    fn borrow(&self) -> &u32 {
-        &self.0
-    }
-}
 
 /// Something the world says happened, handed to a script.
 ///
@@ -174,7 +139,10 @@ pub enum Event {
         body: u16,
         /// Who dealt the killing blow, if known — `0` when unattributed. Lets a
         /// pack credit a kill to a player (a quest's "slay N").
-        killer: Serial,
+        ///
+        /// This stays raw because it is the JS serialization boundary: zero is
+        /// the script API's absence sentinel, never a `Serial`.
+        killer: u32,
     },
     /// A creature's corpse was laid — the loot hook. A pack matches on `body` and
     /// fills the corpse (by `corpse` serial) with its per-creature table, on top
@@ -286,7 +254,10 @@ pub enum Event {
         /// Which quest, by the pack's key.
         key: String,
         /// Who it was turned in to, or `0`.
-        giver: Serial,
+        ///
+        /// This is the JS serialization boundary's absence sentinel, not a
+        /// `Serial` that could name an object.
+        giver: u32,
     },
     /// A player answered a pack-built gump (from `op_gump`) — the reply seam. The
     /// pack matches on `gump_id` and reads `button` (0 = closed) to know the
@@ -443,7 +414,7 @@ pub enum Command {
     /// Fill a vendor's stock crate with priced goods.
     StockVendor {
         /// The vendor mobile's wire serial.
-        serial: u32,
+        serial: Serial,
         /// The goods, priced and labelled.
         stock: Vec<StockItem>,
     },
@@ -451,7 +422,7 @@ pub enum Command {
     /// corpse off a [`CorpseCreated`](Event::CorpseCreated) event.
     AddLoot {
         /// The container's wire serial.
-        container: u32,
+        container: Serial,
         /// The item graphic.
         graphic: u16,
         /// Its hue, or 0.
@@ -465,7 +436,7 @@ pub enum Command {
     /// potion, a read-once scroll).
     ConsumeItem {
         /// The item's wire serial.
-        serial: u32,
+        serial: Serial,
         /// How many to take: 0 (or the whole stack) removes the item, a smaller
         /// amount decrements a stackable pile.
         amount: u16,
