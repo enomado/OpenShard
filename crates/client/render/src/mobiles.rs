@@ -297,13 +297,13 @@ pub fn needed_animations(mobiles: &[Mobile], equip_conv: &EquipConv) -> Vec<(Gra
 /// a walking body (`Filter(order, includeBackpack: false, ...)` in
 /// `PaperdollOrder.BuildInWorld`).
 ///
-/// Borrows the matching worn layers in their draw order. The order table owns
-/// its short list of slots, but the renderer does not need a second allocation
-/// to copy each matching `EquipmentLayer` out of the mobile.
+/// Borrows the matching worn layers in their draw order. The fixed order table
+/// and the renderer both avoid allocation and never copy an `EquipmentLayer`
+/// out of the mobile.
 fn drawn_layers<'a>(mobile: &'a Mobile) -> impl Iterator<Item = &'a EquipmentLayer> + 'a {
     let alt_torso =
         openshard_uofiles::anim::is_female(mobile.body) || openshard_uofiles::anim::is_gargoyle(mobile.body);
-    crate::paperdoll::world_order(&mobile.equipment, alt_torso, mobile.facing)
+    crate::paperdoll::world_ordered(&mobile.equipment, alt_torso, mobile.facing)
         .into_iter()
         .filter_map(move |layer| mobile.equipment.iter().find(|item| item.layer == layer))
 }

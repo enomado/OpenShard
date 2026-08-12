@@ -307,6 +307,33 @@ pub struct Wearer<'a> {
 /// `0x00..=0x18`, sentinel included.
 const LAYERS: usize = 0x19;
 
+/// The fixed-size answer the paperdoll tables produce before a caller chooses
+/// whether it needs owned storage. There can never be more entries than table
+/// slots, so the walking-body renderer need not allocate a `Vec` just to walk
+/// this order once.
+struct LayerOrder {
+    layers: [Layer; LAYERS],
+    len: usize,
+}
+
+impl LayerOrder {
+    fn from_table(table: [Layer; LAYERS]) -> Self {
+        let mut layers = [SENTINEL; LAYERS];
+        let mut len = 0;
+        for layer in table {
+            if layer != SENTINEL && layer != Layer::MOUNT && layer != Layer::BACKPACK {
+                layers[len] = layer;
+                len += 1;
+            }
+        }
+        Self { layers, len }
+    }
+
+    fn into_iter(self) -> impl Iterator<Item = Layer> {
+        self.layers.into_iter().take(self.len)
+    }
+}
+
 /// The layer byte that is not a layer: `Layer.Invalid`, which the base tables
 /// carry at index zero so that a layer's index in the table and its number stay
 /// separate ideas. Dropped by [`order`].
@@ -438,10 +465,7 @@ pub fn order(equipment: &[EquipmentLayer], alt_torso: bool) -> Vec<Layer> {
     let graphic = by_layer(equipment);
     let mut order = base_table(&graphic, alt_torso);
     reorder(&mut order, &graphic);
-    order
-        .into_iter()
-        .filter(|layer| *layer != SENTINEL && *layer != Layer::MOUNT && *layer != Layer::BACKPACK)
-        .collect()
+    LayerOrder::from_table(order).into_iter().collect()
 }
 
 /// The same, for a body walking around the world rather than standing on a
@@ -460,9 +484,23 @@ pub fn order(equipment: &[EquipmentLayer], alt_torso: bool) -> Vec<Layer> {
 /// (`layerDir` in `MobileView.Draw`), and it must, because the two halves it
 /// folds together want the cloak in different places.
 pub fn world_order(equipment: &[EquipmentLayer], alt_torso: bool, facing: Direction) -> Vec<Layer> {
-    let mut layers = order(equipment, alt_torso);
+    world_ordered(equipment, alt_torso, facing).collect()
+}
+
+/// The walking body's layer order without an owned allocation. The public
+/// [`world_order`] remains a `Vec` because paperdoll callers retain it; the
+/// renderer only walks it and therefore uses this iterator directly.
+pub(crate) fn world_ordered(
+    equipment: &[EquipmentLayer],
+    alt_torso: bool,
+    facing: Direction,
+) -> impl Iterator<Item = Layer> {
+    let graphic = by_layer(equipment);
+    let mut table = base_table(&graphic, alt_torso);
+    reorder(&mut table, &graphic);
+    let mut layers = LayerOrder::from_table(table);
     place_cloak(&mut layers, facing);
-    layers
+    layers.into_iter()
 }
 
 /// Move the cloak to where `facing` wants it — `PaperdollOrder.ApplyDirectionCloak`,
@@ -482,20 +520,23 @@ pub fn world_order(equipment: &[EquipmentLayer], alt_torso: bool, facing: Direct
 /// each index. Which is also why it runs after the per-graphic rules and not
 /// instead of them — the quiver that borrows the cloak layer is moved by both,
 /// and the facing has the last word, exactly as the reference sequences them.
-fn place_cloak(layers: &mut Vec<Layer>, facing: Direction) {
+fn place_cloak(layers: &mut LayerOrder, facing: Direction) {
+    let layers = &mut layers.layers[..layers.len];
     let Some(worn) = layers.iter().position(|layer| *layer == Layer::CLOAK) else {
         return;
     };
-    layers.remove(worn);
+    layers.copy_within(worn + 1.., worn);
     let at = match facing {
-        Direction::North => layers.len(),
+        Direction::North => layers.len() - 1,
         Direction::SouthEast => 0,
         _ => layers
             .iter()
+            .take(layers.len() - 1)
             .position(|layer| *layer == Layer::HELMET)
-            .unwrap_or(layers.len()),
+            .unwrap_or(layers.len() - 1),
     };
-    layers.insert(at, Layer::CLOAK);
+    layers.copy_within(at..layers.len() - 1, at + 1);
+    layers[at] = Layer::CLOAK;
 }
 
 /// Which of the three base tables this outfit starts from.
