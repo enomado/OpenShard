@@ -128,7 +128,10 @@ fn make_poison(state: &mut WorldState, actor: EntityId, args: &[&str]) {
     };
     state.registry.insert(
         potion,
-        openshard_state::components::PoisonCharges { level, charges: 1 },
+        openshard_state::components::PoisonCharges {
+            level: openshard_protocol::world::PoisonLevel::new(level),
+            charges: 1,
+        },
     );
     let names = [
         "a lesser poison potion",

@@ -21,6 +21,7 @@ use openshard_state::instrument::{INSTRUMENT_MAX_USES, INSTRUMENT_MIN_USES, inst
 
 use openshard_entities::{EntityId, Registry};
 use openshard_protocol::wire::Graphic;
+use openshard_protocol::world::PoisonLevel;
 
 /// Give a freshly made item whatever its graphic implies.
 ///
@@ -56,7 +57,7 @@ pub fn apply_core_defaults(state: &mut WorldState, item: EntityId, graphic: Grap
         return;
     }
     if graphic == POISON_POTION_GRAPHIC {
-        let level = poison_level_of(state, item);
+        let level = PoisonLevel::new(poison_level_of(state, item));
         state.registry.insert(item, PoisonCharges { level, charges: 1 });
         return;
     }

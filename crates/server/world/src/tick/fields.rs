@@ -141,7 +141,12 @@ impl World {
                         Some(caster),
                     ),
                     FieldKind::Poison => {
-                        combat::apply_poison(&mut self.state, victim, POISON_FIELD_LEVEL, now);
+                        combat::apply_poison(
+                            &mut self.state,
+                            victim,
+                            openshard_protocol::world::PoisonLevel::new(POISON_FIELD_LEVEL),
+                            now,
+                        );
                     }
                     FieldKind::Paralyze => {
                         // No-op if already caught, so the field cannot pin forever.

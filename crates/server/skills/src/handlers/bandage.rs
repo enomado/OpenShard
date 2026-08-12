@@ -213,7 +213,7 @@ pub fn finish_bandages(state: &mut WorldState) -> Vec<BandageFinished> {
         if let Some(&Poisoned { level, .. }) = state.registry.get::<Poisoned>(patient) {
             // A cure: 60.0 in both, then `(healing - 30)/50 - level/10`.
             let able = healing >= CURE_NEEDS && anatomy >= CURE_NEEDS;
-            let chance = (i32::from(healing) - 300) * 1000 / 500 - i32::from(level) * 100;
+            let chance = (i32::from(healing) - 300) * 1000 / 500 - i32::from(level.get()) * 100;
             if able && chance > i32::try_from(state.rng.below(1000)).unwrap_or(0) {
                 state.localized_message(healer, CURED, "");
                 finished.push(BandageFinished {

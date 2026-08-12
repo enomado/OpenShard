@@ -20,7 +20,11 @@
 use openshard_protocol::identity::{AccountName, CharacterName};
 use openshard_protocol::mobile::Notoriety;
 use openshard_protocol::serial::Serial;
-use openshard_protocol::world::{Aggression, DamageType, PhysicalResistance, RangedRange, Sight};
+#[cfg(test)]
+use openshard_protocol::world::PoisonLevel;
+use openshard_protocol::world::{
+    Aggression, DamageType, FollowerSlots, PhysicalResistance, RangedRange, Sight,
+};
 use serde::{Deserialize, Serialize};
 
 /// The persisted state of a container trap.
@@ -679,7 +683,7 @@ pub struct PetData {
     #[serde(with = "serial")]
     pub owner: Serial,
     /// How many follower slots it fills.
-    pub slots: u8,
+    pub slots: FollowerSlots,
     /// What it was last told: 0 follow, 1 come, 2 stay, 3 guard, 4 attack, 5 stop.
     /// Numbered by hand, like the effect kinds, so the on-disk meaning cannot drift
     /// when the enum gains a variant.
@@ -1078,6 +1082,28 @@ mod tests {
             serde_json::from_str::<PhysicalResistance>("255").expect("legacy resistance deserialises"),
             PhysicalResistance::new(100),
             "out-of-range legacy input keeps the runtime's historic 100% cap"
+        );
+    }
+
+    #[test]
+    fn poison_level_keeps_its_numeric_saved_representation() {
+        let json = serde_json::to_string(&PoisonLevel::new(3)).expect("poison level serialises");
+        assert_eq!(json, "3", "a named poison level must not change saved JSON");
+        assert_eq!(
+            serde_json::from_str::<PoisonLevel>("255").expect("legacy poison level deserialises"),
+            PoisonLevel::LETHAL,
+            "out-of-range legacy input keeps the runtime's historic lethal cap"
+        );
+    }
+
+    #[test]
+    fn follower_slots_keep_their_numeric_saved_representation() {
+        let json = serde_json::to_string(&FollowerSlots::new(3)).expect("follower slots serialise");
+        assert_eq!(json, "3", "a named slot cost must not change saved JSON");
+        assert_eq!(
+            serde_json::from_str::<FollowerSlots>("0").expect("legacy follower slots deserialise"),
+            FollowerSlots::ONE,
+            "a legacy zero keeps the runtime's historic minimum of one slot"
         );
     }
 

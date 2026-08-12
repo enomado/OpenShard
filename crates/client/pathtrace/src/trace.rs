@@ -175,11 +175,50 @@ pub struct Pixel {
     pub radiance: [f64; 3],
 }
 
+/// The dimensions of one rendered image.
+///
+/// A width belongs with the height it is measured against: together they name
+/// the pixel grid a camera, an image buffer, and a comparison all agree on.
+/// Keeping them in one value stops a caller from accidentally pairing the
+/// width of one frame with the height of another.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct ImageSize {
+    pub width: u32,
+    pub height: u32,
+}
+
+impl ImageSize {
+    pub const fn new(width: u32, height: u32) -> Self {
+        Self { width, height }
+    }
+
+    /// The number of pixels in this image.
+    pub const fn pixel_count(self) -> usize {
+        self.width as usize * self.height as usize
+    }
+}
+
+/// One pixel on an [`Image`]'s grid.
+///
+/// This is a coordinate in a rendered image, not a world position and not an
+/// index into the image's light list. Its bounds are checked by
+/// [`Image::visibility`], which is the image owning the grid.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct ImagePixel {
+    pub x: u32,
+    pub y: u32,
+}
+
+impl ImagePixel {
+    pub const fn new(x: u32, y: u32) -> Self {
+        Self { x, y }
+    }
+}
+
 /// A rendered frame.
 #[derive(Clone, PartialEq, Debug)]
 pub struct Image {
-    pub width: u32,
-    pub height: u32,
+    pub size: ImageSize,
     /// Row-major, `width * height` of them.
     pub pixels: Vec<Pixel>,
     lights: usize,
@@ -189,16 +228,18 @@ pub struct Image {
 }
 
 impl Image {
-    /// How much of `light` the pixel at `(x, y)` could see.
+    /// How much of `light` reaches `at`.
     ///
     /// # Panics
     ///
     /// On an out-of-range pixel or light index — both are programmer error in a
     /// caller that rendered the image it is now reading.
-    pub fn visibility(&self, x: u32, y: u32, light: LightIdx) -> Visibility {
+    pub fn visibility(&self, at: ImagePixel, light: LightIdx) -> Visibility {
         assert!(
-            x < self.width && y < self.height,
-            "pixel ({x}, {y}) is outside the frame"
+            at.x < self.size.width && at.y < self.size.height,
+            "pixel ({}, {}) is outside the frame",
+            at.x,
+            at.y
         );
         assert!(
             light.raw() < self.lights,
@@ -206,7 +247,7 @@ impl Image {
             light.raw(),
             self.lights
         );
-        self.visibility[((y * self.width + x) as usize) * self.lights + light.raw()]
+        self.visibility[((at.y * self.size.width + at.x) as usize) * self.lights + light.raw()]
     }
 
     /// Whether this image is an exact answer rather than an estimate.
@@ -246,7 +287,7 @@ struct Tally {
     reached: u32,
 }
 
-/// Render `scene`, from `camera`, at `width × height`.
+/// Render `scene`, from `camera`, at `size`.
 ///
 /// The pixel grid is the caller's: pixel `(x, y)` is sampled at its centre,
 /// `(x + 0.5, y + 0.5)`, in whatever coordinates the camera's own map produced.
@@ -258,8 +299,7 @@ pub fn render(
     camera: &Parallel,
     lights: &[Light],
     settings: &Settings,
-    width: u32,
-    height: u32,
+    size: ImageSize,
 ) -> Image {
     assert!(
         settings.brdf != Brdf::Flat || settings.bounces == 0,
@@ -271,17 +311,17 @@ pub fn render(
                 .exact_in_samples()
                 .is_some_and(|needed| needed <= settings.samples)
         });
-    let mut pixels = Vec::with_capacity((width * height) as usize);
-    let mut visibility = vec![Visibility::default(); (width * height) as usize * lights.len()];
+    let mut pixels = Vec::with_capacity(size.pixel_count());
+    let mut visibility = vec![Visibility::default(); size.pixel_count() * lights.len()];
     // One scratch buffer for the whole frame rather than one allocation a
     // pixel: `reached` and `considered` per light, reset at each pixel.
     // Per light: how many emitter samples arrived, how many faced the
     // surface at all, and how many were in reach — three counts because
     // there are three ways a pixel can end up dark.
     let mut tally = vec![Tally::default(); lights.len()];
-    for y in 0..height {
-        for x in 0..width {
-            let index = (y * width + x) as usize;
+    for y in 0..size.height {
+        for x in 0..size.width {
+            let index = (y * size.width + x) as usize;
             let mut stream = Stream::new(settings.seed, index as u64);
             let ray = camera.ray((f64::from(x) + 0.5, f64::from(y) + 0.5));
             let Some(first) = scene.hit(ray.at, ray.direction, f64::NEG_INFINITY) else {
@@ -325,8 +365,7 @@ pub fn render(
         }
     }
     Image {
-        width,
-        height,
+        size,
         pixels,
         lights: lights.len(),
         visibility,
@@ -474,7 +513,7 @@ fn cosine_hemisphere(normal: Vec3, stream: &mut Stream) -> Vec3 {
 
 #[cfg(test)]
 mod tests {
-    use super::{Brdf, Settings, cosine_hemisphere, render};
+    use super::{Brdf, ImagePixel, ImageSize, Settings, cosine_hemisphere, render};
     use crate::aabb::Aabb;
     use crate::camera::Parallel;
     use crate::light::{Emitter, Falloff, Light, LightIdx};
@@ -492,7 +531,7 @@ mod tests {
     }
 
     /// Every case below renders this much of the world.
-    const FRAME: u32 = 24;
+    const FRAME: ImageSize = ImageSize::new(24, 24);
 
     /// A three-unit box on the ground, in the middle of the frame rather than
     /// against its corner.
@@ -526,17 +565,17 @@ mod tests {
 
     /// Ground the box shadows: the segment from here to [`TORCH`] enters the box
     /// across `x = 10` at a third of its height and leaves across `y = 12`.
-    const SHADOWED: (u32, u32) = (8, 9);
+    const SHADOWED: ImagePixel = ImagePixel::new(8, 9);
 
     /// Ground it does not: the segment from here passes six units north of the
     /// box's own footprint.
-    const LIT: (u32, u32) = (2, 20);
+    const LIT: ImagePixel = ImagePixel::new(2, 20);
 
     /// And a pixel of the box's own lid.
-    const ON_THE_BOX: (u32, u32) = (11, 11);
+    const ON_THE_BOX: ImagePixel = ImagePixel::new(11, 11);
 
-    fn pixel_at(image: &super::Image, (x, y): (u32, u32)) -> super::Pixel {
-        image.pixels[(y * FRAME + x) as usize]
+    fn pixel_at(image: &super::Image, at: ImagePixel) -> super::Pixel {
+        image.pixels[(at.y * FRAME.width + at.x) as usize]
     }
 
     fn torch(at: Vec3, emitter: Emitter) -> Light {
@@ -558,7 +597,7 @@ mod tests {
         let point = [torch(TORCH, Emitter::Point)];
         let sphere = [torch(TORCH, Emitter::Sphere { radius: 1.0 })];
         let render_with = |lights: &[Light], settings: &Settings| {
-            render(&scene, &camera, lights, settings, 8, 8).is_exact()
+            render(&scene, &camera, lights, settings, ImageSize::new(8, 8)).is_exact()
         };
         assert!(
             render_with(&point, &Settings::degenerate()),
@@ -590,13 +629,12 @@ mod tests {
             &[torch(TORCH, Emitter::Point)],
             &Settings::degenerate(),
             FRAME,
-            FRAME,
         );
-        let shadowed = image.visibility(SHADOWED.0, SHADOWED.1, LightIdx::new(0));
+        let shadowed = image.visibility(SHADOWED, LightIdx::new(0));
         assert_eq!(shadowed.reached, 0.0, "the box stands in the way");
         assert!(shadowed.within_reach, "and the torch does reach this far");
         assert_eq!(
-            image.visibility(LIT.0, LIT.1, LightIdx::new(0)).reached,
+            image.visibility(LIT, LightIdx::new(0)).reached,
             1.0,
             "nothing between it and the torch"
         );
@@ -633,9 +671,8 @@ mod tests {
             &[far],
             &Settings::degenerate(),
             FRAME,
-            FRAME,
         );
-        let out = image.visibility(0, 0, LightIdx::new(0));
+        let out = image.visibility(ImagePixel::new(0, 0), LightIdx::new(0));
         assert!(!out.within_reach, "the corner is nowhere near a four-unit torch");
         assert_eq!(out.reached, 0.0, "so nothing arrives");
     }
@@ -658,9 +695,8 @@ mod tests {
             &[cellar],
             &Settings::degenerate(),
             FRAME,
-            FRAME,
         );
-        let ground = image.visibility(LIT.0, LIT.1, LightIdx::new(0));
+        let ground = image.visibility(LIT, LightIdx::new(0));
         assert!(!ground.faces_light, "the ground's own normal points away from it");
         assert!(ground.within_reach, "and it is well inside the torch's reach");
         assert_eq!(ground.reached, 0.0, "so nothing arrives, for that reason");
@@ -685,10 +721,9 @@ mod tests {
             at: Vec3::new(12.0, 12.0, -4.0),
             ..torch(TORCH, Emitter::Point)
         };
-        let render_with =
-            |settings| render(&one_box_scene(), &top_down(), &[cellar], &settings, FRAME, FRAME);
+        let render_with = |settings| render(&one_box_scene(), &top_down(), &[cellar], &settings, FRAME);
         let flat = render_with(like_the_engine());
-        let ground = flat.visibility(LIT.0, LIT.1, LightIdx::new(0));
+        let ground = flat.visibility(LIT, LightIdx::new(0));
         assert!(
             !ground.faces_light,
             "the geometry has not changed: this surface still points away"
@@ -704,7 +739,7 @@ mod tests {
         );
         assert_eq!(
             render_with(Settings::degenerate())
-                .visibility(LIT.0, LIT.1, LightIdx::new(0))
+                .visibility(LIT, LightIdx::new(0))
                 .reached,
             0.0,
             "and physics still says nothing arrives"
@@ -724,15 +759,14 @@ mod tests {
             &[torch(TORCH, Emitter::Point)],
             &like_the_engine(),
             FRAME,
-            FRAME,
         );
         assert_eq!(
-            image.visibility(SHADOWED.0, SHADOWED.1, LightIdx::new(0)).reached,
+            image.visibility(SHADOWED, LightIdx::new(0)).reached,
             0.0,
             "the box is another body, and it still stands in the way"
         );
         assert_eq!(
-            image.visibility(LIT.0, LIT.1, LightIdx::new(0)).reached,
+            image.visibility(LIT, LightIdx::new(0)).reached,
             1.0,
             "and open ground is open"
         );
@@ -747,20 +781,13 @@ mod tests {
         // `docs/lighting_rebuild.md`'s phase 0 asks for a statement about the
         // falloff rather than about the shading.
         let overhead = Light {
-            at: Vec3::new(f64::from(LIT.0) + 0.5, f64::from(LIT.1) + 0.5, 5.0),
+            at: Vec3::new(f64::from(LIT.x) + 0.5, f64::from(LIT.y) + 0.5, 5.0),
             ..torch(TORCH, Emitter::Point)
         };
         let under = |settings| {
-            let image = render(
-                &one_box_scene(),
-                &top_down(),
-                &[overhead],
-                &settings,
-                FRAME,
-                FRAME,
-            );
+            let image = render(&one_box_scene(), &top_down(), &[overhead], &settings, FRAME);
             assert_eq!(
-                image.visibility(LIT.0, LIT.1, LightIdx::new(0)).reached,
+                image.visibility(LIT, LightIdx::new(0)).reached,
                 1.0,
                 "lit either way"
             );
@@ -790,7 +817,6 @@ mod tests {
                 ..like_the_engine()
             },
             FRAME,
-            FRAME,
         );
     }
 
@@ -811,12 +837,11 @@ mod tests {
                     ..Settings::degenerate()
                 },
                 FRAME,
-                FRAME,
             );
-            (0..FRAME)
-                .flat_map(|y| (0..FRAME).map(move |x| (x, y)))
-                .filter(|(x, y)| {
-                    let seen = image.visibility(*x, *y, LightIdx::new(0)).reached;
+            (0..FRAME.height)
+                .flat_map(|y| (0..FRAME.width).map(move |x| ImagePixel::new(x, y)))
+                .filter(|at| {
+                    let seen = image.visibility(*at, LightIdx::new(0)).reached;
                     seen > 0.02 && seen < 0.98
                 })
                 .count()
@@ -839,8 +864,8 @@ mod tests {
             sky: [0.2; 3],
             seed: 4242,
         };
-        let first = render(&scene, &camera, &lights, &settings, FRAME, FRAME);
-        let again = render(&scene, &camera, &lights, &settings, FRAME, FRAME);
+        let first = render(&scene, &camera, &lights, &settings, FRAME);
+        let again = render(&scene, &camera, &lights, &settings, FRAME);
         assert_eq!(first, again, "a reference that moves between runs is not one");
     }
 
@@ -865,7 +890,6 @@ mod tests {
                     seed: 7,
                     ..Settings::degenerate()
                 },
-                FRAME,
                 FRAME,
             );
             pixel_at(&image, SHADOWED).radiance[0]

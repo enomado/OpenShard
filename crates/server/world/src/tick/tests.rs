@@ -45,6 +45,32 @@ pub(super) fn world() -> World {
     World::new(START)
 }
 
+/// The long-distance guide shares a facet's static-terrain lifetime: it is
+/// built exactly where `with_terrain` installs that terrain, and is absent for
+/// a mapless test facet. No AI consumes it yet, but this proves the capability
+/// is reachable rather than a client-only cache.
+#[test]
+fn a_mapped_facet_keeps_its_static_coarse_router() {
+    use openshard_movement::{LandTile, MapTerrain};
+    use openshard_protocol::world::Facet;
+    use openshard_uofiles::map::{LandCell, Map};
+    use openshard_uofiles::tiledata::TileData;
+
+    let map = Map::from_blocks(1, 1, |_, _| LandCell {
+        tile: LandTile(0),
+        z: 0,
+    });
+    let world = World::new(START).with_terrain(MapTerrain::new(map, TileData::empty()));
+    assert_eq!(
+        world
+            .state
+            .facet_state(Facet(0))
+            .coarse_router()
+            .map(|router| router.dimensions()),
+        Some((8, 8))
+    );
+}
+
 /// The first id of the band [`connection`] mints from.
 ///
 /// Deliberately far above every connection id written by hand in these tests —
@@ -4847,7 +4873,12 @@ fn poison_pulses_damage_then_wears_off() {
     let mob = spawn_mobile_at(&mut world, Point::new(START.0, START.1, 0), 50, now);
     let entity = world.registry().entity_of(mob).unwrap();
     let ticks = world.state.ticks;
-    combat::apply_poison(&mut world.state, mob, 2, ticks); // greater
+    combat::apply_poison(
+        &mut world.state,
+        mob,
+        openshard_protocol::world::PoisonLevel::new(2),
+        ticks,
+    ); // greater
     assert!(world.registry().get::<Poisoned>(entity).is_some(), "poisoned");
 
     let hp_before = world.registry().get::<Hitpoints>(entity).unwrap().current;
@@ -4875,7 +4906,12 @@ fn cure_clears_poison() {
     let mob = spawn_mobile_at(&mut world, Point::new(START.0, START.1, 0), 50, now);
     let entity = world.registry().entity_of(mob).unwrap();
     let ticks = world.state.ticks;
-    combat::apply_poison(&mut world.state, mob, 2, ticks);
+    combat::apply_poison(
+        &mut world.state,
+        mob,
+        openshard_protocol::world::PoisonLevel::new(2),
+        ticks,
+    );
     assert!(
         combat::cure_poison(&mut world.state, mob),
         "it had poison to cure"
@@ -4897,7 +4933,12 @@ fn poison_survives_a_relogin() {
 
     // Poison the character, then let the save sweep the world.
     let ticks = world.state.ticks;
-    combat::apply_poison(&mut world.state, serial, 2, ticks); // greater
+    combat::apply_poison(
+        &mut world.state,
+        serial,
+        openshard_protocol::world::PoisonLevel::new(2),
+        ticks,
+    ); // greater
     world.take_snapshot();
     let snapshot = world.drain_saves().next_back().expect("a snapshot");
     let record = snapshot
@@ -4935,7 +4976,11 @@ fn poison_survives_a_relogin() {
         .registry()
         .get::<Poisoned>(player)
         .expect("still poisoned after the relog — no free cure");
-    assert_eq!(poisoned.level, 2, "and at the same strength");
+    assert_eq!(
+        poisoned.level,
+        openshard_protocol::world::PoisonLevel::new(2),
+        "and at the same strength"
+    );
 }
 
 #[test]
@@ -4948,7 +4993,12 @@ fn a_poisoned_creature_comes_back_poisoned() {
     let mut home = world();
     let mob = spawn_mobile_at(&mut home, Point::new(START.0, START.1, 0), 50, now);
     let ticks = home.state.ticks;
-    combat::apply_poison(&mut home.state, mob, 1, ticks); // lesser
+    combat::apply_poison(
+        &mut home.state,
+        mob,
+        openshard_protocol::world::PoisonLevel::new(1),
+        ticks,
+    ); // lesser
 
     home.take_snapshot();
     let snapshot = home.drain_saves().next_back().expect("a snapshot");
@@ -4974,7 +5024,7 @@ fn a_poisoned_creature_comes_back_poisoned() {
             .get::<Poisoned>(creature)
             .expect("still poisoned")
             .level,
-        1,
+        openshard_protocol::world::PoisonLevel::new(1),
     );
 }
 
@@ -11108,6 +11158,7 @@ pub(super) fn add_empty_facet_sized(world: &mut World, facet: Facet, width: u32,
         facet,
         FacetState {
             terrain: None,
+            coarse: None,
             width,
             height,
             sectors: Sectors::new(width, height),

@@ -931,6 +931,8 @@ fn main() {
         statics:
             openshard_client_render::statics::StaticGeometry {
                 quads: item_quads,
+                cutaway_quads: _,
+                cutaway_boxes: _,
                 mesh_vertices,
                 mesh_rows,
                 // The impostor's boxes — `docs/lighting_rebuild.md` phase 6c —

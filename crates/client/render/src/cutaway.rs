@@ -27,15 +27,19 @@
 //!
 //! # What is deliberately absent
 //!
-//! The client fades rather than cuts: an object above `_maxZ` walks its alpha
-//! down 25 a frame and is dropped when it reaches zero. Nothing in this crate
-//! blends yet — every pass writes depth and tests it — so a fade would be a
-//! second, half-built feature rather than a port. The predicates here are the
-//! endpoints of that fade, which is what the client settles on within a fifth
-//! of a second, and the fade itself belongs with whatever introduces alpha.
-//! For the same reason there is no foliage, no circle of transparency and no
-//! season: each is a fade, and none of them changes what is drawn once it has
-//! finished fading.
+//! The reference client fades an object above `_maxZ` down 25 alpha units per
+//! frame, then drops it at zero. This crate's predicates are still that ramp's
+//! endpoints — lighting and picking need a binary answer — but the picture is
+//! no longer forced to its endpoint in one opaque draw: [`crate::statics`]
+//! holds cutaway architecture aside, writes it into a private G-buffer after
+//! mobiles, then deferred-lights and blends it without writing the main depth.
+//! It also uses the player's screen rectangle to put an ordinary wall that
+//! actually covers the body in that layer.
+//!
+//! The temporal per-object alpha walk, foliage unions and profile-controlled
+//! transparency radii remain separate work. They need persistent state and a
+//! policy for one tree's several graphics; the pass here is the rendering
+//! primitive those policies use, not an excuse to conflate them.
 
 use openshard_uofiles::map::Map;
 use openshard_uofiles::tiledata::{StaticTile, TileData, TileFlags};
@@ -50,6 +54,14 @@ use crate::ground::corner_heights;
 /// this is the number the client adds to a mobile's `PriorityZ` before asking
 /// whether it is under the ceiling.
 pub const CHARACTER_HEIGHT: i32 = 16;
+
+/// Opacity of an architectural sprite while it is in the player's cutaway.
+///
+/// The deferred cutaway blit uploads this once in its uniform block, after
+/// lighting and immediately before premultiplied source-over composition. It
+/// stays a product-facing constant rather than becoming a field on every
+/// ordinary [`crate::sprite::SpriteQuad`].
+pub const TRANSLUCENT_ALPHA: f32 = 0.4;
 
 /// The height nothing is drawn above, whatever the cutaway decides.
 ///

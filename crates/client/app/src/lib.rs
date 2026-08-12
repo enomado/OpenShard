@@ -675,6 +675,21 @@ pub fn run<D: Dial + Send + 'static>(
         )
     });
 
+    // The map-only reading is exactly the permanently-open base the coarse
+    // graph needs: doors and every other dynamic thing live in `Clutter`, not
+    // in these two client files. Keep the graph separate from the two Arcs so
+    // it stores only connectivity, not another copy of a 100 MB facet.
+    let coarse = openshard_movement::CoarseRouter::build(
+        &openshard_movement::MapTerrain::new(map.as_ref(), tiledata.as_ref()),
+        map.width(),
+        map.height(),
+    );
+    if coarse.is_none() {
+        eprintln!(
+            "the client map is outside movement's coordinate space; long-distance routing is unavailable"
+        );
+    }
+
     let mut app = App {
         // Built before `resources` moves `tiledata` and `map` into it: this
         // borrows both.
@@ -724,6 +739,7 @@ pub fn run<D: Dial + Send + 'static>(
         stall_on_update,
         resources: resources::Resources {
             map,
+            coarse,
             art,
             surfaces,
             repack_forced: false,

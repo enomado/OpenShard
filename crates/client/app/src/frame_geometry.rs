@@ -30,14 +30,16 @@ pub(crate) struct FrameGeometry {
     /// The map's furniture and the server's items, split so a corner static's
     /// two faces carry their own id — see `sprite::split_corners`.
     pub(crate) static_instances: openshard_client_render::sprite::InstanceRows,
-    /// The other three quarters of `frame::assemble`'s own
-    /// `statics::StaticGeometry` — everything about the map's statics and the
-    /// server's items beside their quads, which `static_instances` above
-    /// already carries in split form. [`statics::StaticMesh`] and not
-    /// `StaticGeometry` itself: that type's own `quads` was spent building
-    /// `static_instances`, and a second field here claiming to hold quads
-    /// that are not there would be the same untruth `StaticMesh`'s own doc
-    /// argues against.
+    /// Architecture that overlaps the player's picture, held aside from the
+    /// opaque rows so its private deferred layer can be composited after the
+    /// opaque world is lit.
+    pub(crate) cutaway_instances: openshard_client_render::sprite::InstanceRows,
+    /// The cutaway rows' independent impostor geometry.
+    pub(crate) cutaway_boxes: Vec<openshard_client_render::impostor::Volume>,
+    /// The opaque geometry beside the two static picture lists. The ordinary
+    /// rows were spent building `static_instances` and `cutaway_instances` belongs
+    /// to the private deferred layer, so [`statics::StaticMesh`] carries only the
+    /// per-face rows and volumes still needed by the opaque G-buffer pass.
     pub(crate) mesh: statics::StaticMesh,
     /// What a click is holding, placed exactly as the picture placed it.
     pub(crate) select_quads: Vec<SpriteQuad>,
@@ -207,6 +209,8 @@ pub(crate) fn assemble_geometry(
         statics:
             statics::StaticGeometry {
                 quads: static_quads,
+                cutaway_quads,
+                cutaway_boxes,
                 mesh_vertices,
                 mesh_rows,
                 boxes,
@@ -258,6 +262,7 @@ pub(crate) fn assemble_geometry(
     // A corner static's two faces get their own id past this point — see
     // `docs/gbuffer.md` step 4 and `sprite::split_corners`'s own doc.
     let static_instances = split_corners(static_quads);
+    let cutaway_instances = split_corners(cutaway_quads);
     // The same two effects for a creature, off the same style switch and
     // the same one-pick-a-frame rule: `lit_mobile` and `lit_item` are never
     // both `Some` (see where they are asked), so exactly one of the four
@@ -294,6 +299,8 @@ pub(crate) fn assemble_geometry(
         lighting,
         quads,
         static_instances,
+        cutaway_instances,
+        cutaway_boxes,
         mesh,
         select_quads,
         outline_quads,

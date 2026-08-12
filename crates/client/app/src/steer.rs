@@ -179,8 +179,8 @@ use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
 use openshard_movement::{
-    Around, Detour, Heading, Lean, Leeway, RUN_HOLD, Step, Terrain, Tile, WALK_HOLD, find_path,
-    find_path_toward, step_allowed,
+    Around, CoarseRouter, Detour, Heading, Lean, Leeway, RUN_HOLD, Step, Terrain, Tile, WALK_HOLD,
+    find_long_path, find_path, find_path_toward, step_allowed,
 };
 use openshard_protocol::direction::{Direction, Facing};
 use openshard_protocol::world::Point;
@@ -310,6 +310,28 @@ pub struct Ground<'a> {
     /// The same ground with every shut door opened. Never what decides a step:
     /// walking on its word is a step the shard refuses.
     pub through_doors: &'a dyn Terrain,
+    /// The bare static map the coarse graph was built from. Unlike the two
+    /// live readings above it never contains a door, crate or mobile, so those
+    /// can reject a proposed corridor without rewriting its topology.
+    pub guide: &'a dyn Terrain,
+    /// The map-only connectivity cache, absent in mapless/test callers.
+    pub coarse: Option<&'a CoarseRouter>,
+}
+
+impl Ground<'_> {
+    /// Try the ordinary bounded A* first, then use the static coarse graph to
+    /// divide a long answer into the same exact, live-aware hops. `terrain` is
+    /// chosen by the caller: real ground for a player's open half, or the
+    /// existing doors-open reading for the route that is later cut at a leaf.
+    fn path(&self, terrain: &dyn Terrain, from: Point, to: Point) -> Option<Vec<Direction>> {
+        find_path(terrain, from, to, PLAN_BUDGET).or_else(|| {
+            self.coarse.and_then(|coarse| {
+                // Graph and endpoint joins are both the bare map. Live terrain
+                // only approves or rejects the resulting exact steps.
+                find_long_path(self.guide, terrain, coarse, from, to, PLAN_BUDGET)
+            })
+        })
+    }
 }
 
 /// A world with no doors in it, where the two readings are one terrain.
@@ -325,6 +347,8 @@ impl<'a> Ground<'a> {
         Self {
             real: terrain,
             through_doors: terrain,
+            guide: terrain,
+            coarse: None,
         }
     }
 }
@@ -1132,13 +1156,13 @@ impl Steering {
 /// already standing on `tile`, a body that has arrived.
 pub fn plan(ground: Ground<'_>, from: Point, tile: Tile) -> Option<Plan> {
     let goal = Point::new(tile.x, tile.y, from.z);
-    if let Some(open) = find_path(ground.real, from, goal, PLAN_BUDGET) {
+    if let Some(open) = ground.path(ground.real, from, goal) {
         return Some(Plan {
             open,
             barred: Vec::new(),
         });
     }
-    let Some(through) = find_path(ground.through_doors, from, goal, PLAN_BUDGET) else {
+    let Some(through) = ground.path(ground.through_doors, from, goal) else {
         // Not even with the doors open, so there is nothing to say about the
         // far side of anything: no route through this destination's own tile is
         // known, and drawing one would be inventing it. What is left is how
@@ -1695,6 +1719,22 @@ mod tests {
         }
     }
 
+    /// The same door contract at a distance that exceeds [`PLAN_BUDGET`]. The
+    /// coarse graph is built from the open map; the `shut` reading is what must
+    /// still keep the executable half from crossing the leaf.
+    struct LongDoor {
+        shut: bool,
+        x: u16,
+    }
+
+    impl openshard_movement::Terrain for LongDoor {
+        fn can_step(&self, from: Point, to: Point) -> Option<Point> {
+            (!self.shut || to.x != self.x)
+                .then(|| OpenWorld.can_step(from, to))
+                .flatten()
+        }
+    }
+
     /// Two tiles past the doorway: a destination only reachable through it.
     const BEYOND: Tile = Tile::new(105, 100);
 
@@ -1709,6 +1749,68 @@ mod tests {
             plan.barred.is_empty(),
             "an open doorway is a route, and a route has nothing barred about it"
         );
+    }
+
+    /// The consumer this cache exists for: a destination beyond the ordinary
+    /// plan budget is still a real route, assembled from bounded exact hops.
+    /// Keeping this here, above `Ground::plain`, proves the client actually
+    /// reaches for the graph rather than merely storing one at startup.
+    #[test]
+    fn a_far_destination_uses_the_coarse_route_after_the_ordinary_budget_ends() {
+        let router = CoarseRouter::build(&OpenWorld, 704, 32).expect("a representable map");
+        let from = Point::new(1, 1, 0);
+        let goal = Tile::new(702, 1);
+        assert!(
+            find_path(&OpenWorld, from, Point::new(goal.x, goal.y, 0), PLAN_BUDGET).is_none(),
+            "the flat plan is intentionally too short"
+        );
+        let plan = plan(
+            Ground {
+                real: &OpenWorld,
+                through_doors: &OpenWorld,
+                guide: &OpenWorld,
+                coarse: Some(&router),
+            },
+            from,
+            goal,
+        )
+        .expect("the coarse graph reaches across the facet");
+        assert_eq!(plan.open.len(), 701);
+        assert!(plan.barred.is_empty());
+    }
+
+    #[test]
+    fn a_far_shut_door_is_still_a_cut_coarse_route_not_a_walk_through_it() {
+        let open = LongDoor { shut: false, x: 400 };
+        let shut = LongDoor { shut: true, x: 400 };
+        let router = CoarseRouter::build(&open, 704, 32).expect("a representable map");
+        let from = Point::new(1, 1, 0);
+        let goal = Tile::new(702, 1);
+        let plan = plan(
+            Ground {
+                real: &shut,
+                through_doors: &open,
+                guide: &open,
+                coarse: Some(&router),
+            },
+            from,
+            goal,
+        )
+        .expect("the doors-open map still has a long route");
+        assert!(!plan.barred.is_empty(), "the shut leaf remains a visible refusal");
+
+        let mut at = from;
+        for &direction in &plan.open {
+            at = step_allowed(&shut, at, direction).expect("the open half is actually walkable");
+        }
+        assert!(
+            step_allowed(&shut, at, plan.barred[0]).is_none(),
+            "the red half starts at the first step the real terrain rejects"
+        );
+        for &direction in &plan.barred {
+            at = step_allowed(&open, at, direction).expect("the doors-open half continues the same route");
+        }
+        assert_eq!((at.x, at.y), (goal.x, goal.y));
     }
 
     /// The whole point: a destination behind a shut door is planned up to the
@@ -1727,6 +1829,8 @@ mod tests {
             Ground {
                 real: &shut,
                 through_doors: &open,
+                guide: &open,
+                coarse: None,
             },
             here(),
             BEYOND,
@@ -1757,6 +1861,8 @@ mod tests {
             Ground {
                 real: &wall,
                 through_doors: &OpenWorld,
+                guide: &OpenWorld,
+                coarse: None,
             },
             here(),
             Tile::new(104, 100),
@@ -1789,6 +1895,8 @@ mod tests {
         let ground = Ground {
             real: &shut,
             through_doors: &open,
+            guide: &open,
+            coarse: None,
         };
 
         assert_eq!(
@@ -1861,6 +1969,8 @@ mod tests {
                 Ground {
                     real: &shut,
                     through_doors: &open,
+                    guide: &open,
+                    coarse: None,
                 },
             )
             .unwrap();
@@ -1871,6 +1981,8 @@ mod tests {
             Ground {
                 real: &shut,
                 through_doors: &open,
+                guide: &open,
+                coarse: None,
             },
         );
         assert_eq!(
@@ -1880,7 +1992,9 @@ mod tests {
                 Direction::East,
                 Ground {
                     real: &shut,
-                    through_doors: &open
+                    through_doors: &open,
+                    guide: &open,
+                    coarse: None,
                 }
             ),
             None,

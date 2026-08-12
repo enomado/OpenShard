@@ -358,6 +358,10 @@ pub(crate) struct Screen {
     /// which is the viewport only at zoom 1. [`Screen::blit`] puts it on the
     /// surface.
     pub(crate) world: wgpu::Texture,
+    /// The architecture held aside for alpha composition. It has the world's
+    /// image size, but no independent depth: its draw reads [`Self::depth`]
+    /// so it cannot reveal something the opaque world already hid.
+    pub(crate) cutaway_world: wgpu::Texture,
     /// The pass that does that, and the only place a zoom exists.
     pub(crate) blit: Blit,
     /// The depth buffer the three world passes share, which is what decides
@@ -372,6 +376,10 @@ pub(crate) struct Screen {
     /// the reason [`Screen::depth`] is: these are attachments of the same passes
     /// and must be exactly that image's size.
     pub(crate) gbuffer: Gbuffer,
+    /// Surface data for [`Self::cutaway_world`]. Kept distinct from the main
+    /// G-buffer because the visible body must remain the opaque answer for
+    /// picking and masks even when a wall is displayed over it translucently.
+    pub(crate) cutaway_gbuffer: Gbuffer,
     /// The pass that draws the mobiles, which is the statics pass again with
     /// another atlas bound: a sprite is a sprite, and the two differ only in
     /// where the quad goes.
@@ -555,7 +563,12 @@ impl App {
             .map(|monitor| {
                 let position = monitor.position();
                 let size = monitor.size();
-                (position.x, position.y, size.width, size.height)
+                desk::Monitor {
+                    x: position.x,
+                    y: position.y,
+                    width: size.width,
+                    height: size.height,
+                }
             })
             .collect();
         let restored = self
@@ -757,6 +770,11 @@ impl App {
             self.control.camera().render_width(),
             self.control.camera().render_height(),
         );
+        let cutaway_world = blit::world_texture(
+            &device,
+            self.control.camera().render_width(),
+            self.control.camera().render_height(),
+        );
         let depth = renderer::depth_texture(
             &device,
             self.control.camera().render_width(),
@@ -783,6 +801,11 @@ impl App {
             self.control.camera().render_height(),
         );
         let gbuffer = Gbuffer::new(
+            &device,
+            self.control.camera().render_width(),
+            self.control.camera().render_height(),
+        );
+        let cutaway_gbuffer = Gbuffer::new(
             &device,
             self.control.camera().render_width(),
             self.control.camera().render_height(),
@@ -841,9 +864,11 @@ impl App {
             renderer,
             statics,
             world,
+            cutaway_world,
             blit,
             depth,
             gbuffer,
+            cutaway_gbuffer,
             mobile_pass,
             mesh_pass,
             atlases,

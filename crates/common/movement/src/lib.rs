@@ -48,6 +48,7 @@
 //! hacks, was broken almost immediately, and Sphere stopped reading it. The
 //! defence that works is server-side: see [`WalkPace`].
 
+mod coarse;
 mod detour;
 mod pace;
 mod path;
@@ -56,6 +57,7 @@ mod sequence;
 mod terrain;
 mod walk;
 
+pub use coarse::{CLUSTER_SIZE, CoarseRouter, find_long_path};
 pub use detour::{Around, Detour, Leeway, Step};
 pub use openshard_uofiles::map::LandTile;
 pub use pace::{Pace, RUN_HOLD, RUN_INTERVAL, WALK_BUFFER, WALK_HOLD, WALK_INTERVAL, WalkPace};

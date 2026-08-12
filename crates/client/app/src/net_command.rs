@@ -21,6 +21,30 @@ use crate::app::App;
 use crate::world::{advance_presentation_to, cluttered};
 use crate::{clutter, crowd, link};
 
+/// Fold one locally predicted step into the presentation that ages it.
+///
+/// A prediction is not merely a new tile for the static `Mobile` snapshot.
+/// `Crowd` owns the step's clock, walking group and drawn position; leaving it
+/// at the last acknowledged tile makes a freshly sent step wait for its round
+/// trip before either its glide or its animation can start. The wire's later
+/// `0x22` names this same predicted tile, so its call through this helper is a
+/// no-op rather than a second step.
+///
+/// Equipment belongs to the authoritative mobile view, not to a predicted
+/// step, so preserve its shared allocation while replacing the clocked fields.
+fn project_prediction(
+    crowd: &mut crowd::Crowd,
+    who: crowd::Who,
+    player: &mut mobiles::Mobile,
+    at: openshard_protocol::world::Point,
+    facing: openshard_protocol::direction::Facing,
+    war: bool,
+) {
+    let equipment = std::mem::take(&mut player.equipment);
+    *player = crowd.see(who, at, player.body, facing, player.hue, war);
+    player.equipment = equipment;
+}
+
 impl App {
     /// Reduce one cross-thread update at the event-loop boundary.
     pub(crate) fn on_update(&mut self, update: link::Update) -> bool {
@@ -71,15 +95,52 @@ impl App {
     /// Apply prediction without changing authoritative server state.
     pub(crate) fn apply_prediction(&mut self, body: link::Body) {
         self.world.prediction.apply(body);
-        self.world.presentation.player.at = self.world.prediction.at;
-        self.world.presentation.player.facing = self.world.prediction.facing.direction;
-        self.world.presentation.player.drawn = self
+        let me = self.world.me();
+        self.world.presentation.crowd.commanding(me);
+        let war = self
             .world
-            .presentation
-            .crowd
-            .drawn_for(self.world.me())
-            .unwrap_or_else(|| openshard_client_render::follow::Gaze::on(body.predicted.position));
+            .authoritative
+            .view
+            .as_ref()
+            .is_some_and(|view| view.player.war && !view.player.dead);
+        project_prediction(
+            &mut self.world.presentation.crowd,
+            me,
+            &mut self.world.presentation.player,
+            self.world.prediction.at,
+            self.world.prediction.facing,
+            war,
+        );
+        // Keep the roof decision on the same predicted body *only* when the
+        // map and the live item layer already agree that this is a legal step.
+        // A held key pressed into a known wall still leaves `cutaway_at` where
+        // it was, while a real step round a building cannot be culled by the
+        // previous tile's roof threshold for the whole server round trip.
+        self.advance_cutaway(false);
         self.follow_player(std::time::Duration::ZERO);
+    }
+
+    /// Move the cutaway source to the current player prediction when that move
+    /// is locally known to be possible.
+    ///
+    /// The same guard is used for predictions and packet folds. It prevents a
+    /// roof from popping for a direction this client can already prove will hit
+    /// a wall, while keeping the threshold in lockstep with a normal predicted
+    /// walk — the body the cutaway exists to reveal must not be hidden by its
+    /// previous tile while its step is in flight.
+    fn advance_cutaway(&mut self, corrected: bool) {
+        let next = self.world.prediction.at;
+        if corrected {
+            self.world.presentation.cutaway_at = next;
+            return;
+        }
+        let current = self.world.presentation.cutaway_at;
+        let reachable = cluttered(&self.world, &self.resources)
+            .can_step(current, next)
+            .is_some();
+        if reachable {
+            self.world.presentation.cutaway_at = next;
+        }
     }
 
     /// Redraw from what the server has shown us.
@@ -183,23 +244,10 @@ impl App {
         // otherwise rescan everything on screen. See `clutter.rs`.
         self.world.presentation.clutter =
             clutter::Clutter::of(&self.world.presentation.items, &self.resources.tiledata);
-        // `cutaway_at` follows the same prediction `player.at` does, with one
-        // guard: it only ever advances to a tile the client's own static map
-        // agrees is reachable from the one it already held. A correction is
-        // the server's own word and is trusted outright, same as `player.at`
-        // is; an optimistic step is only trusted here when it is not one
-        // `Steering::detour` is going to have offered into a wall this end
-        // can already see — see the field's own doc for why.
-        self.world.presentation.cutaway_at = match body.corrected {
-            true => self.world.prediction.at,
-            false => {
-                let terrain = cluttered(&self.world, &self.resources);
-                match terrain.can_step(self.world.presentation.cutaway_at, self.world.prediction.at) {
-                    Some(_) => self.world.prediction.at,
-                    None => self.world.presentation.cutaway_at,
-                }
-            }
-        };
+        // The cutaway has already followed each locally valid prediction. An
+        // acknowledgement repeats that answer; a correction is the one case
+        // that has to replace it unconditionally.
+        self.advance_cutaway(body.corrected);
         // Sorted by serial: a `HashMap`'s order is not one, and an atlas built
         // in a different order every frame is a rebuild every frame.
         let mut others: Vec<_> = view.mobiles.iter().collect();
@@ -302,5 +350,55 @@ impl App {
                     .record(elapsed, gaze, self.control.camera().eye(), state);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::rc::Rc;
+
+    use openshard_client_render::follow::Gaze;
+    use openshard_client_render::mobiles::EquipmentLayer;
+    use openshard_movement::WALK_HOLD;
+    use openshard_protocol::direction::{Direction, Facing};
+    use openshard_protocol::wire::{Graphic, Hue, Layer};
+    use openshard_protocol::world::Point;
+    use openshard_uofiles::tiledata::AnimId;
+
+    use super::*;
+
+    #[test]
+    fn a_prediction_starts_the_players_glide_before_an_ack_arrives() {
+        let start = Point::new(100, 100, 0);
+        let next = Point::new(101, 100, 0);
+        let facing = Facing::walking(Direction::East);
+        let mut crowd = crowd::Crowd::default();
+        crowd.commanding(None);
+        let mut player = crowd.see(None, start, Graphic(400), facing, Hue::NONE, false);
+        player.equipment = vec![EquipmentLayer {
+            graphic: AnimId(7005),
+            hue: Hue::NONE,
+            layer: Layer::TUNIC,
+        }]
+        .into();
+        let equipment = player.equipment.clone();
+        let standing = player.group;
+
+        project_prediction(&mut crowd, None, &mut player, next, facing, false);
+
+        assert_eq!(player.at, next, "the prediction is its destination tile");
+        assert_ne!(player.group, standing, "the prediction started a walk");
+        assert!(crowd.anyone_gliding(), "the display-rate wake is armed now");
+        assert!(
+            Rc::ptr_eq(&player.equipment, &equipment),
+            "prediction does not replace authoritative equipment"
+        );
+
+        crowd.advance(WALK_HOLD / 2);
+        assert_ne!(
+            crowd.drawn_for(None),
+            Some(Gaze::on(start)),
+            "the body moves before the server's acknowledgement"
+        );
     }
 }

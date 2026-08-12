@@ -13,6 +13,7 @@
 
 use openshard_entities::EntityId;
 use openshard_protocol::wire::ClilocId;
+use openshard_protocol::world::FollowerSlots;
 use openshard_state::components::{Body, Client, Ghost, Pet, Tamable};
 use openshard_state::{Skill, WorldState};
 
@@ -75,7 +76,7 @@ pub(super) fn taming(state: &mut WorldState, tamer: EntityId, target: EntityId) 
         state.private_overhead_cliloc(tamer, target, ALREADY_TAME, "");
         return None;
     }
-    if followers_of(state, tamer) + what.slots > MAX_FOLLOWERS {
+    if followers_of(state, tamer) + what.slots.get() > MAX_FOLLOWERS {
         state.localized_message(tamer, TOO_MANY_FOLLOWERS, "");
         return None;
     }
@@ -124,7 +125,7 @@ pub struct Tamed {
     /// Who was trying.
     pub tamer: EntityId,
     /// How many follower slots it fills.
-    pub slots: u8,
+    pub slots: FollowerSlots,
     /// Whether it turned on the tamer instead of accepting them.
     pub angered: bool,
 }
@@ -144,7 +145,7 @@ pub fn followers_of(state: &WorldState, owner: EntityId) -> u8 {
         .registry
         .query::<Pet>()
         .filter(|(_, pet)| pet.owner == serial)
-        .map(|(_, pet)| pet.slots)
+        .map(|(_, pet)| pet.slots.get())
         .sum();
     let mount = u8::from(state.registry.has::<openshard_state::components::Riding>(owner));
     pets.saturating_add(mount)

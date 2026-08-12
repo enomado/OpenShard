@@ -225,6 +225,10 @@ struct Lighting {
     // Its colour, then how much it adds. An intensity of zero is "no sun", and
     // it is the only thing tested: a night frame never enters the walk.
     sun_color: vec4<f32>,
+    // The final alpha composition. The opaque world writes one; the private
+    // cutaway layer writes its policy opacity and this shader premultiplies its
+    // lit result before the source-over pipeline consumes it.
+    composite: vec4<f32>,
     lights: array<Light, MAX_LIGHTS>,
 };
 
@@ -248,6 +252,11 @@ const VIEW_SILHOUETTE_ART: u32 = 15u;
 const VIEW_SILHOUETTE_BOX: u32 = 16u;
 
 @group(0) @binding(2) var<uniform> lighting: Lighting;
+
+fn with_composite_opacity(color: vec4<f32>) -> vec4<f32> {
+    let opacity = lighting.composite.x;
+    return vec4<f32>(color.rgb * opacity, color.a * opacity);
+}
 
 // The statics and mobiles passes' own `SpriteQuad`, laid out exactly as
 // `sprite.rs`'s `SpriteQuad::write` puts it on the GPU — this is that same
@@ -1776,9 +1785,9 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
             || view == VIEW_SILHOUETTE_ART
             || view == VIEW_SILHOUETTE_BOX
         {
-            return vec4<f32>(0.0, 0.0, 0.0, color.a);
+            return with_composite_opacity(vec4<f32>(0.0, 0.0, 0.0, color.a));
         }
-        return color;
+        return with_composite_opacity(color);
     }
 
     // Which *tile* this pixel's picture came from is still an id into a
@@ -1952,13 +1961,13 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
     }
 
     if view != VIEW_LIT {
-        return vec4<f32>(
+        return with_composite_opacity(vec4<f32>(
             debug_color(
                 view, mine, ids_edges(ids), kind, tile, at, normal, sub, lit, flames, reached, nearest,
                 nearest_through, sun_through, share,
             ),
             color.a,
-        );
+        ));
     }
 
     // Multiplicative, so a flame brightens whatever is under it — ground, wall,
@@ -1994,7 +2003,7 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
     // what a pixel is *shown as* and nothing about what lit it.
     if dead() {
         let luma = dot(shaded, vec3<f32>(0.299, 0.587, 0.114));
-        return vec4<f32>(luma, luma, luma, color.a);
+        return with_composite_opacity(vec4<f32>(luma, luma, luma, color.a));
     }
-    return vec4<f32>(shaded, color.a);
+    return with_composite_opacity(vec4<f32>(shaded, color.a));
 }

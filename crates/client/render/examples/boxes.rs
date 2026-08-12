@@ -1564,6 +1564,7 @@ fn pathtrace_comparison(inputs: PathtraceInputs<'_>) {
         albedos,
         lit_pixels,
     } = inputs;
+    let size = pt_trace::ImageSize::new(width, height);
 
     // **The engine's own sphere where there is something to cast a shadow, and a
     // point where there is not** — the same choice `tests/traced.rs`'s two gates
@@ -1611,13 +1612,8 @@ fn pathtrace_comparison(inputs: PathtraceInputs<'_>) {
     // rendered in `Brdf::Lambert` for that reason, out of a second mirror whose
     // flame carries `LAMBERT_PI`: the engine's diffuse term has no `1/π` and the
     // reference's does, and the intensity is where the two conventions meet.
-    let exact = mirror.render(pt_trace::Brdf::Flat, oracle::pathtrace::FIRST_SEED, width, height);
-    let physical = mirror.render(
-        pt_trace::Brdf::Lambert,
-        oracle::pathtrace::FIRST_SEED,
-        width,
-        height,
-    );
+    let exact = mirror.render(pt_trace::Brdf::Flat, oracle::pathtrace::FIRST_SEED, size);
+    let physical = mirror.render(pt_trace::Brdf::Lambert, oracle::pathtrace::FIRST_SEED, size);
     let shaded = oracle::pathtrace::Mirror::of(oracle::pathtrace::Mirrored {
         boxes,
         light_at,
@@ -1628,18 +1624,12 @@ fn pathtrace_comparison(inputs: PathtraceInputs<'_>) {
         body,
         to_pixel,
     })
-    .render(
-        pt_trace::Brdf::Lambert,
-        oracle::pathtrace::FIRST_SEED,
-        width,
-        height,
-    );
+    .render(pt_trace::Brdf::Lambert, oracle::pathtrace::FIRST_SEED, size);
     let verdict = oracle::pathtrace::compare(
         &exact,
         &physical,
         oracle::pathtrace::Frame {
-            width,
-            height,
+            size,
             drawn,
             picture: shadow_pixels,
             face_rows,
@@ -1663,13 +1653,12 @@ fn pathtrace_comparison(inputs: PathtraceInputs<'_>) {
             oracle::pathtrace::probe(
                 &exact,
                 oracle::pathtrace::Frame {
-                    width,
-                    height,
+                    size,
                     drawn,
                     picture: shadow_pixels,
                     face_rows,
                 },
-                (numbers[0], numbers[1]),
+                pt_trace::ImagePixel::new(numbers[0], numbers[1]),
                 numbers.get(2).copied().unwrap_or(6),
             )
         );
@@ -1685,15 +1674,9 @@ fn pathtrace_comparison(inputs: PathtraceInputs<'_>) {
         let allowed = oracle::pathtrace::PENUMBRA_ALLOWED;
         let soft = oracle::pathtrace::penumbra(
             &exact,
-            &mirror.render(
-                pt_trace::Brdf::Flat,
-                oracle::pathtrace::SECOND_SEED,
-                width,
-                height,
-            ),
+            &mirror.render(pt_trace::Brdf::Flat, oracle::pathtrace::SECOND_SEED, size),
             oracle::pathtrace::Frame {
-                width,
-                height,
+                size,
                 drawn,
                 picture: shadow_pixels,
                 face_rows,
@@ -1788,8 +1771,7 @@ fn pathtrace_comparison(inputs: PathtraceInputs<'_>) {
             // most of that.
             ..pt_trace::Settings::degenerate()
         },
-        width,
-        height,
+        size,
     );
     let exposure: f64 = env_or("OPENSHARD_BOXES_PATHTRACE_EXPOSURE", "1.0")
         .parse()

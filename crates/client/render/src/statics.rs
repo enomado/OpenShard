@@ -154,6 +154,14 @@ pub struct StaticGeometry {
     /// The pictures, back to front — what this function returned before mesh
     /// geometry existed, unchanged.
     pub quads: Vec<SpriteQuad>,
+    /// Pictures that would otherwise cover the player's body. They are drawn
+    /// into a private G-buffer, then lit and alpha-composited over the opaque
+    /// world, so the wall keeps its own surface data without replacing the
+    /// body's answer.
+    pub cutaway_quads: Vec<SpriteQuad>,
+    /// The cutaway pictures' own volume list. It is separate from [`Self::boxes`]
+    /// because the two static passes bind and index their rows independently.
+    pub cutaway_boxes: Vec<crate::impostor::Volume>,
     /// Raw vertices for every visible climbable static's [`crate::mesh::Mesh`],
     /// six per face ([`crate::mesh::Face::fan`]) —
     /// [`crate::renderer::MeshFaceRenderer::render`]'s own input.
@@ -171,13 +179,13 @@ pub struct StaticGeometry {
     pub boxes: Vec<crate::impostor::Volume>,
 }
 
-/// [`StaticGeometry`] with its `quads` already spent — the honest way to
-/// carry the other three of its four fields once something has consumed
-/// `quads` on its own (`sprite::split_corners`, in the client's own
-/// `frame_geometry.rs`, which needs it by value and cannot leave a copy
-/// behind). A [`StaticGeometry`] with an emptied `quads` would say "no
-/// statics drew" to anything that read it; this says nothing about quads at
-/// all, because it has no field to ask.
+/// The opaque geometry left after the two picture lists have been spent.
+///
+/// `sprite::split_corners` consumes [`StaticGeometry::quads`] while the app
+/// carries [`StaticGeometry::cutaway_quads`] and `cutaway_boxes` to their
+/// private, deferred layer. An emptied [`StaticGeometry`] would claim no
+/// statics drew to any later reader; this type carries only the three opaque
+/// geometry fields that actually remain.
 #[derive(Debug, Default)]
 pub struct StaticMesh {
     /// See [`StaticGeometry::mesh_vertices`].
@@ -193,7 +201,7 @@ impl StaticGeometry {
     ///
     /// The map's furniture and the server's dropped items are two [`collect`]s
     /// of the same shape drawn by one pass, so the two have to become one list
-    /// — and **three of the four fields here are addressed by index**, so
+    /// — and **three list pairs here are addressed by index**, so
     /// appending is not `Vec::extend` three times. A quad names its boxes by an
     /// offset into `boxes`, and a mesh vertex names its row by an index into
     /// `mesh_rows`; both are relative to the list they were built against, and
@@ -207,6 +215,7 @@ impl StaticGeometry {
     /// One place does the join now, and it does both.
     pub fn absorb(&mut self, other: Self) {
         let boxes = self.boxes.len() as u32;
+        let cutaway_boxes = self.cutaway_boxes.len() as u32;
         let rows = self.mesh_rows.len() as u32;
         self.quads.extend(other.quads.into_iter().map(|mut quad| {
             // An empty range keeps its own offset rather than being moved: it
@@ -224,6 +233,14 @@ impl StaticGeometry {
             }));
         self.mesh_rows.extend(other.mesh_rows);
         self.boxes.extend(other.boxes);
+        self.cutaway_quads
+            .extend(other.cutaway_quads.into_iter().map(|mut quad| {
+                if quad.volumes.count != 0 {
+                    quad.volumes.offset += cutaway_boxes;
+                }
+                quad
+            }));
+        self.cutaway_boxes.extend(other.cutaway_boxes);
     }
 }
 
@@ -246,6 +263,8 @@ pub fn collect(
     let (eye_x, eye_y) = camera.eye_tile();
     let base = depth::base_for(eye_x, eye_y);
     let mut quads: Vec<(depth::Order, SpriteQuad)> = Vec::new();
+    let mut cutaway_quads: Vec<(depth::Order, SpriteQuad)> = Vec::new();
+    let mut cutaway_boxes = Vec::new();
     // Always empty since `docs/lighting_rebuild.md` phase 6d: a real static's
     // position and normal come from the impostor meeting `boxes` below, and
     // nothing here pushes a mesh face for it any more. `StaticGeometry` still
@@ -268,9 +287,54 @@ pub fn collect(
             cutaway,
             player_rect,
         ) else {
+            // The normal placement deliberately rejects a roof or upper
+            // storey the cutaway hides. Keep that policy for the opaque pass,
+            // but give it a late translucent row instead of making it vanish.
+            let Some(placed) = place_cutaway(at, item.tile, camera, tiledata, animations, atlas, cutaway)
+            else {
+                return;
+            };
+            if on_screen(camera, placed.at, &placed.sprite) {
+                let key = crate::occlusion::Owner::new(at.z, item.tile);
+                let owner = occlusion.owner_at(i32::from(at.x), i32::from(at.y), at.z, item.tile);
+                let volumes = push_volumes(
+                    &mut cutaway_boxes,
+                    at,
+                    tiledata.static_tile(item.tile.0),
+                    &crate::occlusion::shape_of(Some(atlas), item.tile),
+                    key,
+                    occlusion,
+                );
+                cutaway_quads.push((
+                    placed.order,
+                    quad_of(at, &placed, base, u32::from(item.hue.0), owner, volumes),
+                ));
+            }
             return;
         };
         if !on_screen(camera, placed.at, &placed.sprite) {
+            return;
+        }
+        // Screen overlap only chooses the candidate. The private layer still
+        // tests against the opaque depth after mobiles, so a static behind the
+        // body contributes nothing; a wall actually in front is blended later.
+        // The shader keeps the sprite's own alpha test, so empty corners of a
+        // wall's rectangular atlas allocation remain empty.
+        if player_rect.is_some_and(|player| player.intersects(&placed_rect(&placed))) {
+            let key = crate::occlusion::Owner::new(at.z, item.tile);
+            let owner = occlusion.owner_at(i32::from(at.x), i32::from(at.y), at.z, item.tile);
+            let volumes = push_volumes(
+                &mut cutaway_boxes,
+                at,
+                tiledata.static_tile(item.tile.0),
+                &crate::occlusion::shape_of(Some(atlas), item.tile),
+                key,
+                occlusion,
+            );
+            cutaway_quads.push((
+                placed.order,
+                quad_of(at, &placed, base, u32::from(item.hue.0), owner, volumes),
+            ));
             return;
         }
         // The *placed* graphic and not `placed.showing`: the grid keyed its
@@ -304,8 +368,14 @@ pub fn collect(
     // would be just as deterministic and would resolve those ties by an
     // accident of the art's numbering.
     quads.sort_by_key(|(order, _)| *order);
+    // Alpha composition is order-dependent. `Order` ascending is already the
+    // renderer's back-to-front order, so the same stable sort is the one source
+    // over needs for two translucent statics that overlap.
+    cutaway_quads.sort_by_key(|(order, _)| *order);
     StaticGeometry {
         quads: quads.into_iter().map(|(_, quad)| quad).collect(),
+        cutaway_quads: cutaway_quads.into_iter().map(|(_, quad)| quad).collect(),
+        cutaway_boxes,
         mesh_vertices,
         mesh_rows,
         boxes,
@@ -479,13 +549,15 @@ pub(crate) fn place(
     // `cutaway::hides_foliage_over`'s doc for why this is a hard cut and not
     // the reference's fade.
     if let (true, Some(player_rect)) = (tile.flags.is_foliage(), player_rect) {
-        let screen_rect = Rect {
-            x: screen_at.x,
-            y: screen_at.y,
-            width: f32::from(sprite.width),
-            height: f32::from(sprite.height),
-        };
-        if cutaway::hides_foliage_over(player_rect, screen_rect) {
+        if cutaway::hides_foliage_over(
+            player_rect,
+            Rect {
+                x: screen_at.x,
+                y: screen_at.y,
+                width: f32::from(sprite.width),
+                height: f32::from(sprite.height),
+            },
+        ) {
             return None;
         }
     }
@@ -506,6 +578,57 @@ pub(crate) fn place(
         // `crate::facing`.
         stance: crate::place::Stance::of(tile, sprite.facing),
     })
+}
+
+/// Place a static the frame's cutaway would ordinarily remove.
+///
+/// The opaque collector must continue to exclude these rows: they do not write
+/// a depth or G-buffer answer, and a hidden roof must not begin to occlude light
+/// merely because it is now faintly visible. The late cutaway pass consumes the
+/// returned placement after bodies are drawn and blends it over that already
+/// settled picture instead.
+#[allow(clippy::too_many_arguments)]
+fn place_cutaway(
+    at: Point,
+    graphic: Graphic,
+    camera: &Camera,
+    tiledata: &TileData,
+    animations: &StaticAnimations,
+    atlas: &StaticAtlas,
+    cutaway: &Cutaway,
+) -> Option<Placed> {
+    let tile = tiledata.static_tile(graphic.0);
+    // The drawing ceiling and the internal flag are absolute rejects. Only a
+    // thing this frame's cutaway hid belongs in the translucent list.
+    if !cutaway::drawn_in_any_frame(at.z, tile) || cutaway.shows_static(at.z, tile) {
+        return None;
+    }
+    let showing = animations.showing(graphic);
+    let sprite = atlas.sprite(showing)?;
+    let screen_at = stand_on(camera, at, &sprite);
+    Some(Placed {
+        order: depth::Order {
+            tile: i32::from(at.x) + i32::from(at.y),
+            priority_z: depth::static_priority_z(at.z, tile),
+        },
+        at: screen_at,
+        sprite,
+        showing,
+        stance: crate::place::Stance::of(tile, sprite.facing),
+    })
+}
+
+/// The exact rectangle the sprite pass rasterises in viewport pixels.
+///
+/// The CPU uses it only to shortlist cutaway candidates. The alpha test and
+/// depth comparison remain GPU decisions in the pass that actually blends.
+fn placed_rect(placed: &Placed) -> Rect {
+    Rect {
+        x: placed.at.x,
+        y: placed.at.y,
+        width: f32::from(placed.sprite.width),
+        height: f32::from(placed.sprite.height),
+    }
 }
 
 /// One placed picture as an instance the sprite passes can draw.
@@ -835,6 +958,90 @@ mod tests {
             )
             .is_some(),
             "the same overlap draws a non-foliage static: only foliage is cut"
+        );
+    }
+
+    /// A static covering the player's on-screen body moves out of the opaque
+    /// list, not out of the frame. The late renderer is what turns this row
+    /// into alpha blending; keeping the split as a CPU test makes the feature's
+    /// selection rule independent of a GPU or client install.
+    #[test]
+    fn a_wall_over_the_player_becomes_a_cutaway_row() {
+        let camera = Camera::new(Point::new(100, 100, 0), 800, 600);
+        let graphic = Graphic(0x0006);
+        let atlas = atlas(graphic, 44, 88);
+        let animations = StaticAnimations::default();
+        let tiledata = TileData::empty();
+        let at = Point::new(100, 100, 0);
+        let mut map = field();
+        map.place_static(StaticItem {
+            tile: graphic,
+            x: at.x,
+            y: at.y,
+            z: at.z,
+            hue: Hue(0),
+        });
+        let sprite = atlas.sprite(graphic).expect("packed wall");
+        let screen_at = stand_on(&camera, at, &sprite);
+        let player = Rect {
+            x: screen_at.x + 12.0,
+            y: screen_at.y + 32.0,
+            width: 20.0,
+            height: 32.0,
+        };
+
+        let ordinary = collect(
+            &map,
+            &camera,
+            &tiledata,
+            &animations,
+            &atlas,
+            &Cutaway::OPEN,
+            &crate::occlusion::Occlusion::EMPTY,
+            None,
+        );
+        assert_eq!(ordinary.quads.len(), 1, "the fixture did not draw its wall");
+        assert!(ordinary.cutaway_quads.is_empty(), "no body means no cutaway");
+
+        let cutaway = collect(
+            &map,
+            &camera,
+            &tiledata,
+            &animations,
+            &atlas,
+            &Cutaway::OPEN,
+            &crate::occlusion::Occlusion::EMPTY,
+            Some(player),
+        );
+        assert!(cutaway.quads.is_empty(), "the wall was still in the opaque pass");
+        assert_eq!(
+            cutaway.cutaway_quads.len(),
+            1,
+            "the wall did not reach the cutaway layer"
+        );
+        assert_eq!(cutaway.cutaway_quads[0].rect, ordinary.quads[0].rect);
+        assert_eq!(cutaway.cutaway_quads[0].depth, ordinary.quads[0].depth);
+
+        // The original storey cut has the same destination: it is no longer
+        // an opaque row, but it remains a faint picture instead of vanishing.
+        let above = collect(
+            &map,
+            &camera,
+            &tiledata,
+            &animations,
+            &atlas,
+            &Cutaway {
+                max_z: 0,
+                ..Cutaway::OPEN
+            },
+            &crate::occlusion::Occlusion::EMPTY,
+            None,
+        );
+        assert!(above.quads.is_empty(), "the cut static reached the opaque pass");
+        assert_eq!(
+            above.cutaway_quads.len(),
+            1,
+            "the cut static disappeared outright"
         );
     }
 

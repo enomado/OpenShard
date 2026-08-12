@@ -339,6 +339,8 @@ pub(crate) fn encode_world_passes(
     view: &wgpu::TextureView,
     world_view: &wgpu::TextureView,
     gbuffer_views: &openshard_client_render::gbuffer::Views,
+    cutaway_world_view: &wgpu::TextureView,
+    cutaway_gbuffer_views: &openshard_client_render::gbuffer::Views,
     viewport: ViewportRect,
     camera: Camera,
     solid_cut: openshard_client_render::solid::Cut,
@@ -403,6 +405,31 @@ pub(crate) fn encode_world_passes(
         None,
     );
     profile::end(window.gpu.as_ref(), encoder, timed);
+    // The architectural cutaway comes after mobiles so its depth test sees the
+    // settled opaque world. It writes its *own* picture and G-buffer but reads
+    // the main depth without writing it; its separately lit colour is composed
+    // after the main deferred blit below.
+    if geometry.cutaway_instances.drawn != 0 {
+        let timed = profile::begin(window.gpu.as_ref(), "cutaway geometry", encoder);
+        let cutaway_target = Target {
+            view: cutaway_world_view,
+            depth: target.depth,
+            gbuffer: cutaway_gbuffer_views,
+            width: target.width,
+            height: target.height,
+            projection: target.projection,
+        };
+        window.statics.render_cutaway(
+            &window.device,
+            &window.queue,
+            encoder,
+            cutaway_target,
+            &geometry.cutaway_instances.rows,
+            &geometry.cutaway_boxes,
+            geometry.cutaway_instances.drawn,
+        );
+        profile::end(window.gpu.as_ref(), encoder, timed);
+    }
     // The silhouettes, here and not later: the mask is depth-tested against
     // what the three world passes have drawn, so a barrel behind a wall is
     // kept out of it — and the text pass below writes depth at the near
@@ -574,6 +601,28 @@ pub(crate) fn encode_world_passes(
             &geometry.lighting,
         );
         profile::end(window.gpu.as_ref(), encoder, timed);
+        if geometry.cutaway_instances.drawn != 0 {
+            let timed = profile::begin(window.gpu.as_ref(), "cutaway lighting", encoder);
+            window.blit.render_cutaway(
+                &window.device,
+                &window.queue,
+                encoder,
+                blit::Frame {
+                    target: view,
+                    world: cutaway_world_view,
+                    gbuffer: cutaway_gbuffer_views,
+                    face_instances: window.statics.cutaway_instances_buffer(),
+                    mobile_instances: window.mobile_pass.instances_buffer(),
+                    mesh_instances: window.mesh_pass.rows_buffer(),
+                    ground_instances: window.renderer.instances_buffer(),
+                    zoom: camera.zoom(),
+                    rect: viewport,
+                },
+                &geometry.lighting,
+                openshard_client_render::cutaway::TRANSLUCENT_ALPHA,
+            );
+            profile::end(window.gpu.as_ref(), encoder, timed);
+        }
     }
     // The occlusion grid as solids, when somebody asked for it — step 23.0.
     // First of what is drawn over the lit picture, so the highlights stay on

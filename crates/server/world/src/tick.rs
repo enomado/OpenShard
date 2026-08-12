@@ -232,6 +232,7 @@ impl World {
             Facet(DEFAULT_FACET),
             FacetState {
                 terrain: None,
+                coarse: None,
                 width: FACET_WITHOUT_A_MAP.0,
                 height: FACET_WITHOUT_A_MAP.1,
                 sectors: Sectors::new(FACET_WITHOUT_A_MAP.0, FACET_WITHOUT_A_MAP.1),
@@ -372,6 +373,7 @@ impl World {
     /// Load `terrain` as facet `facet`, its interest grid sized to the map.
     pub fn with_facet(mut self, facet: Facet, terrain: MapTerrain) -> Self {
         let (width, height) = (terrain.map().width(), terrain.map().height());
+        let coarse = openshard_movement::CoarseRouter::build(&terrain, width, height);
         let sectors = Sectors::new(width, height);
         // Boxed as `dyn Terrain`: the state crate holds the abstraction, and the
         // world supplies the concrete map here.
@@ -379,6 +381,7 @@ impl World {
             facet,
             FacetState {
                 terrain: Some(Box::new(terrain) as Box<dyn Terrain + Send + Sync>),
+                coarse,
                 width,
                 height,
                 sectors,

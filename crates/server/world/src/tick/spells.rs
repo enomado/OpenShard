@@ -294,7 +294,12 @@ impl World {
                         .map_or(0, |s| s.get(MAGERY_SKILL));
                     let level = ((magery / 300) as u8).min(2);
                     let now = self.state.ticks;
-                    combat::apply_poison(&mut self.state, target, level, now);
+                    combat::apply_poison(
+                        &mut self.state,
+                        target,
+                        openshard_protocol::world::PoisonLevel::new(level),
+                        now,
+                    );
                 }
             }
             SpellEffect::Cure => {

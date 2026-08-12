@@ -1,6 +1,8 @@
 use super::*;
 use openshard_protocol::mobile::Notoriety;
-use openshard_protocol::world::{Aggression, DamageType, PhysicalResistance, RangedRange, Sight};
+use openshard_protocol::world::{
+    Aggression, DamageType, PhysicalResistance, PoisonLevel, RangedRange, Sight,
+};
 
 /// serial the engine has never been told about.
 ///
@@ -321,7 +323,7 @@ fn op_set_weapon(state: &mut OpState, serial: u32, speed: u32, min: u32, max: u3
 fn op_set_poison(state: &mut OpState, serial: u32, level: u32, charges: u32) {
     state.borrow_mut::<Host>().outbox.push(Command::SetPoison {
         serial,
-        level: level.min(4) as u8,
+        level: PoisonLevel::new(level.min(u32::from(u8::MAX)) as u8),
         charges: charges.min(u32::from(u16::MAX)) as u16,
     });
 }

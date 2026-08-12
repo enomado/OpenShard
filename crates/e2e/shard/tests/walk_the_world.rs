@@ -19,7 +19,7 @@ use std::time::Duration;
 
 use openshard_client_net::connection::Event;
 use openshard_client_net::transport::enter_world;
-use openshard_client_net::walk::{MAX_IN_FLIGHT, Moved, Walk};
+use openshard_client_net::walk::{InFlightSteps, MAX_IN_FLIGHT, Moved, Walk};
 use openshard_movement::WALK_BUFFER;
 use openshard_protocol::direction::Facing;
 use openshard_protocol::world::Point;
@@ -71,7 +71,7 @@ async fn a_client_walks_and_the_shard_agrees_on_where_it_ended_up() {
                 socket.send(&request).await.expect("the shard is listening");
                 sent += 1;
             }
-            if sent == burst && walk.in_flight() == 0 {
+            if sent == burst && walk.in_flight() == InFlightSteps::new(0) {
                 // Every step answered and none refused. The assertions below say
                 // what that means.
                 return;

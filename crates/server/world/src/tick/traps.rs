@@ -92,7 +92,12 @@ impl World {
                 } else {
                     level.saturating_sub(1).min(4)
                 };
-                combat::apply_poison(&mut self.state, serial, poison, ticks);
+                combat::apply_poison(
+                    &mut self.state,
+                    serial,
+                    openshard_protocol::world::PoisonLevel::new(poison),
+                    ticks,
+                );
                 self.state.localized_message(opener, NOXIOUS_CLOUD, "");
                 self.state.play_sound(container, POISON_SOUND);
                 self.location_effect(container, CLOUD_GRAPHIC);

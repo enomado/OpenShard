@@ -25,11 +25,11 @@ use crate::light::Lighting;
 /// wrongly.
 const MAX_LIGHTS: usize = Lighting::MAX;
 
-/// The uniform block's size: six header `vec4`s — the sky ambient with the light
-/// count, the ground ambient, the occlusion grid's rectangle, which view to
-/// draw, and the sun's direction and colour — then three per light: where it
-/// burns, what colour, and which way it points.
-const LIGHTING_BYTES: u64 = (6 + 3 * MAX_LIGHTS as u64) * 16;
+/// The uniform block's size: seven header `vec4`s — the sky ambient with the
+/// light count, the ground ambient, the occlusion grid's rectangle, which view
+/// to draw, the sun's direction and colour, and the compositing opacity — then
+/// three per light: where it burns, what colour, and which way it points.
+const LIGHTING_BYTES: u64 = (7 + 3 * MAX_LIGHTS as u64) * 16;
 
 /// Where the world image goes on the surface, in physical pixels.
 ///
@@ -99,6 +99,9 @@ pub struct Frame<'a> {
 #[derive(Debug)]
 pub struct Blit {
     pipeline: wgpu::RenderPipeline,
+    /// The same deferred shader, but source-over composited instead of clearing
+    /// the surface. It is used only for the private cutaway layer.
+    cutaway_pipeline: wgpu::RenderPipeline,
     layout: wgpu::BindGroupLayout,
     /// For magnifying: a texel has to stay a square.
     nearest: wgpu::Sampler,
@@ -107,6 +110,10 @@ pub struct Blit {
     linear: wgpu::Sampler,
     /// The frame's lights, rewritten every frame — see [`crate::light`].
     lighting: wgpu::Buffer,
+    /// The cutaway's independent copy of the same uniform block. Both blits
+    /// are recorded before one submission; sharing a buffer would make the
+    /// second opacity overwrite the first draw's uniform data.
+    cutaway_lighting: wgpu::Buffer,
     /// What stands in their way, as one texel a tile — see
     /// [`crate::occlusion`]. Recreated when the frame's grid changes size, which
     /// is a zoom step or a resize and not an ordinary frame; rewritten every
@@ -426,6 +433,12 @@ impl Blit {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
+        let cutaway_lighting = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("cutaway lighting"),
+            size: LIGHTING_BYTES,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
 
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("blit"),
@@ -477,12 +490,48 @@ impl Blit {
             cache: None,
         });
 
+        let cutaway_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("cutaway blit"),
+            layout: Some(&pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vs_main"),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                buffers: &[],
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some("fs_main"),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format,
+                    blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleStrip,
+                strip_index_format: None,
+                front_face: wgpu::FrontFace::Ccw,
+                cull_mode: None,
+                unclipped_depth: false,
+                polygon_mode: wgpu::PolygonMode::Fill,
+                conservative: false,
+            },
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview_mask: None,
+            cache: None,
+        });
+
         Self {
             pipeline,
+            cutaway_pipeline,
             layout,
             nearest: sampler("blit nearest", wgpu::FilterMode::Nearest),
             linear: sampler("blit linear", wgpu::FilterMode::Linear),
             lighting,
+            cutaway_lighting,
             // One texel, which is a grid of one open tile: a daylit frame binds
             // it and never reads it, and the first lit frame replaces it. A
             // texture of no size is not a thing wgpu will make.
@@ -523,6 +572,42 @@ impl Blit {
         frame: Frame<'_>,
         lighting: &Lighting,
     ) {
+        self.render_layer(device, queue, encoder, frame, lighting, 1.0, false);
+    }
+
+    /// Deferred-light and source-over a private cutaway layer onto a world the
+    /// ordinary [`Self::render`] has already put on the surface.
+    ///
+    /// `opacity` is supplied by the cutaway policy, once, at the composition
+    /// seam. The shader premultiplies its lit output with it, and this pipeline
+    /// uses premultiplied source-over blending; there is no alpha literal in a
+    /// second sprite shader to drift from the product setting.
+    pub fn render_cutaway(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        encoder: &mut wgpu::CommandEncoder,
+        frame: Frame<'_>,
+        lighting: &Lighting,
+        opacity: f32,
+    ) {
+        self.render_layer(device, queue, encoder, frame, lighting, opacity, true);
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the deferred layer needs its encoder, frame, lighting and composition policy"
+    )]
+    fn render_layer(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        encoder: &mut wgpu::CommandEncoder,
+        frame: Frame<'_>,
+        lighting: &Lighting,
+        opacity: f32,
+        cutaway: bool,
+    ) {
         let Frame {
             target,
             world,
@@ -534,15 +619,19 @@ impl Blit {
             zoom,
             rect,
         } = frame;
-        queue.write_buffer(&self.lighting, 0, &lighting_bytes(lighting));
         self.upload_grid(device, queue, lighting);
         self.upload_tree(device, queue, lighting);
+        let lighting_buffer = match cutaway {
+            true => &self.cutaway_lighting,
+            false => &self.lighting,
+        };
+        queue.write_buffer(lighting_buffer, 0, &lighting_bytes(lighting, opacity));
         // A bind group per call rather than per `Blit`: the world texture is
         // recreated on every resize and every zoom step, and a cached group
         // would be a handle to a texture that is no longer being drawn into.
         let magnifying = zoom.numerator() >= zoom.denominator();
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("blit"),
+            label: Some(if cutaway { "cutaway blit" } else { "blit" }),
             layout: &self.layout,
             entries: &[
                 wgpu::BindGroupEntry {
@@ -559,7 +648,7 @@ impl Blit {
                 },
                 wgpu::BindGroupEntry {
                     binding: 2,
-                    resource: self.lighting.as_entire_binding(),
+                    resource: lighting_buffer.as_entire_binding(),
                 },
                 wgpu::BindGroupEntry {
                     binding: 3,
@@ -635,10 +724,12 @@ impl Blit {
                 depth_slice: None,
                 resolve_target: None,
                 ops: wgpu::Operations {
-                    // Clears the whole surface, not just the rect: whatever the
-                    // UI does not cover and the world does not fill is this
-                    // frame's, and leaving the last one there would smear.
-                    load: wgpu::LoadOp::Clear(crate::renderer::CLEAR),
+                    // The opaque picture owns the clear. The transparent layer
+                    // loads it and source-overs only its non-empty texels.
+                    load: match cutaway {
+                        true => wgpu::LoadOp::Load,
+                        false => wgpu::LoadOp::Clear(crate::renderer::CLEAR),
+                    },
                     store: wgpu::StoreOp::Store,
                 },
             })],
@@ -654,7 +745,10 @@ impl Blit {
             return;
         }
 
-        pass.set_pipeline(&self.pipeline);
+        pass.set_pipeline(match cutaway {
+            true => &self.cutaway_pipeline,
+            false => &self.pipeline,
+        });
         pass.set_bind_group(0, &bind_group, &[]);
         // The viewport is what puts the quad in the rect: the shader emits clip
         // space corners and this is the rectangle clip space maps onto.
@@ -681,7 +775,7 @@ impl Blit {
 /// Lights past [`Lighting::MAX`] are dropped rather than wrapping the array —
 /// [`crate::light::collect`] already keeps only the nearest that many, so this
 /// is the second half of one rule and not a policy of its own.
-fn lighting_bytes(lighting: &Lighting) -> Vec<u8> {
+fn lighting_bytes(lighting: &Lighting, opacity: f32) -> Vec<u8> {
     let mut bytes = Vec::with_capacity(LIGHTING_BYTES as usize);
     let count = lighting.lights.len().min(MAX_LIGHTS);
 
@@ -754,6 +848,13 @@ fn lighting_bytes(lighting: &Lighting) -> Vec<u8> {
         bytes.extend_from_slice(&channel.to_le_bytes());
     }
     bytes.extend_from_slice(&sun.intensity.to_le_bytes());
+
+    // The final operation this blit performs. Opaque world rendering writes
+    // one; the cutaway variant writes its policy opacity and uses a blending
+    // pipeline. The other three words are deliberately reserved as a coherent
+    // fourth header vector rather than smuggling a float into an integer view.
+    bytes.extend_from_slice(&opacity.to_le_bytes());
+    bytes.extend_from_slice(&[0; 12]);
 
     for light in &lighting.lights[..count] {
         // A fire in the open lights every direction, and says so with an axis of

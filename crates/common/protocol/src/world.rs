@@ -1208,6 +1208,85 @@ impl<'de> Deserialize<'de> for PhysicalResistance {
     }
 }
 
+/// One of Ultima Online's five poison strengths, from lesser (`0`) through
+/// lethal (`4`).
+///
+/// Scripts and saves keep their established numeric representation. Legacy
+/// values above lethal are normalised at the boundary, matching the previous
+/// runtime clamp in `combat::apply_poison`.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Debug, Default)]
+pub struct PoisonLevel(u8);
+
+impl PoisonLevel {
+    /// The strongest poison on the game's five-level scale.
+    pub const LETHAL: Self = Self(4);
+
+    /// Make a poison level, capping legacy out-of-range input at lethal.
+    #[must_use]
+    pub const fn new(value: u8) -> Self {
+        Self(if value > Self::LETHAL.0 {
+            Self::LETHAL.0
+        } else {
+            value
+        })
+    }
+
+    /// The numeric level used by the historic script/save format.
+    #[must_use]
+    pub const fn get(self) -> u8 {
+        self.0
+    }
+}
+
+impl Serialize for PoisonLevel {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_u8(self.get())
+    }
+}
+
+impl<'de> Deserialize<'de> for PoisonLevel {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        Ok(Self::new(u8::deserialize(deserializer)?))
+    }
+}
+
+/// How much of a tamer's follower allowance one creature occupies.
+///
+/// A creature always occupies at least one slot. The persisted and scripting
+/// representation remains numeric; decoding a legacy zero keeps the old
+/// `npc::tame` behaviour, which already normalised it to one at creation.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Debug)]
+pub struct FollowerSlots(u8);
+
+impl FollowerSlots {
+    /// One follower slot.
+    pub const ONE: Self = Self(1);
+
+    /// Make a follower-slot cost, normalising the invalid zero cost.
+    #[must_use]
+    pub const fn new(value: u8) -> Self {
+        Self(if value == 0 { Self::ONE.0 } else { value })
+    }
+
+    /// The numeric value used by the historic save format and follower counter.
+    #[must_use]
+    pub const fn get(self) -> u8 {
+        self.0
+    }
+}
+
+impl Serialize for FollowerSlots {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_u8(self.get())
+    }
+}
+
+impl<'de> Deserialize<'de> for FollowerSlots {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        Ok(Self::new(u8::deserialize(deserializer)?))
+    }
+}
+
 /// Whether a creature starts fights, only answers them, or runs from them.
 ///
 /// The numeric representation is part of the script and saved-world contract:

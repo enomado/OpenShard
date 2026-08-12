@@ -77,6 +77,17 @@ fn gpu() -> Option<(wgpu::Device, wgpu::Queue)> {
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
     let adapter =
         pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).ok()?;
+    // The real client requires this exact G-buffer target. Some CI adapters
+    // expose a device but only through a downlevel path that cannot render to
+    // `Rgba32Float`; treating that as a usable GPU lets a test panic halfway
+    // through setup instead of honestly skipping what this machine cannot draw.
+    if !adapter
+        .get_texture_format_features(gbuffer::POSITION_FORMAT)
+        .allowed_usages
+        .contains(wgpu::TextureUsages::RENDER_ATTACHMENT)
+    {
+        return None;
+    }
     // The defaults, plus the one thing this crate asks for above them —
     // `gbuffer::required_limits`, whose own doc has the arithmetic. Asking for
     // exactly what the app asks for is the point: a test running under wider
@@ -93,6 +104,21 @@ fn gpu() -> Option<(wgpu::Device, wgpu::Queue)> {
 struct Frame {
     width: u32,
     pixels: Vec<u8>,
+}
+
+/// The finished picture of the small cutaway harness and the opaque G-buffer
+/// it was composed over. The latter is read directly to prove translucent
+/// architecture did not replace the main identity that picking and masks use.
+struct CutawayFrame {
+    picture: Frame,
+    main_ids: Vec<u8>,
+}
+
+impl CutawayFrame {
+    fn main_id(&self, x: u32, y: u32) -> u32 {
+        let at = ((y * self.picture.width + x) * 4) as usize;
+        u32::from_le_bytes(self.main_ids[at..at + 4].try_into().expect("one R32Uint texel"))
+    }
 }
 
 impl Frame {
@@ -194,11 +220,44 @@ fn render_both(
     height: u32,
     projection: Projection,
 ) -> Frame {
+    render_both_with_cutaway(
+        device,
+        queue,
+        atlas,
+        texmaps,
+        quads,
+        static_atlas,
+        static_quads,
+        mobiles,
+        &[],
+        width,
+        height,
+        projection,
+    )
+    .picture
+}
+
+/// [`render_both`] with the independently deferred cutaway layer enabled.
+#[allow(clippy::too_many_arguments)]
+fn render_both_with_cutaway(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    atlas: &LandAtlas,
+    texmaps: &TexmapAtlas,
+    quads: &[GroundQuad],
+    static_atlas: &StaticAtlas,
+    static_quads: &[SpriteQuad],
+    mobiles: (&[u8], &[SpriteQuad]),
+    cutaway_quads: &[SpriteQuad],
+    width: u32,
+    height: u32,
+    projection: Projection,
+) -> CutawayFrame {
     assert_eq!(width * 4 % 256, 0, "a row copy has to be 256-byte aligned");
 
     let format = wgpu::TextureFormat::Rgba8Unorm;
     let target = device.create_texture(&wgpu::TextureDescriptor {
-        label: Some("frame"),
+        label: Some("cutaway frame"),
         size: wgpu::Extent3d {
             width,
             height,
@@ -212,9 +271,19 @@ fn render_both(
         view_formats: &[],
     });
     let view = target.create_view(&wgpu::TextureViewDescriptor::default());
+    let world = openshard_client_render::blit::world_texture(device, width, height);
+    let world_view = world.create_view(&wgpu::TextureViewDescriptor::default());
+    let cutaway_world = openshard_client_render::blit::world_texture(device, width, height);
+    let cutaway_world_view = cutaway_world.create_view(&wgpu::TextureViewDescriptor::default());
 
     let readback = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("readback"),
+        size: u64::from(width) * u64::from(height) * 4,
+        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+        mapped_at_creation: false,
+    });
+    let ids_readback = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("cutaway main ids readback"),
         size: u64::from(width) * u64::from(height) * 4,
         usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
         mapped_at_creation: false,
@@ -227,6 +296,8 @@ fn render_both(
     let depth_view = depth.create_view(&wgpu::TextureViewDescriptor::default());
     let gbuffer = openshard_client_render::gbuffer::Gbuffer::new(device, width, height);
     let gbuffer_views = gbuffer.views();
+    let cutaway_gbuffer = openshard_client_render::gbuffer::Gbuffer::new(device, width, height);
+    let cutaway_gbuffer_views = cutaway_gbuffer.views();
 
     // None of these frames ask for a hue — every quad built below carries
     // `hue: 0` — so an empty ramp is a real texture the shader can bind rather
@@ -242,7 +313,7 @@ fn render_both(
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
     let target_view = Target {
         gbuffer: &gbuffer_views,
-        view: &view,
+        view: &world_view,
         depth: &depth_view,
         width,
         height,
@@ -256,6 +327,67 @@ fn render_both(
     // `render_places` below is the harness that does, and it takes them.
     statics.render(device, queue, &mut encoder, target_view, static_quads, &[], None);
     people.render(device, queue, &mut encoder, target_view, mobiles.1, &[], None);
+    if !cutaway_quads.is_empty() {
+        let cutaway_target = Target {
+            gbuffer: &cutaway_gbuffer_views,
+            view: &cutaway_world_view,
+            depth: &depth_view,
+            width,
+            height,
+            projection,
+        };
+        statics.render_cutaway(
+            device,
+            queue,
+            &mut encoder,
+            cutaway_target,
+            cutaway_quads,
+            &[],
+            cutaway_quads.len() as u32,
+        );
+    }
+    let mut blit = Blit::new(device, format);
+    // The two dummy buffers must outlive the bindings recorded in this encoder.
+    // They describe categories absent from this small harness, while statics and
+    // ground use the renderers' real instance data above.
+    let mesh_instances = openshard_client_render::blit::dummy_mesh_instances(device);
+    let frame = |world, gbuffer, face_instances| openshard_client_render::blit::Frame {
+        target: &view,
+        world,
+        gbuffer,
+        face_instances,
+        mobile_instances: people.instances_buffer(),
+        mesh_instances: &mesh_instances,
+        ground_instances: renderer.instances_buffer(),
+        zoom: Zoom::ONE,
+        rect: ViewportRect {
+            x: 0,
+            y: 0,
+            width,
+            height,
+        },
+    };
+    blit.render(
+        device,
+        queue,
+        &mut encoder,
+        frame(&world_view, &gbuffer_views, statics.instances_buffer()),
+        &Lighting::NONE,
+    );
+    if !cutaway_quads.is_empty() {
+        blit.render_cutaway(
+            device,
+            queue,
+            &mut encoder,
+            frame(
+                &cutaway_world_view,
+                &cutaway_gbuffer_views,
+                statics.cutaway_instances_buffer(),
+            ),
+            &Lighting::NONE,
+            openshard_client_render::cutaway::TRANSLUCENT_ALPHA,
+        );
+    }
     encoder.copy_texture_to_buffer(
         wgpu::TexelCopyTextureInfo {
             texture: &target,
@@ -277,11 +409,36 @@ fn render_both(
             depth_or_array_layers: 1,
         },
     );
+    encoder.copy_texture_to_buffer(
+        wgpu::TexelCopyTextureInfo {
+            texture: gbuffer.ids(),
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
+        wgpu::TexelCopyBufferInfo {
+            buffer: &ids_readback,
+            layout: wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(width * 4),
+                rows_per_image: Some(height),
+            },
+        },
+        wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
+    );
     queue.submit([encoder.finish()]);
 
     let slice = readback.slice(..);
     slice.map_async(wgpu::MapMode::Read, |result| {
         result.expect("mapping a buffer this test just wrote");
+    });
+    let ids_slice = ids_readback.slice(..);
+    ids_slice.map_async(wgpu::MapMode::Read, |result| {
+        result.expect("mapping the main ids this test just wrote");
     });
     device
         .poll(wgpu::PollType::wait_indefinitely())
@@ -291,8 +448,16 @@ fn render_both(
         .expect("the map completed above")
         .to_vec();
     readback.unmap();
+    let main_ids = ids_slice
+        .get_mapped_range()
+        .expect("the ids map completed above")
+        .to_vec();
+    ids_readback.unmap();
 
-    Frame { width, pixels }
+    CutawayFrame {
+        picture: Frame { width, pixels },
+        main_ids,
+    }
 }
 
 /// One sprite, drawn alone, compared to the art texel for texel.
@@ -585,6 +750,7 @@ fn a_sloped_tile_is_drawn_from_its_texture_and_a_level_one_from_its_art() {
                 green: g,
                 blue: b,
             } = expected.rgb8();
+            let [r, g, b] = openshard_client_render::tonemap::shade_u8([r, g, b], [1.0; 3]);
             assert_eq!(
                 pixel,
                 [r, g, b, u8::MAX],
@@ -1496,6 +1662,85 @@ fn a_static_sprite_is_drawn_texel_for_texel_with_its_shape_intact() {
     // a sprite drawn at the wrong scale fails this even when every pixel it did
     // draw was the right colour.
     assert_eq!(drawn, usize::from(width - 1) * usize::from(height));
+}
+
+/// Cutaway art is composed over the world, rather than replacing it. The
+/// destination is an ordinary opaque static here; a mobile has the same depth
+/// and colour contract, while this keeps the assertion independent of anim art.
+#[test]
+fn a_cutaway_sprite_is_alpha_blended_over_the_picture_behind_it() {
+    let Some((device, queue)) = gpu() else {
+        return;
+    };
+    const BEHIND: Graphic = Graphic(1);
+    const CUTAWAY: Graphic = Graphic(2);
+    let green = Color16(0b0_00000_11111_00000);
+    let red = Color16(0b0_11111_00000_00000);
+    let atlas = StaticAtlas::pack([
+        (BEHIND, Image::new(1, 1, vec![green])),
+        (CUTAWAY, Image::new(1, 1, vec![red])),
+    ])
+    .expect("two one-pixel sprites fit");
+    let quad = |graphic: Graphic, depth: f32| {
+        let sprite = atlas.sprite(graphic).expect("packed");
+        SpriteQuad {
+            rect: Rect {
+                x: 20.0,
+                y: 20.0,
+                width: 1.0,
+                height: 1.0,
+            },
+            region: sprite.region,
+            depth,
+            hue: 0,
+            place: Place::of_static(Point::new(100, 100, 0)),
+            twin: 0,
+            owner: 0,
+            volumes: Range::default(),
+        }
+    };
+    let land = LandAtlas::pack([]).expect("empty land atlas");
+    let texmaps = TexmapAtlas::pack([]).expect("empty texmap atlas");
+    let mobiles = AnimAtlas::pack([]).expect("empty animation atlas");
+    let frame = render_both_with_cutaway(
+        &device,
+        &queue,
+        &land,
+        &texmaps,
+        &[],
+        &atlas,
+        &[quad(BEHIND, 0.6)],
+        (mobiles.pixels(), &[]),
+        &[quad(CUTAWAY, 0.5)],
+        64,
+        64,
+        Projection::one_to_one(64, 64),
+    );
+
+    let pixel = frame.picture.pixel(20, 20);
+    // Both layers have already passed through their ordinary deferred-lighting
+    // curve; the cutaway blit then premultiplies red at this alpha. Source-over
+    // therefore combines the displayed values, not the source art's raw bytes.
+    let alpha = openshard_client_render::cutaway::TRANSLUCENT_ALPHA;
+    let [red, _, _] = openshard_client_render::tonemap::shade_u8([255, 0, 0], [1.0; 3]);
+    let [_, green, _] = openshard_client_render::tonemap::shade_u8([0, 255, 0], [1.0; 3]);
+    let red = (f32::from(red) * alpha).round() as i16;
+    let green = (f32::from(green) * (1.0 - alpha)).round() as i16;
+    assert!(
+        (i16::from(pixel[0]) - red).abs() <= 1,
+        "red was not blended: {pixel:?}"
+    );
+    assert!(
+        (i16::from(pixel[1]) - green).abs() <= 1,
+        "green was not retained: {pixel:?}"
+    );
+    assert_eq!(pixel[2], 0, "unexpected blue in the blended pixel: {pixel:?}");
+    assert_eq!(pixel[3], 255, "blending changed the frame coverage: {pixel:?}");
+    assert_eq!(
+        openshard_client_render::gbuffer::ids_kind(frame.main_id(20, 20)),
+        Some(Kind::Static),
+        "the cutaway replaced the main G-buffer identity instead of only blending over it"
+    );
 }
 
 /// One `hues.mul` group, `Hue(1)`'s ramp set to `colors` and the other seven
@@ -4219,6 +4464,8 @@ fn ground_in_front_hides_a_static_behind_it() {
         green: green_g,
         blue: green_b,
     } = green.rgb8();
+    let [green_r, green_g, green_b] =
+        openshard_client_render::tonemap::shade_u8([green_r, green_g, green_b], [1.0; 3]);
     let mut ground_pixels = 0;
     for y in 0..128u32 {
         for x in 0..128u32 {
@@ -4461,11 +4708,14 @@ fn a_mobile_is_drawn_over_the_ground_and_mirrors_with_its_facing() {
         green: red_g,
         blue: red_b,
     } = red.rgb8();
+    let [red_r, red_g, red_b] = openshard_client_render::tonemap::shade_u8([red_r, red_g, red_b], [1.0; 3]);
     let Rgb8 {
         red: green_r,
         green: green_g,
         blue: green_b,
     } = green.rgb8();
+    let [green_r, green_g, green_b] =
+        openshard_client_render::tonemap::shade_u8([green_r, green_g, green_b], [1.0; 3]);
     // South is stored direction 1 unflipped, East is the same picture mirrored.
     assert_eq!(
         colours(Direction::South),

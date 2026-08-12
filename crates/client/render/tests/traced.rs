@@ -62,6 +62,7 @@ use oracle::boxes::{BoxSpec, box_mesh, box_owner};
 /// own face is thousands of pixels rather than dozens: the comparison's whole
 /// value is that it is a *picture* and not a point query.
 const SIDE: u32 = 512;
+const TRACE_SIZE: pt_trace::ImageSize = pt_trace::ImageSize::new(SIDE, SIDE);
 
 /// A GPU to draw with, or `None` where there is none.
 fn gpu() -> Option<(wgpu::Device, wgpu::Queue)> {
@@ -691,14 +692,13 @@ fn the_frame_and_the_path_tracer_agree_about_every_interior_pixel() {
         body: oracle::pathtrace::ENGINE_FLAME,
         to_pixel: frame.to_pixel.as_ref(),
     });
-    let seen = |brdf, seed| mirror.render(brdf, seed, SIDE, SIDE);
+    let seen = |brdf, seed| mirror.render(brdf, seed, TRACE_SIZE);
     let exact = seen(pt_trace::Brdf::Flat, oracle::pathtrace::FIRST_SEED);
     let verdict = oracle::pathtrace::compare(
         &exact,
         &seen(pt_trace::Brdf::Lambert, oracle::pathtrace::FIRST_SEED),
         oracle::pathtrace::Frame {
-            width: SIDE,
-            height: SIDE,
+            size: TRACE_SIZE,
             drawn: &frame.drawn,
             picture: &frame.surface,
             face_rows: &frame.face_rows,
@@ -717,8 +717,7 @@ fn the_frame_and_the_path_tracer_agree_about_every_interior_pixel() {
         &exact,
         &seen(pt_trace::Brdf::Flat, oracle::pathtrace::SECOND_SEED),
         oracle::pathtrace::Frame {
-            width: SIDE,
-            height: SIDE,
+            size: TRACE_SIZE,
             drawn: &frame.drawn,
             picture: &frame.surface,
             face_rows: &frame.face_rows,
@@ -923,7 +922,7 @@ fn the_frame_and_the_path_tracer_agree_about_a_run_of_flights() {
         body: oracle::pathtrace::Body::Point,
         to_pixel: frame.to_pixel.as_ref(),
     });
-    let seen = |brdf, seed| mirror.render(brdf, seed, SIDE, SIDE);
+    let seen = |brdf, seed| mirror.render(brdf, seed, TRACE_SIZE);
     let exact = seen(pt_trace::Brdf::Flat, oracle::pathtrace::FIRST_SEED);
     assert!(
         exact.is_exact(),
@@ -933,8 +932,7 @@ fn the_frame_and_the_path_tracer_agree_about_a_run_of_flights() {
         &exact,
         &seen(pt_trace::Brdf::Lambert, oracle::pathtrace::FIRST_SEED),
         oracle::pathtrace::Frame {
-            width: SIDE,
-            height: SIDE,
+            size: TRACE_SIZE,
             drawn: &frame.drawn,
             picture: &frame.surface,
             face_rows: &frame.face_rows,
@@ -957,13 +955,12 @@ fn the_frame_and_the_path_tracer_agree_about_a_run_of_flights() {
             oracle::pathtrace::probe(
                 &exact,
                 oracle::pathtrace::Frame {
-                    width: SIDE,
-                    height: SIDE,
+                    size: TRACE_SIZE,
                     drawn: &frame.drawn,
                     picture: &frame.surface,
                     face_rows: &frame.face_rows,
                 },
-                (numbers[0], numbers[1]),
+                pt_trace::ImagePixel::new(numbers[0], numbers[1]),
                 numbers.get(2).copied().unwrap_or(6),
             )
         );
@@ -1072,7 +1069,7 @@ fn the_frame_and_the_path_tracer_agree_about_a_merged_run_of_wall() {
         body: oracle::pathtrace::Body::Point,
         to_pixel: frame.to_pixel.as_ref(),
     });
-    let seen = |brdf, seed| mirror.render(brdf, seed, SIDE, SIDE);
+    let seen = |brdf, seed| mirror.render(brdf, seed, TRACE_SIZE);
     let exact = seen(pt_trace::Brdf::Flat, oracle::pathtrace::FIRST_SEED);
     assert!(
         exact.is_exact(),
@@ -1082,8 +1079,7 @@ fn the_frame_and_the_path_tracer_agree_about_a_merged_run_of_wall() {
         &exact,
         &seen(pt_trace::Brdf::Lambert, oracle::pathtrace::FIRST_SEED),
         oracle::pathtrace::Frame {
-            width: SIDE,
-            height: SIDE,
+            size: TRACE_SIZE,
             drawn: &frame.drawn,
             picture: &frame.surface,
             face_rows: &frame.face_rows,
@@ -1421,15 +1417,14 @@ fn a_flame_just_over_a_landing_does_not_wedge_it_with_its_own_below_horizon_rays
         body: oracle::pathtrace::ENGINE_FLAME,
         to_pixel: frame.to_pixel.as_ref(),
     });
-    let seen = |seed| mirror.render(pt_trace::Brdf::Lambert, seed, SIDE, SIDE);
+    let seen = |seed| mirror.render(pt_trace::Brdf::Lambert, seed, TRACE_SIZE);
     let traced = seen(oracle::pathtrace::FIRST_SEED);
     let allowed = oracle::pathtrace::PENUMBRA_ALLOWED;
     let found = oracle::pathtrace::shading(
         &traced,
         &seen(oracle::pathtrace::SECOND_SEED),
         oracle::pathtrace::Frame {
-            width: SIDE,
-            height: SIDE,
+            size: TRACE_SIZE,
             drawn: &frame.drawn,
             picture: &frame.surface,
             face_rows: &frame.face_rows,
@@ -1748,7 +1743,7 @@ fn the_frame_and_the_path_tracer_agree_about_brightness_on_open_ground() {
     // a description of the engine *before* this phase — no cosine and no notion
     // of a normal anywhere in it — so leaving the gate there would have made the
     // reference agree with the renderer we have just replaced.
-    let traced = mirror.render(pt_trace::Brdf::Lambert, oracle::pathtrace::FIRST_SEED, SIDE, SIDE);
+    let traced = mirror.render(pt_trace::Brdf::Lambert, oracle::pathtrace::FIRST_SEED, TRACE_SIZE);
 
     // Compared where the tracer sees the ground and the frame drew it: the two
     // agreeing what surface is there is the same precondition the shadow gate

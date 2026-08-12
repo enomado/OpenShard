@@ -32,7 +32,9 @@
 mod engine;
 
 use openshard_protocol::mobile::Notoriety;
-use openshard_protocol::world::{Aggression, DamageType, Facet, PhysicalResistance, RangedRange, Sight};
+use openshard_protocol::world::{
+    Aggression, DamageType, Facet, PhysicalResistance, PoisonLevel, RangedRange, Sight,
+};
 
 pub use engine::DenoEngine;
 
@@ -522,7 +524,7 @@ pub enum Command {
         /// The item, by serial.
         serial: Serial,
         /// The poison level, 0 (lesser) .. 4 (lethal).
-        level: u8,
+        level: PoisonLevel,
         /// Doses; one for a bottle, zero to clear.
         charges: u16,
     },

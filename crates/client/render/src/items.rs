@@ -187,6 +187,11 @@ pub fn collect(
     quads.sort_by_key(|(order, _)| *order);
     crate::statics::StaticGeometry {
         quads: quads.into_iter().map(|(_, quad)| quad).collect(),
+        // Ground items do not take part in the player's visual cutaway yet:
+        // the map's architecture is what can stand between the camera and the
+        // body, while an item is separately selectable and highlighted.
+        cutaway_quads: Vec::new(),
+        cutaway_boxes: Vec::new(),
         mesh_vertices,
         mesh_rows,
         boxes,

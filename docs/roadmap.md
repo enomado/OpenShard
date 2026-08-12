@@ -2734,13 +2734,15 @@ riding along with this one.
   pixels, `Panel`'s are logical egui points; same shape, different unit, no
   type keeps them apart. Low priority — it's window-chrome geometry, not game
   state, but it is exactly the space-mixing `docs/style.md` warns about.
-- **`app::gump`** — `Placement`/`Sheet::page: u32` (page id), `Sheet::entries`
-  keyed on bare `u16` (text-field id). Minor; same crate as the fixed items
-  above but not touched here to keep this change small.
-- **`net::walk`** — `Backlogged::in_flight` / `Walk::draining: usize` count
-  steps; `StepCounter` already exists in the same file for the step number
-  itself, so a `StepCount` for the tally would be symmetric. Small, internal,
-  left as-is.
+- ~~**`app::gump` held page and text-field identities as bare integers.**~~
+  Fixed: `GumpPage` and `TextEntryId` carry them through the dialog state;
+  `.raw()` occurs only at the renderer-layout and reply-packet seams. They
+  remain local because neither name describes a protocol-wide domain yet.
+- ~~**`net::walk`'s unanswered-step tally was a `usize`.**~~ Fixed:
+  `InFlightSteps` names `Walk::in_flight`, `MAX_IN_FLIGHT`, and the
+  `NotSent::Backlogged` diagnostic together. The internal `draining` count
+  remains a separate implementation detail: it counts stale responses after a
+  rollback, not the live pending queue.
 - **`app::gump::text_color(hues: &Hues, hue: u32)` narrows with `as`.** Its
   body is `hues.get(Hue(hue as u16))` — a wire hue that arrived as a `u32`
   because `GumpLayout`'s builder methods (`label`, `croppedtext`, …) declare
@@ -2750,25 +2752,24 @@ riding along with this one.
   shape as the four `u32` cliloc parameters on `GumpLayout` that
   `protocol_newtypes.md`'s N-gump backlog already names, and probably wants
   fixing there rather than here.
-- **`pathtrace::Image::visibility(x: u32, y: u32, light: usize)`** — three bare
-  indices in a row, over three different spaces, with two `assert!`s standing
-  in for what a type would refuse at compile time. Every call site passes bare
-  numbers (`image.visibility(LIT.0, LIT.1, 0)`), and the `lights: usize` field
-  one line above the accessor is a *count* of the space `light` indexes into,
-  which is the pair a `LightIdx` newtype exists to keep apart.
-- **`pathtrace`'s `width`/`height` travel as two loose `u32`s** — `Image`'s two
-  fields, `Trace`'s two, and `render(scene, camera, lights, settings, width,
-  height)`, whose tests call it as `render(&scene, &camera, lights, settings,
-  8, 8)`. Not per-axis newtypes: the precedent is `MapSize` (N1 amendment 3 of
-  `protocol_newtypes.md`) — one named pair, because half a resolution is not a
-  smaller number, it is a frame of the wrong shape.
-- **`app::desk::Desk::fits` throws away the struct it is about.** `monitors:
-  &[(i32, i32, u32, u32)]`, with the field order documented only in the doc
-  comment's prose ("each screen's physical rectangle as `(x, y, width,
-  height)`") — while `Frame`, three lines up, is those four fields named. A
-  `Monitor` struct (or `Frame` minus `maximized`) makes the prose unnecessary.
-  Same low priority as the `Frame`/`Panel` unit-mixing item above, and the same
-  pass.
+- ~~**`pathtrace::Image::visibility(x: u32, y: u32, light: usize)`.**~~ Fixed:
+  `ImagePixel` now names an image-grid coordinate and `LightIdx` names the
+  light-list index, so the image owns the only bounds check over both. The
+  tracer tests and renderer oracle carry both types instead of positional
+  integers.
+- ~~**`pathtrace`'s `width`/`height` travel as two loose `u32`s.**~~ Fixed:
+  `trace::ImageSize` now crosses the tracer's public `render` API, lives in
+  `Image`, and follows the renderer-side `Mirror`/oracle `Frame` all the way
+  through comparison. The raw pair stops at the GPU and PNG seams, where those
+  APIs require it. Not per-axis newtypes: the precedent is `MapSize` (N1
+  amendment 3 of `protocol_newtypes.md`) — one named pair, because half a
+  resolution is not a smaller number, it is a frame of the wrong shape.
+- ~~**`app::desk::Desk::fits` throws away the struct it is about.**~~ Fixed:
+  `desk::Monitor` names a screen's physical rectangle from winit through the
+  saved-frame visibility check. It is deliberately distinct from `Frame`:
+  monitor bounds are an outer physical rectangle; a saved frame is an outer
+  origin plus an inner window size. Same low priority as the `Frame`/`Panel`
+  unit-mixing item above, and the same pass.
 - `crates/client/artscan` had no candidates — its public API is already fully
   typed. Re-checked in this pass: still true.
 
@@ -2906,9 +2907,10 @@ Still open, ranked by how strong the case is:
   position in the permutation, and `.raw()` appears only at slice indexing and
   the packed GPU seam.
 - ~~**`pathtrace::Image::visibility(x: u32, y: u32, light: usize)`**~~ Fixed:
-  `pathtrace::light::LightIdx` now names the light-list index, with `.raw()`
+  `pathtrace::trace::ImagePixel` now names the image-grid coordinate and
+  `pathtrace::light::LightIdx` names the light-list index; `.raw()` appears
   only at the image buffer seam. The pathtrace oracle and its render tests
-  carry the type instead of passing a bare zero.
+  carry both types instead of positional integers.
 - ~~**`uofiles::animdata::sequence(graphic: u16)`**~~ Fixed: the parser now
   accepts `Graphic`, matching the static animation API around it; `.0` is only
   used for the file-table offset.

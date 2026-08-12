@@ -3297,11 +3297,13 @@ the way and not done:
   guess was never weighed as its own question; a held direction retried
   against a wall (`Steering::detour`, above) made it visible — a building's
   roof popped for one frame on every retry, for as long as the direction was
-  held. Fixed with a second field, `App::cutaway_at`, that only advances to a
-  tile the client's own static map agrees is reachable from the one it
-  already held, and is snapped outright on a correction — same trust level
-  as `player.at`, minus the one case (a step this end already knows is
-  doomed) that was never worth predicting through for a roof.
+  held. Fixed with a second field, `App::cutaway_at`, which follows a
+  prediction only after the client's static map and live item layer agree it
+  is a legal step, and is snapped outright on a correction. The same guard is
+  applied when the prediction reaches the window, rather than waiting for its
+  ACK: a real step round a building therefore cannot spend a round trip under
+  the previous tile's cutaway, while a known-doomed step still cannot pop a
+  roof.
 
 ## Backlog, found while giving the client the shard's obstacles
 
@@ -3444,14 +3446,13 @@ the way and not done:
   kind that is only ever wrong on the one map somebody plays. Both masks are
   now pinned by `the_two_cutaway_masks_are_the_flags_they_are_named_after`.
 - **Nothing ties the tile the cutaway was taken from to the body it hides.**
-  `Cutaway::at(self.cutaway_at, ..)` and `shows_mobile(mobile.at.z)` read two
-  different positions, and `cutaway_at` deliberately lags `player.at` (see the
-  field's own doc). `a_cutaway_never_hides_the_player_it_was_taken_from` pins
-  that a cutaway taken from a body's *own* tile never cuts it — so any frame
-  where the player vanishes to `shows_mobile` is a frame where the two
-  positions had drifted. The by-construction fix is for the type to carry the
-  point it was computed from, so "hide the body this was taken for" is not
-  expressible; today it is only a test.
+  `Cutaway::at(self.cutaway_at, ..)` and `shows_mobile(mobile.at.z)` still
+  receive separate values. `cutaway_at` now follows each locally legal player
+  prediction, which removes the ordinary one-step drift around a building;
+  it intentionally stays put for a move the local terrain refuses. The hard
+  guarantee is still absent: the type should carry the point it was computed
+  from, so "hide the body this was taken for" is not expressible rather than
+  merely covered by `a_cutaway_never_hides_the_player_it_was_taken_from`.
 - **The cut is hard where the client fades.** Deliberate (see the module's own
   "What is deliberately absent"), and the cost is worth naming beside it: the
   client walks alpha down 25 a frame, so a `_maxZ` that is wrong for one frame

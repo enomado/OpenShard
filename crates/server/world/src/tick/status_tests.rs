@@ -372,7 +372,7 @@ fn a_wound_closes_on_its_own_and_poison_stops_it() {
     world.state.registry.insert(
         player,
         openshard_state::components::Poisoned {
-            level: 1,
+            level: openshard_protocol::world::PoisonLevel::new(1),
             next_pulse: u64::MAX,
             pulses_left: 10,
         },

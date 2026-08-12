@@ -26,7 +26,7 @@ use openshard_protocol::skill::SkillLock;
 use openshard_protocol::wire::{Graphic, Hue, Layer, SoundId};
 
 use crate::skill::Skill;
-pub use openshard_protocol::world::{Aggression, DamageType, RangedRange};
+pub use openshard_protocol::world::{Aggression, DamageType, PoisonLevel, RangedRange};
 use openshard_protocol::world::{Facet, Point, Sight};
 use openshard_protocol::{
     access::AccessLevel,
@@ -472,7 +472,7 @@ pub struct Frozen {
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct Poisoned {
     /// The poison level, 0 (lesser) .. 4 (lethal) — sets the damage per pulse.
-    pub level: u8,
+    pub level: PoisonLevel,
     /// The tick the next pulse of damage lands.
     pub next_pulse: u64,
     /// Pulses left before the poison wears off.
@@ -489,7 +489,7 @@ pub struct Poisoned {
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct PoisonCharges {
     /// The poison level, 0 (lesser) .. 4 (lethal) — the same scale [`Poisoned`] uses.
-    pub level: u8,
+    pub level: PoisonLevel,
     /// Doses left. Zero means spent, and a spent coating is removed rather than
     /// kept at zero, so this is never `0` on a live component.
     pub charges: u16,
@@ -1098,7 +1098,7 @@ pub struct Tamable {
     /// The Animal Taming needed even to try, in tenths — ServUO's `MinTameSkill`.
     pub min_skill: u16,
     /// How much of a tamer's following it takes up, in slots.
-    pub slots: u8,
+    pub slots: openshard_protocol::world::FollowerSlots,
 }
 
 /// What a tamed creature is doing, and for whom — ServUO's `ControlOrder`.
@@ -1129,7 +1129,7 @@ pub struct Pet {
     /// owner logs out and comes back while the pet stands where it was.
     pub owner: Serial,
     /// How many follower slots it fills.
-    pub slots: u8,
+    pub slots: openshard_protocol::world::FollowerSlots,
     /// What it was last told to do.
     pub order: PetOrder,
     /// Whom that order was about, for Attack.

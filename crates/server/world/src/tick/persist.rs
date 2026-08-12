@@ -387,7 +387,7 @@ impl World {
             // same graphic, so an unsaved bottle comes back empty.
             poison: registry
                 .get::<PoisonCharges>(item)
-                .map(|poison| (poison.level, poison.charges)),
+                .map(|poison| (poison.level.get(), poison.charges)),
             // And the trap on it, so a restart does not quietly disarm every chest
             // on the shard.
             trap: registry
@@ -669,7 +669,7 @@ impl World {
         if let Some(poison) = registry.get::<Poisoned>(entity) {
             effects.push(EffectRecord {
                 kind: effect::POISON,
-                amount: i16::from(poison.level),
+                amount: i16::from(poison.level.get()),
                 remaining: u16::from(poison.pulses_left),
             });
         }
@@ -726,7 +726,9 @@ impl World {
                 registry.insert(
                     entity,
                     Poisoned {
-                        level: record.amount.clamp(0, i16::from(u8::MAX)) as u8,
+                        level: openshard_protocol::world::PoisonLevel::new(
+                            record.amount.clamp(0, i16::from(u8::MAX)) as u8,
+                        ),
                         next_pulse: now + combat::POISON_INTERVAL,
                         pulses_left: record.remaining.min(u16::from(u8::MAX)) as u8,
                     },
@@ -1081,9 +1083,13 @@ impl World {
             self.state.registry.insert(entity, corpse_from(story));
         }
         if let Some((level, charges)) = record.poison {
-            self.state
-                .registry
-                .insert(entity, PoisonCharges { level, charges });
+            self.state.registry.insert(
+                entity,
+                PoisonCharges {
+                    level: openshard_protocol::world::PoisonLevel::new(level),
+                    charges,
+                },
+            );
         }
         if let Some(trap) = record.trap {
             self.state.registry.insert(
@@ -1170,9 +1176,13 @@ impl World {
                 self.state.registry.insert(entity, corpse_from(story));
             }
             if let Some((level, charges)) = record.poison {
-                self.state
-                    .registry
-                    .insert(entity, PoisonCharges { level, charges });
+                self.state.registry.insert(
+                    entity,
+                    PoisonCharges {
+                        level: openshard_protocol::world::PoisonLevel::new(level),
+                        charges,
+                    },
+                );
             }
             if let Some(trap) = record.trap {
                 self.state.registry.insert(

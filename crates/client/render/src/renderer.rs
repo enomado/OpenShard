@@ -646,6 +646,11 @@ pub const SPRITE_ATLAS_SIDE: u32 = StaticAtlas::side();
 #[derive(Debug)]
 pub struct SpriteRenderer {
     pipeline: wgpu::RenderPipeline,
+    /// A non-writing version of the static pass for walls and roofs that cover
+    /// the player. It writes a *private* G-buffer while reading the settled
+    /// opaque depth, so a later deferred blit can light the wall itself without
+    /// making it cover the body in the main G-buffer.
+    cutaway_pipeline: wgpu::RenderPipeline,
     /// The same sprites as shapes rather than pictures — see
     /// [`SpriteRenderer::render_mask`] and [`crate::outline`].
     ///
@@ -656,11 +661,21 @@ pub struct SpriteRenderer {
     /// did — is guaranteed by sharing them.
     mask_pipeline: wgpu::RenderPipeline,
     bind_group: wgpu::BindGroup,
+    /// The cutaway has an independent volume binding for the same reason it
+    /// has independent rows: both draws are recorded before one submission, so
+    /// updating the opaque buffer for its private layer would change the
+    /// earlier draw's fragment geometry too.
+    cutaway_bind_group: wgpu::BindGroup,
     uniforms: wgpu::Buffer,
     quad: wgpu::Buffer,
     instances: wgpu::Buffer,
     /// Quads the instance buffer can hold before it has to be replaced.
     capacity: u64,
+    /// The cutaway draw has its own buffer because `Queue::write_buffer` is
+    /// applied before the frame's encoder is submitted: sharing `instances`
+    /// would make the opaque draw read the private layer's rows as well.
+    cutaway_instances: wgpu::Buffer,
+    cutaway_capacity: u64,
     /// The silhouette pass's own instances, kept apart from `instances`
     /// because the two lists are drawn in the same frame and one is a handful
     /// of quads while the other is the whole screen.
@@ -697,6 +712,8 @@ pub struct SpriteRenderer {
     volumes: wgpu::Buffer,
     /// Boxes it can hold before it has to be replaced.
     volume_capacity: u64,
+    cutaway_volumes: wgpu::Buffer,
+    cutaway_volume_capacity: u64,
     /// Everything [`SpriteRenderer::new`] built the bind group out of, kept for
     /// exactly the one reason above.
     layout: wgpu::BindGroupLayout,
@@ -895,6 +912,16 @@ impl SpriteRenderer {
         // since a row with no boxes never enters the loop.
         let volumes = new_volume_buffer(device, 1);
         let bind_group = static_bind_group(device, &layout, &uniforms, &view, &sampler, &ramp_view, &volumes);
+        let cutaway_volumes = new_volume_buffer(device, 1);
+        let cutaway_bind_group = static_bind_group(
+            device,
+            &layout,
+            &uniforms,
+            &view,
+            &sampler,
+            &ramp_view,
+            &cutaway_volumes,
+        );
 
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("statics"),
@@ -1024,6 +1051,111 @@ impl SpriteRenderer {
             cache: None,
         });
 
+        // The same static shader and four outputs, but a different contract
+        // with depth: this pass writes its *private* picture/G-buffer while
+        // reading the settled opaque depth. Thus it sees a wall in front of the
+        // body, but never changes what later opaque-only passes see.
+        let cutaway_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("cutaway statics"),
+            layout: Some(&pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vs_main"),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                buffers: &[
+                    Some(wgpu::VertexBufferLayout {
+                        array_stride: 8,
+                        step_mode: wgpu::VertexStepMode::Vertex,
+                        attributes: &[wgpu::VertexAttribute {
+                            format: wgpu::VertexFormat::Float32x2,
+                            offset: 0,
+                            shader_location: 0,
+                        }],
+                    }),
+                    Some(wgpu::VertexBufferLayout {
+                        array_stride: SpriteQuad::STRIDE,
+                        step_mode: wgpu::VertexStepMode::Instance,
+                        attributes: &[
+                            wgpu::VertexAttribute {
+                                format: wgpu::VertexFormat::Float32x2,
+                                offset: 0,
+                                shader_location: 1,
+                            },
+                            wgpu::VertexAttribute {
+                                format: wgpu::VertexFormat::Float32x2,
+                                offset: 8,
+                                shader_location: 2,
+                            },
+                            wgpu::VertexAttribute {
+                                format: wgpu::VertexFormat::Float32x4,
+                                offset: 16,
+                                shader_location: 3,
+                            },
+                            wgpu::VertexAttribute {
+                                format: wgpu::VertexFormat::Float32,
+                                offset: 32,
+                                shader_location: 4,
+                            },
+                            wgpu::VertexAttribute {
+                                format: wgpu::VertexFormat::Uint32,
+                                offset: 36,
+                                shader_location: 5,
+                            },
+                            wgpu::VertexAttribute {
+                                format: wgpu::VertexFormat::Uint32x2,
+                                offset: 40,
+                                shader_location: 6,
+                            },
+                            wgpu::VertexAttribute {
+                                format: wgpu::VertexFormat::Uint32,
+                                offset: 48,
+                                shader_location: 7,
+                            },
+                            wgpu::VertexAttribute {
+                                format: wgpu::VertexFormat::Uint32x2,
+                                offset: 56,
+                                shader_location: 8,
+                            },
+                        ],
+                    }),
+                ],
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some("fs_main"),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                targets: &[
+                    Some(wgpu::ColorTargetState {
+                        format,
+                        blend: None,
+                        write_mask: wgpu::ColorWrites::ALL,
+                    }),
+                    Some(IDS_TARGET),
+                    Some(POSITION_TARGET),
+                    Some(NORMAL_TARGET),
+                ],
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleStrip,
+                strip_index_format: None,
+                front_face: wgpu::FrontFace::Ccw,
+                cull_mode: None,
+                unclipped_depth: false,
+                polygon_mode: wgpu::PolygonMode::Fill,
+                conservative: false,
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: DEPTH_FORMAT,
+                depth_write_enabled: Some(false),
+                depth_compare: Some(wgpu::CompareFunction::LessEqual),
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
+            }),
+            multisample: wgpu::MultisampleState::default(),
+            multiview_mask: None,
+            cache: None,
+        });
+
         // The same sprites as shapes. Built here, where the bind group layout
         // and the shared uniform block are still in scope, and from a cut-down
         // vertex layout: a silhouette has no hue and no place, so those two
@@ -1142,6 +1274,7 @@ impl SpriteRenderer {
         queue.write_buffer(&quad, 0, &quad_bytes);
 
         let instances = new_static_instance_buffer(device, INITIAL_QUADS);
+        let cutaway_instances = new_static_instance_buffer(device, INITIAL_QUADS);
         // One quad is the frame that has an item under the cursor and the
         // common case; the buffer grows the same way the big one does if a
         // caller ever outlines more.
@@ -1151,12 +1284,16 @@ impl SpriteRenderer {
 
         Self {
             pipeline,
+            cutaway_pipeline,
             mask_pipeline,
             bind_group,
+            cutaway_bind_group,
             uniforms,
             quad,
             instances,
             capacity: INITIAL_QUADS,
+            cutaway_instances,
+            cutaway_capacity: INITIAL_QUADS,
             mask_instances,
             mask_rings,
             mask_capacity,
@@ -1169,6 +1306,8 @@ impl SpriteRenderer {
             fringe: crate::impostor::Fringe::default(),
             volumes,
             volume_capacity: 1,
+            cutaway_volumes,
+            cutaway_volume_capacity: 1,
             layout,
             atlas_view: view,
             ramp_view,
@@ -1362,6 +1501,146 @@ impl SpriteRenderer {
         pass.set_vertex_buffer(0, self.quad.slice(..));
         pass.set_vertex_buffer(1, self.instances.slice(..));
         pass.draw(0..4, 0..drawn.unwrap_or(quads.len() as u32));
+    }
+
+    /// Draw cutaway architecture into its private G-buffer.
+    ///
+    /// This is intentionally a separate draw and buffer from [`Self::render`].
+    /// The opaque pass's rows are bound by the main lighting blit; this pass's
+    /// rows are bound only by the cutaway blit. It reads the opaque depth but
+    /// never writes it, so a translucent wall cannot replace the body it reveals.
+    /// The private colour and G-buffer planes are cleared together: a texel the
+    /// cutaway did not draw must remain `Kind::Nothing` to its lighting pass.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "a private static layer has its own rows and volumes"
+    )]
+    pub fn render_cutaway(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        encoder: &mut wgpu::CommandEncoder,
+        target: Target<'_>,
+        quads: &[SpriteQuad],
+        boxes: &[crate::impostor::Volume],
+        drawn: u32,
+    ) {
+        if drawn == 0 {
+            return;
+        }
+
+        let projection = target.projection;
+        let mut uniform_bytes = Vec::with_capacity(STATIC_UNIFORM_BYTES as usize);
+        for value in [
+            target.width as f32,
+            target.height as f32,
+            projection.scale,
+            self.fringe as u32 as f32,
+            projection.origin.x,
+            projection.origin.y,
+            0.0,
+            0.0,
+        ] {
+            uniform_bytes.extend_from_slice(&value.to_le_bytes());
+        }
+        queue.write_buffer(&self.uniforms, 0, &uniform_bytes);
+
+        if quads.len() as u64 > self.cutaway_capacity {
+            self.cutaway_capacity = (quads.len() as u64).next_power_of_two();
+            self.cutaway_instances = new_static_instance_buffer(device, self.cutaway_capacity);
+        }
+        let mut instance_bytes = Vec::with_capacity(quads.len() * SpriteQuad::STRIDE as usize);
+        for quad in quads {
+            quad.write(&mut instance_bytes);
+        }
+        queue.write_buffer(&self.cutaway_instances, 0, &instance_bytes);
+
+        // The private layer needs the same per-fragment geometry as the opaque
+        // static pass, but in its own binding: both passes execute in the same
+        // submission, after all `Queue::write_buffer` calls have landed.
+        if boxes.len() as u64 > self.cutaway_volume_capacity {
+            self.cutaway_volume_capacity = (boxes.len() as u64).next_power_of_two();
+            self.cutaway_volumes = new_volume_buffer(device, self.cutaway_volume_capacity);
+            self.cutaway_bind_group = static_bind_group(
+                device,
+                &self.layout,
+                &self.uniforms,
+                &self.atlas_view,
+                &self.sampler,
+                &self.ramp_view,
+                &self.cutaway_volumes,
+            );
+        }
+        let mut volume_bytes = Vec::with_capacity(boxes.len() * crate::impostor::Volume::STRIDE as usize);
+        for volume in boxes {
+            volume.write(&mut volume_bytes);
+        }
+        if !volume_bytes.is_empty() {
+            queue.write_buffer(&self.cutaway_volumes, 0, &volume_bytes);
+        }
+
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("cutaway statics"),
+            color_attachments: &[
+                Some(wgpu::RenderPassColorAttachment {
+                    view: target.view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(CLEAR),
+                        store: wgpu::StoreOp::Store,
+                    },
+                }),
+                Some(wgpu::RenderPassColorAttachment {
+                    view: &target.gbuffer.ids,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(crate::gbuffer::IDS_CLEAR),
+                        store: wgpu::StoreOp::Store,
+                    },
+                }),
+                Some(wgpu::RenderPassColorAttachment {
+                    view: &target.gbuffer.position,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(crate::gbuffer::POSITION_CLEAR),
+                        store: wgpu::StoreOp::Store,
+                    },
+                }),
+                Some(wgpu::RenderPassColorAttachment {
+                    view: &target.gbuffer.normal,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(crate::gbuffer::NORMAL_CLEAR),
+                        store: wgpu::StoreOp::Store,
+                    },
+                }),
+            ],
+            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                view: target.depth,
+                depth_ops: Some(wgpu::Operations {
+                    load: wgpu::LoadOp::Load,
+                    store: wgpu::StoreOp::Store,
+                }),
+                stencil_ops: None,
+            }),
+            multiview_mask: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+        });
+        pass.set_pipeline(&self.cutaway_pipeline);
+        pass.set_bind_group(0, &self.cutaway_bind_group, &[]);
+        pass.set_vertex_buffer(0, self.quad.slice(..));
+        pass.set_vertex_buffer(1, self.cutaway_instances.slice(..));
+        pass.draw(0..4, 0..drawn);
+    }
+
+    /// The cutaway row buffer, addressed by its private deferred-lighting blit.
+    pub fn cutaway_instances_buffer(&self) -> &wgpu::Buffer {
+        &self.cutaway_instances
     }
 
     /// Draw `groups` into an outline mask as shapes, **one id per group**.

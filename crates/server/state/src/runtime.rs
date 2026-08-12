@@ -17,7 +17,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use openshard_entities::{EntityId, Registry};
 use openshard_events::EventBus;
 use openshard_gateway::ConnectionId;
-use openshard_movement::{Terrain, Tile};
+use openshard_movement::{CoarseRouter, Terrain, Tile};
 use openshard_protocol::casting::SpellId;
 use openshard_protocol::combat::HealthBar;
 use openshard_protocol::feedback::{Animation, NewAnimation, PlaySound};
@@ -363,6 +363,11 @@ pub struct Outbound {
 pub struct FacetState {
     /// The floor, if this facet has a map loaded.
     pub terrain: Option<Box<dyn Terrain + Send + Sync>>,
+    /// Static long-distance connectivity, built with the terrain at facet load.
+    /// It deliberately has no live doors or placed items in it; a caller still
+    /// refines every hop through [`FacetState::live_terrain`] or its
+    /// doors-open sibling.
+    pub coarse: Option<CoarseRouter>,
     /// How wide this facet's map is, in tiles.
     ///
     /// Kept here rather than asked of the terrain because the client has to be
@@ -390,6 +395,14 @@ pub struct FacetState {
 }
 
 impl FacetState {
+    /// The facet's static long-distance guide, when it has a map in movement's
+    /// coordinate space. Kept as an accessor so no caller can mistake it for
+    /// the live terrain that actually approves a step.
+    #[must_use]
+    pub const fn coarse_router(&self) -> Option<&CoarseRouter> {
+        self.coarse.as_ref()
+    }
+
     /// The terrain every movement decision actually checks: the map with the
     /// live obstacles laid over it. Works with no map too — an open world with
     /// doors in it still has doors.

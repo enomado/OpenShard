@@ -18,7 +18,7 @@ use winit::window::WindowId;
 use crate::app::App;
 use crate::picking::SelectedIdentity;
 use crate::presentation::frame_dump_root;
-use crate::world::{cluttered, cluttered_with_doors_open};
+use crate::world::{cluttered, cluttered_with_doors_open, terrain};
 use crate::{DOUBLE_CLICK, PAGE_PIXELS, desk, keys, shell, steer};
 
 impl ApplicationHandler<()> for App {
@@ -187,6 +187,7 @@ impl ApplicationHandler<()> for App {
                 if let Some(direction) = keys::Held::direction_of(code) {
                     let step = match event.state {
                         ElementState::Pressed => {
+                            let guide = terrain(&self.resources);
                             let opened = cluttered_with_doors_open(&self.world, &self.resources);
                             let cluttered = cluttered(&self.world, &self.resources);
                             self.steer.press(
@@ -197,6 +198,8 @@ impl ApplicationHandler<()> for App {
                                 steer::Ground {
                                     real: &cluttered,
                                     through_doors: &opened,
+                                    guide: &guide,
+                                    coarse: self.resources.coarse.as_ref(),
                                 },
                             )
                         }
@@ -676,11 +679,14 @@ impl ApplicationHandler<()> for App {
             // replans: see `steer::Ground`. Built here rather than held, for the
             // reason the single terrain always was — they borrow the map and the
             // view, and the walk borrows `steer` mutably beside them.
+            let guide = terrain(&self.resources);
             let opened = cluttered_with_doors_open(&self.world, &self.resources);
             let cluttered = cluttered(&self.world, &self.resources);
             let ground = steer::Ground {
                 real: &cluttered,
                 through_doors: &opened,
+                guide: &guide,
+                coarse: self.resources.coarse.as_ref(),
             };
             let Some(facing) = self.steer.due(
                 now,

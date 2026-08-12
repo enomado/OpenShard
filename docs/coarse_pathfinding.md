@@ -1,13 +1,19 @@
 # Coarse (self-written HPA*-style) routing, built on our own `find_path`
 
-## Paused — specs to settle before this is approved
+## Landed — static HPA*-style guide, with live refinement
+
+The first implementation is now in `crates/common/movement/src/coarse.rs` and is wired into the
+client's Ctrl-click planner. The server constructs the same graph beside each mapped
+`FacetState`, exposes it through `FacetState::coarse_router()`, and deliberately has no long-range
+AI consumer yet — chase remains its short-range bounded A*. `cargo run -p openshard-movement
+--example coarse_bench --release` is the host-cost probe for build/query tuning.
 
 1. **Diagonals / corner-cutting.** Settled by the "why not the crate" decision below: the coarse
    graph's edges are real `find_path` costs, so corner-cutting is exactly as correct there as it
    already is everywhere else in this codebase. Restated here as an explicit spec, not just
    prose, so it doesn't get renegotiated by accident later.
-2. **Doors — walk up and stop, or open it, depending on who's walking.** Not yet designed
-   precisely. Two different callers, two different capabilities:
+2. **Doors — walk up and stop, or open it, depending on who's walking.** Settled as two
+   caller capabilities:
    - The **client/player** (`steer.rs::plan()`) cannot open a door itself — a human
      double-clicks it. The existing behaviour (walk the open half, stop in front of the shut
      leaf) is already correct and `find_long_path` should preserve it exactly, not invent a
@@ -18,9 +24,11 @@
      server-side needs to route through this existing capability rather than stopping like the
      client does — "if it can open it, it opens it" is a caller-side fact, not something the
      coarse layer should hardcode either way.
-   - Open question for next time: does `find_long_path` take an `through_doors: bool` the same
-     way `find_path`/`LiveTerrain::planning_terrain` already do, and just pass it through
-     unchanged at each hop? That's the obvious shape but wasn't nailed down before pausing.
+   - **Settled:** `find_long_path` takes the *guide terrain* used to join query endpoints and the
+     *live terrain* which authorizes each refined step, not a boolean. The client supplies its
+     static `MapTerrain` guide plus either real or doors-open live terrain; a future server AI
+     does the same with `planning_terrain(through_doors)`. Door capability remains the caller's
+     choice and no second policy is added to `movement::coarse`.
 3. **Replanning when the world changes (a door opens, a portal appears) — explicitly deferred.**
    Not for this pass. Noted so it isn't lost: a long walk in progress currently has no way to
    notice a shortcut appeared mid-route: nothing here recomputes eagerly. Whatever the
@@ -209,7 +217,10 @@ assumption about our own game:
 - `cargo test -p openshard-movement` — new `coarse` module tests: entrance detection on a
   synthetic chunk border (single run vs. two doorways collapsing to one vs. two entrances),
   waypoints on open ground, waypoints routing around a large synthetic wall, a doorway staying
-  "open" to the coarse graph while shut in `Obstructions`/`Clutter`.
+  "open" to the coarse graph while shut in `Obstructions`/`Clutter`, plus a 64-case
+  property run over randomized narrow gates at five cluster borders. Each generated route is
+  checked against an exhaustive ordinary A* reachability answer, then replayed through
+  `step_allowed` so the coarse guide cannot turn into an illegal walk.
 - A bench (`crates/common/movement/benches/` or an `examples/` binary, following the project's
   existing "measured, not asserted" convention — see `docs/roadmap.md`'s scripting-hook and LOD
   numbers) comparing `find_long_path` against a plain `find_path` with a raised budget on a large

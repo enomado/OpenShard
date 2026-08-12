@@ -204,6 +204,8 @@ fn draw_britain(
         statics:
             StaticGeometry {
                 quads: static_quads,
+                cutaway_quads: _,
+                cutaway_boxes: _,
                 mesh_vertices,
                 mesh_rows,
                 boxes,

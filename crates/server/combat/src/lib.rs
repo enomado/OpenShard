@@ -21,7 +21,7 @@ use openshard_protocol::mobile::Notoriety;
 use openshard_protocol::serial::Serial;
 use openshard_protocol::server_packet::ServerPacket;
 use openshard_protocol::wire::{Graphic, SoundId};
-use openshard_protocol::world::Point;
+use openshard_protocol::world::{Point, PoisonLevel};
 use openshard_state::components::{
     BehaviourBuffs, Body, Client, Combat, CriminalUntil, DamageType, Equipped, Frozen, Ghost, Guard,
     Hitpoints, MeleeDamage, MurderDecay, Murders, PoisonCharges, Poisoned, Position, RangedAttack,
@@ -842,8 +842,8 @@ pub const POISON_PULSES: u8 = 8;
 
 /// The damage one pulse of a poison of `level` deals, before poison resistance.
 #[must_use]
-pub const fn poison_damage(level: u8) -> u16 {
-    level as u16 + 1
+pub const fn poison_damage(level: PoisonLevel) -> u16 {
+    level.get() as u16 + 1
 }
 
 /// Poison a mobile at `level` (0 lesser .. 4 lethal), starting its pulses at
@@ -890,11 +890,10 @@ fn deliver_weapon_poison(state: &mut WorldState, attacker: EntityId, target: Ser
 }
 
 /// stronger one already working — ServUO's rule.
-pub fn apply_poison(state: &mut WorldState, serial: Serial, level: u8, now: u64) {
+pub fn apply_poison(state: &mut WorldState, serial: Serial, level: PoisonLevel, now: u64) {
     let Some(entity) = state.registry.entity_of(serial) else {
         return;
     };
-    let level = level.min(4);
     if state
         .registry
         .get::<Poisoned>(entity)
@@ -927,7 +926,7 @@ pub fn cure_poison(state: &mut WorldState, serial: Serial) -> bool {
 /// `MobileDamaged`.
 pub fn poison_tick(state: &mut WorldState) {
     let now = state.ticks;
-    let due: Vec<(EntityId, u8, u8)> = state
+    let due: Vec<(EntityId, PoisonLevel, u8)> = state
         .registry
         .query::<Poisoned>()
         .filter(|(_, poison)| now >= poison.next_pulse)

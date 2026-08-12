@@ -163,11 +163,14 @@ impl App {
         let Some(tile) = self.pick_tile(*self.control.camera()) else {
             return false;
         };
+        let guide = terrain(&self.resources);
         let opened = cluttered_with_doors_open(&self.world, &self.resources);
         let cluttered = cluttered(&self.world, &self.resources);
         let ground = steer::Ground {
             real: &cluttered,
             through_doors: &opened,
+            guide: &guide,
+            coarse: self.resources.coarse.as_ref(),
         };
         let facing = if self.input.ctrl_held {
             self.steer.go_to(

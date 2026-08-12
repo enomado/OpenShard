@@ -23,8 +23,8 @@ use openshard_state::{Skill, TICKS_PER_SECOND, WorldState};
 
 mod spells;
 pub use spells::{
-    AREA_RADIUS, MAGERY, MAGERY_SKILL, SpellEffect, SpellInfo, SpellTarget, cast_delay_ticks, cast_skills,
-    info, mana,
+    AREA_RADIUS, MAGERY, MAGERY_SKILL, SpellCircle, SpellEffect, SpellInfo, SpellTarget, cast_delay_ticks,
+    cast_skills, info, mana,
 };
 
 mod travel;

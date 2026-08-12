@@ -13,6 +13,7 @@
 use openshard_entities::EntityId;
 use openshard_protocol::serial::Serial;
 use openshard_protocol::wire::{ClilocId, Hue, SoundId};
+use openshard_protocol::world::PoisonLevel;
 use openshard_state::components::{
     Amount, Drawn, EMPTY_BOTTLE_GRAPHIC, POISON_POTION_GRAPHIC, PoisonCharges,
 };
@@ -65,8 +66,8 @@ const POISON_BANDS: [(i32, i32); 5] = [(0, 600), (300, 700), (600, 1000), (800, 
 
 /// How many doses coating a blade leaves — ServUO's `18 - level * 2`.
 #[must_use]
-pub(super) fn charges_for(level: u8) -> u16 {
-    18u16.saturating_sub(u16::from(level) * 2)
+pub(super) fn charges_for(level: PoisonLevel) -> u16 {
+    18u16.saturating_sub(u16::from(level.get()) * 2)
 }
 
 /// The first cursor's answer: the potion. Puts up the second cursor if it is one.
@@ -113,7 +114,7 @@ pub(super) fn apply_to(state: &mut WorldState, actor: EntityId, potion: EntityId
     state.play_sound(actor, APPLY_SOUND);
 
     let skill = Skill::Poisoning;
-    let (min, max) = POISON_BANDS[usize::from(level.min(4))];
+    let (min, max) = POISON_BANDS[usize::from(level.get())];
     if roll_skill_band(state, actor, skill, min, max) {
         state.registry.insert(
             target,
@@ -159,7 +160,7 @@ pub struct PoisonedSelf {
     /// Their wire identity.
     pub serial: Serial,
     /// The strength of the poison they were handling.
-    pub level: u8,
+    pub level: PoisonLevel,
 }
 
 /// Taste Identification: whether a thing has poison on it.

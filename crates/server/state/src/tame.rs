@@ -15,6 +15,7 @@
 //! no column for.
 
 use openshard_protocol::wire::Graphic;
+use openshard_protocol::world::FollowerSlots;
 
 use crate::components::Tamable;
 
@@ -22,7 +23,7 @@ use crate::components::Tamable;
 struct TameData {
     body: Graphic,
     min_skill: u16,
-    slots: u8,
+    slots: FollowerSlots,
 }
 
 /// The default a rideable body takes to tame, in tenths — a horse's 29.1, which is
@@ -42,7 +43,7 @@ pub fn tamable(body: Graphic) -> Option<Tamable> {
     // is the direction `mount_item_for` answers.
     crate::components::mount_item_for(body).map(|_| Tamable {
         min_skill: MOUNT_MIN_SKILL,
-        slots: 1,
+        slots: FollowerSlots::ONE,
     })
 }
 
@@ -86,7 +87,7 @@ const fn t(body: u16, min_skill: u16, slots: u8) -> TameData {
     TameData {
         body: Graphic(body),
         min_skill,
-        slots,
+        slots: FollowerSlots::new(slots),
     }
 }
 

@@ -29,6 +29,43 @@ const SPIDERS_SILK: Graphic = Graphic(0x0F8D);
 /// The mana a spell of each circle (1..8) costs — ServUO's mana table.
 const CIRCLE_MANA: [u16; 8] = [4, 6, 9, 11, 14, 20, 40, 50];
 
+/// A Magery spell circle, which is always in the inclusive range 1 through 8.
+///
+/// Its wire representation is still the familiar `u8`; this type only makes
+/// an invalid circle impossible to attach to a [`SpellInfo`].
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+#[repr(transparent)]
+pub struct SpellCircle(u8);
+
+impl SpellCircle {
+    /// The first valid Magery circle.
+    pub const MIN: u8 = 1;
+    /// The last valid Magery circle.
+    pub const MAX: u8 = 8;
+
+    /// Makes a circle when `value` belongs to the Magery spellbook.
+    #[must_use]
+    pub const fn new(value: u8) -> Option<Self> {
+        if value >= Self::MIN && value <= Self::MAX {
+            Some(Self(value))
+        } else {
+            None
+        }
+    }
+
+    /// Returns the circle's stable numeric value.
+    #[must_use]
+    pub const fn get(self) -> u8 {
+        self.0
+    }
+}
+
+impl From<SpellCircle> for u8 {
+    fn from(circle: SpellCircle) -> Self {
+        circle.get()
+    }
+}
+
 /// What a spell asks the caster to aim at.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum SpellTarget {
@@ -108,8 +145,8 @@ pub const AREA_RADIUS: u32 = 2;
 pub struct SpellInfo {
     /// Its name, for logs and messages.
     pub name: &'static str,
-    /// Circle 1..8 — sets mana, cast delay and difficulty.
-    pub circle: u8,
+    /// Circle 1..=8 — sets mana, cast delay and difficulty.
+    pub circle: SpellCircle,
     /// The reagents it consumes, by item graphic (one of each).
     pub reagents: &'static [Graphic],
     /// What it aims at.
@@ -137,7 +174,10 @@ const fn spell(
 ) -> SpellInfo {
     SpellInfo {
         name,
-        circle,
+        circle: match SpellCircle::new(circle) {
+            Some(circle) => circle,
+            None => panic!("spell circle must be in 1..=8"),
+        },
         reagents,
         target,
         effect,
@@ -559,7 +599,7 @@ pub const MAGERY_SKILL: Skill = Skill::Magery;
 /// The mana a spell costs, from its circle.
 #[must_use]
 pub fn mana(info: &SpellInfo) -> u16 {
-    CIRCLE_MANA[(info.circle.clamp(1, 8) - 1) as usize]
+    CIRCLE_MANA[usize::from(info.circle.get() - SpellCircle::MIN)]
 }
 
 /// The Magery band a spell is cast against, `(min, max)` in tenths — higher
@@ -569,7 +609,7 @@ pub fn cast_skills(info: &SpellInfo) -> (i32, i32) {
     // ServUO's `MagerySpell.GetCastSkills`: the band's centre climbs 100/7 skill
     // points a circle, so the first circle sits at 0.0 and the eighth at 100.0,
     // and the band is twenty points either side of it. In tenths.
-    let centre = i32::from(info.circle.clamp(1, 8) - 1) * 1000 / 7;
+    let centre = i32::from(info.circle.get() - SpellCircle::MIN) * 1000 / 7;
     (centre - CAST_CHANCE_OFFSET, centre + CAST_CHANCE_OFFSET)
 }
 
@@ -584,7 +624,7 @@ const CAST_CHANCE_OFFSET: i32 = 200;
 /// first, a shade over two at the eighth.
 #[must_use]
 pub fn cast_delay_ticks(info: &SpellInfo, ticks_per_second: u64) -> u64 {
-    (u64::from(info.circle) + 1) * ticks_per_second / 4
+    (u64::from(info.circle.get()) + 1) * ticks_per_second / 4
 }
 
 #[cfg(test)]
@@ -596,13 +636,21 @@ mod tests {
         assert_eq!(MAGERY.len(), 64);
         for (id, spell) in MAGERY.iter().enumerate() {
             assert_eq!(
-                spell.circle as usize,
+                usize::from(spell.circle.get()),
                 id / 8 + 1,
                 "{} is in the wrong circle",
                 spell.name
             );
             assert!(!spell.reagents.is_empty(), "{} has no reagents", spell.name);
         }
+    }
+
+    #[test]
+    fn spell_circle_accepts_only_the_eight_spellbook_circles() {
+        assert_eq!(SpellCircle::new(SpellCircle::MIN).unwrap().get(), 1);
+        assert_eq!(SpellCircle::new(SpellCircle::MAX).unwrap().get(), 8);
+        assert!(SpellCircle::new(0).is_none());
+        assert!(SpellCircle::new(9).is_none());
     }
 
     #[test]

@@ -692,6 +692,7 @@ impl App {
         let (render_width, render_height) = camera.image_size();
         if window.world.width() != render_width || window.world.height() != render_height {
             window.world = blit::world_texture(&window.device, render_width, render_height);
+            window.cutaway_world = blit::world_texture(&window.device, render_width, render_height);
             // Tested pixel for pixel against that image, so it is exactly its
             // size or it is nothing.
             window.depth = renderer::depth_texture(&window.device, render_width, render_height);
@@ -704,8 +705,12 @@ impl App {
             // And the G-buffer, whose planes are attachments of those same
             // passes and are read texel for texel against that image.
             window.gbuffer = Gbuffer::new(&window.device, render_width, render_height);
+            window.cutaway_gbuffer = Gbuffer::new(&window.device, render_width, render_height);
         }
         let world_view = window.world.create_view(&wgpu::TextureViewDescriptor::default());
+        let cutaway_world_view = window
+            .cutaway_world
+            .create_view(&wgpu::TextureViewDescriptor::default());
 
         // **The frame's occluders are built before its pictures are collected**,
         // and that ordering is `docs/lighting_height.md` phase 3's one real cost.
@@ -833,6 +838,7 @@ impl App {
         window.upload_ttf_dirty();
         let depth_view = window.depth.create_view(&wgpu::TextureViewDescriptor::default());
         let gbuffer_views = window.gbuffer.views();
+        let cutaway_gbuffer_views = window.cutaway_gbuffer.views();
         let target = Target {
             view: &world_view,
             depth: &depth_view,
@@ -860,6 +866,8 @@ impl App {
             &view,
             &world_view,
             &gbuffer_views,
+            &cutaway_world_view,
+            &cutaway_gbuffer_views,
             viewport,
             camera,
             solid_cut,

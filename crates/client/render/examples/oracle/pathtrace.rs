@@ -309,7 +309,7 @@ impl Mirror {
     /// disagreeing with a hard-shadow frame would not be a finding. A
     /// [`Body::Sphere`] render *is* an estimate by construction and says so by
     /// not being asked.
-    pub fn render(&self, brdf: pt_trace::Brdf, seed: u64, width: u32, height: u32) -> pt_trace::Image {
+    pub fn render(&self, brdf: pt_trace::Brdf, seed: u64, size: pt_trace::ImageSize) -> pt_trace::Image {
         let image = pt_trace::render(
             &self.scene,
             &self.camera,
@@ -320,8 +320,7 @@ impl Mirror {
                 seed,
                 ..pt_trace::Settings::degenerate()
             },
-            width,
-            height,
+            size,
         );
         assert!(
             image.is_exact() || self.samples > 1,
@@ -334,8 +333,8 @@ impl Mirror {
 
 /// What the renderer left on the pixels, as the comparison needs it.
 pub struct Frame<'a> {
-    pub width: u32,
-    pub height: u32,
+    /// The pixel grid the renderer wrote and the tracer must have read.
+    pub size: pt_trace::ImageSize,
     /// The `place` attachment, decoded — who drew each pixel.
     pub drawn: &'a [Drawn],
     /// The frame's own debug view, read back, `RGBA8` — **and which view it is
@@ -735,12 +734,20 @@ pub fn penumbra(
     allowed: f64,
 ) -> Penumbra {
     let Frame {
-        width,
-        height,
+        size,
         drawn,
         picture,
         face_rows,
     } = frame;
+    assert_eq!(
+        traced.size, size,
+        "the traced image and frame have different dimensions"
+    );
+    assert_eq!(
+        second.size, size,
+        "the second traced image and frame have different dimensions"
+    );
+    let (width, height) = (size.width, size.height);
     let mut found = Penumbra {
         compared: 0,
         worst: 0.0,
@@ -759,7 +766,8 @@ pub fn penumbra(
             continue;
         }
         let (x, y) = ((pixel as u32) % width, (pixel as u32) / width);
-        let visibility = traced.visibility(x, y, pt_light::LightIdx::new(0));
+        let at = pt_trace::ImagePixel::new(x, y);
+        let visibility = traced.visibility(at, pt_light::LightIdx::new(0));
         if !visibility.within_reach {
             continue;
         }
@@ -780,7 +788,7 @@ pub fn penumbra(
         };
         let difference = f64::from(grey) / 255.0 - visibility.reached;
         let apart = difference.abs();
-        let own = (second.visibility(x, y, pt_light::LightIdx::new(0)).reached - visibility.reached).abs();
+        let own = (second.visibility(at, pt_light::LightIdx::new(0)).reached - visibility.reached).abs();
         found.compared += 1;
         total += apart;
         signed += difference;
@@ -901,12 +909,20 @@ pub fn shading(
     allowed: f64,
 ) -> Shading {
     let Frame {
-        width,
-        height,
+        size,
         drawn,
         picture,
         face_rows,
     } = frame;
+    assert_eq!(
+        traced.size, size,
+        "the traced image and frame have different dimensions"
+    );
+    assert_eq!(
+        second.size, size,
+        "the second traced image and frame have different dimensions"
+    );
+    let (width, height) = (size.width, size.height);
     let mut engine_surface: Vec<Option<pt_scene::Surface>> = vec![None; (width * height) as usize];
     let mut traced_surfaces: Vec<Option<pt_scene::Surface>> = vec![None; (width * height) as usize];
     for pixel in 0..(width * height) as usize {
@@ -931,9 +947,7 @@ pub fn shading(
             if engine_surface[pixel].is_none() || engine_surface[pixel] != traced_surfaces[pixel] {
                 continue;
             }
-            if on_an_edge(&engine_surface, width, height, x, y)
-                || on_an_edge(&traced_surfaces, width, height, x, y)
-            {
+            if on_an_edge(&engine_surface, size, x, y) || on_an_edge(&traced_surfaces, size, x, y) {
                 continue;
             }
             let engine = (0..3)
@@ -993,17 +1007,21 @@ pub fn shading(
 /// A cross rather than a rectangle: a square of radius six is a hundred and
 /// sixty-nine lines nobody reads, and the two lines through a point are what
 /// show which way a boundary runs.
-pub fn probe(traced: &pt_trace::Image, frame: Frame<'_>, at: (u32, u32), radius: u32) -> String {
+pub fn probe(traced: &pt_trace::Image, frame: Frame<'_>, at: pt_trace::ImagePixel, radius: u32) -> String {
     let Frame {
-        width,
-        height,
+        size,
         drawn,
         picture,
         face_rows,
     } = frame;
+    assert_eq!(
+        traced.size, size,
+        "the traced image and frame have different dimensions"
+    );
+    let (width, height) = (size.width, size.height);
     let mut out = format!(
         "probe at ({}, {}), ± {radius} — the frame's own surface and fragment, then the tracer's\n",
-        at.0, at.1
+        at.x, at.y
     );
     let line = |x: u32, y: u32, out: &mut String| {
         if x >= width || y >= height {
@@ -1036,12 +1054,12 @@ pub fn probe(traced: &pt_trace::Image, frame: Frame<'_>, at: (u32, u32), radius:
         ));
     };
     out.push_str("  — across —\n");
-    for x in at.0.saturating_sub(radius)..=at.0 + radius {
-        line(x, at.1, &mut out);
+    for x in at.x.saturating_sub(radius)..=at.x + radius {
+        line(x, at.y, &mut out);
     }
     out.push_str("  — down —\n");
-    for y in at.1.saturating_sub(radius)..=at.1 + radius {
-        line(at.0, y, &mut out);
+    for y in at.y.saturating_sub(radius)..=at.y + radius {
+        line(at.x, y, &mut out);
     }
     out
 }
@@ -1096,7 +1114,8 @@ fn engine_side(texel: &Drawn, face_rows: &[(usize, Stance, u32)]) -> String {
 /// compared: it is as true of "which surface is there" along a silhouette as it
 /// is of "is this lit" along a shadow's edge, and a second copy of it for the
 /// second map would be a second place for the neighbourhood to change.
-fn on_an_edge<T: PartialEq>(map: &[Option<T>], width: u32, height: u32, x: u32, y: u32) -> bool {
+fn on_an_edge<T: PartialEq>(map: &[Option<T>], size: pt_trace::ImageSize, x: u32, y: u32) -> bool {
+    let (width, height) = (size.width, size.height);
     let own = &map[(y * width + x) as usize];
     (-1i32..=1).any(|dy| {
         (-1i32..=1).any(|dx| {
@@ -1131,12 +1150,20 @@ fn on_an_edge<T: PartialEq>(map: &[Option<T>], width: u32, height: u32, x: u32, 
 /// If it compared too few pixels to mean anything.
 pub fn compare(engine_model: &pt_trace::Image, physical: &pt_trace::Image, frame: Frame<'_>) -> Verdict {
     let Frame {
-        width,
-        height,
+        size,
         drawn,
         picture,
         face_rows,
     } = frame;
+    assert_eq!(
+        engine_model.size, size,
+        "the engine-model image and frame have different dimensions"
+    );
+    assert_eq!(
+        physical.size, size,
+        "the physical image and frame have different dimensions"
+    );
+    let (width, height) = (size.width, size.height);
 
     // Both pictures as one bit a pixel, so the comparison and the image are the
     // same data. `None` where the pixel is not one the two can be compared on.
@@ -1189,7 +1216,8 @@ pub fn compare(engine_model: &pt_trace::Image, physical: &pt_trace::Image, frame
         }
         let frame_lit = Shade::of([picture[pixel * 4], picture[pixel * 4 + 1], picture[pixel * 4 + 2]]).lit();
         let (x, y) = ((pixel as u32) % width, (pixel as u32) / width);
-        let visibility = engine_model.visibility(x, y, pt_light::LightIdx::new(0));
+        let at = pt_trace::ImagePixel::new(x, y);
+        let visibility = engine_model.visibility(at, pt_light::LightIdx::new(0));
         let lit = |seen: pt_trace::Visibility| seen.within_reach && seen.reached > 0.5;
         if !visibility.faces_light {
             verdict.back_facing += 1;
@@ -1200,7 +1228,7 @@ pub fn compare(engine_model: &pt_trace::Image, physical: &pt_trace::Image, frame
         // expectation a detector only ever measures where it already holds is
         // not one the detector can report on.
         verdict.model_decides +=
-            usize::from(lit(visibility) != lit(physical.visibility(x, y, pt_light::LightIdx::new(0))));
+            usize::from(lit(visibility) != lit(physical.visibility(at, pt_light::LightIdx::new(0))));
         engine_lit[pixel] = Some(frame_lit);
         traced_lit[pixel] = Some(lit(visibility));
     }
@@ -1209,8 +1237,7 @@ pub fn compare(engine_model: &pt_trace::Image, physical: &pt_trace::Image, frame
         for x in 0..width {
             let pixel = (y * width + x) as usize;
             if engine_surface[pixel].is_some() && engine_surface[pixel] != traced_surfaces[pixel] {
-                let rim = on_an_edge(&engine_surface, width, height, x, y)
-                    || on_an_edge(&traced_surfaces, width, height, x, y);
+                let rim = on_an_edge(&engine_surface, size, x, y) || on_an_edge(&traced_surfaces, size, x, y);
                 match rim {
                     true => {
                         verdict.silhouette += 1;
@@ -1262,7 +1289,7 @@ pub fn compare(engine_model: &pt_trace::Image, physical: &pt_trace::Image, frame
             if engine == traced {
                 continue;
             }
-            if on_an_edge(&traced_lit, width, height, x, y) || on_an_edge(&engine_lit, width, height, x, y) {
+            if on_an_edge(&traced_lit, size, x, y) || on_an_edge(&engine_lit, size, x, y) {
                 verdict.edge += 1;
                 continue;
             }

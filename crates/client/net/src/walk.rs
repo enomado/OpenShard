@@ -175,7 +175,27 @@ impl std::error::Error for AtTheWorldEdge {}
 /// really is, and the correction when the link comes back is the length of the
 /// outage. Five steps is two seconds of walking, which is longer than any
 /// hiccup worth predicting through.
-pub const MAX_IN_FLIGHT: usize = 5;
+pub const MAX_IN_FLIGHT: InFlightSteps = InFlightSteps::new(5);
+
+/// How many walk requests are waiting for a server answer.
+///
+/// This is a tally of this client's pending walk queue, not a wire sequence,
+/// a movement pace, or a generic collection length. It crosses the public
+/// `Walk` API and the backpressure error as one quantity; `.raw()` is used only
+/// at the queue and presentation seams.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
+pub struct InFlightSteps(usize);
+
+impl InFlightSteps {
+    pub const fn new(steps: usize) -> Self {
+        Self(steps)
+    }
+
+    /// The collection length this count came from.
+    pub const fn raw(self) -> usize {
+        self.0
+    }
+}
 
 /// Why a step was not sent.
 ///
@@ -194,7 +214,7 @@ pub enum NotSent {
     /// like: the character stops until the server speaks.
     Backlogged {
         /// How many are unanswered, which is [`MAX_IN_FLIGHT`].
-        in_flight: usize,
+        in_flight: InFlightSteps,
     },
     /// The walk is out of step with the server and has asked to be told where it
     /// is. See [`Walk::out_of_step`].
@@ -206,7 +226,11 @@ impl std::fmt::Display for NotSent {
         match self {
             Self::AtTheWorldEdge(edge) => edge.fmt(f),
             Self::Backlogged { in_flight } => {
-                write!(f, "{in_flight} steps are unanswered: the shard has gone quiet")
+                write!(
+                    f,
+                    "{} steps are unanswered: the shard has gone quiet",
+                    in_flight.raw()
+                )
             }
             Self::OutOfStep => f.write_str("the walk is out of step and waiting on a resync"),
         }
@@ -306,8 +330,8 @@ impl Walk {
     /// answering — see [`NotSent::Backlogged`]. A caller that wants to walk in
     /// step waits for this to reach zero.
     #[must_use]
-    pub fn in_flight(&self) -> usize {
-        self.pending.len()
+    pub fn in_flight(&self) -> InFlightSteps {
+        InFlightSteps::new(self.pending.len())
     }
 
     /// Ask to take one step, and get the `0x02` to write to the socket.
@@ -355,9 +379,9 @@ impl Walk {
         // And a shard that has stopped answering is not somewhere to keep
         // predicting into: every step past the cap is another tile of correction
         // when the link comes back.
-        if self.pending.len() >= MAX_IN_FLIGHT {
+        if self.in_flight() >= MAX_IN_FLIGHT {
             return Err(NotSent::Backlogged {
-                in_flight: self.pending.len(),
+                in_flight: self.in_flight(),
             });
         }
         let (position, facing) = match intend(self.predicted.position, self.predicted.facing, facing) {
@@ -585,7 +609,11 @@ mod tests {
 
         walk.step(Facing::walking(Direction::East), |_, _| None).unwrap();
         assert_eq!(walk.predicted().position, Point::new(101, 100, 0));
-        assert_eq!(walk.in_flight(), 2, "a turn is a step and gets its own ack");
+        assert_eq!(
+            walk.in_flight(),
+            InFlightSteps::new(2),
+            "a turn is a step and gets its own ack"
+        );
     }
 
     #[test]
@@ -596,7 +624,7 @@ mod tests {
         let mut walk = walk();
         walk.step(Facing::walking(Direction::North), |_, _| None).unwrap();
         walk.step(Facing::walking(Direction::North), |_, _| None).unwrap();
-        assert_eq!(walk.in_flight(), 2);
+        assert_eq!(walk.in_flight(), InFlightSteps::new(2));
 
         assert_eq!(
             walk.on_packet(&ServerPacket::WalkAck(WalkAck {
@@ -609,7 +637,7 @@ mod tests {
                 notoriety: Notoriety::Innocent,
             })
         );
-        assert_eq!(walk.in_flight(), 1);
+        assert_eq!(walk.in_flight(), InFlightSteps::new(1));
 
         assert_eq!(
             walk.on_packet(&ServerPacket::WalkAck(WalkAck {
@@ -622,7 +650,7 @@ mod tests {
                 notoriety: Notoriety::Murderer,
             })
         );
-        assert_eq!(walk.in_flight(), 0);
+        assert_eq!(walk.in_flight(), InFlightSteps::new(0));
     }
 
     #[test]
@@ -646,7 +674,11 @@ mod tests {
                 facing: Facing::walking(Direction::North),
             })
         );
-        assert_eq!(walk.in_flight(), 0, "everything in flight is void");
+        assert_eq!(
+            walk.in_flight(),
+            InFlightSteps::new(0),
+            "everything in flight is void"
+        );
         assert_eq!(walk.predicted().position, Point::new(100, 100, 0));
 
         let bytes = walk.step(Facing::walking(Direction::North), |_, _| None).unwrap();
@@ -702,7 +734,7 @@ mod tests {
                 facing: Facing::walking(Direction::West),
             })
         );
-        assert_eq!(walk.in_flight(), 0);
+        assert_eq!(walk.in_flight(), InFlightSteps::new(0));
     }
 
     /// Two ways to be handed an answer that fits nothing, and neither is
@@ -738,7 +770,7 @@ mod tests {
         );
         assert_eq!(
             walk.in_flight(),
-            1,
+            InFlightSteps::new(1),
             "the step stays in flight: guessing which one was meant would hide the desync"
         );
     }
@@ -753,7 +785,11 @@ mod tests {
                 facing: Facing::walking(Direction::West),
             }))
         );
-        assert_eq!(walk.in_flight(), 0, "nothing was sent, so nothing is pending");
+        assert_eq!(
+            walk.in_flight(),
+            InFlightSteps::new(0),
+            "nothing was sent, so nothing is pending"
+        );
         assert_eq!(
             walk.step(Facing::walking(Direction::East), |_, _| None)
                 .map(|bytes| sent_sequence(&bytes)),
@@ -786,7 +822,7 @@ mod tests {
             facing: Facing::walking(Direction::North),
         });
         assert!(matches!(walk.on_packet(&reject), Ok(Moved::Snapped { .. })));
-        assert_eq!(walk.in_flight(), 0);
+        assert_eq!(walk.in_flight(), InFlightSteps::new(0));
 
         // A step asked for after the rollback, which is what makes this hurt: a
         // client that treated the stale answers as its own would confirm or
@@ -806,7 +842,7 @@ mod tests {
         }
         assert_eq!(
             walk.in_flight(),
-            1,
+            InFlightSteps::new(1),
             "the step sent after the rollback is still waiting for its own answer"
         );
 
@@ -914,7 +950,7 @@ mod tests {
     #[test]
     fn a_silent_shard_stops_the_walk_after_five_steps() {
         let mut walk = Walk::new(Point::new(100, 1000, 0), Facing::walking(Direction::North));
-        for step in 0..MAX_IN_FLIGHT {
+        for step in 0..MAX_IN_FLIGHT.raw() {
             walk.step(Facing::walking(Direction::North), |_, _| None)
                 .unwrap_or_else(|_| panic!("step {step} is within the cap"));
         }

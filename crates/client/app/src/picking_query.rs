@@ -444,11 +444,14 @@ impl App {
     /// The cost is one bounded [`find_path`] (two, where the way is barred)
     /// while a destination is live, and nothing at all otherwise.
     pub(crate) fn route_shown(&self, hover: Option<&PickedTile>) -> Option<Route> {
+        let guide = terrain(&self.resources);
         let opened = cluttered_with_doors_open(&self.world, &self.resources);
         let cluttered = cluttered(&self.world, &self.resources);
         let ground = steer::Ground {
             real: &cluttered,
             through_doors: &opened,
+            guide: &guide,
+            coarse: self.resources.coarse.as_ref(),
         };
         let goal = match self.steer.goal() {
             Some(tile) => tile,

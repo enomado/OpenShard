@@ -4,7 +4,9 @@ use openshard_protocol::identity::RawCharacterName;
 use openshard_protocol::items::DropDestination;
 use openshard_protocol::mobile::Notoriety;
 use openshard_protocol::wire::{Graphic, Hue, RawCharacterSlot};
-use openshard_protocol::world::{Aggression, DamageType, PhysicalResistance, RangedRange, Sight};
+use openshard_protocol::world::{
+    Aggression, DamageType, PhysicalResistance, PoisonLevel, RangedRange, Sight,
+};
 
 /// How a character looks: its body graphic and hue. Chosen on the creation
 /// screen, or restored from the save.
@@ -687,7 +689,7 @@ pub enum Command {
         /// The item.
         serial: Serial,
         /// The poison level, 0 (lesser) .. 4 (lethal).
-        level: u8,
+        level: PoisonLevel,
         /// Doses. One for a bottle; zero clears the poison.
         charges: u16,
     },

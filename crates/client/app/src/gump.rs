@@ -78,7 +78,42 @@ pub struct Dialogs {
     /// `None` is "the keyboard belongs to the world", which is the ordinary
     /// state: a dialog with no field in it never takes one, and clicking off a
     /// field gives the keyboard back.
-    focus: Option<(GumpId, u16)>,
+    focus: Option<(GumpId, TextEntryId)>,
+}
+
+/// A page inside one gump layout.
+///
+/// Page numbers are client-side state, distinct from gump ids and from the
+/// layout's text-entry ids. The renderer's layout boundary stays raw because
+/// that is where its parser declares the number.
+#[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
+struct GumpPage(u32);
+
+impl GumpPage {
+    const fn new(page: u32) -> Self {
+        Self(page)
+    }
+
+    const fn raw(self) -> u32 {
+        self.0
+    }
+}
+
+/// The identity of one editable field inside a gump layout.
+///
+/// It is not a page, a button, or a switch id. The wire/layout seam is where
+/// it becomes the `u16` a `0xB1` text-entry list carries.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Debug)]
+struct TextEntryId(u16);
+
+impl TextEntryId {
+    const fn new(id: u16) -> Self {
+        Self(id)
+    }
+
+    const fn raw(self) -> u16 {
+        self.0
+    }
 }
 
 /// One window's answers-in-progress.
@@ -86,14 +121,14 @@ pub struct Dialogs {
 struct Sheet {
     /// The page being shown. Page `0` is drawn on every page, so this starts at
     /// zero and a layout with no pages at all never leaves it.
-    page: u32,
+    page: GumpPage,
     /// Which switches are on, by their id. Seeded from the layout's own
     /// `initial` flags the first time an id is seen, and the player's after
     /// that — which is why absence and `false` are different here.
     switches: HashMap<RawSwitchId, bool>,
     /// What has been typed into each field, by its id. Seeded the same way,
     /// from the line the layout pointed the field at.
-    entries: HashMap<u16, String>,
+    entries: HashMap<TextEntryId, String>,
 }
 
 /// What the window flags in a layout ask for.
@@ -152,7 +187,7 @@ impl Dialogs {
                     Element::TextEntry { entry_id, line, .. } => {
                         sheet
                             .entries
-                            .entry(*entry_id)
+                            .entry(TextEntryId::new(*entry_id))
                             .or_insert_with(|| gump.line(*line).unwrap_or_default().to_owned());
                     }
                     _ => {}
@@ -182,7 +217,7 @@ impl Dialogs {
             .held
             .filter(|(id, _)| *id == gump.gump_id)
             .map(|(_, hit)| hit);
-        let page = sheet.map_or(0, |sheet| sheet.page);
+        let page = sheet.map_or(GumpPage::default(), |sheet| sheet.page).raw();
         gump::window(&gump.elements, at, page, &on, held, atlas)
     }
 
@@ -233,7 +268,7 @@ impl Dialogs {
         let sheet = self.by_dialog.get(&gump.gump_id);
         for field in &window.fields {
             let typed = sheet
-                .and_then(|sheet| sheet.entries.get(&field.id))
+                .and_then(|sheet| sheet.entries.get(&TextEntryId::new(field.id)))
                 .map(String::as_str)
                 .unwrap_or_default();
             lines.push(GumpLabel {
@@ -243,7 +278,7 @@ impl Dialogs {
                 text: typed,
                 font: CAPTION_FONT,
             });
-            if self.focus == Some((gump.gump_id, field.id)) {
+            if self.focus == Some((gump.gump_id, TextEntryId::new(field.id))) {
                 // A second line rather than a character appended to the first:
                 // the text is the player's and borrowed, and a caret glued onto
                 // it would be a `String` this frame owns. Where it goes is the
@@ -281,7 +316,7 @@ impl Dialogs {
         // the pictures first would answer "the background" for every click into
         // a field.
         if let Some(id) = gump::field(&window.fields, cursor) {
-            self.focus = Some((gump.gump_id, id));
+            self.focus = Some((gump.gump_id, TextEntryId::new(id)));
             return true;
         }
         self.focus = None;
@@ -328,7 +363,7 @@ impl Dialogs {
         }
         match held {
             Hit::Page(page) => {
-                self.by_dialog.entry(gump.gump_id).or_default().page = page;
+                self.by_dialog.entry(gump.gump_id).or_default().page = GumpPage::new(page);
                 None
             }
             Hit::Reply(button) => Some(self.reply(gump, button)),
@@ -451,7 +486,7 @@ impl Dialogs {
         let mut text_entries: Vec<(u16, String)> = sheet
             .entries
             .iter()
-            .map(|(&id, text)| (id, text.clone()))
+            .map(|(&id, text)| (id.raw(), text.clone()))
             .collect();
         text_entries.sort_unstable_by_key(|(id, _)| *id);
 
@@ -507,7 +542,7 @@ mod tests {
         let sheet = &dialogs.by_dialog[&gump.gump_id];
         assert_eq!(sheet.switches.get(&RawSwitchId(1)), Some(&false));
         assert_eq!(
-            sheet.entries.get(&7).map(String::as_str),
+            sheet.entries.get(&TextEntryId::new(7)).map(String::as_str),
             Some("Britain"),
             "the field starts out holding the line the layout named"
         );
@@ -530,7 +565,7 @@ mod tests {
         let mut dialogs = Dialogs::default();
         dialogs.sync(std::slice::from_ref(&gump));
         dialogs.held = Some((gump.gump_id, Hit::Reply(RawButtonId(13))));
-        dialogs.focus = Some((gump.gump_id, 7));
+        dialogs.focus = Some((gump.gump_id, TextEntryId::new(7)));
 
         dialogs.sync(&[]);
         assert!(dialogs.by_dialog.is_empty());
@@ -574,7 +609,7 @@ mod tests {
         dialogs.sync(std::slice::from_ref(&gump));
         dialogs.toggle(gump.gump_id, RawSwitchId(1));
         dialogs.choose(&gump, RawSwitchId(3));
-        dialogs.focus = Some((gump.gump_id, 7));
+        dialogs.focus = Some((gump.gump_id, TextEntryId::new(7)));
         assert!(dialogs.typed("!"));
 
         let reply = dialogs.reply(&gump, RawButtonId(13));
@@ -596,14 +631,17 @@ mod tests {
         assert!(!dialogs.typed("x"), "nothing focused, nothing taken");
         assert!(!dialogs.backspace());
 
-        dialogs.focus = Some((gump.gump_id, 7));
+        dialogs.focus = Some((gump.gump_id, TextEntryId::new(7)));
         assert!(dialogs.typed("x"));
         assert!(
             !dialogs.typed("\n"),
             "a control character is not a character a field takes"
         );
         assert!(dialogs.backspace());
-        assert_eq!(dialogs.by_dialog[&gump.gump_id].entries[&7], "Britain");
+        assert_eq!(
+            dialogs.by_dialog[&gump.gump_id].entries[&TextEntryId::new(7)],
+            "Britain"
+        );
     }
 
     /// `{ noclose }` means the window cannot be walked away from: the right

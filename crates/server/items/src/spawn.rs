@@ -1,5 +1,6 @@
 use super::*;
 use openshard_protocol::wire::{Graphic, Hue};
+use openshard_protocol::world::PoisonLevel;
 
 /// An item appeared in the world.
 ///
@@ -32,7 +33,7 @@ pub fn set_weapon(state: &mut WorldState, serial: Serial, speed: u16, min: u16, 
 /// bottle on the wire, so which poison one holds is on the item and something has to
 /// put it there. `charges` of zero clears it, which is also how a spent coating is
 /// wiped — one door in and out, so "is this poisoned" never has two answers.
-pub fn set_poison(state: &mut WorldState, serial: Serial, level: u8, charges: u16) {
+pub fn set_poison(state: &mut WorldState, serial: Serial, level: PoisonLevel, charges: u16) {
     let Some(entity) = state.registry.entity_of(serial) else {
         return;
     };

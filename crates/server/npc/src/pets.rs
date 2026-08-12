@@ -6,6 +6,7 @@
 //! same reason a wild creature's is `ai::think_one`: deciding a step is the AI's.
 
 use openshard_entities::EntityId;
+use openshard_protocol::world::FollowerSlots;
 use openshard_state::WorldState;
 
 /// Make a creature somebody's — or make it turn on them.
@@ -17,7 +18,13 @@ use openshard_state::WorldState;
 ///
 /// An angered beast is the other half of the same call, because it is the same
 /// decision: it simply gets a `Combat` aimed at the would-be tamer instead.
-pub fn tame(state: &mut WorldState, creature: EntityId, tamer: EntityId, slots: u8, angered: bool) {
+pub fn tame(
+    state: &mut WorldState,
+    creature: EntityId,
+    tamer: EntityId,
+    slots: FollowerSlots,
+    angered: bool,
+) {
     let Some(owner) = state.registry.serial_of(tamer) else {
         return;
     };
@@ -36,7 +43,7 @@ pub fn tame(state: &mut WorldState, creature: EntityId, tamer: EntityId, slots: 
         creature,
         openshard_state::components::Pet {
             owner,
-            slots: slots.max(1),
+            slots,
             order: openshard_state::components::PetOrder::Follow,
             order_target: None,
         },

@@ -362,6 +362,20 @@ pub struct Frame {
     pub maximized: bool,
 }
 
+/// One monitor's physical rectangle.
+///
+/// This is not a saved [`Frame`]: its origin is the monitor's outer position
+/// and its extent is the complete screen, while a frame holds an application's
+/// outer position and inner size. Keeping the two rectangles apart makes the
+/// restore check say which one it is reading.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Monitor {
+    pub x: i32,
+    pub y: i32,
+    pub width: u32,
+    pub height: u32,
+}
+
 /// Everything the HUD remembers.
 ///
 /// `#[serde(default)]` on the struct rather than `Option` per field: a file
@@ -462,7 +476,7 @@ impl Desk {
 
     /// Whether a saved frame still names somewhere a window can be seen.
     ///
-    /// `monitors` is each screen's physical rectangle as `(x, y, width, height)`.
+    /// `monitors` are each screen's physical rectangles.
     /// A window restored onto a monitor that has since been unplugged opens
     /// offscreen, and an offscreen window is indistinguishable from a client that
     /// failed to start — so the test is whether the *title bar's* left corner
@@ -473,12 +487,12 @@ impl Desk {
     /// hanging a little off the right edge of a screen is a normal thing for a
     /// player to have left, and refusing to restore it would be the fix being
     /// worse than the bug.
-    pub fn fits(frame: &Frame, monitors: &[(i32, i32, u32, u32)]) -> bool {
-        monitors.iter().any(|&(x, y, width, height)| {
-            frame.x >= x
-                && frame.y >= y
-                && frame.x < x.saturating_add(width as i32)
-                && frame.y < y.saturating_add(height as i32)
+    pub fn fits(frame: &Frame, monitors: &[Monitor]) -> bool {
+        monitors.iter().any(|monitor| {
+            frame.x >= monitor.x
+                && frame.y >= monitor.y
+                && frame.x < monitor.x.saturating_add(monitor.width as i32)
+                && frame.y < monitor.y.saturating_add(monitor.height as i32)
         })
     }
 }
@@ -620,8 +634,32 @@ mod tests {
             height: 600,
             maximized: false,
         };
-        assert!(!Desk::fits(&frame, &[(0, 0, 2560, 1440)]));
-        assert!(Desk::fits(&frame, &[(-1920, 0, 1920, 1080), (0, 0, 2560, 1440)]));
+        assert!(!Desk::fits(
+            &frame,
+            &[Monitor {
+                x: 0,
+                y: 0,
+                width: 2560,
+                height: 1440,
+            }],
+        ));
+        assert!(Desk::fits(
+            &frame,
+            &[
+                Monitor {
+                    x: -1920,
+                    y: 0,
+                    width: 1920,
+                    height: 1080,
+                },
+                Monitor {
+                    x: 0,
+                    y: 0,
+                    width: 2560,
+                    height: 1440,
+                },
+            ],
+        ));
     }
 
     /// Hanging off the right edge is a normal place to have left a window, and
@@ -635,6 +673,14 @@ mod tests {
             height: 600,
             maximized: false,
         };
-        assert!(Desk::fits(&frame, &[(0, 0, 2560, 1440)]));
+        assert!(Desk::fits(
+            &frame,
+            &[Monitor {
+                x: 0,
+                y: 0,
+                width: 2560,
+                height: 1440,
+            }],
+        ));
     }
 }

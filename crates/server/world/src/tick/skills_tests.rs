@@ -604,10 +604,13 @@ fn poisoning_coats_a_blade_and_the_blade_spends_its_doses() {
     // A bottle of greater poison (level 2) and a katana, both beside the player.
     let potion = item_beside(&mut world, POISON_POTION_GRAPHIC, now);
     let potion_entity = world.state.registry.entity_of(potion).unwrap();
-    world
-        .state
-        .registry
-        .insert(potion_entity, PoisonCharges { level: 2, charges: 1 });
+    world.state.registry.insert(
+        potion_entity,
+        PoisonCharges {
+            level: openshard_protocol::world::PoisonLevel::new(2),
+            charges: 1,
+        },
+    );
     let katana = item_beside(&mut world, openshard_protocol::wire::Graphic(0x13FF), now);
     let blade = world.state.registry.entity_of(katana).unwrap();
     let _ = packets_for(&mut world, player);
@@ -623,7 +626,7 @@ fn poisoning_coats_a_blade_and_the_blade_spends_its_doses() {
     assert_eq!(
         world.state.registry.get::<PoisonCharges>(blade).copied(),
         Some(PoisonCharges {
-            level: 2,
+            level: openshard_protocol::world::PoisonLevel::new(2),
             charges: 14
         }),
         "18 - level*2 doses"
@@ -682,10 +685,13 @@ fn poison_only_goes_on_a_bladed_or_piercing_weapon() {
     world.tick(now);
     let potion = item_beside(&mut world, POISON_POTION_GRAPHIC, now);
     let potion_entity = world.state.registry.entity_of(potion).unwrap();
-    world
-        .state
-        .registry
-        .insert(potion_entity, PoisonCharges { level: 0, charges: 1 });
+    world.state.registry.insert(
+        potion_entity,
+        PoisonCharges {
+            level: openshard_protocol::world::PoisonLevel::new(0),
+            charges: 1,
+        },
+    );
     let mace = item_beside(&mut world, openshard_protocol::wire::Graphic(0x0F5C), now);
     let _ = packets_for(&mut world, player);
 
@@ -712,7 +718,7 @@ fn taste_identification_finds_the_poison_on_a_blade() {
     world.state.registry.insert(
         blade,
         PoisonCharges {
-            level: 3,
+            level: openshard_protocol::world::PoisonLevel::new(3),
             charges: 12,
         },
     );
@@ -1307,7 +1313,7 @@ fn a_pet_hears_all_stay_and_stops() {
         pet,
         openshard_state::components::Pet {
             owner: serial,
-            slots: 1,
+            slots: openshard_protocol::world::FollowerSlots::ONE,
             order: openshard_state::components::PetOrder::Follow,
             order_target: None,
         },
@@ -1391,7 +1397,7 @@ fn a_shop_bottle_holds_the_poison_its_label_names() {
     // Spawned bare, it is the middling poison.
     assert_eq!(
         world.state.registry.get::<PoisonCharges>(bottle).map(|p| p.level),
-        Some(1)
+        Some(openshard_protocol::world::PoisonLevel::new(1))
     );
     let _ = player;
 
@@ -1415,7 +1421,7 @@ fn a_shop_bottle_holds_the_poison_its_label_names() {
             .registry
             .get::<PoisonCharges>(labelled)
             .map(|p| p.level),
-        Some(2),
+        Some(openshard_protocol::world::PoisonLevel::new(2)),
         "greater is level two"
     );
 }
@@ -1447,7 +1453,7 @@ fn animal_lore_reads_a_pet_and_refuses_a_wild_thing_to_a_novice() {
         entity,
         openshard_state::components::Pet {
             owner: serial,
-            slots: 1,
+            slots: openshard_protocol::world::FollowerSlots::ONE,
             order: openshard_state::components::PetOrder::Follow,
             order_target: None,
         },
