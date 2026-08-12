@@ -7,12 +7,16 @@ This is a long-running refactor track for `crates/client`.
 The working tree was clean after:
 
 ```text
-5d1cf8c trim frame copies and isolate update reducer
+3e33a6c separate client presentation projection
 ```
 
 Relevant earlier checkpoints:
 
 ```text
+e6e0c82 separate client prediction state
+cf06c8b isolate authoritative client world
+505e4ed stage client frame delivery
+5d1cf8c trim frame copies and isolate update reducer
 ffa66ce keep local window mutations on app thread
 1e48536 consolidate world mutations in client reducer
 4dd8bad refactor client world update ownership
@@ -23,9 +27,10 @@ Validation currently passes:
 ```text
 cargo check -p openshard-client-app
 cargo test -p openshard-client-app --lib
+cargo test -p openshard-client-render --lib
 ```
 
-Result: 163 passed, 2 ignored.
+Result: 169 app tests passed, 2 ignored; 482 render tests passed, 1 ignored.
 
 ## Architecture agreed with the owner
 
@@ -58,41 +63,33 @@ Result: 163 passed, 2 ignored.
   there is no per-update `WorldView` clone.
 - Mobile picking uses `mobiles::pick_iter`, avoiding a second owned
   `Vec<Mobile>` solely to adapt `(Who, Mobile)` pairs to the picker.
+- Render-mobile equipment is `Rc<[EquipmentLayer]>`, so a frame snapshot
+  retains immutable equipment rather than allocating and copying its layers.
+- Cross-thread delivery is staged: ordered updates are bounded (with socket
+  backpressure), consecutive predictions coalesce, and winit receives one
+  wake-up per pending batch.
+- `WorldState` names its three state kinds directly: `authoritative`,
+  `prediction` and `presentation`.
 
-## Remaining known copy cost
+## Remaining small copy cost
 
-The main remaining frame-level copy is:
+The frame-level equipment copy has been removed: a `Mobile` clone now only
+increments the single-threaded `Rc` handle. `drawn_layers` still builds a small
+ordered list of `EquipmentLayer` values for each renderer pass; that list is
+not a clone of the mobile's equipment allocation and is bounded by the worn
+slots.
 
-```text
-drawn_mobiles()
-  -> clone Mobile values
-  -> clone Vec<EquipmentLayer> for every mobile
-```
-
-This occurs because the renderer currently receives owned `Mobile` values and
-the per-frame code updates animation fields (`group`, `frame`, `drawn`,
-`from`). The correct fix is architectural, not another local clone removal:
-
-1. Prefer an immutable/shared equipment representation for render mobiles,
-   probably `Rc<[EquipmentLayer]>` because this client is single-threaded; or
-2. Introduce a borrowed `FrameMobile`/render snapshot that borrows immutable
-   body/equipment data and owns only the time-varying fields.
-
-Do not reintroduce `Arc<WorldView>` to solve this.
-
-Other clones found are either small/local or semantically required by protocol
-state updates (paperdoll, skills, container contents, login plan). Atlas
-rebuild copies are on a rare eviction path.
+Other clones are either small/local or semantically required by protocol state
+updates (paperdoll, skills, container contents, login plan). Atlas rebuild
+copies are on a rare eviction path. Do not reintroduce `Arc<WorldView>`.
 
 ## Next work items
 
-1. Solve the mobile frame snapshot/equipment ownership issue and measure that
-   the per-frame equipment allocation is gone.
-2. Add tests around frame snapshot reuse or borrowed mobile rendering.
-3. Replace the unbounded command/update delivery with explicit staged delivery
-   semantics. Preserve ordering for mutations and avoid accumulating stale
-   frame updates.
-4. Continue separating:
+1. Decide whether the short-lived `drawn_layers` lists merit a borrowed ordered
+   iterator; measure first, because they are not a per-mobile equipment clone.
+2. Exercise the staged mailbox against a real stalled-window/network workload
+   and tune its ordered-update capacity if needed.
+3. Keep the three state boundaries explicit as new fields are added:
 
    ```text
    authoritative world state
@@ -100,7 +97,7 @@ rebuild copies are on a rare eviction path.
    presentation projection
    ```
 
-5. Keep commits small and run the client app check/tests after each stage.
+4. Keep commits small and run the client app check/tests after each stage.
 
 ## Important caution
 
