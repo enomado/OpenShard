@@ -237,8 +237,73 @@ fn produce_composite_block(
     profile::end(window.gpu.as_ref(), &mut encoder, timed);
     window.queue.submit([encoder.finish()]);
     if let Some(captured) = captured {
-        audit_captured_composite_ids(&window.device, &window.queue, &resources.map, captured);
+        audit_captured_composite_ids(
+            &window.device,
+            &window.queue,
+            &resources.map,
+            captured,
+            &window.composite_producer.world,
+            window.composite_producer.gbuffer.ids(),
+        );
     }
+}
+
+/// Read one texture into packed rows for an opt-in producer/cache audit.
+fn audit_texture_bytes(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    texture: &wgpu::Texture,
+    bytes_per_texel: u32,
+    label: &'static str,
+) -> Option<Vec<u8>> {
+    let row = texture.width() * bytes_per_texel;
+    let stride = row.div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT) * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
+    let readback = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some(label),
+        size: u64::from(stride) * u64::from(texture.height()),
+        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+        mapped_at_creation: false,
+    });
+    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some(label) });
+    encoder.copy_texture_to_buffer(
+        wgpu::TexelCopyTextureInfo {
+            texture,
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
+        wgpu::TexelCopyBufferInfo {
+            buffer: &readback,
+            layout: wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(stride),
+                rows_per_image: Some(texture.height()),
+            },
+        },
+        wgpu::Extent3d {
+            width: texture.width(),
+            height: texture.height(),
+            depth_or_array_layers: 1,
+        },
+    );
+    queue.submit([encoder.finish()]);
+    let (sent, received) = mpsc::channel();
+    readback.slice(..).map_async(wgpu::MapMode::Read, move |result| {
+        let _ = sent.send(result);
+    });
+    if device.poll(wgpu::PollType::wait_indefinitely()).is_err()
+        || received.recv().ok().and_then(Result::ok).is_none()
+    {
+        return None;
+    }
+    let mapped = readback.slice(..).get_mapped_range().ok()?;
+    let packed = mapped
+        .chunks_exact(stride as usize)
+        .flat_map(|source_row| source_row[..row as usize].iter().copied())
+        .collect();
+    drop(mapped);
+    readback.unmap();
+    Some(packed)
 }
 
 /// Read the completed cache entry itself, after the producer command buffer
@@ -250,6 +315,8 @@ fn audit_captured_composite_ids(
     queue: &wgpu::Queue,
     map: &Map,
     captured: &CompositeTexture,
+    source_color: &wgpu::Texture,
+    source_ids: &wgpu::Texture,
 ) {
     if std::env::var_os("OPENSHARD_COMPOSITE_AUDIT").is_none() {
         return;
@@ -334,7 +401,11 @@ fn audit_captured_composite_ids(
             let sample_x = (at.x.max(0) as u32 / divisor).min(ids.width() - 1);
             let sample_y = (at.y.max(0) as u32 / divisor).min(ids.height() - 1);
             let offset = sample_y as usize * stride as usize + sample_x as usize * 4;
-            let id = u32::from_le_bytes(mapped[offset..offset + 4].try_into().expect("one cached ID texel"));
+            let id = u32::from_le_bytes(
+                mapped[offset..offset + 4]
+                    .try_into()
+                    .expect("one cached ID texel"),
+            );
             if openshard_client_render::gbuffer::ids_kind(id)
                 == Some(openshard_client_render::place::Kind::Nothing)
                 && missing_owner_centres.len() < 12
@@ -357,6 +428,62 @@ fn audit_captured_composite_ids(
         missing_owner_centres = ?missing_owner_centres,
         "captured map-composite IDs before restore"
     );
+    if captured.key().tier == openshard_client_render::composite::CompositeTier::Lod1 {
+        let Some(source_color) =
+            audit_texture_bytes(device, queue, source_color, 4, "composite source colour audit")
+        else {
+            tracing::warn!(key = ?captured.key(), "could not read LOD1 producer colour for audit");
+            return;
+        };
+        let Some(captured_color) = audit_texture_bytes(
+            device,
+            queue,
+            captured.texture(),
+            4,
+            "composite cached colour audit",
+        ) else {
+            tracing::warn!(key = ?captured.key(), "could not read LOD1 cached colour for audit");
+            return;
+        };
+        let Some(source_ids) =
+            audit_texture_bytes(device, queue, source_ids, 4, "composite source IDs audit")
+        else {
+            tracing::warn!(key = ?captured.key(), "could not read LOD1 producer IDs for audit");
+            return;
+        };
+        let Some(captured_ids) =
+            audit_texture_bytes(device, queue, ids, 4, "composite cached IDs equality audit")
+        else {
+            tracing::warn!(key = ?captured.key(), "could not read LOD1 cached IDs for equality audit");
+            return;
+        };
+        let color_difference = source_color
+            .iter()
+            .zip(&captured_color)
+            .position(|(source, captured)| source != captured);
+        let ids_difference = source_ids
+            .iter()
+            .zip(&captured_ids)
+            .position(|(source, captured)| source != captured);
+        if source_color.len() == captured_color.len()
+            && source_ids.len() == captured_ids.len()
+            && color_difference.is_none()
+            && ids_difference.is_none()
+        {
+            tracing::info!(key = ?captured.key(), "lossless LOD1 cache bytes match producer source");
+        } else {
+            tracing::error!(
+                key = ?captured.key(),
+                source_color_bytes = source_color.len(),
+                captured_color_bytes = captured_color.len(),
+                source_ids_bytes = source_ids.len(),
+                captured_ids_bytes = captured_ids.len(),
+                ?color_difference,
+                ?ids_difference,
+                "lossless LOD1 cache bytes differ from producer source"
+            );
+        }
+    }
 }
 
 /// Compare the resident static-atlas texture against the bytes that the CPU
@@ -617,9 +744,19 @@ fn audit_visible_ground_centres(window: &crate::window::Screen, map: &Map, camer
     let ids = window.gbuffer.ids();
     let row = ids.width() * 4;
     let stride = row.div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT) * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
+    let position = window.gbuffer.position();
+    let position_row = position.width() * 16;
+    let position_stride =
+        position_row.div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT) * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
     let readback = window.device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("LOD screen G-buffer audit readback"),
         size: u64::from(stride) * u64::from(ids.height()),
+        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+        mapped_at_creation: false,
+    });
+    let position_readback = window.device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("LOD screen G-buffer position audit readback"),
+        size: u64::from(position_stride) * u64::from(position.height()),
         usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
         mapped_at_creation: false,
     });
@@ -649,13 +786,41 @@ fn audit_visible_ground_centres(window: &crate::window::Screen, map: &Map, camer
             depth_or_array_layers: 1,
         },
     );
+    encoder.copy_texture_to_buffer(
+        wgpu::TexelCopyTextureInfo {
+            texture: position,
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
+        wgpu::TexelCopyBufferInfo {
+            buffer: &position_readback,
+            layout: wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(position_stride),
+                rows_per_image: Some(position.height()),
+            },
+        },
+        wgpu::Extent3d {
+            width: position.width(),
+            height: position.height(),
+            depth_or_array_layers: 1,
+        },
+    );
     window.queue.submit([encoder.finish()]);
     let (sent, received) = mpsc::channel();
     readback.slice(..).map_async(wgpu::MapMode::Read, move |result| {
         let _ = sent.send(result);
     });
+    let (position_sent, position_received) = mpsc::channel();
+    position_readback
+        .slice(..)
+        .map_async(wgpu::MapMode::Read, move |result| {
+            let _ = position_sent.send(result);
+        });
     if window.device.poll(wgpu::PollType::wait_indefinitely()).is_err()
         || received.recv().ok().and_then(Result::ok).is_none()
+        || position_received.recv().ok().and_then(Result::ok).is_none()
     {
         tracing::error!("could not read frame G-buffer for LOD bounds audit");
         return;
@@ -679,8 +844,13 @@ fn audit_visible_ground_centres(window: &crate::window::Screen, map: &Map, camer
         .slice(..)
         .get_mapped_range()
         .expect("completed LOD screen audit has mapped bytes");
+    let mapped_position = position_readback
+        .slice(..)
+        .get_mapped_range()
+        .expect("completed LOD screen position audit has mapped bytes");
     let mut composite = 0_u64;
     let mut missing = Vec::new();
+    let mut misplaced_land = Vec::new();
     for (x, y, screen_x, screen_y) in &samples {
         let offset = *screen_y as usize * stride as usize + *screen_x as usize * 4;
         let id = u32::from_le_bytes(mapped[offset..offset + 4].try_into().expect("one ID texel"));
@@ -694,13 +864,40 @@ fn audit_visible_ground_centres(window: &crate::window::Screen, map: &Map, camer
                 missing.push((*x, *y));
             }
         }
+        if id & openshard_client_render::gbuffer::IDS_COMPOSITE_MAP != 0
+            && openshard_client_render::gbuffer::ids_kind(id)
+                == Some(openshard_client_render::place::Kind::Land)
+        {
+            let position_offset = *screen_y as usize * position_stride as usize + *screen_x as usize * 16;
+            let actual_x = f32::from_le_bytes(
+                mapped_position[position_offset..position_offset + 4]
+                    .try_into()
+                    .expect("cached land x position"),
+            )
+            .floor() as i32;
+            let actual_y = f32::from_le_bytes(
+                mapped_position[position_offset + 4..position_offset + 8]
+                    .try_into()
+                    .expect("cached land y position"),
+            )
+            .floor() as i32;
+            if (actual_x != i32::from(*x) || actual_y != i32::from(*y)) && misplaced_land.len() < 12 {
+                misplaced_land.push(((*x, *y), (actual_x, actual_y)));
+            }
+        }
     }
     drop(mapped);
+    drop(mapped_position);
     readback.unmap();
+    position_readback.unmap();
+    // A ground diamond's visual centre can belong to either neighbouring
+    // triangle, so this optional position sample is diagnostic context rather
+    // than a coverage failure. `missing` alone is the LOD readiness invariant.
     if missing.is_empty() {
         tracing::info!(
             samples = samples.len(),
             composite,
+            misplaced_land = ?misplaced_land,
             "LOD screen G-buffer covers every visible tile centre"
         );
     } else {
@@ -708,6 +905,7 @@ fn audit_visible_ground_centres(window: &crate::window::Screen, map: &Map, camer
             samples = samples.len(),
             composite,
             missing = ?missing,
+            misplaced_land = ?misplaced_land,
             "LOD screen G-buffer has uncovered visible tile centres"
         );
     }

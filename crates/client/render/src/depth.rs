@@ -96,7 +96,11 @@ pub fn base_for(x: i32, y: i32) -> i32 {
 /// rebasing it here keeps their pixels in the same ordering as live items and
 /// mobiles after the eye has moved.
 pub fn rebase_adjust(from: i32, to: i32) -> f32 {
-    (to - from) as f32 / (2.0 * HALF_RANGE)
+    // `Order::to_depth` encodes a one-tile change as `DEPTH_PER_TILE`
+    // key units. A cached block's local camera base must therefore move its
+    // depth by that complete tile step before it can depth-test beside the
+    // current camera's LOD0 rows or another cached block.
+    (to - from) as f32 * DEPTH_PER_TILE as f32 / (2.0 * HALF_RANGE)
 }
 
 /// Where a land tile sorts.
@@ -348,6 +352,22 @@ mod tests {
             priority_z: 1,
         };
         assert!(high.to_depth(base) < low.to_depth(base));
+    }
+
+    #[test]
+    fn rebasing_cached_depth_matches_rendering_at_the_new_camera_base() {
+        let order = Order {
+            tile: 2_137,
+            priority_z: 19,
+        };
+        let source_base = base_for(1_064, 1_065);
+        let current_base = base_for(1_088, 1_097);
+        let cached = order.to_depth(source_base) + rebase_adjust(source_base, current_base);
+        let current = order.to_depth(current_base);
+        assert!(
+            (cached - current).abs() < f32::EPSILON,
+            "rebased cached depth {cached} differs from current-camera depth {current}"
+        );
     }
 
     /// Two adjacent keys have to be *representable* as two different depths,

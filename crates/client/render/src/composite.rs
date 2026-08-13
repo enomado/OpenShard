@@ -35,10 +35,10 @@ pub const MAX_STATIC_OVERHANG: u32 = 256;
 /// Virtual-pixel side of the canonical source image for one map-block
 /// composite.
 ///
-/// The producer always renders this extent before a tier downsamples it.  It
-/// is deliberately neither a window size nor a camera render-target size: a
-/// map block must mean the same source pixels when the player pans, resizes,
-/// or changes zoom.
+/// The producer always renders this extent. LOD1 retains its exact source
+/// grid; only the disabled LOD2 tier minifies it. It is deliberately neither
+/// a window size nor a camera render-target size: a map block must mean the
+/// same source pixels when the player pans, resizes, or changes zoom.
 pub const COMPOSITE_SOURCE_SIDE: u32 = BLOCK_SIZE * TILE_WIDTH as u32 + MAX_STATIC_OVERHANG * 2;
 
 /// The fixed coordinate of one 8×8 map block.
@@ -71,10 +71,9 @@ impl MapBlock {
     /// Whether a map tile belongs to this block.
     ///
     /// A block composite has an expanded screen-space rectangle so that a
-    /// static can overhang its ground diamond.  The rectangle can therefore
-    /// contain pixels of a neighbouring block; capture uses this ownership
-    /// rule to keep those pixels with their actual map block instead of
-    /// letting overlapping cache entries redraw one another.
+    /// static can overhang its ground diamond. The producer uses this rule
+    /// while collecting geometry, so its capture attachment contains only the
+    /// block's own pixels and adjacent cache entries never redraw one another.
     pub const fn contains_tile(self, x: u16, y: u16) -> bool {
         Self::containing_tile(x, y).x == self.x && Self::containing_tile(x, y).y == self.y
     }
@@ -125,7 +124,7 @@ impl CompositeProducerJob {
         self.camera
     }
 
-    /// Fixed source attachment dimensions, before downsampling for the tier.
+    /// Fixed source attachment dimensions. LOD1 retains this exact grid.
     pub const fn source_size(self) -> CompositeSize {
         CompositeSize {
             width: COMPOSITE_SOURCE_SIDE,
@@ -272,7 +271,7 @@ impl MapBlockBounds {
 /// The two cached resolutions.  LOD 0 intentionally has no texture.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum CompositeTier {
-    /// Two source pixels per cached texel.
+    /// The lossless cached tier: one source pixel per cached texel.
     Lod1,
     /// Four source pixels per cached texel.
     Lod2,
@@ -291,7 +290,7 @@ impl CompositeTier {
     /// Source pixels represented by one cache texel in each direction.
     pub const fn source_pixels_per_texel(self) -> u32 {
         match self {
-            Self::Lod1 => 2,
+            Self::Lod1 => 1,
             Self::Lod2 => 4,
         }
     }
@@ -338,7 +337,7 @@ impl CompositeSize {
     }
 
     /// A square extent for the ground diamond plus a caller-provided static
-    /// overhang, downsampled exactly for `tier`.
+    /// overhang, represented at the exact resolution of `tier`.
     ///
     /// `overhang_source_pixels` is the cache format's fixed static-overhang
     /// allowance. Keeping it in the extent makes a tall tree at a block edge
@@ -962,7 +961,7 @@ impl CompositeCache {
     /// the next one.  No caller can hand in dynamic attachment textures: the
     /// source is the world target at the exact point before server items and
     /// mobiles are rendered. [`CompositeRenderer`] fills the returned planes
-    /// with a GPU resample in the same command encoder.
+    /// with a GPU capture in the same command encoder.
     fn capture(
         &mut self,
         device: &wgpu::Device,
@@ -1824,6 +1823,16 @@ impl CompositeRenderer {
                     },
                     count: None,
                 },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Uint,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
             ],
         });
         let capture_depth_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -2307,7 +2316,7 @@ impl CompositeRenderer {
         }
     }
 
-    /// Resample colour and the three G-buffer planes into one cached texture.
+    /// Capture colour and the three G-buffer planes into one cached texture.
     fn capture_planes(
         &mut self,
         device: &wgpu::Device,
@@ -2411,7 +2420,7 @@ impl CompositeRenderer {
     }
 
     /// Write the source depth rectangle into a captured entry's float plane.
-    /// The colour and G-buffer planes were resampled by [`Self::capture_planes`];
+    /// The colour and G-buffer planes were captured by [`Self::capture_planes`];
     /// this pass exists solely because WebGPU
     /// does not permit a direct `Depth24Plus` to `R32Float` texture copy.
     fn capture_depth(
@@ -2433,6 +2442,7 @@ impl CompositeRenderer {
             source.rect,
             captured.key().block,
         );
+        let source_ids = source.ids.create_view(&wgpu::TextureViewDescriptor::default());
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("map composite depth capture"),
             layout: &self.capture_depth_layout,
@@ -2444,6 +2454,10 @@ impl CompositeRenderer {
                 wgpu::BindGroupEntry {
                     binding: 1,
                     resource: wgpu::BindingResource::TextureView(source.depth),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::TextureView(&source_ids),
                 },
             ],
         });
@@ -2503,12 +2517,13 @@ mod tests {
         device: &wgpu::Device,
         label: &'static str,
         format: wgpu::TextureFormat,
+        size: u32,
     ) -> wgpu::Texture {
         device.create_texture(&wgpu::TextureDescriptor {
             label: Some(label),
             size: wgpu::Extent3d {
-                width: 64,
-                height: 64,
+                width: size,
+                height: size,
                 depth_or_array_layers: 1,
             },
             mip_level_count: 1,
@@ -2861,27 +2876,30 @@ mod tests {
         let _ = CompositeRenderer::new(&device);
     }
 
-    /// One captured rectangle necessarily includes a neighbour's overhang.
-    /// This is the exact pan regression: without the ownership gate, both
-    /// cache entries restore the same wall pixels and the draw order changes as
-    /// the camera moves.  The fixture's left half belongs to block `(0, 0)`;
-    /// the blue right half belongs to `(1, 0)`.  A full capture/restore must
-    /// retain the former, discard the latter, and leave a valid composite-map
-    /// G-buffer identity only on the owner pixels.
+    /// Producer geometry is the single ownership authority. This fixture
+    /// models an 8x8 producer that emitted its left half only; capture and
+    /// restore must preserve that exact coverage without consulting the
+    /// interpolated G-buffer position a second time.
     #[test]
-    fn captured_block_never_restores_neighbour_pixels_or_their_picking_identity() {
+    fn captured_block_restores_only_its_producer_geometry() {
         let Some((device, queue)) = renderable_device() else {
             return;
         };
         const SIZE: u32 = 64;
-        let color = source_texture(&device, "composite test color", crate::blit::WORLD_FORMAT);
-        let ids = source_texture(&device, "composite test ids", crate::gbuffer::IDS_FORMAT);
+        let color = source_texture(&device, "composite test color", crate::blit::WORLD_FORMAT, SIZE);
+        let ids = source_texture(&device, "composite test ids", crate::gbuffer::IDS_FORMAT, SIZE);
         let position = source_texture(
             &device,
             "composite test position",
             crate::gbuffer::POSITION_FORMAT,
+            SIZE,
         );
-        let normal = source_texture(&device, "composite test normal", crate::gbuffer::NORMAL_FORMAT);
+        let normal = source_texture(
+            &device,
+            "composite test normal",
+            crate::gbuffer::NORMAL_FORMAT,
+            SIZE,
+        );
 
         let mut colors = Vec::with_capacity((SIZE * SIZE * 4) as usize);
         let mut source_ids = Vec::with_capacity((SIZE * SIZE * 4) as usize);
@@ -2896,11 +2914,12 @@ mod tests {
                 } else {
                     &[17, 49, 211, u8::MAX]
                 });
-                source_ids.extend_from_slice(&map_id.to_le_bytes());
-                // `x = 3` belongs to the first block; `x = 8` is the first
-                // tile of its east neighbour.  The source pixels deliberately
-                // have no visible geometric seam, so only the G-buffer owner
-                // rule can distinguish them.
+                let id = if owned { map_id } else { 0 };
+                source_ids.extend_from_slice(&id.to_le_bytes());
+                // Position may cross an apparent tile boundary. It must not
+                // turn a valid producer pixel into a cache hole: IDs encode
+                // source coverage, while tile ownership was settled before
+                // rasterisation by the producer's geometry collection.
                 for value in [if owned { 3.0_f32 } else { 8.0 }, 3.0, 0.0, 0.0] {
                     positions.extend_from_slice(&value.to_le_bytes());
                 }
@@ -3269,6 +3288,159 @@ mod tests {
         assert_eq!(after_depth, first_depth);
     }
 
+    /// At LOD2 a cache texel stands for a 4x4 source footprint. A valid land
+    /// fragment in any one of those sixteen pixels must keep the cache texel
+    /// alive; sampling just one fixed source pixel recreates visible holes at
+    /// the 8x8 block boundary when the cache progressively replaces LOD0.
+    #[test]
+    fn lod2_capture_conservatively_keeps_sparse_source_coverage() {
+        let Some((device, queue)) = renderable_device() else {
+            return;
+        };
+        const SOURCE: u32 = 864;
+        let color = source_texture(
+            &device,
+            "sparse composite color",
+            crate::blit::WORLD_FORMAT,
+            SOURCE,
+        );
+        let ids = source_texture(
+            &device,
+            "sparse composite ids",
+            crate::gbuffer::IDS_FORMAT,
+            SOURCE,
+        );
+        let position = source_texture(
+            &device,
+            "sparse composite position",
+            crate::gbuffer::POSITION_FORMAT,
+            SOURCE,
+        );
+        let normal = source_texture(
+            &device,
+            "sparse composite normal",
+            crate::gbuffer::NORMAL_FORMAT,
+            SOURCE,
+        );
+        let map_id = crate::gbuffer::pack_ids(7, crate::place::Stance::Flat, crate::place::Kind::Land);
+        let texels = (SOURCE * SOURCE) as usize;
+        let mut colors = vec![0_u8; texels * 4];
+        let mut source_ids = vec![0_u8; texels * 4];
+        for y in 0..SOURCE {
+            for x in 0..SOURCE {
+                // Exactly one valid source pixel per 4x4 cache footprint.
+                if x % 4 != 3 || y % 4 != 3 {
+                    continue;
+                }
+                let at = (y * SOURCE + x) as usize * 4;
+                colors[at..at + 4].copy_from_slice(&[219, 31, 17, u8::MAX]);
+                source_ids[at..at + 4].copy_from_slice(&map_id.to_le_bytes());
+            }
+        }
+        let write = |texture: &wgpu::Texture, bytes: &[u8], bytes_per_texel| {
+            queue.write_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::All,
+                },
+                bytes,
+                wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(bytes_per_texel * SOURCE),
+                    rows_per_image: Some(SOURCE),
+                },
+                wgpu::Extent3d {
+                    width: SOURCE,
+                    height: SOURCE,
+                    depth_or_array_layers: 1,
+                },
+            );
+        };
+        write(&color, &colors, 4);
+        write(&ids, &source_ids, 4);
+        write(&position, &vec![0_u8; texels * 16], 16);
+        write(&normal, &vec![0_u8; texels * 4], 4);
+
+        let source_depth = crate::renderer::depth_texture(&device, SOURCE, SOURCE);
+        let source_depth_view = source_depth.create_view(&wgpu::TextureViewDescriptor::default());
+        let key = CompositeKey {
+            block: MapBlock { x: 0, y: 0 },
+            tier: CompositeTier::Lod2,
+            revision: ImmutableRevision::default(),
+        };
+        let bounds = MapBlockBounds {
+            min_x: 0,
+            max_x: 0,
+            min_y: 0,
+            max_y: 0,
+        };
+        let mut work = CompositeWorkQueue::new(1, 1).unwrap();
+        work.refresh(bounds, bounds, BlockLod::Lod2, key.revision, |_| false);
+        assert_eq!(work.take_for_frame().len(), 1);
+        let mut cache = CompositeCache::default();
+        let mut composite = CompositeRenderer::new(&device);
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+        {
+            let _clear = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("sparse composite source depth"),
+                color_attachments: &[],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &source_depth_view,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(0.5),
+                        store: wgpu::StoreOp::Store,
+                    }),
+                    stencil_ops: None,
+                }),
+                multiview_mask: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+        }
+        assert!(
+            work.finish_capture(
+                &device,
+                &queue,
+                &mut encoder,
+                &mut composite,
+                &mut cache,
+                key,
+                CaptureSource {
+                    color: &color,
+                    ids: &ids,
+                    position: &position,
+                    normal: &normal,
+                    depth: &source_depth_view,
+                    depth_base: 0,
+                    rect: crate::blit::ViewportRect {
+                        x: 0,
+                        y: 0,
+                        width: SOURCE,
+                        height: SOURCE,
+                    },
+                },
+            )
+            .is_some()
+        );
+        queue.submit([encoder.finish()]);
+        let ids = read_attachment(
+            &device,
+            &queue,
+            cache
+                .get(key)
+                .unwrap()
+                .deferred_textures()
+                .expect("captured planes")
+                .0,
+        );
+        assert!(ids.chunks_exact(4).all(|word| {
+            crate::gbuffer::ids_kind(u32::from_le_bytes(word.try_into().unwrap()))
+                == Some(crate::place::Kind::Land)
+        }));
+    }
+
     #[test]
     fn lod_zero_cannot_become_a_composite_key() {
         assert_eq!(CompositeTier::from_lod(BlockLod::Lod0), None);
@@ -3294,10 +3466,10 @@ mod tests {
     }
 
     #[test]
-    fn tiers_downsample_the_same_padded_source_extent() {
+    fn tiers_represent_the_same_padded_source_extent() {
         let lod1 = CompositeSize::for_block(CompositeTier::Lod1, 64);
         let lod2 = CompositeSize::for_block(CompositeTier::Lod2, 64);
-        assert_eq!(lod1, CompositeSize::new(240, 240).unwrap());
+        assert_eq!(lod1, CompositeSize::new(480, 480).unwrap());
         assert_eq!(lod2, CompositeSize::new(120, 120).unwrap());
     }
 
@@ -3305,7 +3477,7 @@ mod tests {
     fn canonical_block_extent_does_not_depend_on_current_atlas_contents() {
         let lod1 = CompositeSize::for_block(CompositeTier::Lod1, MAX_STATIC_OVERHANG);
         let lod2 = CompositeSize::for_block(CompositeTier::Lod2, MAX_STATIC_OVERHANG);
-        assert_eq!(lod1, CompositeSize::new(432, 432).unwrap());
+        assert_eq!(lod1, CompositeSize::new(864, 864).unwrap());
         assert_eq!(lod2, CompositeSize::new(216, 216).unwrap());
     }
 

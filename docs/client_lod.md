@@ -128,18 +128,21 @@ in the camera frame.  The source map remains authoritative; the queue and
 cache contain immutable map ground and statics only. Static-atlas page growth
 does not change a composite key: pages are append-only and an entry holds final
 pixels rather than atlas UVs. Its padded 8×8 block rectangle is a fixed
-cache-format extent (256 source pixels of static overhang), and capture filters
-by G-buffer tile ownership so overlapping padded rectangles cannot restore a
-neighbour's pixels. Deferred restore samples colour nearest-neighbour as well
+cache-format extent (256 source pixels of static overhang). Ownership has one
+authority: the producer collects exactly the entry's 8×8 ground/static rows.
+Capture preserves those rendered pixels rather than re-deriving tile bounds
+from interpolated G-buffer positions. LOD1 retains one cache texel per source
+pixel, so colour, ID, position, normal and depth remain an atomic fact. The
+still-disabled LOD2 uses conservative representative selection within its
+minified footprint. Deferred restore samples colour nearest-neighbour as well
 as ownership IDs: filtering a valid edge texel against a transparent texel
 discarded for its neighbour would otherwise create a moving dark seam. Each
 distinct source-depth base in one command encoder has a separate deferred
 viewport/instance binding slot; queue writes to a later group must never alter
 an earlier group's draw. More importantly, ownership starts in the producer:
 its padded camera provides occlusion context, while its ground and map-static
-lists are collected only from the entry's own 8×8 tiles. The capture filter is
-therefore a defensive assertion rather than the operation that assigns pixels
-to a block. During cutaway, cache restore and capture are both bypassed
+lists are collected only from the entry's own 8×8 tiles. Capture does not add
+a second per-pixel ownership rule. During cutaway, cache restore and capture are both bypassed
 because the normal map attachments omit the cut-away rows; dispatched jobs are
 released to be scheduled again on the next ordinary frame.
 
@@ -150,7 +153,9 @@ LOD selection and telemetry code are live. `App::draw_from` enables LOD1 and
 caps selected LOD2 at LOD1. The injected `--scenario lod-sweep` diagnostic
 reaches `1/2x`, pans through block boundaries without desktop input, and can
 be run with `OPENSHARD_COMPOSITE_AUDIT=1` to read each completed cache ID plane
-before restore. LOD2 is disabled.
+before restore. LOD1 is spatially lossless: it preserves one cache texel per
+producer texel, because a deferred G-buffer's colour, ID, position, normal and
+depth must remain one atomic fact. LOD2 is disabled.
 
 The prior failure was an invalid readiness contract: a texture became drawable
 once deferred planes were recorded, while the renderer assumed those planes
@@ -164,8 +169,8 @@ unprepared job, cutaway or animated block still remains LOD0 for that frame.
   invocation and its fixed local camera.
 - `crates/client/app/src/window.rs`: `prepare_composite_job`, including the
   clipped full producer-camera atlas-input bound.
-- `crates/client/render/src/composite.rs`: fixed producer contract, capture,
-  ownership filter, deferred restore and synthetic GPU oracle.
+- `crates/client/render/src/composite.rs`: fixed producer contract,
+  conservative capture, deferred restore and synthetic GPU oracle.
 - `crates/client/app/src/render_passes.rs`: the point at which a ready block
   excludes LOD0 ground/statics and draws its deferred composite.
 
@@ -183,7 +188,7 @@ unprepared job, cutaway or animated block still remains LOD0 for that frame.
    pixels on each side, so `prepare_composite_job` now grows atlases over
    `CompositeProducerJob::source_tiles()` after clipping it to the map. The
    animated-static eligibility check remains limited to the owned 8×8 block:
-   padding tiles are discarded by ownership filtering and must still be able to
+   padding tiles stay out of owner-only geometry and must still be able to
    remain dynamic in their own detailed block.
 3. **Done: share and test the transform.**
    `CompositeProducerJob::rect_in(camera)` replaces the separate
@@ -195,9 +200,10 @@ unprepared job, cutaway or animated block still remains LOD0 for that frame.
    mutation or animated source keeps the detailed path; no cache allocation by
    itself can suppress it.
 5. **In progress: LOD1 field run; LOD2 held back.** The direct `lod-sweep`
-   now verifies the texture state rather than inferring it from a screenshot:
-   cache entries retain their owner IDs while the next producer job redraws all
-   source planes. LOD1 is enabled. Continue the scenario over ordinary terrain,
+    now verifies the texture state rather than inferring it from a screenshot:
+    cache entries retain their owner IDs while the next producer job redraws all
+   source planes. LOD1 is enabled and lossless; only LOD2 may minify source
+   texels. Continue the scenario over ordinary terrain,
    map edges, dense/tall statics and animated statics; the Frames HUD must show
    bounded queue/cache values, no atlas rebuild every frame, and no black,
    holes or shifted map pixels. Enable LOD2 only after that run is clean.

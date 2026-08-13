@@ -2,6 +2,8 @@
 // one cached block.  This is four attachments (the normal world-pass budget),
 // while depth is captured by the companion one-target pass.
 
+import package::place_format::{ids_kind, KIND_NOTHING};
+
 struct Capture {
     target_size: vec2<f32>,
     source_origin: vec2<f32>,
@@ -36,28 +38,43 @@ struct FragmentOut {
 };
 @fragment
 fn fs_main(in: VertexOut) -> FragmentOut {
-    let at = vec2<i32>(min(
-        capture.source_origin + floor(in.uv * capture.source_size),
-        capture.source_origin + capture.source_size - vec2<f32>(1.0),
-    ));
     var out: FragmentOut;
-    out.color = textureLoad(color_of, at, 0);
-    out.ids = textureLoad(ids_of, at, 0).x;
-    out.position = textureLoad(position_of, at, 0);
-    out.normal = textureLoad(normal_of, at, 0).x;
-    // Map statics and land carry their world position in the G-buffer.  Keep
-    // only the pixels whose owner tile is in this entry's 8x8 block.  Without
-    // this gate, the expanded capture rectangles of adjacent blocks overlap
-    // and restoring their cached textures makes camera movement choose a
-    // different copy of the same sprite from frame to frame.
-    let tile = vec2<i32>(floor(out.position.xy));
-    let first = vec2<i32>(capture.block_first_tile);
-    let last = first + vec2<i32>(8);
-    if any(tile < first) || any(tile >= last) {
-        out.color = vec4<f32>(0.0);
-        out.ids = 0u;
-        out.position = vec4<f32>(0.0);
-        out.normal = 0u;
+    out.color = vec4<f32>(0.0);
+    out.ids = 0u;
+    out.position = vec4<f32>(0.0);
+    out.normal = 0u;
+
+    // LOD1's footprint is exactly one source pixel, preserving the atomic
+    // colour/ID/position/depth correspondence. LOD2 (currently disabled)
+    // covers 4x4 source pixels and selects one valid representative.
+    let output_at = vec2<i32>(floor(in.uv * capture.target_size));
+    let footprint = max(
+        vec2<i32>(capture.source_size / capture.target_size),
+        vec2<i32>(1),
+    );
+    let start = vec2<i32>(capture.source_origin) + output_at * footprint;
+    let source_last = vec2<i32>(capture.source_origin + capture.source_size) - vec2<i32>(1);
+    var found = false;
+    for (var y = 0; y < 4; y += 1) {
+        for (var x = 0; x < 4; x += 1) {
+            if x >= footprint.x || y >= footprint.y || found {
+                continue;
+            }
+            let at = min(start + vec2<i32>(x, y), source_last);
+            let ids = textureLoad(ids_of, at, 0).x;
+            let position = textureLoad(position_of, at, 0);
+            // The producer itself owns geometry: it collects exactly this
+            // block's tiles before rasterisation.  Re-testing ownership from
+            // interpolated G-buffer position is not equivalent, and used to
+            // erase water/land fragments along 8x8 block boundaries.
+            if ids_kind(ids) != KIND_NOTHING {
+                out.color = textureLoad(color_of, at, 0);
+                out.ids = ids;
+                out.position = position;
+                out.normal = textureLoad(normal_of, at, 0).x;
+                found = true;
+            }
+        }
     }
     return out;
 }
