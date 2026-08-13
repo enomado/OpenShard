@@ -20,7 +20,7 @@ use openshard_client_render::atlas::{
 use openshard_client_render::blit::{self, Blit};
 use openshard_client_render::camera::{Camera, TileBounds};
 use openshard_client_render::composite::{
-    COMPOSITE_SOURCE_SIDE, CompositeCache, CompositeProducerJob, CompositeRenderer,
+    COMPOSITE_SOURCE_SIDE, CompositeCache, CompositeProducerJob, CompositeRenderer, MapBlock,
 };
 use openshard_client_render::gbuffer::Gbuffer;
 use openshard_client_render::gump::GumpRenderer;
@@ -282,7 +282,6 @@ pub(crate) fn wanted_in(
 pub(crate) fn prepare_composite_job(
     resources: &mut resources::Resources,
     window: &mut Screen,
-    animations: &StaticAnimations,
     job: CompositeProducerJob,
 ) -> bool {
     let map_width = resources.map.width() as i32;
@@ -306,33 +305,23 @@ pub(crate) fn prepare_composite_job(
         min_y: i32::from(*owner_y.start()),
         max_y: i32::from(*owner_y.end()),
     };
-    let Some((source_x, source_y)) = job.source_tiles().clamp_to(map_width as u32, map_height as u32) else {
-        return false;
-    };
-    let source = TileBounds {
-        min_x: i32::from(*source_x.start()),
-        max_x: i32::from(*source_x.end()),
-        min_y: i32::from(*source_y.start()),
-        max_y: i32::from(*source_y.end()),
-    };
-    // The cache is immutable.  A single animated torch makes the whole block
-    // ineligible rather than baking one clock tick and leaving it stale at the
-    // next animation step.
-    let mut animated = false;
-    statics::for_each_static_in(&resources.map, owner, |item| {
-        animated |= animations.is_animated(item.tile);
-    });
-    if animated {
+    // The producer has to own a whole depth-comparable ground region, not a
+    // subset of it. A slope can overlap a neighbouring flat diamond inside
+    // the same 8×8 block; caching only the flat tile and later redrawing that
+    // slope makes two passes compete for pixels that the direct LOD0 pass
+    // resolves as one ordered surface. Keep such a block entirely live.
+    if flat_block_elevation(&resources.map, job.key().block).is_none() {
+        // This is a stable property of the immutable map, so treat it as a
+        // completed LOD0 answer rather than retrying this producer request on
+        // every camera frame.
+        window.composites.reject_block(job.key().block);
         return false;
     }
-    let wanted = wanted_in(
-        &resources.map,
-        [source],
-        &[],
-        &[],
-        animations,
-        &resources.equip_conv,
-    );
+    // Map statics (animated or otherwise) stay in the live pass, so background
+    // LOD work cannot grow or mutate the static atlas and cannot bake a roof
+    // outside its 8×8 source.
+    let mut wanted = Wanted::default();
+    ground::graphics_in(&resources.map, owner, &mut wanted.land);
     if window
         .atlases
         .grow(
@@ -355,6 +344,26 @@ pub(crate) fn prepare_composite_job(
         &window.mobile_pass,
     );
     true
+}
+
+/// A composite owner must be a single flat plateau, not merely 64 individually
+/// flat tiles. Its one elevation is the local camera's vertical origin.
+pub(crate) fn flat_block_elevation(map: &Map, block: MapBlock) -> Option<i8> {
+    let (first_x, first_y) = block.first_tile();
+    let base = map.land(first_x, first_y)?.z;
+    for y in first_y..first_y + openshard_uofiles::map::BLOCK_SIZE as u16 {
+        for x in first_x..first_x + openshard_uofiles::map::BLOCK_SIZE as u16 {
+            let land = map.land(x, y)?;
+            if land.z != base {
+                return None;
+            }
+            let corners = ground::corner_heights(map, x, y, land.z);
+            if !corners.iter().all(|height| *height == corners[0]) {
+                return None;
+            }
+        }
+    }
+    Some(base)
 }
 
 /// Grows or, on eviction, wholly rebuilds `window`'s atlases so this frame's
@@ -643,6 +652,10 @@ pub(crate) struct Screen {
     pub(crate) queue: wgpu::Queue,
     pub(crate) config: wgpu::SurfaceConfiguration,
     pub(crate) renderer: GroundRenderer,
+    /// The map-block producer's dedicated mutable ground stream.  It shares
+    /// atlas textures with `renderer`, but never its uniform or instance
+    /// buffer: producer jobs are submitted independently of camera frames.
+    pub(crate) composite_ground: GroundRenderer,
     /// Immutable map-block textures completed by the bounded composite queue.
     /// Work 4 decides where their colour-only pass interleaves with depth and
     /// dynamic objects; keeping the cache here makes producer completion a
@@ -838,6 +851,9 @@ impl Screen {
             &atlases.land,
             &atlases.texmaps,
         );
+        self.composite_ground = self
+            .renderer
+            .sibling(&self.device, &self.queue, blit::WORLD_FORMAT);
         self.statics = SpriteRenderer::new_static_pages(
             &self.device,
             &self.queue,
@@ -1036,6 +1052,7 @@ impl App {
             &atlases.land,
             &atlases.texmaps,
         );
+        let composite_ground = renderer.sibling(&device, &queue, blit::WORLD_FORMAT);
         let composites = CompositeCache::default();
         let composite_pass = CompositeRenderer::new(&device);
         let statics = SpriteRenderer::new_static_pages(
@@ -1191,6 +1208,7 @@ impl App {
             queue,
             config,
             renderer,
+            composite_ground,
             composites,
             composite_pass,
             composite_output_format: blit::WORLD_FORMAT,

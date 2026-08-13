@@ -16,12 +16,13 @@
 //! The split here is *where the code that touches a field lives*, not *which
 //! struct the field is on*.
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use openshard_client_render::animation::FRAME_DELAY;
 use openshard_client_render::bench::{Scope, Script};
-use openshard_client_render::camera::TileBounds;
+use openshard_client_render::camera::{Camera, TileBounds};
 use openshard_client_render::composite::CompositeWorkQueue;
 use openshard_client_render::control::Control;
 use openshard_client_render::cutaway::Cutaway;
@@ -48,7 +49,44 @@ pub(crate) struct LodSweep {
     reported_lod: bool,
     dumped: bool,
     pub(crate) atlas_soak: bool,
+    pub(crate) stationary_soak: bool,
+    /// Unlike the deterministic offline sweeps, this keeps applying the
+    /// shard's real world, movement and animation traffic and periodically
+    /// compares the submitted frame with a direct LOD0 rendering.
+    pub(crate) live_oracle: bool,
+    /// A diagnostic-only A/B switch. It still observes all post-zoom server
+    /// traffic, but leaves the rendered world at the last accepted snapshot.
+    pub(crate) freeze_server: bool,
+    /// The diagnostic begins only after the window has stopped changing the
+    /// camera to fit its actual viewport. This makes "default zoom" a real
+    /// rendered state rather than the window's startup transient.
+    stationary_started: bool,
+    stationary_warmup_camera: Option<Camera>,
+    stationary_warmup_elapsed: Duration,
+    /// `ZoomSoak` must first render at the opening zoom. Otherwise it skips
+    /// the resident-atlas state that a user creates before zooming out.
+    pub(crate) stationary_zoomed: bool,
+    /// Exact camera value at the previous post-zoom frame. `ZoomSoak` must
+    /// not silently turn into a follow/pan test after its one injected zoom.
+    pub(crate) stationary_camera: Option<Camera>,
     pub(crate) next_atlas_audit: Duration,
+    pub(crate) next_live_oracle: Duration,
+    pub(crate) live_oracle_samples: u64,
+    pub(crate) next_server_report: Duration,
+    pub(crate) server_updates: ServerUpdateAudit,
+}
+
+/// Post-zoom server input observed by a stationary LOD run. This is deliberately
+/// separate from animation and camera clocks: it answers whether an apparently
+/// idle scene was actually rebuilt from newly arrived authoritative state.
+#[derive(Debug, Default)]
+pub(crate) struct ServerUpdateAudit {
+    worlds: u64,
+    mutations: BTreeMap<&'static str, u64>,
+    movements: BTreeMap<&'static str, u64>,
+    animations: u64,
+    new_animations: u64,
+    dropped: u64,
 }
 
 pub(crate) struct App {
@@ -230,23 +268,54 @@ pub(crate) struct OccluderCache {
 }
 
 impl App {
+    /// Arm one ordinary rendered frame for a GPU dump. Both the visible HUD
+    /// button and F12 call this so neither path can drift in naming or capture
+    /// timing.
+    pub(crate) fn request_frame_dump(&mut self) {
+        if self.graphics.frame_dump.is_some() {
+            return;
+        }
+        let into =
+            crate::presentation::frame_dump_root().join(format!("frame-{}", self.graphics.frame_dumps));
+        self.graphics.frame_dump = Some(into.clone());
+        self.graphics.frame_dumps += 1;
+        tracing::info!(into = %into.display(), "armed GPU frame dump");
+    }
+
     /// Begin an injected presentation scenario after the window and GPU exist.
     pub(crate) fn begin_opening_scenario(&mut self) {
         match self.scenario.take() {
-            Some(scenario @ (Scenario::LodSweep | Scenario::AtlasSoak)) => {
+            Some(
+                scenario @ (Scenario::LodSweep
+                | Scenario::AtlasSoak
+                | Scenario::ZoomSoak
+                | Scenario::ZoomSoakFreezeServer
+                | Scenario::LiveOracle),
+            ) => {
                 let atlas_soak = scenario == Scenario::AtlasSoak;
+                let stationary_soak = matches!(
+                    scenario,
+                    Scenario::ZoomSoak | Scenario::ZoomSoakFreezeServer | Scenario::LiveOracle
+                );
+                let freeze_server = scenario == Scenario::ZoomSoakFreezeServer;
+                let live_oracle = scenario == Scenario::LiveOracle;
                 let mut zoom_steps = 0;
                 // Both paths reach the widest zoom-out rung, 1/2×. The LOD
                 // path crosses it quickly; the atlas path then pans slowly for
                 // a long time, which is where a cyclic upload would eventually
                 // overwrite a still-visible region.
-                while zoom_steps < 3 && self.zoom(false) {
-                    zoom_steps += 1;
+                if !stationary_soak {
+                    while zoom_steps < 3 && self.zoom(false) {
+                        zoom_steps += 1;
+                    }
                 }
                 tracing::info!(
                     zoom = %self.control.camera().zoom(),
                     zoom_steps,
                     atlas_soak,
+                    stationary_soak,
+                    live_oracle,
+                    freeze_server,
                     "starting injected LOD/atlas sweep"
                 );
                 self.lod_sweep = Some(LodSweep {
@@ -254,7 +323,19 @@ impl App {
                     reported_lod: false,
                     dumped: false,
                     atlas_soak,
+                    stationary_soak,
+                    live_oracle,
+                    freeze_server,
+                    stationary_started: false,
+                    stationary_warmup_camera: None,
+                    stationary_warmup_elapsed: Duration::ZERO,
+                    stationary_zoomed: !stationary_soak,
+                    stationary_camera: None,
                     next_atlas_audit: Duration::ZERO,
+                    next_live_oracle: Duration::ZERO,
+                    live_oracle_samples: 0,
+                    next_server_report: Duration::ZERO,
+                    server_updates: ServerUpdateAudit::default(),
                 });
             }
             None => {}
@@ -266,13 +347,66 @@ impl App {
     /// sweep crosses thousands of viewport pixels and repeatedly renews block
     /// ownership at its edges before it takes its diagnostic dump.
     pub(crate) fn advance_lod_sweep(&mut self, elapsed: Duration) {
+        let warmup_is_settled = {
+            let Some(sweep) = self.lod_sweep.as_mut() else {
+                return;
+            };
+            if !sweep.stationary_soak || sweep.stationary_zoomed {
+                true
+            } else if !sweep.stationary_started {
+                // A diagnostic that promises not to move must not inherit the
+                // opening rig's glide towards its first camera target.
+                self.control.unlock();
+                sweep.stationary_started = true;
+                sweep.stationary_warmup_camera = None;
+                sweep.stationary_warmup_elapsed = Duration::ZERO;
+                false
+            } else {
+                let camera = *self.control.camera();
+                if sweep.stationary_warmup_camera == Some(camera) {
+                    sweep.stationary_warmup_elapsed += elapsed;
+                } else {
+                    sweep.stationary_warmup_camera = Some(camera);
+                    sweep.stationary_warmup_elapsed = Duration::ZERO;
+                }
+                sweep.stationary_warmup_elapsed >= Duration::from_secs(1)
+            }
+        };
+        if !warmup_is_settled {
+            return;
+        }
+        let delayed_zoom_due = {
+            let Some(sweep) = self.lod_sweep.as_mut() else {
+                return;
+            };
+            sweep.elapsed += elapsed;
+            sweep.stationary_soak && !sweep.stationary_zoomed && sweep.elapsed >= Duration::from_secs(3)
+        };
+        if delayed_zoom_due {
+            let mut zoom_steps = 0;
+            while zoom_steps < 3 && self.zoom(false) {
+                zoom_steps += 1;
+            }
+            let sweep = self
+                .lod_sweep
+                .as_mut()
+                .expect("the active diagnostic owns its delayed zoom state");
+            sweep.stationary_zoomed = true;
+            tracing::info!(
+                zoom = %self.control.camera().zoom(),
+                zoom_steps,
+                "injected stationary LOD soak completed default-to-max zoom"
+            );
+        }
         let Some(sweep) = self.lod_sweep.as_mut() else {
             return;
         };
-        sweep.elapsed += elapsed;
         let speed = if sweep.atlas_soak { 120.0 } else { 2_400.0 };
         let pixels = (elapsed.as_secs_f64() * speed).round().max(1.0) as i32;
-        if sweep.atlas_soak {
+        if sweep.stationary_soak {
+            // Intentionally no pan. This isolates late queue/atlas/cache
+            // mutation after the default-to-max-zoom transition.
+        } else if sweep.atlas_soak {
             // The reported residual pattern appears when travelling sideways:
             // that crosses the block lattice's diagonal screen projections
             // rather than only moving along one of them.
@@ -280,7 +414,7 @@ impl App {
         } else {
             self.control.pan(0, -pixels);
         }
-        let settle_after = if sweep.atlas_soak {
+        let settle_after = if sweep.atlas_soak || sweep.stationary_soak {
             Duration::from_secs(30)
         } else {
             Duration::from_secs(2)
@@ -289,11 +423,76 @@ impl App {
             sweep.reported_lod = true;
             tracing::info!(selected = ?self.composite_lod.current(), "injected LOD sweep reached steady state");
         }
-        if !sweep.atlas_soak && !sweep.dumped && sweep.elapsed >= settle_after {
+        if !sweep.atlas_soak && !sweep.stationary_soak && !sweep.dumped && sweep.elapsed >= settle_after {
             sweep.dumped = true;
             self.graphics.frame_dump = Some(crate::presentation::frame_dump_root().join("lod-sweep"));
             tracing::info!("injected LOD sweep requested frame dump");
         }
+    }
+
+    /// Count post-zoom authoritative traffic before the event loop folds it
+    /// into the render-facing world. The freeze variant returns true for server
+    /// state updates, turning the same scenario into a controlled A/B test.
+    pub(crate) fn observe_stationary_soak_update(&mut self, update: &crate::link::Update) -> bool {
+        let Some(sweep) = self
+            .lod_sweep
+            .as_mut()
+            .filter(|sweep| sweep.stationary_soak && sweep.stationary_zoomed)
+        else {
+            return false;
+        };
+        let is_server_update = match update {
+            crate::link::Update::World { .. } => {
+                sweep.server_updates.worlds += 1;
+                true
+            }
+            crate::link::Update::Mutation { packet } => {
+                *sweep
+                    .server_updates
+                    .mutations
+                    .entry(crate::movement_trace::packet_kind(packet))
+                    .or_default() += 1;
+                true
+            }
+            crate::link::Update::Movement { packet, .. } => {
+                *sweep
+                    .server_updates
+                    .movements
+                    .entry(crate::movement_trace::packet_kind(packet))
+                    .or_default() += 1;
+                true
+            }
+            crate::link::Update::Animation(_) => {
+                sweep.server_updates.animations += 1;
+                true
+            }
+            crate::link::Update::NewAnimation(_) => {
+                sweep.server_updates.new_animations += 1;
+                true
+            }
+            crate::link::Update::Prediction { .. } | crate::link::Update::Lost(_) => false,
+        };
+        let freeze = sweep.freeze_server && is_server_update;
+        if freeze {
+            sweep.server_updates.dropped += 1;
+        }
+        freeze
+    }
+
+    /// Log server traffic independently of the field oracle. It runs from the
+    /// frame clock, so an absence of a user event is visible as an empty report.
+    pub(crate) fn report_stationary_soak_server_updates(&mut self) {
+        let Some(sweep) = self.lod_sweep.as_mut().filter(|sweep| {
+            sweep.stationary_soak && sweep.stationary_zoomed && sweep.elapsed >= sweep.next_server_report
+        }) else {
+            return;
+        };
+        sweep.next_server_report = sweep.elapsed + Duration::from_secs(2);
+        tracing::info!(
+            frozen = sweep.freeze_server,
+            updates = ?sweep.server_updates,
+            "stationary LOD soak post-zoom server-update audit"
+        );
     }
 
     /// Real pixels per gump pixel, which is egui's own scale.

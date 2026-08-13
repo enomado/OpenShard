@@ -52,6 +52,13 @@ impl Hue {
     /// graphic, so it reads as feedback rather than as somebody speaking.
     pub const SYSTEM: Self = Self::MUTED_GREY;
 
+    /// The hue ClassicUO uses for its "Your skill in … has increased" notice.
+    ///
+    /// This is deliberately distinct from [`SYSTEM`](Self::SYSTEM): the skill
+    /// notice is feedback about a character's progress, not ordinary shard
+    /// speech. ClassicUO writes `0x0058` in its skill-update handler.
+    pub const SKILL_CHANGED: Self = Self(0x0058);
+
     /// The hue an NPC's own voice is spoken in — a banker's answer, a vendor's
     /// line, a guard's warning, an escortable's thanks. Over the NPC's head and
     /// heard by everyone nearby, which is what separates it from

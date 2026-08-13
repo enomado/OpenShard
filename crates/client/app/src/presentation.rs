@@ -16,22 +16,21 @@
 //! the atlases, the frame counters — state about how a picture is drawn, not
 //! about what is true.
 
+use std::collections::BTreeSet;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
 
-use openshard_client_render::animate::StaticAnimations;
 use openshard_client_render::atlas::{AnimAtlas, AnimationKey, StaticAtlasPage};
 use openshard_client_render::blit::{self, Blit, ViewportRect};
 use openshard_client_render::camera::{Camera, TileBounds, ViewPixel};
 use openshard_client_render::composite::{
     CaptureSource, CompositeProducerJob, CompositeTexture, CompositeWork, CompositeWorkQueue,
-    ImmutableRevision, MapBlockBounds,
+    ImmutableRevision, MapBlock, MapBlockBounds,
 };
 use openshard_client_render::cutaway::Cutaway;
 use openshard_client_render::debug::View;
-use openshard_client_render::frame::{self, Draw, Impostor};
 use openshard_client_render::gbuffer::Gbuffer;
 use openshard_client_render::gump::GumpPixel;
 use openshard_client_render::items::{self};
@@ -39,7 +38,7 @@ use openshard_client_render::lod::BlockLod;
 use openshard_client_render::mobiles::{self, Mobile};
 use openshard_client_render::outline::{self};
 use openshard_client_render::renderer::{self, Target};
-use openshard_client_render::sprite::{SpriteQuad, split_corners};
+use openshard_client_render::sprite::SpriteQuad;
 use openshard_client_render::text::{self, Label};
 use openshard_client_render::{ground, light, paperdoll, statics};
 use openshard_protocol::speech::Font;
@@ -54,73 +53,37 @@ use crate::frame_geometry::{FrameFacts, assemble_geometry};
 use crate::graphics::HighlightTarget;
 use crate::picking::SelectedIdentity;
 use crate::profile;
-use crate::render_passes::{draw_gump_windows, encode_world_passes};
-use crate::window::{prepare_composite_job, ready_atlases};
+use crate::render_passes::{WorldPassAudit, draw_gump_windows, encode_world_passes};
+use crate::window::{flat_block_elevation, prepare_composite_job, ready_atlases};
 use crate::windows::{Drawn, WindowSubject};
 use crate::world::{DAMAGE_NUMBER_HOLD, DAMAGE_NUMBER_RISE, PlayerMotion, advance_presentation_to};
 
-/// Build one complete immutable map block without touching the camera frame.
+/// Build the ground-owned portion of one immutable map block without touching
+/// the camera frame.
 ///
 /// The producer camera, targets and source rectangle all come from `work`.
-/// Map land/statics (including mesh faces) are its only draw calls; server
-/// items, mobiles, cutaway rows and every UI plane remain outside this command
-/// buffer.  The cache entry is accepted only after the colour, G-buffer and
-/// depth copier passes have all been recorded from those private attachments.
-#[allow(clippy::too_many_arguments)]
+/// Only flat land is safe to cache in a fixed 8×8 footprint: a roof can rise
+/// farther than its block's bounded capture margin and must keep its one live
+/// map-static owner. Server items, mobiles, cutaway rows and every UI plane
+/// likewise remain outside this command buffer. The cache entry is accepted
+/// only after the colour, G-buffer and depth copier passes have all been
+/// recorded from those private attachments.
 fn produce_composite_block(
     resources: &crate::resources::Resources,
-    animations: &StaticAnimations,
-    tuning: &light::Tuning,
-    sky: Option<light::Ambient>,
-    fringe: openshard_client_render::impostor::Fringe,
     window: &mut crate::window::Screen,
     composite_work: &mut CompositeWorkQueue,
     work: CompositeWork,
 ) {
-    let job = CompositeProducerJob::new(work.key);
+    let Some(ground_z) = flat_block_elevation(&resources.map, work.key.block) else {
+        // The same immutable eligibility gate should already have kept this
+        // work pending, but never let a stale prepared job publish a partial
+        // source if the map contract changes underneath it.
+        window.composites.reject_block(work.key.block);
+        composite_work.finished(work.key);
+        return;
+    };
+    let job = CompositeProducerJob::at_ground_z(work.key, ground_z);
     let camera = job.camera();
-    let mut fades = openshard_client_render::cutaway::Fades::default();
-    let (assembled, _) = frame::assemble_split_profiled(frame::Inputs {
-        map: &resources.map,
-        items: &[],
-        camera: &camera,
-        tiledata: &resources.tiledata,
-        animations,
-        cutaway: &Cutaway::OPEN,
-        land: &window.atlases.land,
-        texmaps: &window.atlases.texmaps,
-        statics: &window.atlases.statics,
-        sky,
-        sun: None,
-        carried: None,
-        tuning,
-        flame_time: 0.0,
-        bake: None,
-        highlight: None,
-        impostor: match sky {
-            Some(_) => Impostor::Met,
-            None => Impostor::Billboards,
-        },
-        draw: Draw {
-            // `assemble_split_profiled` supplies the padded source's lighting
-            // and occlusion only. The owner-only geometry below is collected
-            // separately, so neighbouring map rows never enter this producer.
-            land: false,
-            statics: false,
-            items: false,
-            mobiles: false,
-        },
-        view: View::Lit,
-        dead: false,
-        player_rect: None,
-        player_mask: None,
-        fades: &mut fades,
-    });
-    // The padded camera supplies the occlusion context, not picture ownership.
-    // A composite is the sole producer of its own 8×8 tiles from the first
-    // geometry list onward; neighbouring rows must not be rendered here and
-    // later erased texel-by-texel by the capture shader.  The latter remains a
-    // defensive assertion on the attachment, while this is the actual owner.
     let (first_x, first_y) = job.key().block.first_tile();
     let owner = TileBounds {
         min_x: i32::from(first_x),
@@ -128,39 +91,22 @@ fn produce_composite_block(
         min_y: i32::from(first_y),
         max_y: i32::from(first_y) + openshard_uofiles::map::BLOCK_SIZE as i32 - 1,
     };
-    let ground = ground::collect_in(
+    let ground: Vec<_> = ground::collect_in(
         &resources.map,
         &camera,
         owner,
         &window.atlases.land,
         &window.atlases.texmaps,
         &Cutaway::OPEN,
-    );
-    let no_grid = openshard_client_render::occlusion::Occlusion::EMPTY;
-    let occlusion = match sky {
-        Some(_) => &assembled.lighting.occlusion,
-        None => &no_grid,
-    };
-    let map_statics = statics::collect_in(
-        &resources.map,
-        &camera,
-        owner,
-        &resources.tiledata,
-        animations,
-        &window.atlases.statics,
-        &Cutaway::OPEN,
-        occlusion,
-        None,
-        None,
-    );
-    let openshard_client_render::statics::StaticGeometry {
-        quads,
-        mesh_vertices,
-        mesh_rows,
-        boxes,
-        ..
-    } = map_statics;
-    let statics = split_corners(quads);
+    )
+    .into_iter()
+    // A sloped land quad's visible raster depends on the adjoining height
+    // field. Keep it in the current LOD0 ground layer, where every neighbour
+    // participates in the same depth ordering, rather than baking one 8x8
+    // owner in isolation. Flat map tiles and map statics remain immutable
+    // producer input.
+    .filter(|quad| quad.is_flat())
+    .collect();
 
     let mut encoder = window
         .device
@@ -190,26 +136,8 @@ fn produce_composite_block(
         projection: camera.projection(),
     };
     window
-        .renderer
+        .composite_ground
         .render(&window.device, &window.queue, &mut encoder, target, &ground);
-    window.statics.set_fringe(fringe);
-    window.statics.render(
-        &window.device,
-        &window.queue,
-        &mut encoder,
-        target,
-        &statics.rows,
-        &boxes,
-        Some(statics.drawn),
-    );
-    window.mesh_pass.render(
-        &window.device,
-        &window.queue,
-        &mut encoder,
-        target,
-        &mesh_vertices,
-        &mesh_rows,
-    );
     let (eye_x, eye_y) = camera.eye_tile();
     let source = CaptureSource {
         color: &window.composite_producer.world,
@@ -233,6 +161,7 @@ fn produce_composite_block(
         &mut window.composites,
         work.key,
         source,
+        ground_z,
     );
     profile::end(window.gpu.as_ref(), &mut encoder, timed);
     window.queue.submit([encoder.finish()]);
@@ -386,7 +315,7 @@ fn audit_captured_composite_ids(
             }
         }
     }
-    let job = CompositeProducerJob::new(captured.key());
+    let job = CompositeProducerJob::at_ground_z(captured.key(), captured.ground_z());
     let divisor = captured.key().tier.source_pixels_per_texel();
     let mut missing_owner_centres = Vec::new();
     let (first_x, first_y) = captured.key().block.first_tile();
@@ -395,6 +324,13 @@ fn audit_captured_composite_ids(
             let Some(land) = map.land(x, y) else {
                 continue;
             };
+            let corners = ground::corner_heights(map, x, y, land.z);
+            // Slopes deliberately remain in the live LOD0 layer. Their absent
+            // producer texel is the expected result, not a cache coverage
+            // hole; the full-scene oracle checks their current-frame result.
+            if !corners.iter().all(|height| *height == corners[0]) {
+                continue;
+            }
             let at = job
                 .camera()
                 .to_screen(openshard_protocol::world::Point::new(x, y, land.z));
@@ -911,12 +847,381 @@ fn audit_visible_ground_centres(window: &crate::window::Screen, map: &Map, camer
     }
 }
 
-/// LOD2 stays held back while the direct field scenario validates LOD1.
-///
-/// The first tier uses the same canonical source and deferred planes as LOD2,
-/// but preserves twice as many cache texels.  Its producer cache is audited
-/// directly before restore; only after this field gate is clean can the next
-/// minified tier take over.
+/// Render the immutable map portion once more, entirely at LOD0, and compare
+/// it with the cached pixels already present in the real frame.  This is the
+/// field oracle for a valid-but-wrong cached pixel: coverage checks cannot see
+/// a sprite or depth winner borrowed from another block.
+fn audit_lod_map_equivalence(
+    window: &mut crate::window::Screen,
+    camera: Camera,
+    geometry: &crate::frame_geometry::FrameGeometry,
+    pass: WorldPassAudit,
+) -> String {
+    let width = window.gbuffer.ids().width();
+    let height = window.gbuffer.ids().height();
+    let expected_world = blit::world_texture(&window.device, width, height);
+    let expected_world_view = expected_world.create_view(&wgpu::TextureViewDescriptor::default());
+    let expected_depth = openshard_client_render::renderer::depth_texture(&window.device, width, height);
+    let expected_depth_view = expected_depth.create_view(&wgpu::TextureViewDescriptor::default());
+    let expected_gbuffer = Gbuffer::new(&window.device, width, height);
+    let expected_views = expected_gbuffer.views();
+    let target = Target {
+        view: &expected_world_view,
+        depth: &expected_depth_view,
+        gbuffer: &expected_views,
+        width,
+        height,
+        projection: camera.projection(),
+    };
+    let mut encoder = window
+        .device
+        .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("LOD map equivalence oracle"),
+        });
+    // This is deliberately the complete immutable geometry, not
+    // `detail_*`: the reference says what the same camera would draw with no
+    // ready composite at all.
+    // This pass is recorded after the real frame has been submitted.  It must
+    // not reuse that frame's mutable instance buffer: a diagnostic must only
+    // observe the scene, never enqueue a later upload into the stream the
+    // already-submitted frame is reading. `composite_ground` has the same
+    // shared atlas textures but an independent uniform/instance stream.
+    window.composite_ground.render(
+        &window.device,
+        &window.queue,
+        &mut encoder,
+        target,
+        &geometry.quads,
+    );
+    window.statics.render(
+        &window.device,
+        &window.queue,
+        &mut encoder,
+        target,
+        &geometry.map_static_instances.rows,
+        &geometry.mesh.boxes,
+        Some(geometry.map_static_instances.drawn),
+    );
+    window.mesh_pass.render(
+        &window.device,
+        &window.queue,
+        &mut encoder,
+        target,
+        &geometry.mesh.mesh_vertices,
+        &geometry.mesh.mesh_rows,
+    );
+    window.queue.submit([encoder.finish()]);
+
+    // Raw G-buffer equality proves capture/restore. Run the actual deferred
+    // lighting route as well: cached IDs intentionally take a different
+    // branch in `blit.wesl`, so this catches a valid raw pixel which becomes a
+    // wrong visible pixel only after lighting and selection resolve it.
+    let lit_actual = blit::world_texture(&window.device, width, height);
+    let lit_actual_view = lit_actual.create_view(&wgpu::TextureViewDescriptor::default());
+    let lit_expected = blit::world_texture(&window.device, width, height);
+    let lit_expected_view = lit_expected.create_view(&wgpu::TextureViewDescriptor::default());
+    let actual_views = window.gbuffer.views();
+    let mut lit = Blit::new(&window.device, blit::WORLD_FORMAT);
+    let raw_rect = ViewportRect {
+        x: 0,
+        y: 0,
+        width,
+        height,
+    };
+    let actual_world_view = window.world.create_view(&wgpu::TextureViewDescriptor::default());
+    let frame = |target, world, gbuffer| blit::Frame {
+        target,
+        world,
+        gbuffer,
+        face_instances: window.statics.instances_buffer(),
+        item_instances: window.items_pass.instances_buffer(),
+        mobile_instances: window.mobile_pass.instances_buffer(),
+        mesh_instances: window.mesh_pass.rows_buffer(),
+        ground_instances: window.renderer.instances_buffer(),
+        zoom: camera.zoom(),
+        rect: raw_rect,
+    };
+    let mut encoder = window
+        .device
+        .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("LOD map equivalence lighting oracle"),
+        });
+    lit.render(
+        &window.device,
+        &window.queue,
+        &mut encoder,
+        frame(&lit_actual_view, &actual_world_view, &actual_views),
+        &geometry.lighting,
+    );
+    lit.render(
+        &window.device,
+        &window.queue,
+        &mut encoder,
+        frame(&lit_expected_view, &expected_world_view, &expected_views),
+        &geometry.lighting,
+    );
+    window.queue.submit([encoder.finish()]);
+
+    let Some(actual_color) = audit_texture_bytes(
+        &window.device,
+        &window.queue,
+        &window.world,
+        4,
+        "LOD actual world equivalence readback",
+    ) else {
+        tracing::warn!("could not read actual world for LOD equivalence oracle");
+        return "status=unavailable\nreason=actual-world-readback\n".to_owned();
+    };
+    let Some(expected_color) = audit_texture_bytes(
+        &window.device,
+        &window.queue,
+        &expected_world,
+        4,
+        "LOD expected world equivalence readback",
+    ) else {
+        tracing::warn!("could not read expected world for LOD equivalence oracle");
+        return "status=unavailable\nreason=expected-world-readback\n".to_owned();
+    };
+    let Some(actual_ids) = audit_texture_bytes(
+        &window.device,
+        &window.queue,
+        window.gbuffer.ids(),
+        4,
+        "LOD actual IDs equivalence readback",
+    ) else {
+        tracing::warn!("could not read actual IDs for LOD equivalence oracle");
+        return "status=unavailable\nreason=actual-ids-readback\n".to_owned();
+    };
+    let Some(expected_ids) = audit_texture_bytes(
+        &window.device,
+        &window.queue,
+        expected_gbuffer.ids(),
+        4,
+        "LOD expected IDs equivalence readback",
+    ) else {
+        tracing::warn!("could not read expected IDs for LOD equivalence oracle");
+        return "status=unavailable\nreason=expected-ids-readback\n".to_owned();
+    };
+    let Some(actual_position) = audit_texture_bytes(
+        &window.device,
+        &window.queue,
+        window.gbuffer.position(),
+        16,
+        "LOD actual position equivalence readback",
+    ) else {
+        tracing::warn!("could not read actual position for LOD equivalence oracle");
+        return "status=unavailable\nreason=actual-position-readback\n".to_owned();
+    };
+    let Some(expected_position) = audit_texture_bytes(
+        &window.device,
+        &window.queue,
+        expected_gbuffer.position(),
+        16,
+        "LOD expected position equivalence readback",
+    ) else {
+        tracing::warn!("could not read expected position for LOD equivalence oracle");
+        return "status=unavailable\nreason=expected-position-readback\n".to_owned();
+    };
+    let Some(lit_actual) = audit_texture_bytes(
+        &window.device,
+        &window.queue,
+        &lit_actual,
+        4,
+        "LOD actual lit equivalence readback",
+    ) else {
+        tracing::warn!("could not read actual lit world for LOD equivalence oracle");
+        return "status=unavailable\nreason=actual-lit-readback\n".to_owned();
+    };
+    let Some(lit_expected) = audit_texture_bytes(
+        &window.device,
+        &window.queue,
+        &lit_expected,
+        4,
+        "LOD expected lit equivalence readback",
+    ) else {
+        tracing::warn!("could not read expected lit world for LOD equivalence oracle");
+        return "status=unavailable\nreason=expected-lit-readback\n".to_owned();
+    };
+
+    let (
+        mut compared,
+        mut color_mismatches,
+        mut lit_mismatches,
+        mut identity_mismatches,
+        mut position_mismatches,
+    ) = (0_u64, 0_u64, 0_u64, 0_u64, 0_u64);
+    let mut color_examples = Vec::new();
+    let mut lit_examples = Vec::new();
+    let mut position_examples = Vec::new();
+    let mut rejected_blocks = BTreeSet::new();
+    for pixel in 0..(width * height) as usize {
+        let byte = pixel * 4;
+        let actual_id = u32::from_le_bytes(actual_ids[byte..byte + 4].try_into().expect("actual ID"));
+        let expected_id = u32::from_le_bytes(expected_ids[byte..byte + 4].try_into().expect("expected ID"));
+        let expected_map = matches!(
+            openshard_client_render::gbuffer::ids_kind(expected_id),
+            Some(openshard_client_render::place::Kind::Land | openshard_client_render::place::Kind::Static)
+        );
+        // The direct reference deliberately contains immutable map geometry
+        // only. A live server item or mobile may legitimately cover that map
+        // pixel in the real frame, but an empty actual pixel cannot: it is the
+        // exact black ground hole a composite seam would otherwise evade by
+        // simply dropping its `IDS_COMPOSITE_MAP` bit.
+        let actual_is_dynamic = openshard_client_render::gbuffer::ids_id(actual_id)
+            & openshard_client_render::gbuffer::IDS_DYNAMIC_ITEM
+            != 0
+            || openshard_client_render::gbuffer::ids_kind(actual_id)
+                == Some(openshard_client_render::place::Kind::Mobile);
+        if !expected_map || actual_is_dynamic {
+            continue;
+        }
+        let expected_source_tile = match openshard_client_render::gbuffer::ids_kind(expected_id) {
+            Some(openshard_client_render::place::Kind::Land) => geometry
+                .quads
+                .get(openshard_client_render::gbuffer::ids_id(expected_id) as usize)
+                .map(|quad| (quad.place.x, quad.place.y)),
+            _ => None,
+        };
+        let expected_source_is_flat = match openshard_client_render::gbuffer::ids_kind(expected_id) {
+            Some(openshard_client_render::place::Kind::Land) => geometry
+                .quads
+                .get(openshard_client_render::gbuffer::ids_id(expected_id) as usize)
+                .map(|quad| quad.is_flat()),
+            _ => None,
+        };
+        let expected_source_block = expected_source_tile.map(|(x, y)| MapBlock::containing_tile(x, y));
+        // Do not make a person wait for a second report to get their scene
+        // back. A direct-map land pixel replaced by `Nothing` is a definite
+        // cache coverage failure, not a benign ordering difference. Quarantine
+        // just that source block, so the next frame returns to the known-good
+        // LOD0 ground path while unaffected blocks keep their cache benefit.
+        if openshard_client_render::gbuffer::ids_kind(actual_id)
+            == Some(openshard_client_render::place::Kind::Nothing)
+        {
+            if let Some(block) = expected_source_block {
+                rejected_blocks.insert(block);
+            }
+        }
+        compared += 1;
+        let same_identity = openshard_client_render::gbuffer::ids_kind(actual_id)
+            == openshard_client_render::gbuffer::ids_kind(expected_id)
+            && openshard_client_render::gbuffer::ids_stance(actual_id)
+                == openshard_client_render::gbuffer::ids_stance(expected_id);
+        let same_color = actual_color[byte..byte + 4] == expected_color[byte..byte + 4];
+        let same_lit = lit_actual[byte..byte + 4] == lit_expected[byte..byte + 4];
+        let position_byte = pixel * 16;
+        let read_point = |bytes: &[u8]| {
+            [0, 4, 8, 12].map(|offset| {
+                f32::from_le_bytes(
+                    bytes[position_byte + offset..position_byte + offset + 4]
+                        .try_into()
+                        .expect("position component"),
+                )
+            })
+        };
+        let actual_point = read_point(&actual_position);
+        let expected_point = read_point(&expected_position);
+        // The independent producer and camera frame use equivalent triangle
+        // interpolation in a different draw arrangement. A few ULPs are not
+        // a changed world point; report only a material coordinate change.
+        let same_position = actual_point
+            .iter()
+            .zip(expected_point)
+            .all(|(actual, expected)| (actual - expected).abs() <= 1e-4);
+        identity_mismatches += u64::from(!same_identity);
+        color_mismatches += u64::from(!same_color);
+        lit_mismatches += u64::from(!same_lit);
+        position_mismatches += u64::from(!same_position);
+        if !same_color && color_examples.len() < 12 {
+            color_examples.push((
+                (pixel as u32 % width, pixel as u32 / width),
+                [
+                    actual_color[byte],
+                    actual_color[byte + 1],
+                    actual_color[byte + 2],
+                    actual_color[byte + 3],
+                ],
+                [
+                    expected_color[byte],
+                    expected_color[byte + 1],
+                    expected_color[byte + 2],
+                    expected_color[byte + 3],
+                ],
+                actual_id,
+                expected_id,
+                actual_point,
+                expected_point,
+                expected_source_tile,
+                expected_source_is_flat,
+                expected_source_block,
+            ));
+        }
+        if !same_lit && lit_examples.len() < 12 {
+            lit_examples.push((
+                (pixel as u32 % width, pixel as u32 / width),
+                [
+                    lit_actual[byte],
+                    lit_actual[byte + 1],
+                    lit_actual[byte + 2],
+                    lit_actual[byte + 3],
+                ],
+                [
+                    lit_expected[byte],
+                    lit_expected[byte + 1],
+                    lit_expected[byte + 2],
+                    lit_expected[byte + 3],
+                ],
+                actual_id,
+                expected_id,
+            ));
+        }
+        if !same_position && position_examples.len() < 12 {
+            position_examples.push((
+                (pixel as u32 % width, pixel as u32 / width),
+                actual_point,
+                expected_point,
+                actual_id,
+                expected_id,
+            ));
+        }
+    }
+    let rejected: Vec<_> = rejected_blocks.iter().copied().collect();
+    for block in &rejected {
+        window.composites.reject_block(*block);
+    }
+    if !rejected.is_empty() {
+        tracing::error!(
+            ?rejected,
+            "LOD oracle quarantined cache blocks with missing ground coverage"
+        );
+    }
+    if color_mismatches == 0 && lit_mismatches == 0 && identity_mismatches == 0 && position_mismatches == 0 {
+        tracing::info!(compared, "LOD map equivalence oracle matches full LOD0 scene");
+        format!(
+            "status=match\nsize={width}x{height}\nworld_pass_requested_lod={:?}\nworld_pass_ready_blocks={}\nworld_pass_live_ground_quads={}\nworld_pass_full_ground_quads={}\ncompared={compared}\ncolor_mismatches=0\nlit_mismatches=0\nidentity_mismatches=0\nposition_mismatches=0\nrejected_blocks={rejected:#?}\n",
+            pass.requested_lod, pass.ready_blocks, pass.live_ground_quads, pass.full_ground_quads,
+        )
+    } else {
+        tracing::error!(
+            compared,
+            color_mismatches,
+            lit_mismatches,
+            identity_mismatches,
+            position_mismatches,
+            color_examples = ?color_examples,
+            lit_examples = ?lit_examples,
+            position_examples = ?position_examples,
+            "rendered immutable map differs from full LOD0 scene"
+        );
+        format!(
+            "status=mismatch\nsize={width}x{height}\nworld_pass_requested_lod={:?}\nworld_pass_ready_blocks={}\nworld_pass_live_ground_quads={}\nworld_pass_full_ground_quads={}\ncompared={compared}\ncolor_mismatches={color_mismatches}\nlit_mismatches={lit_mismatches}\nidentity_mismatches={identity_mismatches}\nposition_mismatches={position_mismatches}\nrejected_blocks={rejected:#?}\ncolor_examples={color_examples:#?}\nlit_examples={lit_examples:#?}\nposition_examples={position_examples:#?}\n",
+            pass.requested_lod, pass.ready_blocks, pass.live_ground_quads, pass.full_ground_quads,
+        )
+    }
+}
+
+/// LOD2 stays held back while the repaired LOD1 restore path is checked against
+/// live server/NPC traffic. LOD1 keeps every producer texel lossless.
 const fn visible_composite_lod(selected: BlockLod) -> BlockLod {
     match selected {
         BlockLod::Lod2 => BlockLod::Lod1,
@@ -1188,6 +1493,25 @@ impl App {
         // and is then walked across for the next 400ms, so every frame in
         // between has a different answer.
         self.follow_player(elapsed);
+        self.report_stationary_soak_server_updates();
+        if let Some(sweep) = self
+            .lod_sweep
+            .as_mut()
+            .filter(|sweep| sweep.stationary_soak && sweep.stationary_zoomed)
+        {
+            let camera = *self.control.camera();
+            if let Some(previous) = sweep.stationary_camera.replace(camera) {
+                if previous != camera {
+                    tracing::error!(
+                        previous = ?previous,
+                        current = ?camera,
+                        "stationary LOD soak camera changed after its injected zoom"
+                    );
+                }
+            } else {
+                tracing::info!(?camera, "stationary LOD soak camera locked after injected zoom");
+            }
+        }
         if let Some(trace) = self.movement_trace.as_mut() {
             trace.record("frame", &self.world, self.control.camera());
         }
@@ -1528,16 +1852,6 @@ impl App {
         // frame. Lighting itself is applied later from the restored G-buffer,
         // but a lit frame's map statics still need their real box intersection
         // instead of the daylight billboard fallback.
-        let producer_sky = match (self.graphics.night, self.graphics.sunlit) {
-            (true, _) => Some(light::NIGHT),
-            (false, true) => Some(light::SKYLIGHT),
-            (false, false) => self.graphics.show_solids.then_some(light::Ambient::DAY),
-        };
-        let producer_sky = self
-            .graphics
-            .sky_field
-            .then_some(producer_sky)
-            .unwrap_or_else(|| producer_sky.map(light::Ambient::flattened));
         // The Chat tab's own numbers, the same reason and the same place:
         // gathered before the window is borrowed below, since `App::chat_style`
         // also reads the whole of `self`.
@@ -1581,8 +1895,8 @@ impl App {
         ) {
             let composites = self.window.as_ref().map(|window| &window.composites);
             self.composite_work
-                .refresh(visible, map, selected_composite_lod, composite_revision, |key| {
-                    composites.is_some_and(|cache| cache.get(key).is_some())
+                .refresh(visible, map, composite_lod, composite_revision, |key| {
+                    composites.is_some_and(|cache| cache.is_rejected(key.block) || cache.get(key).is_some())
                 });
         }
         // The producer owns its own command buffer below. Keep this empty so
@@ -1613,12 +1927,32 @@ impl App {
         // slow-pan scenario whose purpose is to expose asynchronous churn.
         let atlas_audit_due = std::env::var_os("OPENSHARD_ATLAS_AUDIT").is_some()
             && self.lod_sweep.as_mut().is_some_and(|sweep| {
-                if !sweep.atlas_soak || sweep.elapsed < sweep.next_atlas_audit {
+                if (!sweep.atlas_soak && !sweep.stationary_soak) || sweep.elapsed < sweep.next_atlas_audit {
                     return false;
                 }
                 sweep.next_atlas_audit = sweep.elapsed + Duration::from_secs(2);
                 true
             });
+        // This is intentionally a run against the connection the user opened,
+        // rather than a synthetic scene.  The zoom-soak state leaves every
+        // packet, NPC animation and server mutation enabled; the oracle takes
+        // a deliberately sparse (two-second) GPU snapshot so it can run for
+        // minutes without turning ordinary animation into a readback benchmark.
+        let live_oracle_sample = self.lod_sweep.as_mut().and_then(|sweep| {
+            if !sweep.live_oracle || !sweep.stationary_zoomed || sweep.elapsed < sweep.next_live_oracle {
+                return None;
+            }
+            sweep.next_live_oracle = sweep.elapsed + Duration::from_secs(2);
+            let sample = sweep.live_oracle_samples;
+            sweep.live_oracle_samples += 1;
+            Some(sample)
+        });
+        // A person captured this exact frame because it already looked wrong.
+        // Give that one-shot dump the same independent atlas/screen/full-LOD0
+        // checks as the slow field scenario, without making ordinary play pay
+        // for a GPU readback or requiring an environment flag beforehand.
+        let manual_frame_dump = self.graphics.frame_dump.clone();
+        let manual_frame_diagnostic = manual_frame_dump.is_some();
         if window.composite_output_format != blit::WORLD_FORMAT {
             window.composites.clear();
             self.composite_work.clear();
@@ -1633,28 +1967,15 @@ impl App {
         // camera-frame capture path.
         if cutaway == Cutaway::OPEN {
             for work in self.composite_work.preparation_candidates() {
-                let prepared = prepare_composite_job(
-                    &mut self.resources,
-                    window,
-                    &self.world.presentation.tile_animations,
-                    CompositeProducerJob::new(work.key),
-                );
+                let prepared =
+                    prepare_composite_job(&mut self.resources, window, CompositeProducerJob::new(work.key));
                 if prepared {
                     self.composite_work.mark_prepared(work.key);
                 }
             }
             let producer_jobs = self.composite_work.take_marked_prepared_for_frame();
             for work in producer_jobs {
-                produce_composite_block(
-                    &self.resources,
-                    &self.world.presentation.tile_animations,
-                    &tuning,
-                    producer_sky,
-                    self.graphics.fringe,
-                    window,
-                    &mut self.composite_work,
-                    work,
-                );
+                produce_composite_block(&self.resources, window, &mut self.composite_work, work);
             }
         }
         // Three time-varying halves of a mobile, filled in per frame rather
@@ -1943,7 +2264,7 @@ impl App {
         // written through the `&mut GraphicsSettings` its signature already
         // names, not through a `&mut self` that would let it touch anything
         // else too.
-        encode_world_passes(
+        let world_pass_audit = encode_world_passes(
             &mut self.graphics,
             &self.picking,
             window,
@@ -2142,11 +2463,49 @@ impl App {
             gpu.resolve(&mut encoder);
         }
         window.queue.submit([encoder.finish()]);
-        if atlas_audit_due {
+        if atlas_audit_due || manual_frame_diagnostic || live_oracle_sample.is_some() {
+            if manual_frame_diagnostic {
+                tracing::info!("running one-shot LOD diagnostics for manual GPU frame dump");
+            }
             audit_static_atlas_pages(window);
             audit_scene_instance_buffers(window);
-            if std::env::var_os("OPENSHARD_LOD_SCREEN_AUDIT").is_some() {
+            if manual_frame_diagnostic || std::env::var_os("OPENSHARD_LOD_SCREEN_AUDIT").is_some() {
                 audit_visible_ground_centres(window, &self.resources.map, camera);
+            }
+            let oracle_report = if manual_frame_diagnostic
+                || live_oracle_sample.is_some()
+                || std::env::var_os("OPENSHARD_LOD_FRAME_ORACLE").is_some()
+            {
+                Some(audit_lod_map_equivalence(
+                    window,
+                    camera,
+                    &geometry,
+                    world_pass_audit,
+                ))
+            } else {
+                None
+            };
+            // Logs from a running graphical client often have no durable sink.
+            // The clicked frame is the evidence, so keep the oracle verdict in
+            // its directory next to the exact planes it compared.
+            if let (Some(into), Some(report)) = (manual_frame_dump.as_deref(), oracle_report.as_deref()) {
+                if let Err(error) = std::fs::create_dir_all(into)
+                    .and_then(|()| std::fs::write(into.join("lod-oracle.txt"), report))
+                {
+                    tracing::warn!(into = %into.display(), %error, "writing LOD oracle report");
+                }
+            }
+            if let (Some(sample), Some(report)) = (live_oracle_sample, oracle_report.as_deref()) {
+                let into = frame_dump_root().join("live-oracle");
+                let result = std::fs::create_dir_all(&into)
+                    .and_then(|()| std::fs::write(into.join(format!("sample-{sample:05}.txt")), report));
+                if let Err(error) = result {
+                    tracing::warn!(into = %into.display(), %error, "writing live LOD oracle sample");
+                } else if report.starts_with("status=mismatch") {
+                    tracing::error!(sample, into = %into.display(), "live LOD oracle caught a server-driven frame mismatch");
+                } else {
+                    tracing::info!(sample, "live LOD oracle matches this server-driven frame");
+                }
             }
         }
         // And the frame closed, which is what makes those buffers eligible to be

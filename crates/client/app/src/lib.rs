@@ -227,6 +227,17 @@ pub enum Scenario {
     /// Hold the maximum zoom while comparing the resident static-atlas texture
     /// against its CPU source; used to catch delayed atlas overwrites.
     AtlasSoak,
+    /// Start at the default zoom, zoom directly out, then hold the camera still
+    /// while late producer/cache work is audited.
+    ZoomSoak,
+    /// The same stationary zoom transition, but deliberately drops subsequent
+    /// server world updates after counting them. This isolates packet-driven
+    /// scene mutation from a texture/cache mutation.
+    ZoomSoakFreezeServer,
+    /// Use the real shard connection: zoom out, keep all incoming state and
+    /// animation updates, and periodically compare the resulting frame with
+    /// a direct LOD0 render. This is deliberately not an offline simulation.
+    LiveOracle,
 }
 
 /// The facet to open. Felucca: `0x1B` carries the facet's *size* and not its

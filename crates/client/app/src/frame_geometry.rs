@@ -79,13 +79,15 @@ impl FrameGeometry {
             .copied()
             .filter(|quad| {
                 let block = MapBlock::containing_tile(quad.place.x, quad.place.y);
-                // The cached image owns an expanded rectangle, but its capture
-                // deliberately discards pixels whose G-buffer position belongs
-                // to a neighbouring block. Keep one detailed ground-tile rim
-                // beneath every cached block: the deferred restore overwrites
-                // it where its cache texel is valid, and it fills any ownership
-                // or downsampling seam instead of exposing a large block gap.
+                let sloped = !quad.is_flat();
+                // Keep one detailed ground-tile rim beneath every cached block:
+                // the deferred restore overwrites it where its cache texel is
+                // valid, and it fills any ownership or downsampling seam
+                // instead of exposing a large block gap.
+                // A slope stays detailed too: its raster depends on adjoining
+                // heights that are not safely owned by one 8x8 producer.
                 !cached.contains(&block)
+                    || sloped
                     || quad.place.x % openshard_uofiles::map::BLOCK_SIZE as u16 == 0
                     || quad.place.x % openshard_uofiles::map::BLOCK_SIZE as u16
                         == openshard_uofiles::map::BLOCK_SIZE as u16 - 1
@@ -96,16 +98,15 @@ impl FrameGeometry {
             .collect()
     }
 
-    /// Map-static rows excluding ready blocks.  Re-splitting after filtering is
-    /// required because a corner's twin is a current frame row id; cached map
-    /// pixels deliberately never retain one.
-    pub(crate) fn detail_map_statics(&self, cached: &BTreeSet<MapBlock>) -> InstanceRows {
-        let rows = self.map_static_instances.rows[..self.map_static_instances.drawn as usize]
-            .iter()
-            .copied()
-            .filter(|quad| !cached.contains(&MapBlock::containing_tile(quad.place.x, quad.place.y)))
-            .collect();
-        split_corners(rows)
+    /// Map statics stay live even when their ground block is cached. A roof's
+    /// sprite may rise beyond the fixed capture footprint of its 8×8 base
+    /// block; keeping all such rows in this one current-frame owner preserves
+    /// their depth order with every neighbouring cached ground tile.
+    pub(crate) fn detail_map_statics(&self, _cached: &BTreeSet<MapBlock>) -> InstanceRows {
+        InstanceRows {
+            rows: self.map_static_instances.rows.clone(),
+            drawn: self.map_static_instances.drawn,
+        }
     }
 }
 

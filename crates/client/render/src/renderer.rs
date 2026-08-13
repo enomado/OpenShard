@@ -256,6 +256,34 @@ impl GroundRenderer {
             TexmapAtlas::side(),
             texmaps.pixels(),
         );
+        Self::from_atlas_textures(device, queue, format, land_texture, texmap_texture)
+    }
+
+    /// Build an isolated drawing stream over this renderer's atlas textures.
+    ///
+    /// The texture handles intentionally stay shared: atlas growth must become
+    /// visible to the main frame and the offscreen map-block producer at the
+    /// same instant.  Uniform and instance buffers, however, are per stream.
+    /// A producer job can be submitted before a camera frame while the queue
+    /// writes its input, so sharing those mutable buffers would make one draw
+    /// consume the other draw's tile rows.
+    pub fn sibling(&self, device: &wgpu::Device, queue: &wgpu::Queue, format: wgpu::TextureFormat) -> Self {
+        Self::from_atlas_textures(
+            device,
+            queue,
+            format,
+            self.land_texture.clone(),
+            self.texmap_texture.clone(),
+        )
+    }
+
+    fn from_atlas_textures(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        format: wgpu::TextureFormat,
+        land_texture: wgpu::Texture,
+        texmap_texture: wgpu::Texture,
+    ) -> Self {
         let view = land_texture.create_view(&wgpu::TextureViewDescriptor::default());
         let texmap_view = texmap_texture.create_view(&wgpu::TextureViewDescriptor::default());
 
@@ -558,6 +586,35 @@ impl GroundRenderer {
         target: Target<'_>,
         quads: &[GroundQuad],
     ) {
+        self.render_with_load(device, queue, encoder, target, quads, true);
+    }
+
+    /// Draw ground into an already-cleared/deferred-restored world frame.
+    ///
+    /// This is the companion to [`Self::render`] for the composite path. A
+    /// cache owns only flat 8×8 ground; slopes and the boundary rim remain
+    /// live, so they must depth-test *after* cached ground without erasing its
+    /// colour or G-buffer planes first.
+    pub fn render_loaded(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        encoder: &mut wgpu::CommandEncoder,
+        target: Target<'_>,
+        quads: &[GroundQuad],
+    ) {
+        self.render_with_load(device, queue, encoder, target, quads, false);
+    }
+
+    fn render_with_load(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        encoder: &mut wgpu::CommandEncoder,
+        target: Target<'_>,
+        quads: &[GroundQuad],
+        clear: bool,
+    ) {
         let mut uniform_bytes = Vec::with_capacity(UNIFORM_BYTES as usize);
         let projection = target.projection;
         for value in [
@@ -598,7 +655,11 @@ impl GroundRenderer {
                     depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(CLEAR),
+                        load: if clear {
+                            wgpu::LoadOp::Clear(CLEAR)
+                        } else {
+                            wgpu::LoadOp::Load
+                        },
                         store: wgpu::StoreOp::Store,
                     },
                 }),
@@ -610,7 +671,11 @@ impl GroundRenderer {
                     depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(crate::gbuffer::IDS_CLEAR),
+                        load: if clear {
+                            wgpu::LoadOp::Clear(crate::gbuffer::IDS_CLEAR)
+                        } else {
+                            wgpu::LoadOp::Load
+                        },
                         store: wgpu::StoreOp::Store,
                     },
                 }),
@@ -619,7 +684,11 @@ impl GroundRenderer {
                     depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(crate::gbuffer::POSITION_CLEAR),
+                        load: if clear {
+                            wgpu::LoadOp::Clear(crate::gbuffer::POSITION_CLEAR)
+                        } else {
+                            wgpu::LoadOp::Load
+                        },
                         store: wgpu::StoreOp::Store,
                     },
                 }),
@@ -628,7 +697,11 @@ impl GroundRenderer {
                     depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(crate::gbuffer::NORMAL_CLEAR),
+                        load: if clear {
+                            wgpu::LoadOp::Clear(crate::gbuffer::NORMAL_CLEAR)
+                        } else {
+                            wgpu::LoadOp::Load
+                        },
                         store: wgpu::StoreOp::Store,
                     },
                 }),
@@ -639,7 +712,11 @@ impl GroundRenderer {
             depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                 view: target.depth,
                 depth_ops: Some(wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(1.0),
+                    load: if clear {
+                        wgpu::LoadOp::Clear(1.0)
+                    } else {
+                        wgpu::LoadOp::Load
+                    },
                     store: wgpu::StoreOp::Store,
                 }),
                 stencil_ops: None,

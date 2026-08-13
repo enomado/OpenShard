@@ -2,7 +2,7 @@
 // attachments. Dynamic items and mobiles are drawn afterwards against the
 // depth written here; they never enter this texture.
 
-import package::place_format::{ids_kind, KIND_NOTHING, IDS_COMPOSITE_MAP};
+import package::place_format::{ids_kind, KIND_NOTHING, IDS_COMPOSITE_MAP, IDS_ID_SHIFT};
 
 struct Viewport { size: vec2<f32>, depth_adjust: f32, _padding: f32 };
 @group(0) @binding(0) var<uniform> viewport: Viewport;
@@ -11,7 +11,6 @@ struct Viewport { size: vec2<f32>, depth_adjust: f32, _padding: f32 };
 @group(0) @binding(3) var position_of: texture_2d<f32>;
 @group(0) @binding(4) var normal_of: texture_2d<u32>;
 @group(0) @binding(5) var depth_of: texture_2d<f32>;
-@group(0) @binding(6) var nearest: sampler;
 
 struct VertexOut { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> };
 @vertex
@@ -36,8 +35,16 @@ fn fs_main(in: VertexOut) -> FragmentOut {
     let ids = textureLoad(ids_of, at, 0).x;
     if ids_kind(ids) == KIND_NOTHING { discard; }
     var out: FragmentOut;
-    out.color = textureSampleLevel(color_of, nearest, in.uv, 0.0);
-    out.ids = ids | IDS_COMPOSITE_MAP;
+    // Every plane must come from one integer texel. Sampling `color_of` with
+    // normalized UVs — even with a nearest sampler — has different edge/tie
+    // rules from the integer G-buffer loads below, and can borrow a colour
+    // from an adjacent texel while retaining this texel's IDs and depth.
+    out.color = textureLoad(color_of, at, 0);
+    // The route bits live in the *id field*, not directly in the packed
+    // G-buffer word. `ids_id` shifts by `IDS_ID_SHIFT` before `blit.wesl`
+    // checks this marker. OR-ing the unshifted bit made a producer-local row
+    // look like a current-frame ground-row index after restore.
+    out.ids = ids | (IDS_COMPOSITE_MAP << IDS_ID_SHIFT);
     out.position = textureLoad(position_of, at, 0);
     out.normal = textureLoad(normal_of, at, 0).x;
     out.depth = clamp(textureLoad(depth_of, at, 0).x + viewport.depth_adjust, 0.0, 1.0);

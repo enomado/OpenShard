@@ -17,7 +17,6 @@ use winit::window::WindowId;
 
 use crate::app::App;
 use crate::picking::SelectedIdentity;
-use crate::presentation::frame_dump_root;
 use crate::world::{cluttered, cluttered_with_doors_open, terrain};
 use crate::{DOUBLE_CLICK, PAGE_PIXELS, desk, keys, shell, steer};
 
@@ -403,9 +402,7 @@ impl ApplicationHandler<()> for App {
                     // person is looking at, and anything that had to be switched
                     // on beforehand would dump a different one.
                     KeyCode::F12 => {
-                        self.graphics.frame_dump =
-                            Some(frame_dump_root().join(format!("frame-{}", self.graphics.frame_dumps)));
-                        self.graphics.frame_dumps += 1;
+                        self.request_frame_dump();
                         true
                     }
                     _ => false,

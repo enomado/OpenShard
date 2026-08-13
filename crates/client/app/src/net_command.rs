@@ -84,6 +84,12 @@ impl App {
     /// Reduce one cross-thread update at the event-loop boundary.
     pub(crate) fn on_update(&mut self, update: link::Update) -> bool {
         let now = Instant::now();
+        if self.observe_stationary_soak_update(&update) {
+            // `zoom-soak-freeze-server` keeps the last whole WorldView as a
+            // diagnostic baseline. The socket thread still runs normally; this
+            // only declines to fold server state into this client-side scene.
+            return true;
+        }
         advance_presentation_to(
             &mut self.world.presentation,
             &mut self.world.motion,

@@ -63,6 +63,15 @@ pub struct GroundQuad {
 }
 
 impl GroundQuad {
+    /// Whether every corner has the same height.
+    ///
+    /// A flat quad is self-contained map art. A slope, by contrast, derives
+    /// its surface from adjacent map cells; callers that compose one bounded
+    /// block can use this distinction to keep that shared surface live.
+    pub fn is_flat(self) -> bool {
+        self.corners.iter().all(|height| *height == self.corners[0])
+    }
+
     /// Bytes one quad occupies in the instance buffer.
     ///
     /// Fifteen floats and the two words of [`crate::place::Place`]: position,
@@ -597,6 +606,27 @@ mod tests {
         assert_eq!(&out[52..56], &0.0f32.to_le_bytes(), "dv");
         // And the depth is the last float, after the texture region.
         assert_eq!(&out[56..60], &0.25f32.to_le_bytes(), "depth");
+    }
+
+    #[test]
+    fn a_quad_distinguishes_a_self_contained_flat_tile_from_a_shared_slope() {
+        let mut quad = GroundQuad {
+            x: 0.0,
+            y: 0.0,
+            corners: [7.0; 4],
+            region: Region {
+                u: 0.0,
+                v: 0.0,
+                du: 1.0,
+                dv: 1.0,
+            },
+            texmap: None,
+            depth: 0.0,
+            place: crate::place::Place::land(0, 0),
+        };
+        assert!(quad.is_flat());
+        quad.corners[3] = 8.0;
+        assert!(!quad.is_flat());
     }
 
     /// The whole point of corner heights: a corner belongs to four tiles at

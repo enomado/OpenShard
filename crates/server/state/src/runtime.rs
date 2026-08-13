@@ -959,6 +959,35 @@ impl WorldState {
         self.send_packet(connection, &packet);
     }
 
+    /// Tell a player that one of their skills rose, in ClassicUO's exact
+    /// wording and hue. `previous` and `current` are in tenths, as on `0x3A`.
+    pub fn skill_changed_message(&mut self, mobile: EntityId, skill: Skill, previous: u16, current: u16) {
+        debug_assert!(
+            current > previous,
+            "a skill-change notice only reports an increase"
+        );
+        let Some(&Client { connection, .. }) = self.registry.get::<Client>(mobile) else {
+            return;
+        };
+        let value = |tenths: u16| format!("{}.{:01}", tenths / 10, tenths % 10);
+        let text = format!(
+            "Your skill in {} has increased by {}.  It is now {}.",
+            skill.info().name,
+            value(current - previous),
+            value(current),
+        );
+        let packet = ServerPacket::SpokenMessage(SpokenMessage {
+            serial: None,
+            graphic: None,
+            mode: TalkMode::Regular,
+            hue: Hue::SKILL_CHANGED,
+            font: SYSTEM_FONT,
+            name: "System".to_owned(),
+            text,
+        });
+        self.send_packet(connection, &packet);
+    }
+
     /// Send `mobile` a private **localized** line — a cliloc the client looks up
     /// in its own translation file and draws.
     ///

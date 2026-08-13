@@ -23,23 +23,17 @@ use crate::camera::{Camera, TILE_HEIGHT, TILE_WIDTH, TileBounds, WorldPixel, pro
 use crate::geometry::Rect;
 use crate::lod::BlockLod;
 
-/// Largest map-static overhang the client accepts in a block composite.
-///
-/// This is a property of the cache format, not of whichever art happens to be
-/// packed in the current viewport. The shipped static art tops out at roughly
-/// 250 pixels, so 256 preserves every sprite while giving a block one stable
-/// screen-space extent for its entire lifetime. Changing this value changes the
-/// composite format and requires invalidating existing entries.
-pub const MAX_STATIC_OVERHANG: u32 = 256;
-
-/// Virtual-pixel side of the canonical source image for one map-block
+/// Virtual-pixel side of the canonical ground image for one map-block
 /// composite.
 ///
-/// The producer always renders this extent. LOD1 retains its exact source
-/// grid; only the disabled LOD2 tier minifies it. It is deliberately neither
-/// a window size nor a camera render-target size: a map block must mean the
-/// same source pixels when the player pans, resizes, or changes zoom.
-pub const COMPOSITE_SOURCE_SIDE: u32 = BLOCK_SIZE * TILE_WIDTH as u32 + MAX_STATIC_OVERHANG * 2;
+/// A cached owner is flat ground only. Map statics stay in the live pass: a
+/// roof can rise far above its 8×8 base block, which cannot fit in a bounded
+/// immutable source image without making every resident block enormous. LOD1
+/// retains this exact source grid; only the disabled LOD2 tier minifies it.
+/// It is deliberately neither a window size nor a camera render-target size:
+/// a map block must mean the same source pixels when the player pans, resizes,
+/// or changes zoom.
+pub const COMPOSITE_SOURCE_SIDE: u32 = BLOCK_SIZE * TILE_WIDTH as u32;
 
 /// The fixed coordinate of one 8×8 map block.
 ///
@@ -70,10 +64,7 @@ impl MapBlock {
 
     /// Whether a map tile belongs to this block.
     ///
-    /// A block composite has an expanded screen-space rectangle so that a
-    /// static can overhang its ground diamond. The producer uses this rule
-    /// while collecting geometry, so its capture attachment contains only the
-    /// block's own pixels and adjacent cache entries never redraw one another.
+    /// A ground composite has exactly this block's own 8×8 tile pixels.
     pub const fn contains_tile(self, x: u16, y: u16) -> bool {
         Self::containing_tile(x, y).x == self.x && Self::containing_tile(x, y).y == self.y
     }
@@ -91,19 +82,29 @@ impl MapBlock {
 pub struct CompositeProducerJob {
     key: CompositeKey,
     camera: Camera,
+    ground_z: i8,
 }
 
 impl CompositeProducerJob {
     /// Define the canonical producer for one dispatched cache identity.
     pub fn new(key: CompositeKey) -> Self {
+        Self::at_ground_z(key, 0)
+    }
+
+    /// Define the canonical producer for a wholly flat block at `ground_z`.
+    ///
+    /// A flat plateau is self-contained, but it is not necessarily at sea
+    /// level.  Its local camera must use that same elevation or the fixed
+    /// 352-pixel source crops the top (or bottom) of every diamond before it
+    /// reaches the cache.
+    pub fn at_ground_z(key: CompositeKey, ground_z: i8) -> Self {
         let (x, y) = key.block.first_tile();
         // The ground diamond for 8×8 tiles has its vertical centre 22 pixels
         // above the centre of tile `(x + 4, y + 4)`.  Looking there centres
-        // the 352-pixel diamond plus its 256-pixel static margin in the fixed
-        // 864-pixel producer target.
-        let centre = project(openshard_protocol::world::Point::new(x + 4, y + 4, 0));
+        // the 352-pixel diamond in the fixed 352-pixel producer target.
+        let centre = project(openshard_protocol::world::Point::new(x + 4, y + 4, ground_z));
         let mut camera = Camera::new(
-            openshard_protocol::world::Point::new(x + 4, y + 4, 0),
+            openshard_protocol::world::Point::new(x + 4, y + 4, ground_z),
             COMPOSITE_SOURCE_SIDE,
             COMPOSITE_SOURCE_SIDE,
         );
@@ -111,7 +112,11 @@ impl CompositeProducerJob {
             x: centre.x,
             y: centre.y - TILE_HEIGHT / 2,
         });
-        Self { key, camera }
+        Self {
+            key,
+            camera,
+            ground_z,
+        }
     }
 
     /// The immutable cache identity this producer is allowed to complete.
@@ -132,38 +137,29 @@ impl CompositeProducerJob {
         }
     }
 
-    /// The tier's final cached texture dimensions.
+    /// The tier's final cached ground texture dimensions.
     pub const fn output_size(self) -> CompositeSize {
-        CompositeSize::for_block(self.key.tier, MAX_STATIC_OVERHANG)
+        CompositeSize::for_block(self.key.tier, 0)
     }
 
-    /// Every map cell the producer's camera can ask the frame assembler to
-    /// visit.  This is intentionally wider than the owned 8×8 block: the
-    /// fixed source image includes its static-overhang margin, and the normal
-    /// assembler walks a conservative tile rectangle for that image.
-    ///
-    /// Callers preparing atlases must use this bound (after map clipping), not
-    /// just [`MapBlock::first_tile`].  Otherwise a producer can reach a map
-    /// static whose atlas page was never appended, yielding a clear source
-    /// pixel that later looks like a hole when the composite replaces LOD 0.
-    pub fn source_tiles(self) -> TileBounds {
-        self.camera.visible_tiles()
-    }
-
-    /// The padded block footprint in this job's own source attachment.
+    /// The ground block footprint in this job's own source attachment.
     pub fn rect_in(self, camera: Camera) -> Rect {
         let (x, y) = self.key.block.first_tile();
-        let top = camera.to_screen(openshard_protocol::world::Point::new(x, y, 0));
+        let top = camera.to_screen(openshard_protocol::world::Point::new(x, y, self.ground_z()));
         let side = COMPOSITE_SOURCE_SIDE as f32;
         Rect {
             x: top.x as f32 - side / 2.0,
-            y: top.y as f32 - TILE_WIDTH as f32 / 2.0 - MAX_STATIC_OVERHANG as f32,
+            y: top.y as f32 - TILE_WIDTH as f32 / 2.0,
             width: side,
             height: side,
         }
     }
 
-    /// The padded block footprint in this job's own source attachment.
+    fn ground_z(self) -> i8 {
+        self.ground_z
+    }
+
+    /// The ground block footprint in this job's own source attachment.
     pub fn source_rect(self) -> Rect {
         self.rect_in(self.camera)
     }
@@ -482,6 +478,9 @@ impl CompositePixels {
 #[derive(Debug)]
 pub struct CompositeTexture {
     key: CompositeKey,
+    /// The common elevation of the wholly flat ground block this texture owns.
+    /// It is part of the producer/view transform, not of the atlas revision.
+    ground_z: i8,
     /// CPU pixels are retained for worker-produced entries.  GPU captures do
     /// not read the image back merely to upload it again, so they have no CPU
     /// copy here.
@@ -553,6 +552,7 @@ impl CompositeTexture {
             .map(|planes| DeferredTextures::new(device, queue, size, planes));
         Self {
             key,
+            ground_z: 0,
             size,
             depth_base: pixels.deferred().map_or(0, DeferredPixels::depth_base),
             pixels: Some(pixels),
@@ -567,7 +567,13 @@ impl CompositeTexture {
     /// map-only portion of a normal frame.  This deliberately never maps a
     /// buffer: a queue job becomes useful on a later frame without inserting a
     /// CPU readback stall between the source draw and the cache upload.
-    fn capture(device: &wgpu::Device, key: CompositeKey, size: CompositeSize, depth_base: i32) -> Self {
+    fn capture(
+        device: &wgpu::Device,
+        key: CompositeKey,
+        size: CompositeSize,
+        depth_base: i32,
+        ground_z: i8,
+    ) -> Self {
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("captured map block composite"),
             size: wgpu::Extent3d {
@@ -587,6 +593,7 @@ impl CompositeTexture {
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
         Self {
             key,
+            ground_z,
             pixels: None,
             size,
             depth_base,
@@ -600,6 +607,16 @@ impl CompositeTexture {
     /// Immutable identity of the image.
     pub const fn key(&self) -> CompositeKey {
         self.key
+    }
+
+    /// Where this plateau lies in map height units.
+    pub const fn ground_z(&self) -> i8 {
+        self.ground_z
+    }
+
+    /// The exact current-frame destination rectangle for this cached plateau.
+    pub fn rect_in(&self, camera: Camera) -> crate::geometry::Rect {
+        CompositeProducerJob::at_ground_z(self.key, self.ground_z).rect_in(camera)
     }
 
     /// Camera depth base used when this entry's stored depths were written.
@@ -864,6 +881,10 @@ pub struct CompositeEviction {
 #[derive(Debug)]
 pub struct CompositeCache {
     entries: BTreeMap<CompositeKey, CompositeTexture>,
+    /// Blocks the full-frame oracle has proved unsafe to restore. They stay at
+    /// LOD0 for the rest of the session: a correct fallback is preferable to
+    /// repeatedly rebuilding a known-bad cache image every frame.
+    rejected: BTreeSet<MapBlock>,
     limits: CompositeCacheLimits,
     use_clock: Cell<u64>,
 }
@@ -879,6 +900,7 @@ impl CompositeCache {
     pub fn with_limits(limits: CompositeCacheLimits) -> Self {
         Self {
             entries: BTreeMap::new(),
+            rejected: BTreeSet::new(),
             limits,
             use_clock: Cell::new(0),
         }
@@ -901,6 +923,9 @@ impl CompositeCache {
 
     /// A ready composite for the exact immutable revision.
     pub fn get(&self, key: CompositeKey) -> Option<&CompositeTexture> {
+        if self.rejected.contains(&key.block) {
+            return None;
+        }
         let entry = self.entries.get(&key)?;
         let stamp = self.use_clock.get().wrapping_add(1);
         self.use_clock.set(stamp);
@@ -967,6 +992,7 @@ impl CompositeCache {
         device: &wgpu::Device,
         key: CompositeKey,
         source: CaptureSource<'_>,
+        ground_z: i8,
     ) -> &CompositeTexture {
         let divisor = key.tier.source_pixels_per_texel();
         let size = CompositeSize::new(
@@ -974,7 +1000,7 @@ impl CompositeCache {
             source.rect.height.div_ceil(divisor),
         )
         .expect("a non-empty capture rectangle has a non-empty tier");
-        let composite = CompositeTexture::capture(device, key, size, source.depth_base);
+        let composite = CompositeTexture::capture(device, key, size, source.depth_base, ground_z);
         self.entries.insert(key, composite);
         self.get(key).expect("the captured entry was just inserted")
     }
@@ -983,6 +1009,25 @@ impl CompositeCache {
     /// can invalidate affected block/tier pairs without a global cache clear.
     pub fn remove(&mut self, key: CompositeKey) -> Option<CompositeTexture> {
         self.entries.remove(&key)
+    }
+
+    /// Permanently fall back to direct LOD0 rendering for one block after a
+    /// full-frame oracle found a missing map pixel in its cached replacement.
+    ///
+    /// This is deliberately a block-level circuit breaker rather than a retry:
+    /// retrying the same deterministic producer would merely reintroduce the
+    /// hole after its queue comes round again. Map terrain is immutable for the
+    /// lifetime of this cache, so the direct path remains the authoritative
+    /// safe representation until the underlying producer is fixed.
+    pub fn reject_block(&mut self, block: MapBlock) -> usize {
+        self.rejected.insert(block);
+        self.invalidate_block(block)
+    }
+
+    /// A rejected block acts as ready to the scheduler so it does not consume
+    /// an atlas/preparation slot every frame only to be discarded again.
+    pub fn is_rejected(&self, block: MapBlock) -> bool {
+        self.rejected.contains(&block)
     }
 
     /// Forget every cached resolution and revision of one changed map block.
@@ -1226,6 +1271,12 @@ impl CompositeWorkQueue {
             key.tier == tier
                 && key.revision == revision
                 && (visible.contains(key.block) || ahead.is_some_and(|bounds| bounds.contains(key.block)))
+                // A preparation gate may have concluded that this immutable
+                // block deliberately stays LOD0 (for example it contains a
+                // slope). Drop the existing pending record as well as refusing
+                // a new request below, otherwise that conclusion would leave
+                // a never-preparable entry resident forever.
+                && !ready(*key)
         });
         self.prepared.retain(|key| self.pending.contains_key(key));
         for block in visible.blocks() {
@@ -1452,11 +1503,15 @@ impl CompositeWorkQueue {
         cache: &'a mut CompositeCache,
         key: CompositeKey,
         source: CaptureSource<'_>,
+        ground_z: i8,
     ) -> Option<&'a CompositeTexture> {
         if !self.in_flight.remove(&key) {
             return None;
         }
-        let captured = cache.capture(device, key, source);
+        if cache.is_rejected(key.block) {
+            return None;
+        }
+        let captured = cache.capture(device, key, source, ground_z);
         renderer.capture_planes(device, queue, encoder, source, captured);
         renderer.capture_depth(device, queue, encoder, source, captured);
         Some(captured)
@@ -1499,10 +1554,6 @@ pub struct CompositeRenderer {
     /// preceding frame, never between groups in that frame.
     deferred_batches: Vec<DeferredBatch>,
     deferred_batch_cursor: usize,
-    /// Deferred ownership is a discrete G-buffer fact.  Its colour must use
-    /// the same texel selection, otherwise a valid edge texel blends with a
-    /// transparent neighbour discarded by the ID plane.
-    deferred_nearest: wgpu::Sampler,
     sampler: wgpu::Sampler,
 }
 
@@ -1584,16 +1635,6 @@ impl CompositeRenderer {
             address_mode_w: wgpu::AddressMode::ClampToEdge,
             mag_filter: wgpu::FilterMode::Linear,
             min_filter: wgpu::FilterMode::Linear,
-            mipmap_filter: wgpu::MipmapFilterMode::Nearest,
-            ..Default::default()
-        });
-        let deferred_nearest = device.create_sampler(&wgpu::SamplerDescriptor {
-            label: Some("map block deferred composite nearest sampler"),
-            address_mode_u: wgpu::AddressMode::ClampToEdge,
-            address_mode_v: wgpu::AddressMode::ClampToEdge,
-            address_mode_w: wgpu::AddressMode::ClampToEdge,
-            mag_filter: wgpu::FilterMode::Nearest,
-            min_filter: wgpu::FilterMode::Nearest,
             mipmap_filter: wgpu::MipmapFilterMode::Nearest,
             ..Default::default()
         });
@@ -1721,12 +1762,6 @@ impl CompositeRenderer {
                         view_dimension: wgpu::TextureViewDimension::D2,
                         multisampled: false,
                     },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 6,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                     count: None,
                 },
             ],
@@ -2037,7 +2072,6 @@ impl CompositeRenderer {
             capacity: 1,
             deferred_batches: Vec::new(),
             deferred_batch_cursor: 0,
-            deferred_nearest,
             sampler,
         }
     }
@@ -2246,10 +2280,6 @@ impl CompositeRenderer {
                         wgpu::BindGroupEntry {
                             binding: 5,
                             resource: wgpu::BindingResource::TextureView(depth),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 6,
-                            resource: wgpu::BindingResource::Sampler(&self.deferred_nearest),
                         },
                     ],
                 })
@@ -3018,7 +3048,8 @@ mod tests {
                 &mut composite,
                 &mut cache,
                 key,
-                source
+                source,
+                0,
             )
             .is_some()
         );
@@ -3112,7 +3143,10 @@ mod tests {
         assert_eq!(pixel(&colors, 48, 32), [0, 0, 0, 0]);
         let owner_id = u32::from_le_bytes(pixel(&restored_ids, 16, 32));
         assert_eq!(crate::gbuffer::ids_kind(owner_id), Some(crate::place::Kind::Land));
-        assert_ne!(owner_id & crate::gbuffer::IDS_COMPOSITE_MAP, 0);
+        assert_ne!(
+            crate::gbuffer::ids_id(owner_id) & crate::gbuffer::IDS_COMPOSITE_MAP,
+            0
+        );
         assert_eq!(u32::from_le_bytes(pixel(&restored_ids, 48, 32)), 0);
 
         // The same source depth that prevents a real item/mobile behind map
@@ -3249,6 +3283,7 @@ mod tests {
                             height: SIZE,
                         },
                     },
+                    0,
                 )
                 .is_some()
         );
@@ -3421,6 +3456,7 @@ mod tests {
                         height: SOURCE,
                     },
                 },
+                0,
             )
             .is_some()
         );
@@ -3474,11 +3510,11 @@ mod tests {
     }
 
     #[test]
-    fn canonical_block_extent_does_not_depend_on_current_atlas_contents() {
-        let lod1 = CompositeSize::for_block(CompositeTier::Lod1, MAX_STATIC_OVERHANG);
-        let lod2 = CompositeSize::for_block(CompositeTier::Lod2, MAX_STATIC_OVERHANG);
-        assert_eq!(lod1, CompositeSize::new(864, 864).unwrap());
-        assert_eq!(lod2, CompositeSize::new(216, 216).unwrap());
+    fn canonical_ground_block_extent_does_not_depend_on_current_atlas_contents() {
+        let lod1 = CompositeSize::for_block(CompositeTier::Lod1, 0);
+        let lod2 = CompositeSize::for_block(CompositeTier::Lod2, 0);
+        assert_eq!(lod1, CompositeSize::new(352, 352).unwrap());
+        assert_eq!(lod2, CompositeSize::new(88, 88).unwrap());
     }
 
     #[test]
@@ -3490,8 +3526,8 @@ mod tests {
         };
         let job = CompositeProducerJob::new(key);
         assert_eq!(job.key(), key);
-        assert_eq!(job.source_size(), CompositeSize::new(864, 864).unwrap());
-        assert_eq!(job.output_size(), CompositeSize::new(216, 216).unwrap());
+        assert_eq!(job.source_size(), CompositeSize::new(352, 352).unwrap());
+        assert_eq!(job.output_size(), CompositeSize::new(88, 88).unwrap());
         assert_eq!(job.camera().width, COMPOSITE_SOURCE_SIDE);
         assert_eq!(job.camera().height, COMPOSITE_SOURCE_SIDE);
         assert_eq!(
@@ -3502,6 +3538,27 @@ mod tests {
                 width: COMPOSITE_SOURCE_SIDE as f32,
                 height: COMPOSITE_SOURCE_SIDE as f32,
             }
+        );
+    }
+
+    #[test]
+    fn elevated_flat_plateau_keeps_its_source_rect_at_the_full_attachment() {
+        let key = CompositeKey {
+            block: MapBlock { x: 12, y: 19 },
+            tier: CompositeTier::Lod1,
+            revision: ImmutableRevision(41),
+        };
+        let elevated = CompositeProducerJob::at_ground_z(key, 20);
+        assert_eq!(elevated.source_rect().x, 0.0);
+        assert_eq!(elevated.source_rect().y, 0.0);
+        assert_eq!(elevated.source_rect().width, COMPOSITE_SOURCE_SIDE as f32);
+        assert_eq!(elevated.source_rect().height, COMPOSITE_SOURCE_SIDE as f32);
+
+        let level = CompositeProducerJob::new(key);
+        let camera = Camera::new(openshard_protocol::world::Point::new(100, 100, 0), 640, 480);
+        assert_eq!(
+            elevated.rect_in(camera).y,
+            level.rect_in(camera).y - 20.0 * crate::camera::Z_STEP as f32
         );
     }
 
@@ -3540,22 +3597,6 @@ mod tests {
             assert_eq!(south_rect.x - here.x, -4.0 * TILE_WIDTH as f32);
             assert_eq!(south_rect.y - here.y, 4.0 * TILE_HEIGHT as f32);
         }
-    }
-
-    #[test]
-    fn producer_source_tiles_cover_more_than_its_owned_block() {
-        let job = CompositeProducerJob::new(CompositeKey {
-            block: MapBlock { x: 50, y: 50 },
-            tier: CompositeTier::Lod1,
-            revision: ImmutableRevision::default(),
-        });
-        let tiles = job.source_tiles();
-        let (x, y) = job.key().block.first_tile();
-        assert!(tiles.min_x <= i32::from(x));
-        assert!(tiles.max_x >= i32::from(x) + 7);
-        assert!(tiles.min_y <= i32::from(y));
-        assert!(tiles.max_y >= i32::from(y) + 7);
-        assert!(tiles.width() > 8 || tiles.height() > 8);
     }
 
     #[test]
@@ -3776,6 +3817,23 @@ mod tests {
         queue.finished(first[0].key);
         queue.refresh(visible, map, BlockLod::Lod1, revision, |key| key == first[0].key);
         assert_eq!(queue.pending_len(), 0, "ready work is not re-requested");
+    }
+
+    #[test]
+    fn a_pending_block_that_becomes_a_lod0_fallback_is_discarded() {
+        let mut queue = CompositeWorkQueue::new(8, 1).unwrap();
+        let visible = blocks(1, 1, 1, 1);
+        let map = blocks(0, 9, 0, 9);
+        let revision = ImmutableRevision(4);
+        queue.refresh(visible, map, BlockLod::Lod1, revision, |_| false);
+        assert_eq!(queue.pending_len(), 1);
+
+        // The cache callback also represents a permanent LOD0 decision. A
+        // slope-containing block must leave the queue rather than remain an
+        // unpreparable visible request.
+        queue.refresh(visible, map, BlockLod::Lod1, revision, |_| true);
+        assert_eq!(queue.pending_len(), 0);
+        assert_eq!(queue.prepared_len(), 0);
     }
 
     #[test]

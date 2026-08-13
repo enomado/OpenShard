@@ -66,6 +66,9 @@ use crate::world::WorldState;
 /// that happens on any path.
 #[derive(Clone, Default, Debug)]
 pub struct Request {
+    /// Save the next fully rendered world frame and its GPU planes. This is an
+    /// edge-triggered diagnostic action, not a persistent display setting.
+    pub frame_dump: bool,
     /// Put the eye back on the body and lock it there.
     pub relock: bool,
     /// Let go of the body.
@@ -459,6 +462,17 @@ fn layout(root: &mut egui::Ui, hud: &Hud, camera: Camera, world: &WorldState, de
                 .clicked()
             {
                 desk.open = !desk.open;
+            }
+            // This stays on the ordinary status strip rather than hidden in a
+            // developer tab: an intermittent roof/LOD artifact must be saved
+            // at the moment it is seen, not after navigating a panel. F12 is
+            // the keyboard twin for the same action.
+            if ui
+                .button("capture GPU dump")
+                .on_hover_text("Save this world frame's GPU planes and render inputs (F12)")
+                .clicked()
+            {
+                request.frame_dump = true;
             }
             // The HUD's scale, shown because it is remembered: a client that
             // reopened at yesterday's zoom and does not say so reads as a client

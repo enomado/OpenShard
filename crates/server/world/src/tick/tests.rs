@@ -4542,15 +4542,21 @@ fn a_skill_gain_updates_the_open_window() {
         world.tick(now);
         let packets = packets_for(&mut world, connection);
         saw_update |= packets.iter().any(|p| p[0] == 0x3A && p[3] == 0xDF);
-        saw_message |= packets
-            .iter()
-            .any(|p| p[0] == 0x1C && String::from_utf8_lossy(p).contains("You have gained in Anatomy."));
+        saw_message |= packets.iter().any(|p| {
+            p[0] == 0x1C
+                && p[10..12] == [0x00, 0x58]
+                && String::from_utf8_lossy(p)
+                    .contains("Your skill in Anatomy has increased by 0.1.  It is now 10.1.")
+        });
         if saw_update && saw_message {
             break;
         }
     }
     assert!(saw_update, "a gain pushed a single-skill update to the window");
-    assert!(saw_message, "a gain wrote the classic line to the journal");
+    assert!(
+        saw_message,
+        "a gain wrote ClassicUO's coloured, quantified line to the journal"
+    );
 }
 
 #[test]

@@ -64,9 +64,9 @@ fn fs_main(in: VertexOut) -> FragmentOut {
             let ids = textureLoad(ids_of, at, 0).x;
             let position = textureLoad(position_of, at, 0);
             // The producer itself owns geometry: it collects exactly this
-            // block's tiles before rasterisation.  Re-testing ownership from
-            // interpolated G-buffer position is not equivalent, and used to
-            // erase water/land fragments along 8x8 block boundaries.
+            // block's tiles before rasterisation. Re-testing ownership from
+            // interpolated G-buffer position is not equivalent, and can erase
+            // water/land fragments along 8x8 block boundaries.
             if ids_kind(ids) != KIND_NOTHING {
                 out.color = textureLoad(color_of, at, 0);
                 out.ids = ids;

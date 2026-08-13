@@ -36,6 +36,13 @@ enum Scenario {
     LodSweep,
     /// Hold maximum zoom and audit the static atlas for delayed corruption.
     AtlasSoak,
+    /// Zoom out from the default view, then hold still for delayed LOD churn.
+    ZoomSoak,
+    /// As `zoom-soak`, but ignore server world updates after the injected zoom.
+    ZoomSoakFreezeServer,
+    /// Zoom out on the real shard connection and periodically audit its live
+    /// server-driven frames against direct LOD0 rendering.
+    LiveOracle,
 }
 
 /// A window on a client install, and a shard to play if one was asked for.
@@ -157,6 +164,9 @@ fn main() -> ExitCode {
         scenario: cli.scenario.map(|scenario| match scenario {
             Scenario::LodSweep => openshard_client_app::Scenario::LodSweep,
             Scenario::AtlasSoak => openshard_client_app::Scenario::AtlasSoak,
+            Scenario::ZoomSoak => openshard_client_app::Scenario::ZoomSoak,
+            Scenario::ZoomSoakFreezeServer => openshard_client_app::Scenario::ZoomSoakFreezeServer,
+            Scenario::LiveOracle => openshard_client_app::Scenario::LiveOracle,
         }),
         ..Default::default()
     };

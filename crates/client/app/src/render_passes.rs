@@ -26,6 +26,18 @@ use openshard_protocol::containers::ContainedItem;
 use crate::frame_geometry::FrameGeometry;
 use crate::picking::{self, SelectedIdentity};
 use crate::window::Screen;
+
+/// Facts from the one world-pass encoding that a GPU dump can later compare
+/// with its attachments. Keeping these numbers beside the exact frame closes
+/// the gap between a requested LOD policy and the list the ground renderer was
+/// actually handed.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct WorldPassAudit {
+    pub(crate) requested_lod: BlockLod,
+    pub(crate) ready_blocks: usize,
+    pub(crate) live_ground_quads: usize,
+    pub(crate) full_ground_quads: usize,
+}
 use crate::windows::{Drawn, WindowSubject};
 use crate::{crowd, graphics, profile, resources, shell, windows, world};
 
@@ -363,7 +375,7 @@ pub(crate) fn encode_world_passes(
     composite_visible: Option<MapBlockBounds>,
     composite_jobs: &[CompositeWork],
     composite_work: &mut CompositeWorkQueue,
-) {
+) -> WorldPassAudit {
     // Ground first, because it clears; statics after, into what it left.
     // Which covers which is decided by the depth they share, not by this
     // order — the order only decides who clears.
@@ -390,24 +402,40 @@ pub(crate) fn encode_world_passes(
             if !texture.has_deferred() {
                 return None;
             }
-            Some((
-                block,
-                CompositeProducerJob::new(texture.key()).rect_in(camera),
-                texture,
-            ))
+            Some((block, texture.rect_in(camera), texture))
         })
         .collect();
     let cached_blocks: BTreeSet<_> = ready.iter().map(|(block, _, _)| *block).collect();
     let ground = geometry.detail_ground(&cached_blocks);
+    let audit = WorldPassAudit {
+        requested_lod: composite_lod,
+        ready_blocks: ready.len(),
+        live_ground_quads: ground.len(),
+        full_ground_quads: geometry.quads.len(),
+    };
+    if composite_lod == BlockLod::Lod0 && !ready.is_empty() {
+        tracing::error!(?audit, "LOD0 world pass selected cached map blocks");
+    }
     let map_statics = geometry.detail_map_statics(&cached_blocks);
-    let timed = profile::begin(window.gpu.as_ref(), "ground", encoder);
-    window
-        .renderer
-        .render(&window.device, &window.queue, encoder, target, &ground);
-    profile::end(window.gpu.as_ref(), encoder, timed);
-    // A cached block is restored before any live sprite pass.  Its depth and
-    // G-buffer facts therefore interleave with unready map rows, server items
-    // and mobiles exactly as the detailed world did.
+    // The ordinary all-live path clears and draws at once. With a cache, clear
+    // first but defer the live slope/rim rows until after restore: their exact
+    // current-frame depth must be able to beat a neighbouring cached flat tile
+    // where the two diamonds overlap.
+    if ready.is_empty() {
+        let timed = profile::begin(window.gpu.as_ref(), "ground", encoder);
+        window
+            .renderer
+            .render(&window.device, &window.queue, encoder, target, &ground);
+        profile::end(window.gpu.as_ref(), encoder, timed);
+    } else {
+        window
+            .renderer
+            .render(&window.device, &window.queue, encoder, target, &[]);
+    }
+    // Cached flat ground is restored before all live sprite passes. Map statics
+    // deliberately remain live: their art can overhang an 8×8 ground block by
+    // more than the bounded composite margin, while this shared depth buffer
+    // still orders them against every cached ground pixel.
     let mut composite_groups: BTreeMap<i32, Vec<CompositeQuad<'_>>> = BTreeMap::new();
     for (_, rect, texture) in &ready {
         composite_groups
@@ -433,6 +461,13 @@ pub(crate) fn encode_world_passes(
         );
     }
     profile::end(window.gpu.as_ref(), encoder, timed);
+    if !ready.is_empty() {
+        let timed = profile::begin(window.gpu.as_ref(), "ground detail", encoder);
+        window
+            .renderer
+            .render_loaded(&window.device, &window.queue, encoder, target, &ground);
+        profile::end(window.gpu.as_ref(), encoder, timed);
+    }
     // Handed over every frame rather than on the key, because the key does
     // not have the window: `graphics.fringe` is the switch and the pass is where
     // it is read, and a state pushed once at start-up would leave F2 silent.
@@ -489,6 +524,7 @@ pub(crate) fn encode_world_passes(
                 &mut window.composites,
                 work.key,
                 source,
+                0,
             );
         }
     }
@@ -880,4 +916,5 @@ pub(crate) fn encode_world_passes(
         );
         profile::end(window.gpu.as_ref(), encoder, timed);
     }
+    audit
 }

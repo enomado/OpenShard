@@ -148,10 +148,8 @@ impl World {
             self.state
                 .send_packet(connection, &ServerPacket::SkillUpdate(SkillUpdate { entry }));
             if event.value > event.previous {
-                self.state.system_message(
-                    event.entity,
-                    &format!("You have gained in {}.", event.skill.info().name),
-                );
+                self.state
+                    .skill_changed_message(event.entity, event.skill, event.previous, event.value);
             }
         }
     }
