@@ -18,8 +18,13 @@ use openshard_protocol::server_packet::ServerPacket;
 use openshard_uofiles::anim::is_ghost;
 
 use crate::app::App;
-use crate::world::{advance_presentation_to, cluttered};
+use crate::world::{MotionRenderState, advance_presentation_to, cluttered};
 use crate::{clutter, crowd, link};
+
+/// The protocol's corpse marker. Its `WorldItem.amount` is a body graphic, not
+/// a stack size, and so it must be rendered from `anim.mul` rather than
+/// `art.mul`.
+const CORPSE_GRAPHIC: openshard_protocol::wire::Graphic = openshard_protocol::wire::Graphic(0x2006);
 
 /// Fold one locally predicted step into the presentation that ages it.
 ///
@@ -32,29 +37,102 @@ use crate::{clutter, crowd, link};
 ///
 /// Equipment belongs to the authoritative mobile view, not to a predicted
 /// step, so preserve its shared allocation while replacing the clocked fields.
-fn project_prediction(
+pub(crate) fn project_motion(
     crowd: &mut crowd::Crowd,
     who: crowd::Who,
     player: &mut mobiles::Mobile,
-    at: openshard_protocol::world::Point,
-    facing: openshard_protocol::direction::Facing,
+    motion: MotionRenderState,
     war: bool,
 ) {
     let equipment = std::mem::take(&mut player.equipment);
-    *player = crowd.see(who, at, player.body, facing, player.hue, war);
+    let command = match (motion.corrected, motion.transition) {
+        (true, _) => crowd::CommandedMove::Snap {
+            at: motion.rendered.position,
+        },
+        (false, Some((from, to))) => crowd::CommandedMove::Transition { from, to },
+        (false, None) => crowd::CommandedMove::Standing {
+            at: motion.rendered.position,
+        },
+    };
+    *player = crowd.command(who, command, player.body, motion.rendered.facing, player.hue, war);
     player.equipment = equipment;
 }
 
 impl App {
+    /// Refresh the renderer adapter from the current motion snapshot.
+    ///
+    /// This is also called after a frame advances: a stalled application may
+    /// have several numbered transitions queued, and completing one must hand
+    /// the next explicit command to Crowd without waiting for another packet.
+    pub(crate) fn project_player_motion(&mut self) {
+        let me = self.world.me();
+        let war = self
+            .world
+            .authoritative
+            .view
+            .as_ref()
+            .is_some_and(|view| view.player.war && !view.player.dead);
+        project_motion(
+            &mut self.world.presentation.crowd,
+            me,
+            &mut self.world.presentation.player,
+            self.world.motion.render_state(),
+            war,
+        );
+    }
+
     /// Reduce one cross-thread update at the event-loop boundary.
     pub(crate) fn on_update(&mut self, update: link::Update) -> bool {
         let now = Instant::now();
-        advance_presentation_to(&mut self.world.presentation, &mut self.last_advance, now);
+        advance_presentation_to(
+            &mut self.world.presentation,
+            &mut self.world.motion,
+            &mut self.last_advance,
+            now,
+        );
+        self.project_player_motion();
+        let (trace_event, trace_detail) = match &update {
+            link::Update::World { body, .. } => (
+                "world",
+                format!(
+                    "predicted={} corrected={}",
+                    crate::movement_trace::point(body.predicted.position),
+                    body.corrected
+                ),
+            ),
+            link::Update::Mutation { packet } => (
+                "mutation",
+                format!("packet={}", crate::movement_trace::packet_kind(packet)),
+            ),
+            link::Update::Movement { packet, movement } => (
+                "movement",
+                format!(
+                    "packet={} movement={movement:?}",
+                    crate::movement_trace::packet_kind(packet),
+                ),
+            ),
+            link::Update::Prediction { body, sequence } => (
+                "prediction",
+                format!(
+                    "sequence={sequence:?} predicted={} corrected={}",
+                    crate::movement_trace::point(body.predicted.position),
+                    body.corrected
+                ),
+            ),
+            link::Update::Animation(_) => ("animation", String::new()),
+            link::Update::NewAnimation(_) => ("new animation", String::new()),
+            link::Update::Lost(_) => ("lost", String::new()),
+        };
         match update {
-            link::Update::World { view, body } => self.entered(*view, body, None),
-            link::Update::Mutation { packet, body } => self.apply_mutation(&packet, body),
-            link::Update::Prediction(body) => self.apply_prediction(body),
+            link::Update::World { view, body } => {
+                self.world.motion.reset(body);
+                self.entered(*view, None);
+            }
+            link::Update::Mutation { packet } => self.apply_mutation(&packet),
+            link::Update::Movement { packet, movement } => self.apply_movement(&packet, movement),
+            link::Update::Prediction { body, sequence } => self.apply_prediction(body, sequence),
             link::Update::Animation(animation) => self.world.presentation.crowd.play(animation),
+            link::Update::NewAnimation(animation) => self.world.presentation.crowd.play_new(animation),
             link::Update::Lost(reason) => {
                 eprintln!("disconnected: {reason}");
                 self.world.link = None;
@@ -62,8 +140,11 @@ impl App {
             }
         }
         let soon = now + crate::GLIDE_INTERVAL;
-        if self.world.presentation.crowd.anyone_gliding() && self.next_tick > soon {
+        if self.world.anyone_gliding() && self.next_tick > soon {
             self.next_tick = soon;
+        }
+        if let Some(trace) = self.movement_trace.as_mut() {
+            trace.record_detail(trace_event, &trace_detail, &self.world, self.control.camera());
         }
         true
     }
@@ -82,35 +163,65 @@ impl App {
 
     /// Apply one network mutation on the event-loop thread. This is the only
     /// place after connection setup that mutates the client-owned view.
-    pub(crate) fn apply_mutation(&mut self, packet: &ServerPacket, body: link::Body) {
+    pub(crate) fn apply_mutation(&mut self, packet: &ServerPacket) {
+        self.apply_packet(packet, None);
+    }
+
+    /// Apply one of the rare packet kinds that changes the player anchor.
+    /// Ordinary world packets have no value that can call this method.
+    pub(crate) fn apply_movement(&mut self, packet: &ServerPacket, movement: link::Movement) {
+        self.apply_packet(packet, Some(movement));
+    }
+
+    fn apply_packet(&mut self, packet: &ServerPacket, movement: Option<link::Movement>) {
+        // Sound and music are events, not facts in `WorldView`: a second
+        // identical packet must play twice, while a view fold can correctly be
+        // a no-op.  Take the listener from the same authoritative anchor the
+        // camera follows, before this packet has a chance to replace it.
+        self.audio
+            .play_packet(packet, self.world.motion.planning_state().position);
         let Some(mut view) = self.world.authoritative.view.take() else {
             return;
         };
+        // Health bars are the wire-level result of every kind of damage.  Keep
+        // the previous value only long enough to turn a falling value into a
+        // presentation event; the authoritative view remains the sole record
+        // of the current hit points.
+        let damage = match packet {
+            ServerPacket::Health(bar) => match bar.serial == view.player.serial {
+                true => view.player.hits,
+                false => view.mobiles.get(&bar.serial).and_then(|mobile| mobile.hits),
+            }
+            .and_then(|before| before.current.checked_sub(bar.vitals.current))
+            .filter(|amount| *amount > 0)
+            .map(|amount| (bar.serial, amount)),
+            _ => None,
+        };
         let previous_latest = view.journal.back().cloned();
         view.apply(packet);
-        view.player_stepped(body.predicted.position, body.predicted.facing);
-        self.entered(*view, body, previous_latest);
+        if let Some((serial, amount)) = damage {
+            self.world.presentation.damage(serial, amount);
+        }
+        // `WalkAck` and `WalkReject` do not carry a position in the decoded
+        // view. Their `Movement` counterpart does; every other packet leaves
+        // this authoritative anchor untouched.
+        if let Some(movement) = movement {
+            let confirmed = movement.confirmed();
+            view.player_stepped(confirmed.position, confirmed.facing);
+        }
+        self.world.motion.accept_network(movement);
+        self.entered(*view, previous_latest);
     }
 
     /// Apply prediction without changing authoritative server state.
-    pub(crate) fn apply_prediction(&mut self, body: link::Body) {
-        self.world.prediction.apply(body);
-        let me = self.world.me();
-        self.world.presentation.crowd.commanding(me);
-        let war = self
-            .world
-            .authoritative
-            .view
-            .as_ref()
-            .is_some_and(|view| view.player.war && !view.player.dead);
-        project_prediction(
-            &mut self.world.presentation.crowd,
-            me,
-            &mut self.world.presentation.player,
-            self.world.prediction.at,
-            self.world.prediction.facing,
-            war,
-        );
+    pub(crate) fn apply_prediction(
+        &mut self,
+        body: link::Body,
+        sequence: openshard_protocol::world::StepSequence,
+    ) {
+        self.world.motion.accept_local(body, sequence);
+        self.world.presentation.crowd.commanding(self.world.me());
+        self.project_player_motion();
         // Keep the roof decision on the same predicted body *only* when the
         // map and the live item layer already agree that this is a legal step.
         // A held key pressed into a known wall still leaves `cutaway_at` where
@@ -118,6 +229,7 @@ impl App {
         // previous tile's roof threshold for the whole server round trip.
         self.advance_cutaway(false);
         self.follow_player(std::time::Duration::ZERO);
+        self.assert_motion_projection();
     }
 
     /// Move the cutaway source to the current player prediction when that move
@@ -129,7 +241,7 @@ impl App {
     /// walk — the body the cutaway exists to reveal must not be hidden by its
     /// previous tile while its step is in flight.
     fn advance_cutaway(&mut self, corrected: bool) {
-        let next = self.world.prediction.at;
+        let next = self.world.motion.planning_state().position;
         if corrected {
             self.world.presentation.cutaway_at = next;
             return;
@@ -148,7 +260,7 @@ impl App {
     /// A projection of the whole [`WorldView`], rebuilt each time rather than
     /// patched: the view is the record of what arrived, and anything kept in
     /// step with it by hand would be a second record that could disagree.
-    pub(crate) fn entered(&mut self, view: WorldView, body: link::Body, previous_latest: Option<Heard>) {
+    pub(crate) fn entered(&mut self, view: WorldView, previous_latest: Option<Heard>) {
         // Movement updates arrive while the player is standing still too.  The
         // route HUD depends on the item layer, not on every packet in the view;
         // invalidating it unconditionally made the same expensive plan run on
@@ -167,7 +279,9 @@ impl App {
             self.terrain_cache = None;
             self.occluder_cache = None;
         }
-        self.world.prediction.apply(body);
+        // Movement has already been applied through `PlayerMotion` at the
+        // mailbox boundary.  Rebuilding world presentation must not be a
+        // second writer of either confirmed or predicted state.
         // The facet is chosen at startup and `0x1B` names only its size, so a
         // shard serving a different one draws this client the wrong ground with
         // no complaint from either end. Said once, because it is a
@@ -207,33 +321,20 @@ impl App {
         // Left uncorrected, the step after a `0x21` is decided against a facing
         // nobody has: it is timed as a turn when it is a step, or as a step when
         // it is a turn, and either is a beat of the walk in the wrong place.
-        if body.corrected {
-            self.steer.corrected(body.predicted.facing.direction);
+        if self.world.motion.corrected() {
+            self.steer
+                .corrected(self.world.motion.planning_state().facing.direction);
         }
-        self.world.presentation.player = match body.corrected {
-            true => self.world.presentation.crowd.snap(
-                me,
-                self.world.prediction.at,
-                view.player.body,
-                self.world.prediction.facing,
-                view.player.hue,
-                // A ghost stands with no sword drawn even if `war` is still
-                // set — D9's `!InWarMode || IsDead`.
-                view.player.war && !view.player.dead,
-            ),
-            false => self.world.presentation.crowd.see(
-                me,
-                self.world.prediction.at,
-                view.player.body,
-                self.world.prediction.facing,
-                view.player.hue,
-                // Our own stance is the `0x72`'s and the `0x88`'s, not a bit of
-                // a `0x77` — no `0x77` ever describes this body. See
-                // `view::Player::war` beside `view::Mobile::war`. Gated on
-                // death for the same reason as the branch above.
-                view.player.war && !view.player.dead,
-            ),
-        };
+        // A ghost stands with no sword drawn even if `war` is still set —
+        // D9's `!InWarMode || IsDead`.  The facing and all movement endpoints
+        // come only from `PlayerMotion` above.
+        project_motion(
+            &mut self.world.presentation.crowd,
+            me,
+            &mut self.world.presentation.player,
+            self.world.motion.render_state(),
+            view.player.war && !view.player.dead,
+        );
         self.world.presentation.player.equipment =
             crowd::worn(&view.player.equipment, &self.resources.tiledata).into();
         // Sorted by serial for the same reason, and for one more: two items on
@@ -248,7 +349,20 @@ impl App {
         items.sort_unstable_by_key(|(serial, _)| serial.raw());
         self.world.presentation.items.clear();
         self.world.presentation.item_serials.clear();
+        self.world.presentation.corpses.clear();
         for (serial, item) in items {
+            if item.graphic == CORPSE_GRAPHIC {
+                self.world.presentation.corpses.push((
+                    Some(*serial),
+                    self.world.presentation.crowd.corpse(
+                        Some(*serial),
+                        item.position,
+                        openshard_protocol::wire::Graphic(item.amount.0),
+                        item.hue,
+                    ),
+                ));
+                continue;
+            }
             self.world.presentation.items.push(GroundItem {
                 at: item.position,
                 graphic: item.graphic,
@@ -265,7 +379,7 @@ impl App {
         // The cutaway has already followed each locally valid prediction. An
         // acknowledgement repeats that answer; a correction is the one case
         // that has to replace it unconditionally.
-        self.advance_cutaway(body.corrected);
+        self.advance_cutaway(self.world.motion.corrected());
         // Sorted by serial: a `HashMap`'s order is not one, and an atlas built
         // in a different order every frame is a rebuild every frame.
         let mut others: Vec<_> = view.mobiles.iter().collect();
@@ -297,7 +411,14 @@ impl App {
         // the placeholder's `None` is gone the moment a shard names us, which is
         // right — it was never a mobile.
         self.world.presentation.crowd.retain(|who| {
-            who.is_some_and(|serial| serial == view.player.serial || view.mobiles.contains_key(&serial))
+            who.is_some_and(|serial| {
+                serial == view.player.serial
+                    || view.mobiles.contains_key(&serial)
+                    || view
+                        .items
+                        .get(&serial)
+                        .is_some_and(|item| item.graphic == CORPSE_GRAPHIC)
+            })
         });
         self.world.connection = format!("in world as 0x{:08X}", view.player.serial.raw());
         // The newest line in the journal, heard once and hung over its
@@ -334,19 +455,20 @@ impl App {
         // by it.
         //
         // Zero, for the reason `App::walk_offline` says: a packet is not a
-        // frame. The crowd's clock was brought up to date before this fold, so
-        // there is no elapsed time left to hand a rig anyway.
+        // frame. Game motion was brought up to date before this fold, so there
+        // is no elapsed time left to hand a rig anyway.
         self.follow_player(std::time::Duration::ZERO);
+        self.assert_motion_projection();
     }
 
-    /// Point the eye at our own body, wherever the glide has it this instant.
+    /// Point the eye at our own body, wherever the game-motion core has it.
     ///
     /// Called every frame and not only when a step arrives: the glide moves the
     /// body a few pixels per frame, and an eye that moved a tile at a time would
-    /// jerk the whole world under it. Reads the crowd's clock straight, so it is
-    /// also what keeps the eye and the sprite from disagreeing by a frame.
+    /// jerk the whole world under it. The sprite and camera read the same
+    /// `GameMotion` pose, so they cannot disagree by a frame.
     ///
-    /// `elapsed` is the same span the crowd's clock was just advanced by, and
+    /// `elapsed` is the same span the game-motion clock was just advanced by,
     /// deliberately the same value: a rig that filters is integrating over it,
     /// and a camera integrating a different amount of time than the body moved
     /// through lags by whatever the difference was — which varies frame to
@@ -368,6 +490,14 @@ impl App {
                     .record(elapsed, gaze, self.control.camera().eye(), state);
             }
         }
+    }
+
+    /// Verify the actual sprite projection against the continuous game core.
+    /// Crowd still owns animation groups for every mobile, but it is no longer
+    /// an authority for the player position between tiles.
+    fn assert_motion_projection(&self) {
+        self.world.motion.debug_assert_valid();
+        debug_assert_eq!(self.world.presentation.player.drawn, self.world.motion.drawn());
     }
 }
 
@@ -402,7 +532,46 @@ mod tests {
         let equipment = player.equipment.clone();
         let standing = player.group;
 
-        project_prediction(&mut crowd, None, &mut player, next, facing, false);
+        project_motion(
+            &mut crowd,
+            None,
+            &mut player,
+            MotionRenderState {
+                rendered: openshard_client_net::walk::Predicted {
+                    position: next,
+                    facing,
+                },
+                predicted: openshard_client_net::walk::Predicted {
+                    position: next,
+                    facing,
+                },
+                transition: Some((start, next)),
+                corrected: false,
+            },
+            false,
+        );
+
+        // A vendor/container packet may rebuild the presentation while this
+        // glide is active. Replaying the same motion projection must not start
+        // a second transition or change its logical endpoints.
+        project_motion(
+            &mut crowd,
+            None,
+            &mut player,
+            MotionRenderState {
+                rendered: openshard_client_net::walk::Predicted {
+                    position: next,
+                    facing,
+                },
+                predicted: openshard_client_net::walk::Predicted {
+                    position: next,
+                    facing,
+                },
+                transition: Some((start, next)),
+                corrected: false,
+            },
+            false,
+        );
 
         assert_eq!(player.at, next, "the prediction is its destination tile");
         assert_ne!(player.group, standing, "the prediction started a walk");

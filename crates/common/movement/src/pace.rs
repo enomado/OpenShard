@@ -59,6 +59,29 @@ pub const WALK_HOLD: Duration = Duration::from_millis(2 * WALK_INTERVAL.as_milli
 /// time the next step arrived.
 pub const RUN_HOLD: Duration = Duration::from_millis(2 * RUN_INTERVAL.as_millis() as u64);
 
+/// The nominal duration of one locally commanded step.
+///
+/// This is the shared timing primitive for the app's movement core and its
+/// deterministic walk oracle.  Server acknowledgement latency is deliberately
+/// absent: the client starts a predicted step now, and an answer only confirms
+/// it or corrects it later.
+pub const fn step_hold(running: bool) -> Duration {
+    if running { RUN_HOLD } else { WALK_HOLD }
+}
+
+/// How far a nominal step has advanced, clamped at its destination.
+///
+/// One shared interpolation fraction keeps the production movement core and
+/// the DST oracle on the same constant-velocity rule. A zero duration is not a
+/// legal player pace, but treating it as complete keeps diagnostic callers from
+/// producing a NaN if fed malformed timing data.
+pub fn step_progress(elapsed: Duration, takes: Duration) -> f64 {
+    if takes.is_zero() {
+        return 1.0;
+    }
+    (elapsed.as_secs_f64() / takes.as_secs_f64()).min(1.0)
+}
+
 /// How many steps of credit a mobile may bank.
 ///
 /// The burst a client may spend at once after standing still. It has to be
@@ -280,6 +303,20 @@ mod tests {
         assert_eq!(WALK_HOLD.as_millis(), 400, "ServUO WalkFoot");
         assert_eq!(RUN_HOLD.as_millis(), 200, "ServUO RunFoot");
         assert_eq!(RUN_HOLD * 2, WALK_HOLD, "a run is a walk doubled");
+    }
+
+    #[test]
+    fn nominal_step_progress_is_constant_and_shared_by_the_client_and_its_oracle() {
+        assert_eq!(step_hold(false), WALK_HOLD);
+        assert_eq!(step_hold(true), RUN_HOLD);
+        assert_eq!(step_progress(Duration::ZERO, WALK_HOLD), 0.0);
+        assert_eq!(step_progress(WALK_HOLD / 4, WALK_HOLD), 0.25);
+        assert_eq!(step_progress(WALK_HOLD, WALK_HOLD), 1.0);
+        assert_eq!(
+            step_progress(WALK_HOLD * 2, WALK_HOLD),
+            1.0,
+            "a step cannot overshoot"
+        );
     }
 
     #[test]

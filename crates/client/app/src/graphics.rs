@@ -49,6 +49,10 @@ pub struct GraphicsSettings {
     /// Whether the architectural cutaway is disabled. This is a diagnostic
     /// switch for comparing the transparency bug with the normal view.
     pub cutaway_disabled: bool,
+    /// Whether sprites overlapping the player's screen/body mask are kept
+    /// opaque. This isolates the neighbour-transparency diagnostic from the
+    /// architectural height cutaway above.
+    pub body_overlap_transparency_disabled: bool,
     /// Whether the world is drawn as if it were night: dark ambient, and the
     /// fires on the map lighting what is around them. Toggled with F10.
     ///

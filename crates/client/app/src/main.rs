@@ -19,7 +19,7 @@ use std::net::{Ipv4Addr, SocketAddrV4};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 use openshard_client_net::session::{Pick, Plan};
 use openshard_client_net::transport::Tcp;
 use openshard_movement::Tile;
@@ -28,6 +28,15 @@ use tracing_subscriber::EnvFilter;
 
 /// Where a shard is, when one is asked for and no address is given.
 const DEFAULT_SHARD: SocketAddrV4 = SocketAddrV4::new(Ipv4Addr::LOCALHOST, 2593);
+
+/// A reproducible diagnostic path that is injected into the client itself.
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum Scenario {
+    /// Zoom out to the first map-composite tier and pan across block boundaries.
+    LodSweep,
+    /// Hold maximum zoom and audit the static atlas for delayed corruption.
+    AtlasSoak,
+}
 
 /// A window on a client install, and a shard to play if one was asked for.
 #[derive(Debug, Parser)]
@@ -88,6 +97,11 @@ struct Cli {
     /// what make one reproducible.
     #[arg(long)]
     solids: bool,
+
+    /// Run a deterministic presentation diagnostic inside the client instead
+    /// of relying on desktop input events.
+    #[arg(long, value_enum)]
+    scenario: Option<Scenario>,
 }
 
 /// `X,Y` off the command line, as a tile.
@@ -140,6 +154,10 @@ fn main() -> ExitCode {
     let opening = openshard_client_app::Opening {
         at: cli.at,
         solids: cli.solids,
+        scenario: cli.scenario.map(|scenario| match scenario {
+            Scenario::LodSweep => openshard_client_app::Scenario::LodSweep,
+            Scenario::AtlasSoak => openshard_client_app::Scenario::AtlasSoak,
+        }),
         ..Default::default()
     };
     openshard_client_app::run(&cli.client, shard, cli.ttf_font, opening)

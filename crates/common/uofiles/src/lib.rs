@@ -35,6 +35,7 @@ pub mod image;
 pub mod map;
 pub mod skillgrp;
 pub mod skills;
+pub mod sound;
 pub mod texmaps;
 pub mod tiledata;
 pub mod ttf_font;

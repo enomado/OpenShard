@@ -1235,6 +1235,7 @@ impl World {
             self.state.bus.read(&mut self.damaged).copied().collect();
         if !blows.is_empty() {
             ai::retaliate(&mut self.state, &blows);
+            combat::retaliate_players(&mut self.state, &blows);
         }
         let now = self.state.ticks;
         let thinkers: Vec<EntityId> = self

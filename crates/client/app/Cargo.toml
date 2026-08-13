@@ -85,8 +85,14 @@ winit = "0.30"
 puffin = "0.20"
 wgpu-profiler = { version = "0.28", default-features = false, features = ["puffin"] }
 
+[dev-dependencies]
+# DST's event timeline also serves as the headless boundary for movement-core
+# fuzzing: random packet outcomes and long frames are shrunk to one sequence.
+proptest.workspace = true
+
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 wgpu = { version = "30", default-features = false, features = ["wgsl", "vulkan", "metal", "dx12", "gles"] }
+rodio.workspace = true
 # The TCP server the viewer connects to. Native only: it is a socket.
 puffin_http = "0.17"
 

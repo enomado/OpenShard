@@ -28,6 +28,7 @@ pub enum Outgoing {
     Use(Serial),
     WarMode(bool),
     Attack(Serial),
+    StopAttacking,
     LogOut,
     Status(Serial),
     Skills(Serial),
@@ -55,6 +56,7 @@ impl Outgoing {
             Self::Use(serial) => crate::interact::use_object(serial),
             Self::WarMode(war) => crate::doll::war_mode(war),
             Self::Attack(mobile) => crate::combat::attack(mobile),
+            Self::StopAttacking => crate::combat::stop_attacking(),
             Self::LogOut => crate::doll::log_out(),
             Self::Status(mobile) => crate::doll::status(mobile),
             Self::Skills(mobile) => crate::doll::skills(mobile),
@@ -80,6 +82,10 @@ mod tests {
         assert_eq!(
             Outgoing::Attack(target).encode(player),
             crate::combat::attack(target)
+        );
+        assert_eq!(
+            Outgoing::StopAttacking.encode(player),
+            crate::combat::stop_attacking()
         );
         assert_eq!(Outgoing::QuestLog.encode(player), crate::doll::quest_log(player));
     }

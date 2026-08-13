@@ -19,8 +19,9 @@ use openshard_client_render::atlas::{
 };
 use openshard_client_render::blit::{self, Blit};
 use openshard_client_render::camera::{Camera, TileBounds};
-use openshard_client_render::composite::{CompositeCache, CompositeRenderer};
-use openshard_client_render::cutaway::Cutaway;
+use openshard_client_render::composite::{
+    COMPOSITE_SOURCE_SIDE, CompositeCache, CompositeProducerJob, CompositeRenderer,
+};
 use openshard_client_render::gbuffer::Gbuffer;
 use openshard_client_render::gump::GumpRenderer;
 use openshard_client_render::hue::HueRamp;
@@ -271,6 +272,91 @@ pub(crate) fn wanted_in(
     wanted
 }
 
+/// Append exactly one producer job's map art to the resident atlases.
+///
+/// This deliberately has no rebuild branch.  A far block can wait for a later
+/// attempt when an atlas has reached its page limit, but it must never evict
+/// the visible camera's art merely to make a background composite possible.
+/// Existing atlas pages remain valid because growth only appends pixels/pages;
+/// completed composites store final pixels and are not keyed to that growth.
+pub(crate) fn prepare_composite_job(
+    resources: &mut resources::Resources,
+    window: &mut Screen,
+    animations: &StaticAnimations,
+    job: CompositeProducerJob,
+) -> bool {
+    let map_width = resources.map.width() as i32;
+    let map_height = resources.map.height() as i32;
+    if map_width <= 0 || map_height <= 0 {
+        return false;
+    }
+    let (first_x, first_y) = job.key().block.first_tile();
+    let owner = TileBounds {
+        min_x: i32::from(first_x),
+        max_x: i32::from(first_x) + openshard_uofiles::map::BLOCK_SIZE as i32 - 1,
+        min_y: i32::from(first_y),
+        max_y: i32::from(first_y) + openshard_uofiles::map::BLOCK_SIZE as i32 - 1,
+    };
+    let Some((owner_x, owner_y)) = owner.clamp_to(map_width as u32, map_height as u32) else {
+        return false;
+    };
+    let owner = TileBounds {
+        min_x: i32::from(*owner_x.start()),
+        max_x: i32::from(*owner_x.end()),
+        min_y: i32::from(*owner_y.start()),
+        max_y: i32::from(*owner_y.end()),
+    };
+    let Some((source_x, source_y)) = job.source_tiles().clamp_to(map_width as u32, map_height as u32) else {
+        return false;
+    };
+    let source = TileBounds {
+        min_x: i32::from(*source_x.start()),
+        max_x: i32::from(*source_x.end()),
+        min_y: i32::from(*source_y.start()),
+        max_y: i32::from(*source_y.end()),
+    };
+    // The cache is immutable.  A single animated torch makes the whole block
+    // ineligible rather than baking one clock tick and leaving it stale at the
+    // next animation step.
+    let mut animated = false;
+    statics::for_each_static_in(&resources.map, owner, |item| {
+        animated |= animations.is_animated(item.tile);
+    });
+    if animated {
+        return false;
+    }
+    let wanted = wanted_in(
+        &resources.map,
+        [source],
+        &[],
+        &[],
+        animations,
+        &resources.equip_conv,
+    );
+    if window
+        .atlases
+        .grow(
+            &resources.art,
+            &resources.texmaps,
+            &resources.tiledata,
+            &mut resources.anim,
+            &wanted,
+        )
+        .is_err()
+    {
+        return false;
+    }
+    window.atlases.upload(
+        &window.device,
+        &window.queue,
+        &window.renderer,
+        &mut window.statics,
+        &mut window.items_pass,
+        &window.mobile_pass,
+    );
+    true
+}
+
 /// Grows or, on eviction, wholly rebuilds `window`'s atlases so this frame's
 /// picture has everywhere it needs already packed before anything reads them
 /// — see `App::draw_from`'s Step three doc for where this call sits.
@@ -451,7 +537,102 @@ pub(crate) fn ready_atlases(
             Err(error) => eprintln!("packing the art on screen: {error}"),
         }
     }
+    if std::env::var_os("OPENSHARD_ATLAS_AUDIT").is_some() && work.uploaded_bytes != 0 {
+        tracing::info!(
+            ?want,
+            covered = ?graphics.covered,
+            uploaded_bytes = work.uploaded_bytes,
+            repacked,
+            overflow = ?work.overflow,
+            "atlas upload during max-zoom audit"
+        );
+    }
     (repacked, work)
+}
+
+/// Reusable offscreen attachments for one map-block producer.
+///
+/// The producer deliberately owns different attachments from the
+/// camera frame.  They have one canonical 864×864 extent, are reused for one
+/// bounded job at a time, and must never be resized with the window.  The
+/// producer pass is connected only after it can render a complete map block;
+/// keeping the targets here now makes that separation explicit rather than
+/// letting an implementation accidentally sample [`Screen::world`].
+pub(crate) struct CompositeProducerTargets {
+    pub(crate) world: wgpu::Texture,
+    pub(crate) depth: wgpu::Texture,
+    pub(crate) gbuffer: Gbuffer,
+}
+
+impl CompositeProducerTargets {
+    fn new(device: &wgpu::Device) -> Self {
+        Self {
+            world: blit::world_texture(device, COMPOSITE_SOURCE_SIDE, COMPOSITE_SOURCE_SIDE),
+            depth: renderer::depth_texture(device, COMPOSITE_SOURCE_SIDE, COMPOSITE_SOURCE_SIDE),
+            gbuffer: Gbuffer::new(device, COMPOSITE_SOURCE_SIDE, COMPOSITE_SOURCE_SIDE),
+        }
+    }
+
+    /// Begin a fresh producer image without borrowing any visible-frame
+    /// attachment.  The map-only draw that follows must write every plane
+    /// before the job is allowed to become `Ready`.
+    pub(crate) fn clear(&self, encoder: &mut wgpu::CommandEncoder) {
+        let world = self.world.create_view(&wgpu::TextureViewDescriptor::default());
+        let depth = self.depth.create_view(&wgpu::TextureViewDescriptor::default());
+        let gbuffer = self.gbuffer.views();
+        let _clear = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("map block composite producer clear"),
+            color_attachments: &[
+                Some(wgpu::RenderPassColorAttachment {
+                    view: &world,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                        store: wgpu::StoreOp::Store,
+                    },
+                }),
+                Some(wgpu::RenderPassColorAttachment {
+                    view: &gbuffer.ids,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(openshard_client_render::gbuffer::IDS_CLEAR),
+                        store: wgpu::StoreOp::Store,
+                    },
+                }),
+                Some(wgpu::RenderPassColorAttachment {
+                    view: &gbuffer.position,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(openshard_client_render::gbuffer::POSITION_CLEAR),
+                        store: wgpu::StoreOp::Store,
+                    },
+                }),
+                Some(wgpu::RenderPassColorAttachment {
+                    view: &gbuffer.normal,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(openshard_client_render::gbuffer::NORMAL_CLEAR),
+                        store: wgpu::StoreOp::Store,
+                    },
+                }),
+            ],
+            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                view: &depth,
+                depth_ops: Some(wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(1.0),
+                    store: wgpu::StoreOp::Store,
+                }),
+                stencil_ops: None,
+            }),
+            multiview_mask: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+        });
+    }
 }
 
 /// Everything a window needs, built once the window exists.
@@ -470,11 +651,6 @@ pub(crate) struct Screen {
     /// The one-quad renderer paired with [`Self::composites`].  It is built at
     /// window creation, not lazily when a block enters the camera.
     pub(crate) composite_pass: CompositeRenderer,
-    /// Immutable inputs last accepted by the composite cache.  Atlas additions
-    /// and cutaway changes invalidate only the current affected blocks; the
-    /// cache's own LRU then retains unrelated map blocks for a later pan back.
-    pub(crate) composite_atlas_revision: u64,
-    pub(crate) composite_cutaway: Cutaway,
     /// The world target format used for cached colour pixels.  This is normally
     /// [`blit::WORLD_FORMAT`], but keeping the value makes a future format
     /// reconfiguration an explicit cache-invalidating event instead of a
@@ -482,6 +658,10 @@ pub(crate) struct Screen {
     pub(crate) composite_output_format: wgpu::TextureFormat,
     /// The pass that draws what stands on the ground.
     pub(crate) statics: SpriteRenderer,
+    /// Reusable offscreen attachments for one canonical, map-only composite
+    /// producer job. Unlike the camera-frame targets below, these never follow
+    /// the viewport and are never a source for visible-frame captures.
+    pub(crate) composite_producer: CompositeProducerTargets,
     /// Server-owned ground items. Kept separate from immutable map rows so a
     /// cached block never needs a frame-local instance id.
     pub(crate) items_pass: SpriteRenderer,
@@ -567,8 +747,9 @@ pub(crate) struct Screen {
     /// The pass that washes that silhouette, and the ground under it, after the
     /// blit — see `openshard_client_render::select`.
     pub(crate) select: Select,
-    /// The held selection's own ring silhouette — a mobile or an item a click
-    /// named, drawn in [`Ring::SELECTED`] rather than [`Ring::SOFT`].
+    /// The combat target's own ring silhouette — or, when not fighting, a
+    /// mobile or item a click named — drawn in [`Ring::SELECTED`] rather than
+    /// [`Ring::SOFT`].
     ///
     /// Not [`Screen::outline_mask`]: that one is overwritten every frame by
     /// whatever the cursor is over *this* frame, hover or nothing, so a
@@ -957,6 +1138,7 @@ impl App {
             self.control.camera().render_width(),
             self.control.camera().render_height(),
         );
+        let composite_producer = CompositeProducerTargets::new(&device);
         let blit = Blit::new(&device, format);
         // The surface's format and not the world's: the ring is drawn over the
         // blit's output, so that a highlight is not dimmed by the night the way
@@ -1011,11 +1193,10 @@ impl App {
             renderer,
             composites,
             composite_pass,
-            composite_atlas_revision: atlases.statics.revision(),
-            composite_cutaway: Cutaway::OPEN,
             composite_output_format: blit::WORLD_FORMAT,
             statics,
             items_pass,
+            composite_producer,
             world,
             cutaway_world,
             blit,

@@ -21,7 +21,7 @@ use std::time::{Duration, Instant};
 
 use openshard_client_render::animation::FRAME_DELAY;
 use openshard_client_render::bench::{Scope, Script};
-use openshard_client_render::camera::{Camera, TileBounds};
+use openshard_client_render::camera::TileBounds;
 use openshard_client_render::composite::CompositeWorkQueue;
 use openshard_client_render::control::Control;
 use openshard_client_render::cutaway::Cutaway;
@@ -33,12 +33,28 @@ use openshard_protocol::world::Point;
 
 use crate::chat::Chat;
 use crate::diagnostics::{OccluderSurface, Route, TerrainOverlay};
+use crate::net_command::project_motion;
 use crate::window::Screen;
 use crate::{
-    GLIDE_INTERVAL, desk, frames, graphics, input, picking, replay, resources, shell, steer, windows, world,
+    GLIDE_INTERVAL, Scenario, desk, frames, graphics, input, picking, replay, resources, shell, steer,
+    windows, world,
 };
 
+/// State for the injected LOD field scenario.  The input stays in the client
+/// rather than being synthesized by the desktop, so each frame follows the
+/// same `Control` path as a real pan and can be reproduced in CI or locally.
+pub(crate) struct LodSweep {
+    pub(crate) elapsed: Duration,
+    reported_lod: bool,
+    dumped: bool,
+    pub(crate) atlas_soak: bool,
+    pub(crate) next_atlas_audit: Duration,
+}
+
 pub(crate) struct App {
+    /// The optional output mixer. It hears packet feedback but never owns game
+    /// state, which stays in `world`.
+    pub(crate) audio: crate::audio::Audio,
     /// The client's own asset files, read once and held for the run — see
     /// [`resources::Resources`].
     pub(crate) resources: resources::Resources,
@@ -49,7 +65,7 @@ pub(crate) struct App {
     /// [`world::WorldState`].
     pub(crate) world: world::WorldState,
     /// The shard thread's staged delivery into this event-loop-owned model.
-    /// Mutations are drained in order; superseded frame predictions are not.
+    /// Every packet and numbered movement event is drained in wire/app order.
     pub(crate) updates: crate::link::Updates,
     /// One opt-in pause after entering the world, used only by a diagnostic
     /// harness to make mailbox backpressure observable.
@@ -179,6 +195,14 @@ pub(crate) struct App {
     pub(crate) scripts: Vec<Script>,
     /// The one being walked in the window, while it is.
     pub(crate) replay: Option<replay::Replay>,
+    /// A requested presentation diagnostic, armed once the real GPU has told
+    /// the control how large a world texture it can allocate.
+    pub(crate) scenario: Option<Scenario>,
+    /// The active state of [`Scenario::LodSweep`], if that diagnostic was
+    /// requested at startup.
+    pub(crate) lod_sweep: Option<LodSweep>,
+    /// Diagnostic comparison of network, prediction, crowd and render positions.
+    pub(crate) movement_trace: Option<crate::movement_trace::MovementTrace>,
 }
 
 /// A route snapshot and the world positions that make it valid.
@@ -191,7 +215,7 @@ pub(crate) struct RouteCache {
 /// A terrain wash is independent of time; rebuilding it while the camera is
 /// still only repeats per-tile walkability queries.
 pub(crate) struct TerrainCache {
-    pub(crate) camera: Camera,
+    pub(crate) bounds: TileBounds,
     pub(crate) from: Point,
     pub(crate) overlay: Arc<TerrainOverlay>,
 }
@@ -206,6 +230,72 @@ pub(crate) struct OccluderCache {
 }
 
 impl App {
+    /// Begin an injected presentation scenario after the window and GPU exist.
+    pub(crate) fn begin_opening_scenario(&mut self) {
+        match self.scenario.take() {
+            Some(scenario @ (Scenario::LodSweep | Scenario::AtlasSoak)) => {
+                let atlas_soak = scenario == Scenario::AtlasSoak;
+                let mut zoom_steps = 0;
+                // Both paths reach the widest zoom-out rung, 1/2×. The LOD
+                // path crosses it quickly; the atlas path then pans slowly for
+                // a long time, which is where a cyclic upload would eventually
+                // overwrite a still-visible region.
+                while zoom_steps < 3 && self.zoom(false) {
+                    zoom_steps += 1;
+                }
+                tracing::info!(
+                    zoom = %self.control.camera().zoom(),
+                    zoom_steps,
+                    atlas_soak,
+                    "starting injected LOD/atlas sweep"
+                );
+                self.lod_sweep = Some(LodSweep {
+                    elapsed: Duration::ZERO,
+                    reported_lod: false,
+                    dumped: false,
+                    atlas_soak,
+                    next_atlas_audit: Duration::ZERO,
+                });
+            }
+            None => {}
+        }
+    }
+
+    /// Advance the LOD diagnostic through the same camera control that real
+    /// input uses. At half scale an 8×8 map block enters LOD1; the two-second
+    /// sweep crosses thousands of viewport pixels and repeatedly renews block
+    /// ownership at its edges before it takes its diagnostic dump.
+    pub(crate) fn advance_lod_sweep(&mut self, elapsed: Duration) {
+        let Some(sweep) = self.lod_sweep.as_mut() else {
+            return;
+        };
+        sweep.elapsed += elapsed;
+        let speed = if sweep.atlas_soak { 120.0 } else { 2_400.0 };
+        let pixels = (elapsed.as_secs_f64() * speed).round().max(1.0) as i32;
+        if sweep.atlas_soak {
+            // The reported residual pattern appears when travelling sideways:
+            // that crosses the block lattice's diagonal screen projections
+            // rather than only moving along one of them.
+            self.control.pan(pixels, 0);
+        } else {
+            self.control.pan(0, -pixels);
+        }
+        let settle_after = if sweep.atlas_soak {
+            Duration::from_secs(30)
+        } else {
+            Duration::from_secs(2)
+        };
+        if !sweep.reported_lod && sweep.elapsed >= settle_after {
+            sweep.reported_lod = true;
+            tracing::info!(selected = ?self.composite_lod.current(), "injected LOD sweep reached steady state");
+        }
+        if !sweep.atlas_soak && !sweep.dumped && sweep.elapsed >= settle_after {
+            sweep.dumped = true;
+            self.graphics.frame_dump = Some(crate::presentation::frame_dump_root().join("lod-sweep"));
+            tracing::info!("injected LOD sweep requested frame dump");
+        }
+    }
+
     /// Real pixels per gump pixel, which is egui's own scale.
     ///
     /// Not the window's scale factor: the interface's art is placed at
@@ -231,21 +321,13 @@ impl App {
             .relock(mobiles::gaze(&self.world.presentation.player));
     }
 
-    /// Where our own body is drawn this instant, off the crowd's clock.
-    ///
-    /// Read rather than stored, and this is the one place that reads it: the
-    /// position is a function of a clock and an ease's state, so one read once a
-    /// frame is what keeps the sprite, the camera and the scope on the same
-    /// number. A crowd that has never heard of us — before a shard names the
-    /// body, and for the frame a placeholder is created on — answers with the
-    /// tile, which is where a body nobody is easing stands.
     /// Whether there is anybody to show a frame to: the window has the keyboard
     /// and is not covered.
     ///
     /// What the loop's pacing hangs on, and the whole of what this client does
     /// about power. A window in the background still ages its animations — the
-    /// crowd has to be where it would have been when the player comes back —
-    /// but it does it on the animation clock rather than at the display's rate.
+    /// other mobile animations age on their animation clock rather than at the
+    /// display's rate.
     pub(crate) fn watched(&self) -> bool {
         self.input.focused && !self.input.occluded
     }
@@ -285,9 +367,7 @@ impl App {
     /// The fallback timer's interval. See [`App::pacing`] for when it is the one
     /// that decides.
     pub(crate) fn redraw_interval(&self) -> std::time::Duration {
-        let moving = self.world.presentation.crowd.anyone_gliding()
-            || self.control.settling()
-            || self.replay.is_some();
+        let moving = self.world.anyone_gliding() || self.control.settling() || self.replay.is_some();
         if moving { GLIDE_INTERVAL } else { FRAME_DELAY }
     }
 
@@ -310,14 +390,14 @@ impl App {
         let ground = script
             .knots()
             .first()
-            .map_or(self.world.presentation.player.at.z, |knot| {
+            .map_or(self.world.motion.planning_state().position.z, |knot| {
                 Self::in_bounds(
                     i32::from(knot.from.x),
                     i32::from(knot.from.y),
                     &self.resources.map,
                 )
                 .and_then(|tile| self.resources.map.land(tile.x, tile.y))
-                .map_or(self.world.presentation.player.at.z, |cell| cell.z)
+                .map_or(self.world.motion.planning_state().position.z, |cell| cell.z)
             });
         let replay = replay::Replay::new(script, ground);
         if let Some(start) = replay.start() {
@@ -336,20 +416,19 @@ impl App {
                 .view
                 .as_ref()
                 .is_some_and(|view| view.player.war);
+            let facing = Facing::walking(self.world.motion.planning_state().facing.direction);
+            self.world.motion.set_local(start, facing);
+            let motion = self.world.motion.planning_state();
             self.world.presentation.player = self.world.presentation.crowd.snap(
                 self.world.me(),
-                start,
+                motion.position,
                 body,
-                Facing::walking(self.world.presentation.player.facing),
+                motion.facing,
                 hue,
                 war,
             );
             self.world.presentation.player.equipment = equipment;
-            self.world.prediction.set(
-                self.world.presentation.player.at,
-                Facing::walking(self.world.presentation.player.facing),
-            );
-            self.world.presentation.cutaway_at = self.world.presentation.player.at;
+            self.world.presentation.cutaway_at = motion.position;
             self.control
                 .relock(mobiles::gaze(&self.world.presentation.player));
         }
@@ -370,11 +449,6 @@ impl App {
         let moves = replay.advance(elapsed);
         let finished = replay.finished();
         for step in moves {
-            let (body, hue) = (
-                self.world.presentation.player.body,
-                self.world.presentation.player.hue,
-            );
-            let equipment = std::mem::take(&mut self.world.presentation.player.equipment);
             // The stance the session is actually in: a replay walks this body
             // through a recorded route, and what it is wearing or holding is
             // not part of the recording — so a scenario replayed while at war
@@ -385,25 +459,34 @@ impl App {
                 .view
                 .as_ref()
                 .is_some_and(|view| view.player.war);
-            self.world.presentation.player = match step.glided {
-                true => {
-                    self.world
-                        .presentation
-                        .crowd
-                        .see(self.world.me(), step.to, body, step.facing, hue, war)
-                }
-                false => {
-                    self.world
-                        .presentation
-                        .crowd
-                        .snap(self.world.me(), step.to, body, step.facing, hue, war)
-                }
-            };
-            self.world.presentation.player.equipment = equipment;
-            self.world
-                .prediction
-                .set(self.world.presentation.player.at, step.facing);
-            self.world.presentation.cutaway_at = self.world.presentation.player.at;
+            if step.glided {
+                self.world.motion.accept_trusted_step(step.to, step.facing);
+                let me = self.world.me();
+                project_motion(
+                    &mut self.world.presentation.crowd,
+                    me,
+                    &mut self.world.presentation.player,
+                    self.world.motion.render_state(),
+                    war,
+                );
+            } else {
+                self.world.motion.set_local(step.to, step.facing);
+                let motion = self.world.motion.planning_state();
+                let equipment = std::mem::take(&mut self.world.presentation.player.equipment);
+                self.world.presentation.player = self.world.presentation.crowd.snap(
+                    self.world.me(),
+                    motion.position,
+                    self.world.presentation.player.body,
+                    motion.facing,
+                    self.world.presentation.player.hue,
+                    war,
+                );
+                self.world.presentation.player.equipment = equipment;
+            }
+            self.world.presentation.cutaway_at = self.world.motion.planning_state().position;
+            if let Some(trace) = self.movement_trace.as_mut() {
+                trace.record("replay_step", &self.world, self.control.camera());
+            }
         }
         if finished {
             self.replay = None;

@@ -272,6 +272,20 @@ impl BodyKind {
         }
     }
 
+    /// Which group is the first death animation for this kind of body.
+    ///
+    /// Like standing and walking, these are three distinct enumerations: group
+    /// 2 is `Die1` for a monster, but group 8 is the animal equivalent and 21
+    /// is the human one. A corpse is drawn from this group rather than from the
+    /// `0x2006` item's static art, whose amount names the body it was.
+    pub const fn dying(self) -> AnimationGroup {
+        match self {
+            Self::Monster => AnimationGroup(2),
+            Self::Animal => AnimationGroup(8),
+            Self::Human => AnimationGroup(21),
+        }
+    }
+
     /// Which group means "walking".
     ///
     /// Zero in all three, which is the one coincidence between them — and the
@@ -795,6 +809,21 @@ mod tests {
             BodyKind::Human.standing(),
             AnimationGroup(4),
             "PeopleAnimationGroup.Stand"
+        );
+        assert_eq!(
+            BodyKind::Monster.dying(),
+            AnimationGroup(2),
+            "HighAnimationGroup.Die1"
+        );
+        assert_eq!(
+            BodyKind::Animal.dying(),
+            AnimationGroup(8),
+            "LowAnimationGroup.Die1"
+        );
+        assert_eq!(
+            BodyKind::Human.dying(),
+            AnimationGroup(21),
+            "PeopleAnimationGroup.Die1"
         );
         // Walking is the coincidence, and the reason standing is not.
         for kind in [BodyKind::Monster, BodyKind::Animal, BodyKind::Human] {

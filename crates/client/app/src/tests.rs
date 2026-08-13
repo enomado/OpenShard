@@ -290,7 +290,7 @@ fn the_group_packed_is_the_group_the_crowd_is_playing() {
     // Through the list `App::wanted_in` grows the atlases from, and not
     // through `advance_groups` directly: what is being protected is that the
     // packing path goes through the refresh at all.
-    let drawn = App::everyone_drawn(&crowd, None, &stepped, &[]);
+    let drawn = App::everyone_drawn(&crowd, None, &stepped, &[], &[]);
     let mobiles: Vec<Mobile> = drawn.into_iter().map(|(_, mobile)| mobile).collect();
     let wanted = mobiles::needed_animations(&mobiles, &EquipConv::default());
     let (direction, _) = openshard_uofiles::anim::facing(mobiles[0].facing);
@@ -325,7 +325,7 @@ fn a_frame_snapshot_reuses_a_mobiles_equipment() {
     }]
     .into();
 
-    let snapshot = App::everyone_drawn(&crowd, None, &player, &[]);
+    let snapshot = App::everyone_drawn(&crowd, None, &player, &[], &[]);
     assert!(std::rc::Rc::ptr_eq(&player.equipment, &snapshot[0].1.equipment));
 }
 

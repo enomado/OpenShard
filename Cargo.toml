@@ -65,6 +65,8 @@ opt-level = 1
 opt-level = 1
 
 [workspace.dependencies]
+# Fast non-cryptographic hashing for hot integer-keyed maps.
+rustc-hash = "2.1"
 # Internal crates
 openshard-ai = { path = "crates/server/ai", version = "0.0.1" }
 openshard-chat = { path = "crates/server/chat", version = "0.0.1" }
@@ -134,6 +136,7 @@ thiserror = "2"
 # Property-based fuzzing over a hand-written oracle — random scenes, shrunk to
 # a minimal failing case rather than one fixed fixture per bug. Dev-only.
 proptest = "1"
+rodio = { version = "0.22", default-features = false, features = ["playback", "mp3", "vorbis", "flac", "wav"] }
 tokio = { version = "1", features = ["full"] }
 toml = "0.8"
 tracing = "0.1"

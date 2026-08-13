@@ -70,6 +70,27 @@ impl EncodePacket for PlaySound {
     }
 }
 
+impl DecodePacket for PlaySound {
+    const ID: u8 = 0x54;
+
+    fn decode_body(
+        reader: &mut crate::codec::PacketReader<'_>,
+        _version: ClientVersion,
+    ) -> Result<Self, crate::error::DecodeError> {
+        // The first byte is a server-side playback flag and the next u16 is a
+        // volume hint.  Neither changes which client asset this packet names;
+        // the client keeps its own mixer settings, so consume both here rather
+        // than inventing a second, packet-local volume policy.
+        let _flags = reader.u8()?;
+        let sound = SoundId(reader.u16()?);
+        let _volume = reader.u16()?;
+        Ok(Self {
+            sound,
+            at: Point::new(reader.u16()?, reader.u16()?, reader.u16()? as i16 as i8),
+        })
+    }
+}
+
 /// `0x6E` — animate a mobile with the classic action packet. 14 bytes.
 ///
 /// The pre-7.0 form, and what a client without [`Feature::NewMobileAnimation`]
@@ -187,6 +208,25 @@ impl EncodePacket for NewAnimation {
         out.u16(self.animation_type);
         out.u16(self.action);
         out.u8(self.delay);
+    }
+}
+
+impl DecodePacket for NewAnimation {
+    const ID: u8 = 0xE2;
+
+    fn decode_body(
+        reader: &mut crate::codec::PacketReader<'_>,
+        _version: ClientVersion,
+    ) -> Result<Self, crate::error::DecodeError> {
+        Ok(Self {
+            serial: Serial::new(reader.u32()?).ok_or(crate::error::DecodeError::UnknownValue {
+                field: "new animation serial",
+                value: 0,
+            })?,
+            animation_type: reader.u16()?,
+            action: reader.u16()?,
+            delay: reader.u8()?,
+        })
     }
 }
 

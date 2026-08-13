@@ -267,11 +267,16 @@ fn gain_skill(state: &mut WorldState, entity: EntityId, skill: Skill) {
     // Both halves of the move are announced, so an open window follows a skill
     // that falls as well as one that rises.
     if let Some(serial) = state.registry.serial_of(entity) {
-        for (moved, value) in lowered.into_iter().chain(raised.map(|v| (skill, v))) {
+        for (moved, previous, value) in lowered
+            .into_iter()
+            .map(|(moved, value)| (moved, value.saturating_add(to_gain), value))
+            .chain(raised.map(|value| (skill, base, value)))
+        {
             state.bus.send(SkillChanged {
                 entity,
                 serial,
                 skill: moved,
+                previous,
                 value,
             });
         }

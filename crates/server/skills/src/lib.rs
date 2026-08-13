@@ -51,6 +51,8 @@ pub struct SkillChanged {
     pub serial: Serial,
     /// Which skill.
     pub skill: Skill,
+    /// Its trained value before this move, in tenths.
+    pub previous: u16,
     /// The skill's value now, in tenths.
     pub value: u16,
 }

@@ -54,6 +54,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 mod app;
+mod audio;
 mod chat;
 mod clutter;
 mod crowd;
@@ -71,6 +72,7 @@ mod input;
 mod jank;
 mod keys;
 mod link;
+mod movement_trace;
 mod net_command;
 mod own_windows;
 mod picking;
@@ -211,6 +213,20 @@ pub struct Opening {
     /// This is an opt-in diagnostic for exercising backpressure; it is never a
     /// gameplay setting and defaults to no pause.
     pub stall_on_update: Option<std::time::Duration>,
+    /// An opt-in, deterministic presentation scenario.  It is a diagnostic
+    /// input rather than a player command: the event loop drives it directly,
+    /// so a renderer investigation does not depend on a desktop input injector.
+    pub scenario: Option<Scenario>,
+}
+
+/// A repeatable presentation path injected into the client at startup.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Scenario {
+    /// Zoom out to the first composite tier and pan across many map blocks.
+    LodSweep,
+    /// Hold the maximum zoom while comparing the resident static-atlas texture
+    /// against its CPU source; used to catch delayed atlas overwrites.
+    AtlasSoak,
 }
 
 /// The facet to open. Felucca: `0x1B` carries the facet's *size* and not its
@@ -456,6 +472,7 @@ pub fn run<D: Dial + Send + 'static>(
         at,
         solids,
         stall_on_update,
+        scenario,
     } = opening;
     // Reading the whole facet takes a moment and a few hundred megabytes. That
     // is the shape `uofiles` has today — see the backlog in docs/client.md — and
@@ -616,7 +633,7 @@ pub fn run<D: Dial + Send + 'static>(
 
     // User events are wake-ups only. The shard thread puts updates in the
     // staged mailbox below, so a busy platform loop cannot accumulate a second
-    // user event for every now-stale frame prediction.
+    // user event for every update it has not yet drained.
     let event_loop = match EventLoop::<()>::with_user_event().build() {
         Ok(event_loop) => event_loop,
         Err(error) => {
@@ -743,7 +760,18 @@ pub fn run<D: Dial + Send + 'static>(
         .ok();
     checkpoint("navigation graph loaded");
 
+    // The sound mixer opens before a window exists, but its values belong to
+    // the HUD's persisted settings just like light tuning does.
+    let mut desk = match desk::Desk::load(std::path::Path::new(desk::PATH)) {
+        Ok(desk) => desk,
+        Err(error) => {
+            eprintln!("{error} — starting with the default HUD layout");
+            desk::Desk::default()
+        }
+    };
+    desk.audio = desk.audio.clamped();
     let mut app = App {
+        audio: audio::Audio::open(dir, desk.audio.effects, desk.audio.music),
         // Built before `resources` moves `tiledata` and `map` into it: this
         // borrows both.
         world: world::WorldState {
@@ -751,10 +779,7 @@ pub fn run<D: Dial + Send + 'static>(
                 view: None,
                 facet_checked: false,
             },
-            prediction: world::PredictionState {
-                at: start,
-                facing: Facing::walking(Direction::SouthEast),
-            },
+            motion: world::PlayerMotion::new(start, Facing::walking(Direction::SouthEast)),
             presentation: world::PresentationWorld {
                 tile_animations: StaticAnimations::build(&animdata, &tiledata),
                 flame_clock: std::time::Duration::ZERO,
@@ -775,8 +800,10 @@ pub fn run<D: Dial + Send + 'static>(
                 cutaway_at: start,
                 cutaway_fades: openshard_client_render::cutaway::Fades::default(),
                 others: Vec::new(),
+                corpses: Vec::new(),
                 items: Vec::new(),
                 item_serials: Vec::new(),
+                damage_numbers: Vec::new(),
                 clutter: clutter::Clutter::default(),
                 crowd: {
                     // The body's ease, which is not the camera's — see `STARTUP_EASE`.
@@ -812,6 +839,10 @@ pub fn run<D: Dial + Send + 'static>(
         },
         graphics: graphics::GraphicsSettings {
             cutaway_disabled: std::env::var_os("OPENSHARD_DISABLE_CUTAWAY").is_some(),
+            body_overlap_transparency_disabled: std::env::var_os(
+                "OPENSHARD_DISABLE_BODY_OVERLAP_TRANSPARENCY",
+            )
+            .is_some(),
             // Daylight until asked otherwise: the lighting pass is then
             // exactly the copy the blit has always been.
             night: false,
@@ -852,17 +883,9 @@ pub fn run<D: Dial + Send + 'static>(
         control: Control::new(Camera::new(start, 1024, 768), 2048, STARTUP_RIG),
         zoom_limit_reported: false,
         shell: None,
-        // What the last run left. A file that cannot be read is worth saying so
-        // about and not worth refusing to start over: the defaults are a working
-        // HUD, and the alternative is a client that will not open because of
-        // where a window used to be.
-        desk: match desk::Desk::load(std::path::Path::new(desk::PATH)) {
-            Ok(desk) => desk,
-            Err(error) => {
-                eprintln!("{error} — starting with the default HUD layout");
-                desk::Desk::default()
-            }
-        },
+        // What the last run left, already read above so audio starts with the
+        // same saved settings its panel shows.
+        desk,
         steer: {
             // The one decision about walking that is a player's taste rather
             // than a rule: whether a body that has walked into something
@@ -953,6 +976,9 @@ pub fn run<D: Dial + Send + 'static>(
         _puffin: profile::serve(),
         scripts: bench::scripts(),
         replay: None,
+        scenario,
+        lod_sweep: None,
+        movement_trace: movement_trace::MovementTrace::open(),
     };
     match event_loop.run_app(&mut app) {
         Ok(()) => ExitCode::SUCCESS,

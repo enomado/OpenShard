@@ -3062,6 +3062,53 @@ fn war_mode_and_attack_are_confirmed_to_the_client() {
 }
 
 #[test]
+fn a_player_in_war_mode_retaliates_when_struck_without_a_target() {
+    let now = Instant::now();
+    let mut world = world();
+    let defender = enter(&mut world, now);
+    let attacker = enter(&mut world, now);
+    let defender_entity = world.state.players[&defender];
+    let defender_serial = serial_of(&world, defender);
+    let attacker_serial = serial_of(&world, attacker);
+
+    world.queue(Command::WarMode {
+        connection: defender,
+        war: true,
+    });
+    world.tick(now);
+    let _ = packets_for(&mut world, defender);
+
+    combat::damage(
+        &mut world.state,
+        defender_serial,
+        1,
+        openshard_state::DamageType::Physical,
+        Some(attacker_serial),
+    );
+    world.tick(now);
+
+    assert_eq!(
+        world
+            .state
+            .registry
+            .get::<Combat>(defender_entity)
+            .and_then(|combat| combat.target),
+        Some(attacker_serial),
+        "a struck war-mode player aims back at the attacker"
+    );
+    assert!(
+        !world.state.registry.has::<CriminalUntil>(defender_entity),
+        "self-defence does not flag the defending player criminal"
+    );
+    assert!(
+        packets_for(&mut world, defender)
+            .iter()
+            .any(|packet| packet[0] == 0xAA && mentions(packet, attacker_serial)),
+        "the client receives the new confirmed target for its marker"
+    );
+}
+
+#[test]
 fn a_player_in_war_mode_swings_at_an_adjacent_target() {
     let now = Instant::now();
     let mut world = world();
@@ -4484,6 +4531,7 @@ fn a_skill_gain_updates_the_open_window() {
     let _ = packets_for(&mut world, connection);
 
     let mut saw_update = false;
+    let mut saw_message = false;
     for _ in 0..80 {
         world.queue(Command::UseSkill {
             serial,
@@ -4492,14 +4540,17 @@ fn a_skill_gain_updates_the_open_window() {
             max_skill: 500,
         });
         world.tick(now);
-        saw_update |= packets_for(&mut world, connection)
+        let packets = packets_for(&mut world, connection);
+        saw_update |= packets.iter().any(|p| p[0] == 0x3A && p[3] == 0xDF);
+        saw_message |= packets
             .iter()
-            .any(|p| p[0] == 0x3A && p[3] == 0xDF);
-        if saw_update {
+            .any(|p| p[0] == 0x1C && String::from_utf8_lossy(p).contains("You have gained in Anatomy."));
+        if saw_update && saw_message {
             break;
         }
     }
     assert!(saw_update, "a gain pushed a single-skill update to the window");
+    assert!(saw_message, "a gain wrote the classic line to the journal");
 }
 
 #[test]
@@ -7286,6 +7337,47 @@ fn an_aggressive_creature_attacks_a_nearby_player() {
             .current
             < DEFAULT_HITPOINTS,
         "the creature noticed the player and hit them"
+    );
+}
+
+#[test]
+fn a_melee_swing_turns_the_attacker_toward_its_target() {
+    let now = Instant::now();
+    let mut world = world();
+    let attacker = enter(&mut world, now);
+    let defender = enter(&mut world, now);
+    teleport(&mut world, defender, Point::new(START.0 + 1, START.1, 0));
+
+    let attacker_entity = world.state.players[&attacker];
+    let defender_serial = serial_of(&world, defender);
+    world
+        .state
+        .registry
+        .insert(attacker_entity, Heading(Facing::walking(Direction::South)));
+    world.state.registry.insert(
+        attacker_entity,
+        Combat {
+            warmode: true,
+            target: Some(defender_serial),
+            next_swing: world.state.ticks,
+        },
+    );
+
+    combat::swings(&mut world.state);
+
+    assert_eq!(
+        world.state.registry.get::<Heading>(attacker_entity),
+        Some(&Heading(Facing::walking(Direction::East))),
+        "the attacking body faces the adjacent target before its animation"
+    );
+    assert_eq!(
+        world
+            .state
+            .registry
+            .get::<Movement>(attacker_entity)
+            .map(|movement| movement.0.facing.direction),
+        Some(Direction::East),
+        "the next AI/player step agrees with the displayed heading"
     );
 }
 

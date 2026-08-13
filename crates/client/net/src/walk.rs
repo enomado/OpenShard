@@ -321,6 +321,15 @@ impl Walk {
         self.predicted
     }
 
+    /// The protocol identity of the newest locally accepted step.
+    ///
+    /// The application-side motion model uses this to pair its visual
+    /// transition with the `WalkAck` that later retires it.  It is intentionally
+    /// absent before the first accepted step.
+    pub fn newest_pending_sequence(&self) -> Option<StepSequence> {
+        self.pending.back().map(|pending| pending.sequence)
+    }
+
     /// How many steps have been sent and not yet answered.
     ///
     /// Capped at [`MAX_IN_FLIGHT`], and *not* as a pace limit: the server's own

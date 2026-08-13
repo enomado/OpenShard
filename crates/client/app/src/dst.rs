@@ -68,9 +68,12 @@ use openshard_client_render::bench::{Cadence, Metrics, Sample};
 use openshard_client_render::camera::{Camera, TILE_HEIGHT, TILE_WIDTH};
 use openshard_client_render::chart;
 use openshard_client_render::control::Control;
+use openshard_client_render::follow::Gaze;
 use openshard_client_render::follow::Rig;
 use openshard_client_render::mobiles::{self, Mobile};
-use openshard_movement::{OpenWorld, RUN_HOLD, Terrain, Tile, WALK_HOLD, Walk as Handled, Walker};
+use openshard_movement::{
+    OpenWorld, Terrain, Tile, WALK_HOLD, Walk as Handled, Walker, step_hold, step_progress,
+};
 use openshard_protocol::direction::{Direction, Facing};
 use openshard_protocol::mobile::Notoriety;
 use openshard_protocol::packet::decode_packet;
@@ -82,7 +85,10 @@ use openshard_protocol::world::{Point, WalkAck, WalkReject, WalkRequest};
 
 use crate::GLIDE_INTERVAL;
 use crate::crowd::{Crowd, Ease, Who};
+use crate::link::{self, Body};
+use crate::net_command::project_motion;
 use crate::steer::Ground;
+use crate::world::PlayerMotion;
 
 /// The body every scenario walks.
 const BODY: Graphic = Graphic(0x0190);
@@ -237,7 +243,7 @@ impl Oracle {
             }
 
             let Some(direction) = held else { continue };
-            let takes = if running { RUN_HOLD } else { WALK_HOLD };
+            let takes = step_hold(running);
             // A turn costs nothing. It is a `0x02` of its own — turning is a
             // step in UO and the shard acks it — but it is not a *delay*: the
             // shard answers a turn before it charges the pace budget, so the
@@ -275,7 +281,7 @@ impl Oracle {
                 position = knot.to;
                 continue;
             }
-            let progress = elapsed.as_secs_f64() / knot.takes.as_secs_f64();
+            let progress = step_progress(elapsed, knot.takes);
             position = (
                 knot.from.0 + (knot.to.0 - knot.from.0) * progress,
                 knot.from.1 + (knot.to.1 - knot.from.1) * progress,
@@ -736,6 +742,61 @@ impl Sim {
     }
 }
 
+/// The player-only part of the event timeline, without a window, map assets,
+/// or a live connection.  Unlike [`Sim`], this deliberately drives the same
+/// app-thread movement core and render projection as `App::on_update`.
+///
+/// It exists for packet-order regressions that are too small to need the walk
+/// oracle's shard and steering model: a double-click can make an ordinary
+/// container packet arrive between the local prediction and its acknowledgement.
+struct MotionKernel {
+    motion: PlayerMotion,
+    crowd: Crowd,
+    player: Mobile,
+}
+
+impl MotionKernel {
+    fn new(at: Point, facing: Facing) -> Self {
+        let mut crowd = Crowd::default();
+        crowd.commanding(me());
+        let player = crowd.see(me(), at, BODY, facing, Hue::NONE, false);
+        Self {
+            motion: PlayerMotion::new(at, facing),
+            crowd,
+            player,
+        }
+    }
+
+    fn predict(&mut self, body: Body, sequence: openshard_protocol::world::StepSequence) {
+        self.motion.accept_local(body, sequence);
+        self.project();
+    }
+
+    fn mutation(&mut self, movement: Option<link::Movement>) {
+        self.motion.accept_network(movement);
+        self.project();
+    }
+
+    fn frame(&mut self, elapsed: Duration) {
+        self.motion.advance(elapsed);
+        self.crowd.advance(elapsed);
+        self.project();
+    }
+
+    fn project(&mut self) {
+        project_motion(
+            &mut self.crowd,
+            me(),
+            &mut self.player,
+            self.motion.render_state(),
+            false,
+        );
+        // This is the same final local-player projection the frame builder
+        // performs after Crowd has supplied the animation group and frame.
+        self.player.drawn = self.motion.drawn();
+    }
+}
+
 /// Assert the drawn walk never left a corridor of `tiles` around the oracle.
 #[track_caller]
 fn tracks(sim: &Sim, oracle: &Oracle, tiles: f64) {
@@ -901,6 +962,336 @@ fn ten_steps_east() -> Vec<Act> {
 }
 
 // --- The scenarios ---------------------------------------------------------
+
+/// A double-click can cause `OpenContainer` to arrive while the step it was
+/// made during is still gliding.  That packet is a world mutation, but it is
+/// not a movement event: accepting its generic `Body` used to overwrite the
+/// visual source with the server's old tile and leave the sprite behind the
+/// predicted/HUD position.
+///
+/// This runs the actual packet fold, both app-side movement cores, and the
+/// player projection on a virtual clock. No window or client process is
+/// required to reproduce the packet ordering.
+#[test]
+fn double_click_container_packet_cannot_desynchronise_a_predicted_glide() {
+    let facing = Facing::walking(Direction::East);
+    let mut wire = Walk::new(START, facing);
+    wire.step(facing, |_, _| None).expect("the first step is valid");
+    let sequence = wire
+        .newest_pending_sequence()
+        .expect("the predicted step has protocol identity");
+    let predicted = wire.predicted();
+    let mut kernel = MotionKernel::new(START, facing);
+    kernel.predict(
+        Body {
+            predicted,
+            corrected: false,
+        },
+        sequence,
+    );
+    kernel.frame(WALK_HOLD / 2);
+    let halfway = kernel.motion.drawn();
+    assert_ne!(halfway, Gaze::on(START), "the local prediction is gliding");
+    let motion_before_container = kernel.motion.clone();
+
+    let container = ServerPacket::OpenContainer(openshard_protocol::containers::OpenContainer {
+        container: Serial::new(0x4000_0001).unwrap(),
+        gump: Graphic(0x003C),
+    });
+    let folded = link::fold(&mut wire, &container).expect("a container does not disturb Walk");
+    assert!(
+        folded.movement.is_none(),
+        "the double-click packet has no movement fact"
+    );
+    kernel.mutation(folded.movement);
+    assert_eq!(
+        kernel.motion, motion_before_container,
+        "opening a container cannot change any movement-core field"
+    );
+    assert_eq!(kernel.motion.planning_state(), predicted);
+    assert_eq!(kernel.motion.pending_steps(), 1);
+    assert_eq!(
+        kernel.motion.route_origin(),
+        START,
+        "the HUD begins at the active transition source until the delayed acknowledgement"
+    );
+    assert_eq!(kernel.motion.transition_from(), Some(START));
+    assert_eq!(kernel.crowd.stepping_from(me()), Some(START));
+    assert_eq!(
+        kernel.motion.drawn(),
+        halfway,
+        "rebuilding the container presentation cannot restart or snap the glide"
+    );
+
+    let ack = ServerPacket::WalkAck(WalkAck {
+        sequence,
+        notoriety: Notoriety::Innocent,
+    });
+    let folded = link::fold(&mut wire, &ack).expect("the pending step is acknowledged");
+    kernel.mutation(folded.movement);
+    assert_eq!(kernel.motion.drawn(), halfway);
+
+    kernel.frame(WALK_HOLD / 2);
+    assert_eq!(kernel.motion.confirmed_state(), predicted);
+    assert_eq!(kernel.motion.planning_state(), predicted);
+    assert_eq!(kernel.motion.pending_steps(), 0);
+    assert_eq!(kernel.motion.transition_from(), None);
+    assert_eq!(kernel.motion.drawn(), Gaze::on(predicted.position));
+    assert_eq!(kernel.crowd.stepping_from(me()), None);
+}
+
+/// The trace that originally exposed the bug was not a pending online walk:
+/// `confirmed` and the route advanced with `pending=0` while `Crowd` remained
+/// on the replay's start tile.  A replay/offline step is trusted immediately,
+/// but it must still publish the same transition to the render clock before
+/// the next frame asks for the HUD and sprite.
+#[test]
+fn trusted_replay_steps_cannot_advance_the_hud_past_the_drawn_body() {
+    let facing = Facing::walking(Direction::East);
+    let first = Point::new(START.x + 1, START.y, START.z);
+    let second = Point::new(START.x + 2, START.y, START.z);
+    let mut kernel = MotionKernel::new(START, facing);
+
+    kernel.motion.accept_trusted_step(first, facing);
+    kernel.project();
+    kernel.frame(WALK_HOLD);
+    assert_eq!(kernel.motion.drawn(), Gaze::on(first));
+    assert_eq!(kernel.motion.route_origin(), first);
+
+    kernel.motion.accept_trusted_step(second, facing);
+    kernel.project();
+    kernel.frame(WALK_HOLD / 2);
+
+    assert_eq!(
+        kernel.motion.route_origin(),
+        first,
+        "HUD starts at the glide source"
+    );
+    assert_eq!(kernel.motion.transition_from(), Some(first));
+    assert_eq!(kernel.crowd.stepping_from(me()), Some(first));
+    assert_ne!(kernel.motion.drawn(), Gaze::on(first));
+    assert_ne!(kernel.motion.drawn(), Gaze::on(second));
+
+    kernel.frame(WALK_HOLD / 2);
+    assert_eq!(kernel.motion.route_origin(), second);
+    assert_eq!(kernel.motion.transition_from(), None);
+    assert_eq!(kernel.motion.drawn(), Gaze::on(second));
+}
+
+/// A blocked window can age several motion-core transitions in one frame.
+/// Crowd receives only the newly active transition afterwards, so it must
+/// rebase its animation clock at that explicit source instead of assuming it
+/// saw every intermediate command.
+#[test]
+fn a_stalled_frame_rebases_crowd_at_the_active_motion_source() {
+    let facing = Facing::walking(Direction::East);
+    let first = Point::new(START.x + 1, START.y, START.z);
+    let second = Point::new(START.x + 2, START.y, START.z);
+    let third = Point::new(START.x + 3, START.y, START.z);
+    let mut kernel = MotionKernel::new(START, facing);
+
+    for (position, sequence) in [(first, 1), (second, 2), (third, 3)] {
+        kernel.predict(
+            Body {
+                predicted: openshard_client_net::walk::Predicted { position, facing },
+                corrected: false,
+            },
+            openshard_protocol::world::StepSequence(sequence),
+        );
+    }
+
+    kernel.frame(WALK_HOLD * 2);
+
+    assert_eq!(kernel.motion.transition_from(), Some(second));
+    assert_eq!(kernel.crowd.stepping_from(me()), Some(second));
+    assert_eq!(kernel.player.drawn, kernel.motion.drawn());
+}
+
+/// The local core owns the whole smooth chain while acknowledgements are in
+/// flight.  The shard arbitrates those numbered steps, rather than pacing the
+/// picture: only a refusal is allowed to discard the unconfirmed suffix.
+#[test]
+fn refusing_the_oldest_step_snaps_and_discards_the_entire_local_chain() {
+    let facing = Facing::walking(Direction::East);
+    let first = Point::new(START.x + 1, START.y, START.z);
+    let second = Point::new(START.x + 2, START.y, START.z);
+    let mut kernel = MotionKernel::new(START, facing);
+
+    for (position, sequence) in [(first, 41), (second, 42)] {
+        kernel.predict(
+            Body {
+                predicted: Predicted { position, facing },
+                corrected: false,
+            },
+            openshard_protocol::world::StepSequence(sequence),
+        );
+    }
+    kernel.frame(WALK_HOLD / 2);
+    assert!(
+        kernel.motion.is_gliding(),
+        "the local core continues before a server answer"
+    );
+    assert_eq!(kernel.motion.pending_steps(), 2);
+    assert_eq!(kernel.motion.planning_state().position, second);
+    assert_eq!(kernel.motion.route_origin(), START);
+
+    kernel.mutation(Some(link::Movement::Reject {
+        sequence: openshard_protocol::world::StepSequence(41),
+        confirmed: Predicted {
+            position: START,
+            facing,
+        },
+    }));
+
+    assert!(
+        !kernel.motion.is_gliding(),
+        "a refusal ends the local chain at once"
+    );
+    assert_eq!(kernel.motion.confirmed_state().position, START);
+    assert_eq!(kernel.motion.planning_state().position, START);
+    assert_eq!(kernel.motion.pending_steps(), 0);
+    assert_eq!(kernel.motion.route_origin(), START);
+    assert_eq!(kernel.motion.transition_from(), None);
+    assert_eq!(kernel.motion.drawn(), Gaze::on(START));
+    assert_eq!(kernel.player.drawn, Gaze::on(START));
+    assert_eq!(kernel.crowd.stepping_from(me()), None);
+}
+
+/// The fixed DST scripts pin known timing regressions; this property search
+/// covers the crossings between them.  It deliberately mixes packet outcomes
+/// with long presentation gaps, because a queue that is correct event-by-event
+/// can still fail when one frame consumes several queued transitions.
+#[test]
+fn fuzzed_motion_events_keep_the_core_and_crowd_projection_consistent() {
+    use proptest::prelude::*;
+
+    proptest!(ProptestConfig::with_cases(1_024), |(
+        events in prop::collection::vec(
+            (
+                0_u8..6,
+                -1_i8..=1,
+                -1_i8..=1,
+                -3_i8..=3,
+                0_u16..=2_000,
+            ),
+            1..96,
+        ),
+    )| {
+        let facing = Facing::walking(Direction::East);
+        let mut kernel = MotionKernel::new(START, facing);
+        let mut outstanding = VecDeque::new();
+        let mut next_sequence = 0_u8;
+        let mut confirmed = Predicted {
+            position: START,
+            facing,
+        };
+
+        let offset = |value: u16, delta: i8| {
+            (i32::from(value) + i32::from(delta)).clamp(0, i32::from(u16::MAX)) as u16
+        };
+
+        for (kind, dx, dy, dz, elapsed) in events {
+            match kind {
+                // Locally accepted protocol step, including a turn or a
+                // height-only move: all are useful boundary cases for the
+                // motion queue even when a real terrain rule would reject
+                // some of them before the network layer.
+                0 => {
+                    let from = kernel.motion.planning_state();
+                    let predicted = Predicted {
+                        position: Point::new(
+                            offset(from.position.x, dx),
+                            offset(from.position.y, dy),
+                            from.position.z.saturating_add(dz),
+                        ),
+                        facing,
+                    };
+                    let sequence = openshard_protocol::world::StepSequence(next_sequence);
+                    next_sequence = next_sequence.wrapping_add(1);
+                    kernel.predict(
+                        Body {
+                            predicted,
+                            corrected: false,
+                        },
+                        sequence,
+                    );
+                    outstanding.push_back((sequence, predicted));
+                }
+                // A display or event-loop stall: this is what can consume more
+                // than one queued transition before Crowd sees the next one.
+                1 => kernel.frame(Duration::from_millis(u64::from(elapsed))),
+                // Acknowledge exactly the oldest outstanding step, as the walk
+                // protocol requires.
+                2 => {
+                    if let Some((sequence, accepted)) = outstanding.pop_front() {
+                        confirmed = accepted;
+                        kernel.mutation(Some(link::Movement::Ack {
+                            sequence,
+                            confirmed: accepted,
+                        }));
+                    }
+                }
+                // Reject the oldest step and discard the rest, matching
+                // `Walk::snap`'s rollback semantics.
+                3 => {
+                    if let Some((sequence, _)) = outstanding.pop_front() {
+                        let from = kernel.motion.planning_state();
+                        confirmed = Predicted {
+                            position: Point::new(
+                                offset(from.position.x, dx),
+                                offset(from.position.y, dy),
+                                from.position.z.saturating_add(dz),
+                            ),
+                            facing,
+                        };
+                        kernel.mutation(Some(link::Movement::Reject {
+                            sequence,
+                            confirmed,
+                        }));
+                        outstanding.clear();
+                    }
+                }
+                // A server relocation is not paired with a sequence and
+                // invalidates every outstanding local prediction.
+                4 => {
+                    let from = kernel.motion.planning_state();
+                    confirmed = Predicted {
+                        position: Point::new(
+                            offset(from.position.x, dx),
+                            offset(from.position.y, dy),
+                            from.position.z.saturating_add(dz),
+                        ),
+                        facing,
+                    };
+                    kernel.mutation(Some(link::Movement::Relocation { confirmed }));
+                    outstanding.clear();
+                }
+                // Any ordinary packet is a movement no-op.
+                _ => {
+                    let before = kernel.motion.clone();
+                    kernel.mutation(None);
+                    prop_assert_eq!(&kernel.motion, &before);
+                }
+            }
+
+            let snapshot = kernel.motion.snapshot();
+            prop_assert_eq!(snapshot.confirmed, confirmed);
+            prop_assert_eq!(snapshot.predicted, kernel.motion.planning_state());
+            prop_assert_eq!(snapshot.pending_steps, outstanding.len());
+            match snapshot.transition {
+                Some((from, to)) => {
+                    prop_assert_ne!(from, to);
+                    prop_assert_eq!(snapshot.route_origin, from);
+                }
+                None => {
+                    prop_assert_eq!(snapshot.route_origin, snapshot.predicted.position);
+                    prop_assert_eq!(snapshot.rendered, Gaze::on(snapshot.predicted.position));
+                }
+            }
+            prop_assert_eq!(kernel.player.drawn, kernel.motion.drawn());
+        }
+    });
+}
 
 /// The oracle is worth exactly as much as its own arithmetic, so pin it first:
 /// ten steps, four seconds, one tile per 400ms, and nothing in between.

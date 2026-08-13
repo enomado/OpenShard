@@ -526,12 +526,24 @@ impl GroundRenderer {
         uploaded
     }
 
+    /// The two actual GPU atlas textures, for an opt-in CPU/GPU consistency
+    /// audit during a steady presentation soak.
+    pub fn atlas_textures_for_audit(&self) -> (&wgpu::Texture, &wgpu::Texture) {
+        (&self.land_texture, &self.texmap_texture)
+    }
+
     /// This pass's own instance buffer, as `blit.wgsl`/`select.wgsl` need it:
     /// bound a second time, as storage, so `ground_instances[id]` can read a
     /// fragment's own tile back instead of carrying it on every pixel of its
     /// own picture. See `docs/gbuffer.md` decision 2 and step 7.
     pub fn instances_buffer(&self) -> &wgpu::Buffer {
         &self.instances
+    }
+
+    /// The current CPU serialization and its GPU destination, for a diagnostic
+    /// that checks a long-moving scene has not shifted its live instance rows.
+    pub fn instance_state_for_audit(&self) -> (&wgpu::Buffer, &[u8]) {
+        (&self.instances, &self.instance_bytes)
     }
 
     /// Draw `quads` into `target`, clearing it first.
@@ -1499,12 +1511,24 @@ impl SpriteRenderer {
         write_rows(queue, &page.texture, pixels, rows);
     }
 
+    /// The actual GPU atlas page, exposed solely to an opt-in diagnostic that
+    /// compares it with the CPU atlas after a long steady frame run.
+    pub fn atlas_page_texture_for_audit(&self, page: StaticAtlasPage) -> Option<&wgpu::Texture> {
+        self.pages.get(usize::from(page.0)).map(|page| &page.texture)
+    }
+
     /// This pass's own instance buffer, as `blit.wgsl` needs it: bound a
     /// second time, as storage, so `instances[id]` can read a fragment's own
     /// `SpriteQuad` back instead of decoding it from the `place` attachment.
     /// See `docs/gbuffer.md` decision 2 and step 3.
     pub fn instances_buffer(&self) -> &wgpu::Buffer {
         &self.instances
+    }
+
+    /// The current CPU serialization and its GPU destination, for an opt-in
+    /// scene audit while the camera is moving.
+    pub fn instance_state_for_audit(&self) -> (&wgpu::Buffer, &[u8]) {
+        (&self.instances, &self.instance_bytes)
     }
 
     /// What a fragment whose ray met no box is answered with, and the switch a
@@ -2342,7 +2366,10 @@ pub(crate) fn new_static_instance_buffer(device: &wgpu::Device, quads: u64) -> w
     device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("static instances"),
         size: quads * SpriteQuad::STRIDE,
-        usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        usage: wgpu::BufferUsages::VERTEX
+            | wgpu::BufferUsages::STORAGE
+            | wgpu::BufferUsages::COPY_DST
+            | wgpu::BufferUsages::COPY_SRC,
         mapped_at_creation: false,
     })
 }
@@ -2375,7 +2402,9 @@ pub(crate) fn upload(
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
         format: wgpu::TextureFormat::Rgba8Unorm,
-        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING
+            | wgpu::TextureUsages::COPY_DST
+            | wgpu::TextureUsages::COPY_SRC,
         view_formats: &[],
     });
     queue.write_texture(

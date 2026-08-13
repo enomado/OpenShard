@@ -8,10 +8,10 @@
 use openshard_client_render::blit::{self, ViewportRect};
 use std::collections::{BTreeMap, BTreeSet};
 
-use openshard_client_render::camera::{Camera, TILE_WIDTH};
+use openshard_client_render::camera::Camera;
 use openshard_client_render::composite::{
-    CaptureSource, CompositeQuad, CompositeWork, CompositeWorkQueue, ImmutableRevision, MapBlock,
-    MapBlockBounds,
+    CaptureSource, CompositeProducerJob, CompositeQuad, CompositeWork, CompositeWorkQueue, ImmutableRevision,
+    MapBlock, MapBlockBounds,
 };
 use openshard_client_render::geometry::Rect;
 use openshard_client_render::gump::{self as gump_art};
@@ -28,22 +28,6 @@ use crate::picking::{self, SelectedIdentity};
 use crate::window::Screen;
 use crate::windows::{Drawn, WindowSubject};
 use crate::{crowd, graphics, profile, resources, shell, windows, world};
-
-/// The zero-height diamond occupied by one 8×8 map block.  The first tile's
-/// centre is its top vertex plus half a tile; the block's four extrema are
-/// therefore a stable 352-pixel square in virtual target space.
-fn block_rect(camera: Camera, block: MapBlock, overhang: f32) -> Rect {
-    let (x, y) = block.first_tile();
-    let top = camera.to_screen(openshard_protocol::world::Point::new(x, y, 0));
-    let footprint = (openshard_uofiles::map::BLOCK_SIZE as i32 * TILE_WIDTH) as f32;
-    let side = footprint + overhang * 2.0;
-    Rect {
-        x: top.x as f32 - side / 2.0,
-        y: top.y as f32 - TILE_WIDTH as f32 / 2.0 - overhang,
-        width: side,
-        height: side,
-    }
-}
 
 /// A whole source rectangle suitable for an immutable GPU capture.  Partially
 /// visible blocks stay detailed until a frame exposes their complete footprint;
@@ -389,8 +373,6 @@ pub(crate) fn encode_world_passes(
     // of a frame's cost no clock on this thread can see. See [`profile`] for
     // why that is so and why the bracket is a pair of calls rather than a
     // scope guard. Nothing when the adapter has no timestamp queries.
-    let (static_width, static_height) = window.atlases.statics.max_sprite_size();
-    let composite_overhang = f32::from(static_width.max(static_height));
     let ready: Vec<(
         MapBlock,
         Rect,
@@ -408,7 +390,11 @@ pub(crate) fn encode_world_passes(
             if !texture.has_deferred() {
                 return None;
             }
-            Some((block, block_rect(camera, block, composite_overhang), texture))
+            Some((
+                block,
+                CompositeProducerJob::new(texture.key()).rect_in(camera),
+                texture,
+            ))
         })
         .collect();
     let cached_blocks: BTreeSet<_> = ready.iter().map(|(block, _, _)| *block).collect();
@@ -432,6 +418,10 @@ pub(crate) fn encode_world_passes(
     let (eye_x, eye_y) = camera.eye_tile();
     let current_depth_base = openshard_client_render::depth::base_for(eye_x, eye_y);
     let timed = profile::begin(window.gpu.as_ref(), "map composites", encoder);
+    // `render_deferred` needs one binding slot per source depth base, but the
+    // slots are reusable only after this encoder's previous frame has been
+    // submitted. Reset the per-frame cursor once, before the group loop.
+    window.composite_pass.begin_frame();
     for (source_base, blocks) in composite_groups.iter() {
         window.composite_pass.render_deferred(
             &window.device,
@@ -460,35 +450,47 @@ pub(crate) fn encode_world_passes(
     );
     profile::end(window.gpu.as_ref(), encoder, timed);
     // Completing a queued job copies exactly the attachment state before live
-    // server items and mobiles are added.  A miss remains LOD 0 this frame;
-    // the copy is consumed only by a later frame, never synchronously rebuilt.
-    for work in composite_jobs {
-        let Some(rect) = capture_rect(
-            block_rect(camera, work.key.block, composite_overhang),
-            target.width,
-            target.height,
-        ) else {
+    // server items and mobiles are added. A miss remains LOD 0 this frame; the
+    // copy is consumed only by a later frame, never synchronously rebuilt.
+    //
+    // A cutaway splits map statics into a separate translucent path. Its normal
+    // map attachment is therefore not a complete immutable block, so it must
+    // neither be restored from a composite nor captured as one. Releasing the
+    // small dispatch reservation lets the ordinary frame after the cutaway
+    // schedule the same block again without invalidating every completed entry.
+    if geometry.cutaway_instances.drawn != 0 {
+        for work in composite_jobs {
             composite_work.finished(work.key);
-            continue;
-        };
-        let source = CaptureSource {
-            color: &window.world,
-            ids: window.gbuffer.ids(),
-            position: window.gbuffer.position(),
-            normal: window.gbuffer.normal(),
-            depth: target.depth,
-            depth_base: current_depth_base,
-            rect,
-        };
-        let _ = composite_work.finish_capture(
-            &window.device,
-            &window.queue,
-            encoder,
-            &mut window.composite_pass,
-            &mut window.composites,
-            work.key,
-            source,
-        );
+        }
+    } else {
+        for work in composite_jobs {
+            let Some(rect) = capture_rect(
+                CompositeProducerJob::new(work.key).rect_in(camera),
+                target.width,
+                target.height,
+            ) else {
+                composite_work.finished(work.key);
+                continue;
+            };
+            let source = CaptureSource {
+                color: &window.world,
+                ids: window.gbuffer.ids(),
+                position: window.gbuffer.position(),
+                normal: window.gbuffer.normal(),
+                depth: target.depth,
+                depth_base: current_depth_base,
+                rect,
+            };
+            let _ = composite_work.finish_capture(
+                &window.device,
+                &window.queue,
+                encoder,
+                &mut window.composite_pass,
+                &mut window.composites,
+                work.key,
+                source,
+            );
+        }
     }
     // Composite entries are potentially eight RGBA-sized planes each.  Keep a
     // bounded LRU tail, but protect one block outside the current viewport so
@@ -622,7 +624,7 @@ pub(crate) fn encode_world_passes(
         );
         profile::end(window.gpu.as_ref(), encoder, timed);
     }
-    // And the held mobile or item's own ring silhouette, into
+    // And the combat target (or, with no target, the held mobile/item) into
     // `Screen::held_mask` — the same two-pass shape as the hover ring
     // above (items first, unconditionally, so an empty frame still clears
     // the mask; the mobile pass gated because it clears the mask too).

@@ -546,7 +546,8 @@ pub(crate) fn collect_in_with_fades_profiled(
                 u8::MAX
             }
         } else if player_mask.is_some_and(|body| {
-            body.overlaps_opaque(placed_rect(&placed), |x, y| atlas.opaque_at(placed.showing, x, y))
+            placed.order > body.order()
+                && body.overlaps_opaque(placed_rect(&placed), |x, y| atlas.opaque_at(placed.showing, x, y))
         }) {
             crate::cutaway::TRANSLUCENT_ALPHA_U8
         } else {
@@ -1088,7 +1089,7 @@ pub fn selected(
 /// on them burns: one walk written twice would be two answers to "which statics
 /// is this frame about", and the lights would drift from the sprites making
 /// them.
-pub(crate) fn for_each_static_in(
+pub fn for_each_static_in(
     map: &Map,
     bounds: TileBounds,
     mut each: impl FnMut(&openshard_uofiles::map::StaticItem),

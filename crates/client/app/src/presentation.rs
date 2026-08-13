@@ -16,15 +16,22 @@
 //! the atlases, the frame counters — state about how a picture is drawn, not
 //! about what is true.
 
-use std::sync::Arc;
-use std::time::Instant;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
+use std::sync::{Arc, mpsc};
+use std::time::{Duration, Instant};
 
-use openshard_client_render::atlas::{AnimAtlas, AnimationKey};
+use openshard_client_render::animate::StaticAnimations;
+use openshard_client_render::atlas::{AnimAtlas, AnimationKey, StaticAtlasPage};
 use openshard_client_render::blit::{self, Blit, ViewportRect};
-use openshard_client_render::camera::{Camera, ViewPixel};
-use openshard_client_render::composite::{ImmutableRevision, MapBlockBounds};
+use openshard_client_render::camera::{Camera, TileBounds, ViewPixel};
+use openshard_client_render::composite::{
+    CaptureSource, CompositeProducerJob, CompositeTexture, CompositeWork, CompositeWorkQueue,
+    ImmutableRevision, MapBlockBounds,
+};
 use openshard_client_render::cutaway::Cutaway;
 use openshard_client_render::debug::View;
+use openshard_client_render::frame::{self, Draw, Impostor};
 use openshard_client_render::gbuffer::Gbuffer;
 use openshard_client_render::gump::GumpPixel;
 use openshard_client_render::items::{self};
@@ -32,11 +39,12 @@ use openshard_client_render::lod::BlockLod;
 use openshard_client_render::mobiles::{self, Mobile};
 use openshard_client_render::outline::{self};
 use openshard_client_render::renderer::{self, Target};
-use openshard_client_render::sprite::SpriteQuad;
+use openshard_client_render::sprite::{SpriteQuad, split_corners};
 use openshard_client_render::text::{self, Label};
-use openshard_client_render::{light, paperdoll, statics};
+use openshard_client_render::{ground, light, paperdoll, statics};
 use openshard_protocol::speech::Font;
 use openshard_protocol::wire::Hue;
+use openshard_uofiles::map::Map;
 
 use crate::app::App;
 use crate::chat::draw_chat_and_speech;
@@ -47,9 +55,676 @@ use crate::graphics::HighlightTarget;
 use crate::picking::SelectedIdentity;
 use crate::profile;
 use crate::render_passes::{draw_gump_windows, encode_world_passes};
-use crate::window::ready_atlases;
+use crate::window::{prepare_composite_job, ready_atlases};
 use crate::windows::{Drawn, WindowSubject};
-use crate::world::advance_presentation_to;
+use crate::world::{DAMAGE_NUMBER_HOLD, DAMAGE_NUMBER_RISE, PlayerMotion, advance_presentation_to};
+
+/// Build one complete immutable map block without touching the camera frame.
+///
+/// The producer camera, targets and source rectangle all come from `work`.
+/// Map land/statics (including mesh faces) are its only draw calls; server
+/// items, mobiles, cutaway rows and every UI plane remain outside this command
+/// buffer.  The cache entry is accepted only after the colour, G-buffer and
+/// depth copier passes have all been recorded from those private attachments.
+#[allow(clippy::too_many_arguments)]
+fn produce_composite_block(
+    resources: &crate::resources::Resources,
+    animations: &StaticAnimations,
+    tuning: &light::Tuning,
+    sky: Option<light::Ambient>,
+    fringe: openshard_client_render::impostor::Fringe,
+    window: &mut crate::window::Screen,
+    composite_work: &mut CompositeWorkQueue,
+    work: CompositeWork,
+) {
+    let job = CompositeProducerJob::new(work.key);
+    let camera = job.camera();
+    let mut fades = openshard_client_render::cutaway::Fades::default();
+    let (assembled, _) = frame::assemble_split_profiled(frame::Inputs {
+        map: &resources.map,
+        items: &[],
+        camera: &camera,
+        tiledata: &resources.tiledata,
+        animations,
+        cutaway: &Cutaway::OPEN,
+        land: &window.atlases.land,
+        texmaps: &window.atlases.texmaps,
+        statics: &window.atlases.statics,
+        sky,
+        sun: None,
+        carried: None,
+        tuning,
+        flame_time: 0.0,
+        bake: None,
+        highlight: None,
+        impostor: match sky {
+            Some(_) => Impostor::Met,
+            None => Impostor::Billboards,
+        },
+        draw: Draw {
+            // `assemble_split_profiled` supplies the padded source's lighting
+            // and occlusion only. The owner-only geometry below is collected
+            // separately, so neighbouring map rows never enter this producer.
+            land: false,
+            statics: false,
+            items: false,
+            mobiles: false,
+        },
+        view: View::Lit,
+        dead: false,
+        player_rect: None,
+        player_mask: None,
+        fades: &mut fades,
+    });
+    // The padded camera supplies the occlusion context, not picture ownership.
+    // A composite is the sole producer of its own 8×8 tiles from the first
+    // geometry list onward; neighbouring rows must not be rendered here and
+    // later erased texel-by-texel by the capture shader.  The latter remains a
+    // defensive assertion on the attachment, while this is the actual owner.
+    let (first_x, first_y) = job.key().block.first_tile();
+    let owner = TileBounds {
+        min_x: i32::from(first_x),
+        max_x: i32::from(first_x) + openshard_uofiles::map::BLOCK_SIZE as i32 - 1,
+        min_y: i32::from(first_y),
+        max_y: i32::from(first_y) + openshard_uofiles::map::BLOCK_SIZE as i32 - 1,
+    };
+    let ground = ground::collect_in(
+        &resources.map,
+        &camera,
+        owner,
+        &window.atlases.land,
+        &window.atlases.texmaps,
+        &Cutaway::OPEN,
+    );
+    let no_grid = openshard_client_render::occlusion::Occlusion::EMPTY;
+    let occlusion = match sky {
+        Some(_) => &assembled.lighting.occlusion,
+        None => &no_grid,
+    };
+    let map_statics = statics::collect_in(
+        &resources.map,
+        &camera,
+        owner,
+        &resources.tiledata,
+        animations,
+        &window.atlases.statics,
+        &Cutaway::OPEN,
+        occlusion,
+        None,
+        None,
+    );
+    let openshard_client_render::statics::StaticGeometry {
+        quads,
+        mesh_vertices,
+        mesh_rows,
+        boxes,
+        ..
+    } = map_statics;
+    let statics = split_corners(quads);
+
+    let mut encoder = window
+        .device
+        .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("map block composite producer"),
+        });
+    // This buffer is submitted ahead of the camera frame, but its timestamp
+    // query is resolved by that frame's encoder after the ordered submission.
+    // It therefore appears as an independent GPU pass without a CPU wait.
+    let timed = profile::begin(window.gpu.as_ref(), "map composite producer", &mut encoder);
+    window.composite_producer.clear(&mut encoder);
+    let world = window
+        .composite_producer
+        .world
+        .create_view(&wgpu::TextureViewDescriptor::default());
+    let depth = window
+        .composite_producer
+        .depth
+        .create_view(&wgpu::TextureViewDescriptor::default());
+    let gbuffer = window.composite_producer.gbuffer.views();
+    let target = Target {
+        view: &world,
+        depth: &depth,
+        gbuffer: &gbuffer,
+        width: job.source_size().width,
+        height: job.source_size().height,
+        projection: camera.projection(),
+    };
+    window
+        .renderer
+        .render(&window.device, &window.queue, &mut encoder, target, &ground);
+    window.statics.set_fringe(fringe);
+    window.statics.render(
+        &window.device,
+        &window.queue,
+        &mut encoder,
+        target,
+        &statics.rows,
+        &boxes,
+        Some(statics.drawn),
+    );
+    window.mesh_pass.render(
+        &window.device,
+        &window.queue,
+        &mut encoder,
+        target,
+        &mesh_vertices,
+        &mesh_rows,
+    );
+    let (eye_x, eye_y) = camera.eye_tile();
+    let source = CaptureSource {
+        color: &window.composite_producer.world,
+        ids: window.composite_producer.gbuffer.ids(),
+        position: window.composite_producer.gbuffer.position(),
+        normal: window.composite_producer.gbuffer.normal(),
+        depth: &depth,
+        depth_base: openshard_client_render::depth::base_for(eye_x, eye_y),
+        rect: ViewportRect {
+            x: 0,
+            y: 0,
+            width: job.source_size().width,
+            height: job.source_size().height,
+        },
+    };
+    let captured = composite_work.finish_capture(
+        &window.device,
+        &window.queue,
+        &mut encoder,
+        &mut window.composite_pass,
+        &mut window.composites,
+        work.key,
+        source,
+    );
+    profile::end(window.gpu.as_ref(), &mut encoder, timed);
+    window.queue.submit([encoder.finish()]);
+    if let Some(captured) = captured {
+        audit_captured_composite_ids(&window.device, &window.queue, &resources.map, captured);
+    }
+}
+
+/// Read the completed cache entry itself, after the producer command buffer
+/// has run and before any camera frame can restore it.  This is deliberately
+/// opt-in: it waits for a GPU map, which is appropriate for the injected field
+/// scenario but never for ordinary play.
+fn audit_captured_composite_ids(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    map: &Map,
+    captured: &CompositeTexture,
+) {
+    if std::env::var_os("OPENSHARD_COMPOSITE_AUDIT").is_none() {
+        return;
+    }
+    let Some((ids, _, _, _)) = captured.deferred_textures_for_audit() else {
+        return;
+    };
+    let row = ids.width() * 4;
+    let stride = row.div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT) * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
+    let bytes = u64::from(stride) * u64::from(ids.height());
+    let readback = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("map composite IDs audit readback"),
+        size: bytes,
+        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+        mapped_at_creation: false,
+    });
+    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+        label: Some("map composite IDs audit"),
+    });
+    encoder.copy_texture_to_buffer(
+        wgpu::TexelCopyTextureInfo {
+            texture: ids,
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
+        wgpu::TexelCopyBufferInfo {
+            buffer: &readback,
+            layout: wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(stride),
+                rows_per_image: Some(ids.height()),
+            },
+        },
+        wgpu::Extent3d {
+            width: ids.width(),
+            height: ids.height(),
+            depth_or_array_layers: 1,
+        },
+    );
+    queue.submit([encoder.finish()]);
+    let (sent, received) = mpsc::channel();
+    readback.slice(..).map_async(wgpu::MapMode::Read, move |result| {
+        let _ = sent.send(result);
+    });
+    if device.poll(wgpu::PollType::wait_indefinitely()).is_err()
+        || received.recv().ok().and_then(Result::ok).is_none()
+    {
+        tracing::warn!(key = ?captured.key(), "could not read captured map-composite IDs for audit");
+        return;
+    }
+    let mapped = readback
+        .slice(..)
+        .get_mapped_range()
+        .expect("completed map-composite audit has mapped bytes");
+    let (mut nothing, mut land, mut statics, mut mobile, mut invalid) = (0_u64, 0_u64, 0_u64, 0_u64, 0_u64);
+    for source_row in mapped.chunks_exact(stride as usize) {
+        for word in source_row[..row as usize].chunks_exact(4) {
+            match openshard_client_render::gbuffer::ids_kind(u32::from_le_bytes(
+                word.try_into().expect("four ID bytes"),
+            )) {
+                Some(openshard_client_render::place::Kind::Nothing) => nothing += 1,
+                Some(openshard_client_render::place::Kind::Land) => land += 1,
+                Some(openshard_client_render::place::Kind::Static) => statics += 1,
+                Some(openshard_client_render::place::Kind::Mobile) => mobile += 1,
+                None => invalid += 1,
+            }
+        }
+    }
+    let job = CompositeProducerJob::new(captured.key());
+    let divisor = captured.key().tier.source_pixels_per_texel();
+    let mut missing_owner_centres = Vec::new();
+    let (first_x, first_y) = captured.key().block.first_tile();
+    for y in first_y..first_y + openshard_uofiles::map::BLOCK_SIZE as u16 {
+        for x in first_x..first_x + openshard_uofiles::map::BLOCK_SIZE as u16 {
+            let Some(land) = map.land(x, y) else {
+                continue;
+            };
+            let at = job
+                .camera()
+                .to_screen(openshard_protocol::world::Point::new(x, y, land.z));
+            let sample_x = (at.x.max(0) as u32 / divisor).min(ids.width() - 1);
+            let sample_y = (at.y.max(0) as u32 / divisor).min(ids.height() - 1);
+            let offset = sample_y as usize * stride as usize + sample_x as usize * 4;
+            let id = u32::from_le_bytes(mapped[offset..offset + 4].try_into().expect("one cached ID texel"));
+            if openshard_client_render::gbuffer::ids_kind(id)
+                == Some(openshard_client_render::place::Kind::Nothing)
+                && missing_owner_centres.len() < 12
+            {
+                missing_owner_centres.push((x, y));
+            }
+        }
+    }
+    drop(mapped);
+    readback.unmap();
+    tracing::info!(
+        key = ?captured.key(),
+        width = ids.width(),
+        height = ids.height(),
+        nothing,
+        land,
+        statics,
+        mobile,
+        invalid,
+        missing_owner_centres = ?missing_owner_centres,
+        "captured map-composite IDs before restore"
+    );
+}
+
+/// Compare the resident static-atlas texture against the bytes that the CPU
+/// atlas says belong there. The injected max-zoom soak calls this sparingly,
+/// after all dirty-row uploads for that frame have been queued.
+fn audit_static_atlas_pages(window: &crate::window::Screen) {
+    fn digest(bytes: &[u8]) -> u64 {
+        let mut hash = DefaultHasher::new();
+        bytes.hash(&mut hash);
+        hash.finish()
+    }
+
+    for index in 0..window.atlases.statics.page_count() {
+        let page = StaticAtlasPage(index as u8);
+        let cpu = window
+            .atlases
+            .statics
+            .page(page)
+            .expect("static atlas page_count owns every page");
+        let Some(texture) = window.statics.atlas_page_texture_for_audit(page) else {
+            tracing::error!(page = index, "static atlas CPU page has no GPU texture");
+            continue;
+        };
+        let row = texture.width() * 4;
+        let stride = row.div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT) * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
+        let readback = window.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("static atlas soak readback"),
+            size: u64::from(stride) * u64::from(texture.height()),
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let mut encoder = window
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("static atlas soak audit"),
+            });
+        encoder.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo {
+                texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyBufferInfo {
+                buffer: &readback,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(stride),
+                    rows_per_image: Some(texture.height()),
+                },
+            },
+            wgpu::Extent3d {
+                width: texture.width(),
+                height: texture.height(),
+                depth_or_array_layers: 1,
+            },
+        );
+        window.queue.submit([encoder.finish()]);
+        let (sent, received) = mpsc::channel();
+        readback.slice(..).map_async(wgpu::MapMode::Read, move |result| {
+            let _ = sent.send(result);
+        });
+        if window.device.poll(wgpu::PollType::wait_indefinitely()).is_err()
+            || received.recv().ok().and_then(Result::ok).is_none()
+        {
+            tracing::error!(page = index, "could not read static atlas GPU texture");
+            continue;
+        }
+        let mapped = readback
+            .slice(..)
+            .get_mapped_range()
+            .expect("completed static atlas audit has mapped bytes");
+        let gpu = mapped
+            .chunks_exact(stride as usize)
+            .flat_map(|source_row| source_row[..row as usize].iter().copied())
+            .collect::<Vec<_>>();
+        drop(mapped);
+        readback.unmap();
+        let cpu_hash = digest(cpu.pixels());
+        let gpu_hash = digest(&gpu);
+        if cpu_hash == gpu_hash && cpu.pixels() == gpu {
+            tracing::info!(
+                page = index,
+                revision = window.atlases.statics.revision(),
+                bytes = gpu.len(),
+                hash = cpu_hash,
+                "static atlas CPU and GPU state agree"
+            );
+        } else {
+            tracing::error!(
+                page = index,
+                revision = window.atlases.statics.revision(),
+                cpu_hash,
+                gpu_hash,
+                "static atlas GPU state differs from CPU source"
+            );
+        }
+    }
+
+    let (land, texmaps) = window.renderer.atlas_textures_for_audit();
+    audit_atlas_texture(window, "land", land, window.atlases.land.pixels());
+    audit_atlas_texture(window, "texmaps", texmaps, window.atlases.texmaps.pixels());
+}
+
+/// Compare one ordinary RGBA atlas texture with its CPU packing bytes.
+fn audit_atlas_texture(
+    window: &crate::window::Screen,
+    label: &'static str,
+    texture: &wgpu::Texture,
+    cpu: &[u8],
+) {
+    let row = texture.width() * 4;
+    let stride = row.div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT) * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
+    let readback = window.device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("atlas soak readback"),
+        size: u64::from(stride) * u64::from(texture.height()),
+        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+        mapped_at_creation: false,
+    });
+    let mut encoder = window
+        .device
+        .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("atlas soak audit"),
+        });
+    encoder.copy_texture_to_buffer(
+        wgpu::TexelCopyTextureInfo {
+            texture,
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
+        wgpu::TexelCopyBufferInfo {
+            buffer: &readback,
+            layout: wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(stride),
+                rows_per_image: Some(texture.height()),
+            },
+        },
+        wgpu::Extent3d {
+            width: texture.width(),
+            height: texture.height(),
+            depth_or_array_layers: 1,
+        },
+    );
+    window.queue.submit([encoder.finish()]);
+    let (sent, received) = mpsc::channel();
+    readback.slice(..).map_async(wgpu::MapMode::Read, move |result| {
+        let _ = sent.send(result);
+    });
+    if window.device.poll(wgpu::PollType::wait_indefinitely()).is_err()
+        || received.recv().ok().and_then(Result::ok).is_none()
+    {
+        tracing::error!(atlas = label, "could not read atlas GPU texture");
+        return;
+    }
+    let mapped = readback
+        .slice(..)
+        .get_mapped_range()
+        .expect("completed atlas audit has mapped bytes");
+    let gpu = mapped
+        .chunks_exact(stride as usize)
+        .flat_map(|source_row| source_row[..row as usize].iter().copied())
+        .collect::<Vec<_>>();
+    drop(mapped);
+    readback.unmap();
+    let mut cpu_hasher = DefaultHasher::new();
+    cpu.hash(&mut cpu_hasher);
+    let mut gpu_hasher = DefaultHasher::new();
+    gpu.hash(&mut gpu_hasher);
+    let (cpu_hash, gpu_hash) = (cpu_hasher.finish(), gpu_hasher.finish());
+    if cpu_hash == gpu_hash && cpu == gpu {
+        tracing::info!(
+            atlas = label,
+            bytes = gpu.len(),
+            hash = cpu_hash,
+            "atlas CPU and GPU state agree"
+        );
+    } else {
+        tracing::error!(
+            atlas = label,
+            cpu_hash,
+            gpu_hash,
+            "atlas GPU state differs from CPU source"
+        );
+    }
+}
+
+/// Compare the bytes the scene renderer will fetch for this frame against the
+/// current CPU serialization. This is the direct oracle for a suspected
+/// circular/staging overwrite of sprite placement rather than atlas pixels.
+fn audit_scene_instance_buffers(window: &crate::window::Screen) {
+    for (label, (source, expected)) in [
+        ("map statics", window.statics.instance_state_for_audit()),
+        ("items", window.items_pass.instance_state_for_audit()),
+        ("mobiles", window.mobile_pass.instance_state_for_audit()),
+    ] {
+        if expected.is_empty() {
+            continue;
+        }
+        let readback = window.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("scene instance soak readback"),
+            size: expected.len() as u64,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let mut encoder = window
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("scene instance soak audit"),
+            });
+        encoder.copy_buffer_to_buffer(source, 0, &readback, 0, expected.len() as u64);
+        window.queue.submit([encoder.finish()]);
+        let (sent, received) = mpsc::channel();
+        readback.slice(..).map_async(wgpu::MapMode::Read, move |result| {
+            let _ = sent.send(result);
+        });
+        if window.device.poll(wgpu::PollType::wait_indefinitely()).is_err()
+            || received.recv().ok().and_then(Result::ok).is_none()
+        {
+            tracing::error!(scene = label, "could not read scene instance buffer");
+            continue;
+        }
+        let actual = readback
+            .slice(..)
+            .get_mapped_range()
+            .expect("completed scene audit has mapped bytes")
+            .to_vec();
+        readback.unmap();
+        if actual == expected {
+            tracing::info!(
+                scene = label,
+                bytes = expected.len(),
+                "scene instance CPU and GPU state agree"
+            );
+        } else {
+            let first_difference = actual
+                .iter()
+                .zip(expected)
+                .position(|(actual, expected)| actual != expected);
+            tracing::error!(
+                scene = label,
+                bytes = expected.len(),
+                ?first_difference,
+                "scene instance GPU state differs from current CPU rows"
+            );
+        }
+    }
+}
+
+/// Inspect the actual frame G-buffer at every visible ground-tile centre.
+///
+/// This catches the failure a picture can only suggest: a map block was marked
+/// ready (therefore its LOD0 rows were omitted), but its restored deferred
+/// rectangle wrote `Kind::Nothing` at a tile it owns.  The check is opt-in
+/// because mapping a full screen attachment intentionally fences the device.
+fn audit_visible_ground_centres(window: &crate::window::Screen, map: &Map, camera: Camera) {
+    let ids = window.gbuffer.ids();
+    let row = ids.width() * 4;
+    let stride = row.div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT) * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
+    let readback = window.device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("LOD screen G-buffer audit readback"),
+        size: u64::from(stride) * u64::from(ids.height()),
+        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+        mapped_at_creation: false,
+    });
+    let mut encoder = window
+        .device
+        .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("LOD screen G-buffer audit"),
+        });
+    encoder.copy_texture_to_buffer(
+        wgpu::TexelCopyTextureInfo {
+            texture: ids,
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
+        wgpu::TexelCopyBufferInfo {
+            buffer: &readback,
+            layout: wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(stride),
+                rows_per_image: Some(ids.height()),
+            },
+        },
+        wgpu::Extent3d {
+            width: ids.width(),
+            height: ids.height(),
+            depth_or_array_layers: 1,
+        },
+    );
+    window.queue.submit([encoder.finish()]);
+    let (sent, received) = mpsc::channel();
+    readback.slice(..).map_async(wgpu::MapMode::Read, move |result| {
+        let _ = sent.send(result);
+    });
+    if window.device.poll(wgpu::PollType::wait_indefinitely()).is_err()
+        || received.recv().ok().and_then(Result::ok).is_none()
+    {
+        tracing::error!("could not read frame G-buffer for LOD bounds audit");
+        return;
+    }
+    let samples: Vec<_> = camera
+        .visible_tiles()
+        .clamp_to(map.width(), map.height())
+        .into_iter()
+        .flat_map(|(xs, ys)| {
+            ys.flat_map(move |y| {
+                xs.clone().filter_map(move |x| {
+                    let land = map.land(x, y)?;
+                    let at = camera.to_screen(openshard_protocol::world::Point::new(x, y, land.z));
+                    (at.x >= 0 && at.y >= 0 && at.x < ids.width() as i32 && at.y < ids.height() as i32)
+                        .then_some((x, y, at.x as u32, at.y as u32))
+                })
+            })
+        })
+        .collect();
+    let mapped = readback
+        .slice(..)
+        .get_mapped_range()
+        .expect("completed LOD screen audit has mapped bytes");
+    let mut composite = 0_u64;
+    let mut missing = Vec::new();
+    for (x, y, screen_x, screen_y) in &samples {
+        let offset = *screen_y as usize * stride as usize + *screen_x as usize * 4;
+        let id = u32::from_le_bytes(mapped[offset..offset + 4].try_into().expect("one ID texel"));
+        if id & openshard_client_render::gbuffer::IDS_COMPOSITE_MAP != 0 {
+            composite += 1;
+        }
+        if openshard_client_render::gbuffer::ids_kind(id)
+            == Some(openshard_client_render::place::Kind::Nothing)
+        {
+            if missing.len() < 12 {
+                missing.push((*x, *y));
+            }
+        }
+    }
+    drop(mapped);
+    readback.unmap();
+    if missing.is_empty() {
+        tracing::info!(
+            samples = samples.len(),
+            composite,
+            "LOD screen G-buffer covers every visible tile centre"
+        );
+    } else {
+        tracing::error!(
+            samples = samples.len(),
+            composite,
+            missing = ?missing,
+            "LOD screen G-buffer has uncovered visible tile centres"
+        );
+    }
+}
+
+/// LOD2 stays held back while the direct field scenario validates LOD1.
+///
+/// The first tier uses the same canonical source and deferred planes as LOD2,
+/// but preserves twice as many cache texels.  Its producer cache is audited
+/// directly before restore; only after this field gate is clean can the next
+/// minified tier take over.
+const fn visible_composite_lod(selected: BlockLod) -> BlockLod {
+    match selected {
+        BlockLod::Lod2 => BlockLod::Lod1,
+        lod => lod,
+    }
+}
 
 /// The immutable boundary between advancing the client and presenting one
 /// frame. It contains the one camera and the read-only facts every pass,
@@ -80,6 +755,7 @@ impl App {
             self.world.me(),
             &self.world.presentation.player,
             &self.world.presentation.others,
+            &self.world.presentation.corpses,
         )
     }
 
@@ -92,10 +768,12 @@ impl App {
         me: Who,
         player: &Mobile,
         others: &[(Who, Mobile)],
+        corpses: &[(Who, Mobile)],
     ) -> Vec<(Who, Mobile)> {
-        let mut mobiles = Vec::with_capacity(others.len() + 1);
+        let mut mobiles = Vec::with_capacity(others.len() + corpses.len() + 1);
         mobiles.push((me, player.clone()));
         mobiles.extend_from_slice(others);
+        mobiles.extend_from_slice(corpses);
         Self::advance_groups(crowd, &mut mobiles);
         mobiles
     }
@@ -119,9 +797,9 @@ impl App {
         }
     }
 
-    /// Fill in the three time-varying halves of every mobile from the crowd's
-    /// clocks: which group is playing, which frame of it, where the body is
-    /// drawn, and which tile the step is sorted at.
+    /// Fill in the time-varying presentation state. `Crowd` provides animation
+    /// groups and frames for everyone; the local player's pose and sorting
+    /// source come exclusively from [`PlayerMotion`].
     ///
     /// An associated function taking the two fields it reads rather than a
     /// method, because both callers hold a borrow of one of `App`'s fields
@@ -134,7 +812,13 @@ impl App {
     /// 6-frame walk" expressible. Under the body the atlas packed — for a ghost
     /// the living body it borrows its pictures from — or a ghost counts zero
     /// frames, lands on frame 0 for ever and slides along standing still.
-    pub(crate) fn advance_to_clocks(crowd: &Crowd, atlas: &AnimAtlas, drawn: &mut [(Who, Mobile)]) {
+    pub(crate) fn advance_to_clocks(
+        crowd: &Crowd,
+        atlas: &AnimAtlas,
+        me: Who,
+        motion: &PlayerMotion,
+        drawn: &mut [(Who, Mobile)],
+    ) {
         // The group is read back first and not only the frame and the glide —
         // the frame count below is asked *under* it. Idempotent when the caller
         // is [`App::drawn_mobiles`], which is every caller today; here so this
@@ -148,14 +832,32 @@ impl App {
                 direction,
             ));
             mobile.frame = openshard_uofiles::anim::AnimationFrameIndex(crowd.frame_for(*who, frame_count));
-            if let Some(at) = crowd.drawn_for(*who) {
-                mobile.drawn = at;
+            if *who == me {
+                // This is the boundary that used to reintroduce the bug: the
+                // frame builder overwrote the local `GameMotion` pose from
+                // `Crowd`, so a stuck crowd made a moving HUD look detached
+                // from a stationary body.
+                Self::project_local_motion(motion, mobile);
+            } else {
+                if let Some(at) = crowd.drawn_for(*who) {
+                    mobile.drawn = at;
+                }
+                // A remote mobile has no local movement core. Its crowd entry
+                // remains the presentation source for sort order.
+                mobile.from = crowd.stepping_from(*who);
             }
-            // And which tile it sorts at, which is a step's own clock too: the
-            // crossing ends without a packet to say so, and a body still sorted
-            // on the tile it left would keep drawing over the ground behind it.
-            mobile.from = crowd.stepping_from(*who);
         }
+        if let Some((_, player)) = drawn.iter().find(|(who, _)| *who == me) {
+            debug_assert_eq!(player.drawn, motion.drawn());
+            debug_assert_eq!(player.from, motion.transition_from());
+        }
+    }
+
+    /// Apply the only two movement-owned fields of the local render mobile.
+    /// Kept separate so this boundary is testable without a window or atlas.
+    fn project_local_motion(motion: &PlayerMotion, mobile: &mut Mobile) {
+        mobile.drawn = motion.drawn();
+        mobile.from = motion.transition_from();
     }
 
     /// Everyone as they are drawn *this instant*, clocks and all — the list
@@ -169,7 +871,13 @@ impl App {
     /// the pick still names the same creature to the passes below.
     pub(crate) fn drawn_now(&self, atlas: &AnimAtlas) -> Vec<(Who, Mobile)> {
         let mut drawn = self.drawn_mobiles();
-        Self::advance_to_clocks(&self.world.presentation.crowd, atlas, &mut drawn);
+        Self::advance_to_clocks(
+            &self.world.presentation.crowd,
+            atlas,
+            self.world.me(),
+            &self.world.motion,
+            &mut drawn,
+        );
         drawn
     }
 
@@ -253,11 +961,28 @@ impl App {
             let viewport = shell.viewport();
             self.control.resize(viewport.width, viewport.height);
         }
-        advance_presentation_to(&mut self.world.presentation, &mut self.last_advance, started);
+        advance_presentation_to(
+            &mut self.world.presentation,
+            &mut self.world.motion,
+            &mut self.last_advance,
+            started,
+        );
+        self.project_player_motion();
         // Whatever scenario is being walked delivers its knots for the span that
         // just passed, before the eye is asked where the body is: a step that
         // arrived this frame is one the camera has to answer this frame.
+        let prediction_before_replay = self.world.motion.planning_state();
         self.advance_replay(elapsed);
+        self.advance_lod_sweep(elapsed);
+        if self.world.motion.planning_state() != prediction_before_replay {
+            if let Some(trace) = self.movement_trace.as_mut() {
+                trace.record(
+                    "frame_replay_changed_prediction",
+                    &self.world,
+                    self.control.camera(),
+                );
+            }
+        }
         // A viewport that grew may have taken the world texture past what the
         // device allows, which no zoom step asked for.
         self.fit_zoom_to_device();
@@ -265,6 +990,9 @@ impl App {
         // and is then walked across for the next 400ms, so every frame in
         // between has a different answer.
         self.follow_player(elapsed);
+        if let Some(trace) = self.movement_trace.as_mut() {
+            trace.record("frame", &self.world, self.control.camera());
+        }
     }
 
     /// **Step two**: one snapshot, and it is a value.
@@ -418,6 +1146,25 @@ impl App {
         let lit_mobile = on_mobile.filter(|_| self.graphics.highlight != HighlightTarget::Tiles);
         let lit_item = on_item.filter(|_| self.graphics.highlight != HighlightTarget::Tiles);
 
+        // The server-confirmed combat target owns the persistent mobile ring.
+        // It takes precedence over a local click selection: selection may move
+        // to a tile or an item while combat continues, but the target marker
+        // must stay on the body the shard says we are fighting.
+        let targeted_mobile = self
+            .world
+            .authoritative
+            .view
+            .as_ref()
+            .and_then(|view| view.player.attacking)
+            .filter(|_| self.graphics.drawing.mobiles)
+            .and_then(|who| {
+                drawn_mobiles.as_ref().and_then(|drawn| {
+                    drawn
+                        .iter()
+                        .position(|(candidate, _)| *candidate == Some(who))
+                        .map(openshard_client_render::mobiles::MobileIndex::new)
+                })
+            });
         // What a click is *holding*, turned from identity back into this
         // frame's index — the reverse of `on_mobile`/`on_item` just above.
         // This is the held ring's own pick, asked once here rather than at
@@ -429,7 +1176,7 @@ impl App {
         // emptied whole when `self.graphics.drawing.mobiles` is off, and an index into
         // `drawn_mobiles` would then point at a `Vec` the held ring never
         // sees.
-        let held_mobile = self
+        let selected_mobile = self
             .picking
             .selected
             .and_then(SelectedIdentity::as_mobile)
@@ -442,6 +1189,7 @@ impl App {
                         .map(openshard_client_render::mobiles::MobileIndex::new)
                 })
             });
+        let held_mobile = targeted_mobile.or(selected_mobile);
         let held_item = self
             .picking
             .selected
@@ -578,6 +1326,20 @@ impl App {
         // atlases have to be grown for the same bound `light::collect` reads
         // them over.
         let tuning = self.tuning();
+        // The producer needs the same static-impostor mode as the camera
+        // frame. Lighting itself is applied later from the restored G-buffer,
+        // but a lit frame's map statics still need their real box intersection
+        // instead of the daylight billboard fallback.
+        let producer_sky = match (self.graphics.night, self.graphics.sunlit) {
+            (true, _) => Some(light::NIGHT),
+            (false, true) => Some(light::SKYLIGHT),
+            (false, false) => self.graphics.show_solids.then_some(light::Ambient::DAY),
+        };
+        let producer_sky = self
+            .graphics
+            .sky_field
+            .then_some(producer_sky)
+            .unwrap_or_else(|| producer_sky.map(light::Ambient::flattened));
         // The Chat tab's own numbers, the same reason and the same place:
         // gathered before the window is borrowed below, since `App::chat_style`
         // also reads the whole of `self`.
@@ -602,35 +1364,33 @@ impl App {
             max_y: map_height.saturating_sub(1) as i32,
         };
         let composite_visible = MapBlockBounds::from_tiles(camera.visible_tiles(), map_width, map_height);
-        // Composite LOD is temporarily disabled while validating the ordinary
-        // detailed renderer.  Keep the selector and queue intact so the
-        // experiment is reversible, but do not schedule or draw cached map
-        // blocks: every visible map tile must come from the LOD 0 path.
-        let _selected_composite_lod = self.composite_lod.update_camera(&camera);
-        let composite_lod = BlockLod::Lod0;
-        // A static-atlas page is immutable once sealed, but the family revision
-        // changes whenever new art/shape facts become available.  Cache keys
-        // carry that revision so a newly packed sprite cannot be stretched
-        // through an old block capture.
-        let mut composite_revision = self
-            .window
-            .as_ref()
-            .map(|window| ImmutableRevision(window.atlases.statics.revision()))
-            .unwrap_or_default();
+        // Producer coverage is proven through the real-map capture/restore
+        // oracle in `tests/frame.rs`. Roll out the first cache tier only: a
+        // far enough camera may request LOD1, while the selector continues to
+        // retain its LOD2 hysteresis state for that tier's later validation.
+        let selected_composite_lod = self.composite_lod.update_camera(&camera);
+        let composite_lod = visible_composite_lod(selected_composite_lod);
+        // A composite stores final map pixels and deferred facts, not atlas
+        // UVs. Static-atlas pages are append-only, so packing art for a newly
+        // entered block cannot alter a completed block composite. In
+        // particular, do not key this cache to the atlas's growth revision:
+        // at far zoom each scroll would otherwise discard the whole visible
+        // LOD working set merely because one new sprite was packed.
+        let composite_revision = ImmutableRevision(self.graphics.fringe as u64);
         if let (Some(visible), Some(map)) = (
             composite_visible,
             MapBlockBounds::from_tiles(map_tiles, map_width, map_height),
         ) {
             let composites = self.window.as_ref().map(|window| &window.composites);
             self.composite_work
-                .refresh(visible, map, composite_lod, composite_revision, |key| {
+                .refresh(visible, map, selected_composite_lod, composite_revision, |key| {
                     composites.is_some_and(|cache| cache.get(key).is_some())
                 });
         }
-        let composite_jobs = match composite_lod {
-            BlockLod::Lod0 => Vec::new(),
-            _ => self.composite_work.take_for_frame(),
-        };
+        // The producer owns its own command buffer below. Keep this empty so
+        // `encode_world_passes` cannot revive the retired camera-frame capture
+        // path.
+        let composite_jobs = Vec::new();
         let mut drawn = self.drawn_mobiles();
         // Likewise: the cut the solids view is drawn under reads the player, and
         // the pass that uses it runs inside the window's borrow.
@@ -650,41 +1410,55 @@ impl App {
             &wanted,
             &drawn,
         );
-        // A composite is map-only, but it still samples static art and omits
-        // whatever this frame's cutaway omits.  Do not flush the whole cache
-        // for a local player move: only blocks currently affected by that
-        // cutaway need a fresh capture.  Atlas additions likewise only make
-        // the current visible representation stale; older entries carry their
-        // old revision and age out through the bounded cache tail.
-        let atlas_revision = window.atlases.statics.revision();
+        // Full GPU readback fences the device.  It is useful for the explicit
+        // field audit, but must not change the timing of the ordinary injected
+        // slow-pan scenario whose purpose is to expose asynchronous churn.
+        let atlas_audit_due = std::env::var_os("OPENSHARD_ATLAS_AUDIT").is_some()
+            && self.lod_sweep.as_mut().is_some_and(|sweep| {
+                if !sweep.atlas_soak || sweep.elapsed < sweep.next_atlas_audit {
+                    return false;
+                }
+                sweep.next_atlas_audit = sweep.elapsed + Duration::from_secs(2);
+                true
+            });
         if window.composite_output_format != blit::WORLD_FORMAT {
             window.composites.clear();
             self.composite_work.clear();
             window.composite_output_format = blit::WORLD_FORMAT;
         }
-        if window.composite_atlas_revision != atlas_revision {
-            if let Some(blocks) = composite_visible {
-                window.composites.invalidate_blocks(blocks);
+        // Prepare at most one immutable block's art in the same stable order
+        // the eventual producer will dispatch.  This appends to atlas pages
+        // and uploads only their dirty rows; a full/page-limited atlas does
+        // not take the ordinary frame's rebuild route for a background job.
+        // The job remains pending until an independent offscreen map draw can
+        // consume the prepared inputs, so this does not re-enable the former
+        // camera-frame capture path.
+        if cutaway == Cutaway::OPEN {
+            for work in self.composite_work.preparation_candidates() {
+                let prepared = prepare_composite_job(
+                    &mut self.resources,
+                    window,
+                    &self.world.presentation.tile_animations,
+                    CompositeProducerJob::new(work.key),
+                );
+                if prepared {
+                    self.composite_work.mark_prepared(work.key);
+                }
             }
-            // An in-flight prefetch may cover a block just outside this frame
-            // whose statics also used newly available art.  It has no safe
-            // per-graphic dependency list yet, so cancel the tiny bounded
-            // queue rather than admitting a late old-revision capture.
-            self.composite_work.clear();
-            window.composite_atlas_revision = atlas_revision;
-        }
-        if window.composite_cutaway != cutaway {
-            if let Some(blocks) = composite_visible {
-                window.composites.invalidate_blocks(blocks);
-                self.composite_work.invalidate_blocks(blocks);
+            let producer_jobs = self.composite_work.take_marked_prepared_for_frame();
+            for work in producer_jobs {
+                produce_composite_block(
+                    &self.resources,
+                    &self.world.presentation.tile_animations,
+                    &tuning,
+                    producer_sky,
+                    self.graphics.fringe,
+                    window,
+                    &mut self.composite_work,
+                    work,
+                );
             }
-            window.composite_cutaway = cutaway;
         }
-        // `ready_atlases` may have packed a graphic just exposed at the edge
-        // this frame.  Captures made after it must advertise that new immutable
-        // revision, while previously dispatched jobs were cancelled above.
-        composite_revision = ImmutableRevision(atlas_revision);
-
         // Three time-varying halves of a mobile, filled in per frame rather
         // than per packet: the crowd is the only thing that knows what a
         // clock — and a group — has done since the `0x77` landed, and
@@ -694,6 +1468,8 @@ impl App {
         Self::advance_to_clocks(
             &self.world.presentation.crowd,
             &window.atlases.mobiles,
+            self.world.me(),
+            &self.world.motion,
             &mut drawn,
         );
         // Whoever the crowd is still holding a line for, hung above whichever
@@ -701,7 +1477,7 @@ impl App {
         // `who` is dropped below: a label with no mobile to anchor to has
         // nothing to draw either way, so the two share the same "still on
         // screen" question `mobiles::head_anchor` answers.
-        let speech: Vec<(ViewPixel, String, Font, Hue)> = drawn
+        let mut overhead: Vec<(ViewPixel, String, Font, Hue)> = drawn
             .iter()
             .filter_map(|(who, mobile)| {
                 let (text, font, hue) = self.world.presentation.crowd.speaking(*who)?;
@@ -709,6 +1485,18 @@ impl App {
                 Some((anchor, text.to_string(), font, hue))
             })
             .collect();
+        // A combat number follows the same mobile anchor as speech, but its
+        // y-coordinate is aged every frame so it rises smoothly rather than
+        // moving only when the network sends another packet.
+        for number in &self.world.presentation.damage_numbers {
+            if let Some((_, mobile)) = drawn.iter().find(|(who, _)| *who == Some(number.serial)) {
+                if let Some(mut anchor) = mobiles::head_anchor(mobile, &camera, &window.atlases.mobiles) {
+                    let progress = number.elapsed.as_secs_f32() / DAMAGE_NUMBER_HOLD.as_secs_f32();
+                    anchor.y -= (DAMAGE_NUMBER_RISE as f32 * progress) as i32;
+                    overhead.push((anchor, number.amount.to_string(), Font::DEFAULT, Hue(0x0022)));
+                }
+            }
+        }
         // **The crowd, or none of it** — `frame::Draw::mobiles`, which this
         // function honours because `frame::assemble` does not collect mobiles at
         // all. Emptied here and not at each of the three uses below, so that the
@@ -862,75 +1650,75 @@ impl App {
         // `text::ScreenLabel`'s doc for why the pass and `hud_quads`'s own
         // comment for why it has to be one call.
         let encode_started = Instant::now();
-        let (text_quads, screen_speech): (Vec<SpriteQuad>, Vec<text::ScreenLabel<'_>>) = match &self
-            .resources
-            .ttf_font
-        {
-            Some(font) => {
-                let atlas = window
-                    .ttf_atlas
-                    .as_mut()
-                    .expect("create_window builds ttf_atlas whenever ttf_font is set");
-                // Unlike `font_atlas`, `ttf_atlas` is grown a line at a time:
-                // there is no bounded "whole file" to pack up front for a
-                // face that answers to all of Unicode, so this asks it to
-                // rasterize whatever of this frame's speech it has not seen
-                // yet, the way `window.atlases` grows for graphics newly on
-                // screen.
-                if let Err(error) = atlas.add(font, speech.iter().flat_map(|(.., line, _, _)| line.chars())) {
-                    // `eprintln!` and a frame that draws anyway, the same
-                    // corner `AtlasError::Full` already cuts for the map's
-                    // own atlases — see docs/client.md. Unreachable in
-                    // practice: a shard's whole spoken character set is a
-                    // few hundred glyphs at most, nowhere near one 2048
-                    // texture.
-                    eprintln!("packing ttf glyphs: {error}");
+        let (text_quads, screen_speech): (Vec<SpriteQuad>, Vec<text::ScreenLabel<'_>>) =
+            match &self.resources.ttf_font {
+                Some(font) => {
+                    let atlas = window
+                        .ttf_atlas
+                        .as_mut()
+                        .expect("create_window builds ttf_atlas whenever ttf_font is set");
+                    // Unlike `font_atlas`, `ttf_atlas` is grown a line at a time:
+                    // there is no bounded "whole file" to pack up front for a
+                    // face that answers to all of Unicode, so this asks it to
+                    // rasterize whatever of this frame's speech it has not seen
+                    // yet, the way `window.atlases` grows for graphics newly on
+                    // screen.
+                    if let Err(error) =
+                        atlas.add(font, overhead.iter().flat_map(|(.., line, _, _)| line.chars()))
+                    {
+                        // `eprintln!` and a frame that draws anyway, the same
+                        // corner `AtlasError::Full` already cuts for the map's
+                        // own atlases — see docs/client.md. Unreachable in
+                        // practice: a shard's whole spoken character set is a
+                        // few hundred glyphs at most, nowhere near one 2048
+                        // texture.
+                        eprintln!("packing ttf glyphs: {error}");
+                    }
+                    let screen_speech = overhead
+                        .iter()
+                        .map(|(anchor, line, _font, hue)| {
+                            // `to_viewport` and not the projection directly:
+                            // it is the one place that already undoes both a
+                            // magnifying zoom's vertex-shader scale *and* a
+                            // minifying one's blit-shrink with the same number
+                            // — see its own doc. `viewport`'s own corner is
+                            // added because `to_viewport` answers in pixels of
+                            // the rect the world goes into, not the surface.
+                            let real = camera.to_viewport(*anchor);
+                            text::ScreenLabel {
+                                anchor: GumpPixel::new(
+                                    viewport.x as i32 + real.x.round() as i32,
+                                    viewport.y as i32 + real.y.round() as i32,
+                                ),
+                                text: line.as_str(),
+                                hue: *hue,
+                            }
+                        })
+                        .collect();
+                    (Vec::new(), screen_speech)
                 }
-                let screen_speech = speech
-                    .iter()
-                    .map(|(anchor, line, _font, hue)| {
-                        // `to_viewport` and not the projection directly:
-                        // it is the one place that already undoes both a
-                        // magnifying zoom's vertex-shader scale *and* a
-                        // minifying one's blit-shrink with the same number
-                        // — see its own doc. `viewport`'s own corner is
-                        // added because `to_viewport` answers in pixels of
-                        // the rect the world goes into, not the surface.
-                        let real = camera.to_viewport(*anchor);
-                        text::ScreenLabel {
-                            anchor: GumpPixel::new(
-                                viewport.x as i32 + real.x.round() as i32,
-                                viewport.y as i32 + real.y.round() as i32,
-                            ),
+                None => {
+                    let labels: Vec<Label<'_>> = overhead
+                        .iter()
+                        .map(|(anchor, line, font, hue)| Label {
+                            anchor: *anchor,
                             text: line.as_str(),
+                            font: *font,
                             hue: *hue,
-                        }
-                    })
-                    .collect();
-                (Vec::new(), screen_speech)
-            }
-            None => {
-                let labels: Vec<Label<'_>> = speech
-                    .iter()
-                    .map(|(anchor, line, font, hue)| Label {
-                        anchor: *anchor,
-                        text: line.as_str(),
-                        font: *font,
-                        hue: *hue,
-                        // Nearer than anything the world draws, rather than
-                        // an `Order` of its own: speech reads as an overlay
-                        // above whoever said it in every reference client,
-                        // and there is no real case here of a wall in front
-                        // of the speaker hiding it that a viewer would want
-                        // honoured. Worth revisiting with a
-                        // `depth::text_priority_z` alongside the mobile's
-                        // own if that ever stops being true.
-                        depth: 0.0,
-                    })
-                    .collect();
-                (text::collect(&labels, &self.resources.font_atlas), Vec::new())
-            }
-        };
+                            // Nearer than anything the world draws, rather than
+                            // an `Order` of its own: speech reads as an overlay
+                            // above whoever said it in every reference client,
+                            // and there is no real case here of a wall in front
+                            // of the speaker hiding it that a viewer would want
+                            // honoured. Worth revisiting with a
+                            // `depth::text_priority_z` alongside the mobile's
+                            // own if that ever stops being true.
+                            depth: 0.0,
+                        })
+                        .collect();
+                    (text::collect(&labels, &self.resources.font_atlas), Vec::new())
+                }
+            };
         // Uploads whatever the `add` above (and the HUD's own, further down
         // this frame) packed fresh — see `Screen::upload_ttf_dirty`'s doc for
         // why this is the one place both call through rather than each taking
@@ -1156,6 +1944,13 @@ impl App {
             gpu.resolve(&mut encoder);
         }
         window.queue.submit([encoder.finish()]);
+        if atlas_audit_due {
+            audit_static_atlas_pages(window);
+            audit_scene_instance_buffers(window);
+            if std::env::var_os("OPENSHARD_LOD_SCREEN_AUDIT").is_some() {
+                audit_visible_ground_centres(window, &self.resources.map, camera);
+            }
+        }
         // And the frame closed, which is what makes those buffers eligible to be
         // mapped. What comes back is an older frame's timings — see [`profile`]
         // for why that is the right trade and not a defect.
@@ -1376,4 +2171,50 @@ pub(crate) fn write_frame_dump(
         std::fs::write(into.join(format!("{}.png", view.name())), png)?;
     }
     std::fs::write(into.join("inputs.txt"), asked_for)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use openshard_client_render::follow::Gaze;
+    use openshard_protocol::direction::{Direction, Facing};
+    use openshard_protocol::wire::{Graphic, Hue};
+    use openshard_protocol::world::Point;
+    use openshard_uofiles::anim::BodyKind;
+
+    #[test]
+    fn local_render_projection_uses_game_motion_not_a_presentation_clock() {
+        let start = Point::new(100, 100, 0);
+        let end = Point::new(101, 100, 0);
+        let east = Facing::walking(Direction::East);
+        let mut motion = PlayerMotion::new(start, east);
+        let mut player = Mobile {
+            at: end,
+            body: Graphic(0x0190),
+            group: BodyKind::of(Graphic(0x0190)).standing(),
+            facing: Direction::East,
+            frame: openshard_uofiles::anim::AnimationFrameIndex(0),
+            from: None,
+            hue: Hue::NONE,
+            // Deliberately an impossible stale presentation pose: the test
+            // proves the frame projection replaces it from GameMotion alone.
+            drawn: Gaze::on(start),
+            equipment: Vec::new().into(),
+        };
+
+        motion.accept_trusted_step(end, east);
+        motion.advance(openshard_movement::WALK_HOLD / 2);
+        App::project_local_motion(&motion, &mut player);
+
+        assert_eq!(player.drawn, motion.drawn());
+        assert_ne!(player.drawn, Gaze::on(start));
+        assert_eq!(player.from, Some(start));
+    }
+
+    #[test]
+    fn visible_composite_gate_allows_lod_one_but_holds_lod_two() {
+        assert_eq!(visible_composite_lod(BlockLod::Lod0), BlockLod::Lod0);
+        assert_eq!(visible_composite_lod(BlockLod::Lod1), BlockLod::Lod1);
+        assert_eq!(visible_composite_lod(BlockLod::Lod2), BlockLod::Lod1);
+    }
 }

@@ -40,9 +40,9 @@ use std::time::Duration;
 use openshard_client_render::animation::AnimationClock;
 use openshard_client_render::follow::Gaze;
 use openshard_client_render::mobiles::{EquipmentLayer, Mobile};
-use openshard_movement::{RUN_HOLD, WALK_HOLD};
+use openshard_movement::step_hold;
 use openshard_protocol::direction::{Direction, Facing};
-use openshard_protocol::feedback::{Animation, AnimationFrameCount};
+use openshard_protocol::feedback::{Animation, AnimationFrameCount, NewAnimation};
 use openshard_protocol::mobile::Equipment;
 use openshard_protocol::serial::Serial;
 use openshard_protocol::speech::Font;
@@ -244,6 +244,38 @@ fn animation_hold(takes: Duration) -> Duration {
     takes * 3 / 2
 }
 
+/// Translate the semantic categories of `0xE2` into the groups in the classic
+/// animation files.  The packet intentionally has no body-specific group: the
+/// body already on screen supplies that half of the key.
+///
+/// The timings mirror the shard's `0x6E` fallback.  The group lookup remains
+/// here because only the client has the currently displayed body's kind.
+fn modern_action(kind: BodyKind, animation_type: u16, sub_action: u16) -> Option<(u16, u16)> {
+    let human = matches!(kind, BodyKind::Human);
+    match animation_type {
+        // Attack.  Harvesting is sent as Attack with a nonzero sub-action.
+        0 => Some(match (human, sub_action) {
+            (true, 3) => (11, 5), // mine
+            (true, 6) => (12, 5), // fish
+            (true, 7) => (13, 6), // chop
+            (true, _) => (31, 7), // wrestle
+            (false, _) => match kind {
+                BodyKind::Monster => (4, 4), // HighAnimationGroup.Attack1
+                BodyKind::Animal => (5, 4),  // LowAnimationGroup.Attack1
+                BodyKind::Human => unreachable!("human handled above"),
+            },
+        }),
+        3 => Some(match kind {
+            BodyKind::Monster => (2, 4), // HighAnimationGroup.Die1
+            BodyKind::Animal => (8, 4),  // LowAnimationGroup.Die1
+            BodyKind::Human => (21, 6),  // PeopleAnimationGroup.Die1
+        }),
+        9 => Some(if human { (32, 5) } else { (4, 4) }), // bow
+        11 => Some(if human { (16, 7) } else { (12, 7) }), // spell
+        _ => None,
+    }
+}
+
 /// One mobile's history: where it was, what it is playing, and since when.
 #[derive(Clone, Copy, Debug)]
 struct Tracked {
@@ -269,6 +301,12 @@ struct Tracked {
     /// flag byte — so it is restated on each [`Crowd::see`] rather than
     /// remembered from whenever the stance last changed.
     war: bool,
+    /// Whether this is an item corpse rather than a living mobile.
+    ///
+    /// Corpses borrow the mobile renderer because `0x2006`'s amount is a body
+    /// id, not a stack count. Unlike a live body they hold the final frame of
+    /// their death group forever.
+    corpse: bool,
     /// Which animation group is playing.
     group: AnimationGroup,
     /// The step it is in the middle of.
@@ -320,6 +358,20 @@ struct ActionAnimation {
 /// moment the client logs in.
 pub type Who = Option<Serial>;
 
+/// An explicit movement command for the client-controlled body.  Other
+/// mobiles still arrive as position snapshots through [`Crowd::see`], but the
+/// player must not make Crowd infer a transition from two independent stores.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CommandedMove {
+    /// Start or refresh a transition whose logical endpoints are already owned
+    /// by the movement core.
+    Transition { from: Point, to: Point },
+    /// Keep the body at a known standing tile (including a turn in place).
+    Standing { at: Point },
+    /// Put the body down without interpolation after reconciliation.
+    Snap { at: Point },
+}
+
 /// Everyone on screen, aged.
 #[derive(Clone, Debug)]
 pub struct Crowd {
@@ -368,6 +420,31 @@ impl Default for Crowd {
 }
 
 impl Crowd {
+    /// Project one explicit player-motion command into Crowd's clocks.
+    ///
+    /// The method deliberately delegates clock arithmetic to [`Self::see`] and
+    /// [`Self::snap`]; its contract is ownership, not a second interpolation
+    /// implementation. Its explicit source lets it recover if a blocked frame
+    /// advanced more than one core transition before presentation ran again.
+    pub fn command(
+        &mut self,
+        who: Who,
+        command: CommandedMove,
+        body: Graphic,
+        facing: Facing,
+        hue: Hue,
+        war: bool,
+    ) -> Mobile {
+        match command {
+            CommandedMove::Transition { from, to } => {
+                debug_assert_ne!(from, to, "a transition must cross a tile");
+                self.see_inner(who, to, body, facing, hue, war, Some(from))
+            }
+            CommandedMove::Standing { at } => self.see_inner(who, at, body, facing, hue, war, None),
+            CommandedMove::Snap { at } => self.snap(who, at, body, facing, hue, war),
+        }
+    }
+
     /// Ease every body by a different amount from now on.
     ///
     /// The eased positions are deliberately *not* reset: a body is where it is,
@@ -451,6 +528,21 @@ impl Crowd {
     /// knows how many frames there are, and it is not built yet when this is
     /// called; [`Crowd::frame_for`] fills it in once it is.
     pub fn see(&mut self, who: Who, at: Point, body: Graphic, facing: Facing, hue: Hue, war: bool) -> Mobile {
+        self.see_inner(who, at, body, facing, hue, war, None)
+    }
+
+    /// `explicit_from` is supplied only for the locally commanded body.  Its
+    /// step is a fact from `PlayerMotion`, unlike a remote mobile's snapshot.
+    fn see_inner(
+        &mut self,
+        who: Who,
+        at: Point,
+        body: Graphic,
+        facing: Facing,
+        hue: Hue,
+        war: bool,
+        explicit_from: Option<Point>,
+    ) -> Mobile {
         let kind = BodyKind::of(body);
         let now = self.now;
         let commanded = self.commanded == who;
@@ -459,6 +551,7 @@ impl Crowd {
             facing: facing.direction,
             body,
             war,
+            corpse: false,
             // A body first heard of is standing: it may well be mid-stride, but
             // the only thing that could say so is a previous packet and there
             // is none. In the stance the packet stated, which for a body that
@@ -479,13 +572,38 @@ impl Crowd {
             action: None,
         });
 
+        // A serial is normally never reused while it remains on screen, but
+        // making the ordinary mobile path explicit keeps this history honest if
+        // a shard ever does reuse one after removing a corpse.
+        tracked.corpse = false;
+
         // A step is a *position* change. A turn on the spot is not one — the
         // client draws a turning body standing, and a facing change arrives for
         // every step too, so treating it as movement would keep everyone
         // walking forever.
-        if tracked.at != at {
+        let moved = match explicit_from {
+            Some(_) if tracked.at == at => false,
+            Some(from) => {
+                // `PlayerMotion` is authoritative for the locally controlled
+                // body.  A long blocked frame can finish several queued
+                // transitions before the renderer gets one chance to project
+                // again; Crowd then legitimately has missed intermediate
+                // commands.  Rebase this presentation-only clock at the
+                // motion core's named source rather than treating Crowd's old
+                // destination as movement truth.
+                if tracked.at != from {
+                    tracked.at = from;
+                    tracked.drawn = Gaze::on(from);
+                    tracked.step = None;
+                    tracked.stepped_at = None;
+                }
+                true
+            }
+            None => tracked.at != at,
+        };
+        if moved {
             let was = tracked.at;
-            let nominal = if facing.running { RUN_HOLD } else { WALK_HOLD };
+            let nominal = step_hold(facing.running);
             // Two ways to know how long a tile takes, and which one is available
             // is exactly what [`Crowd::commanded`] answers.
             //
@@ -614,6 +732,7 @@ impl Crowd {
             facing: facing.direction,
             body,
             war,
+            corpse: false,
             group: match war {
                 true => kind.standing_at_war().unwrap_or(kind.standing()),
                 false => kind.standing(),
@@ -657,6 +776,7 @@ impl Crowd {
         // nobody has to infer anything. Easing across it would draw the body
         // strolling over ground it never crossed, which is the same picture the
         // glide is skipped for two lines above.
+        tracked.corpse = false;
         tracked.drawn = Gaze::on(at);
 
         Mobile {
@@ -681,18 +801,70 @@ impl Crowd {
     /// by [`Crowd::see`]: the count belongs to the atlas and the atlas belongs
     /// to the frame being drawn.
     pub fn frame_for(&self, who: Who, frame_count: AnimationFrameCount) -> u16 {
-        self.tracked.get(&who).map_or(0, |tracked| match tracked.action {
-            Some(action) => {
-                let ticks = action.elapsed.as_millis() / action.delay.as_millis().max(1);
-                let frame = (ticks % u128::from(action.frames.0.max(1))) as u16;
-                if action.forward {
-                    frame
-                } else {
-                    action.frames.0.saturating_sub(1).saturating_sub(frame)
-                }
+        self.tracked.get(&who).map_or(0, |tracked| {
+            if tracked.corpse {
+                return frame_count.0.saturating_sub(1);
             }
-            None => tracked.clock.frame(frame_count),
+            match tracked.action {
+                Some(action) => {
+                    let ticks = action.elapsed.as_millis() / action.delay.as_millis().max(1);
+                    let frame = (ticks % u128::from(action.frames.0.max(1))) as u16;
+                    if action.forward {
+                        frame
+                    } else {
+                        action.frames.0.saturating_sub(1).saturating_sub(frame)
+                    }
+                }
+                None => tracked.clock.frame(frame_count),
+            }
         })
+    }
+
+    /// Project an item corpse through the mobile renderer.
+    ///
+    /// The server sends a corpse as item `0x2006`; its amount is the dead
+    /// body's graphic. Static art has no picture for that protocol marker, so
+    /// the corpse instead holds the last frame of that body's `Die1` group.
+    /// Direction is not yet carried by `WorldItem`, hence the stable southeast
+    /// fallback until the wire grows the corpse-direction bit.
+    pub fn corpse(&mut self, who: Who, at: Point, body: Graphic, hue: Hue) -> Mobile {
+        let facing = Facing::walking(Direction::SouthEast);
+        let group = BodyKind::of(body).dying();
+        let tracked = self.tracked.entry(who).or_insert(Tracked {
+            at,
+            facing: facing.direction,
+            body,
+            war: false,
+            corpse: true,
+            group,
+            step: None,
+            stepped_at: None,
+            drawn: Gaze::on(at),
+            clock: AnimationClock::default(),
+            action: None,
+        });
+        tracked.at = at;
+        tracked.facing = facing.direction;
+        tracked.body = body;
+        tracked.war = false;
+        tracked.corpse = true;
+        tracked.step = None;
+        tracked.stepped_at = None;
+        tracked.drawn = Gaze::on(at);
+        tracked.action = None;
+        tracked.change_to(group);
+
+        Mobile {
+            at,
+            body,
+            group,
+            facing: facing.direction,
+            frame: AnimationFrameIndex(0),
+            from: None,
+            hue,
+            drawn: tracked.drawn,
+            equipment: Vec::new().into(),
+        }
     }
 
     /// Play a server-selected classic body action until it finishes.
@@ -718,6 +890,30 @@ impl Crowd {
             elapsed: Duration::ZERO,
         });
         tracked.change_to(AnimationGroup(group));
+    }
+
+    /// Play a modern action packet by translating its body-agnostic category
+    /// into the group numbering for the body currently on screen.
+    pub fn play_new(&mut self, animation: NewAnimation) {
+        let Some(tracked) = self.tracked.get(&Some(animation.serial)) else {
+            return;
+        };
+        let Some((action, frames)) = modern_action(
+            BodyKind::of(tracked.body),
+            animation.animation_type,
+            animation.action,
+        ) else {
+            return;
+        };
+        self.play(Animation {
+            serial: animation.serial,
+            action,
+            frame_count: AnimationFrameCount(frames),
+            repeat_count: 1,
+            forward: true,
+            repeat: false,
+            delay: animation.delay,
+        });
     }
 
     /// Where this body is drawn now, in the sub-pixel form the sprite and the
@@ -1046,6 +1242,7 @@ fn is_one_step(from: Point, to: Point) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use openshard_movement::{RUN_HOLD, WALK_HOLD};
     use openshard_protocol::direction::Direction;
 
     use super::*;
@@ -1090,6 +1287,63 @@ mod tests {
             false,
         );
         assert_eq!(dragon.group, 1, "HighAnimationGroup.Stand");
+    }
+
+    #[test]
+    fn a_modern_attack_uses_each_bodys_attack_group() {
+        let mut crowd = Crowd::default();
+        for (who, body, expected_group, expected_frames) in [
+            (serial(1), Graphic(DRAGON), 4, 4),
+            (serial(2), Graphic(HORSE), 5, 4),
+            (serial(3), Graphic(PLAYER), 31, 7),
+        ] {
+            crowd.see(
+                who,
+                Point::new(10, 10, 0),
+                body,
+                Facing::walking(Direction::South),
+                Hue::NONE,
+                false,
+            );
+            crowd.play_new(NewAnimation {
+                serial: who.expect("a serial"),
+                animation_type: 0,
+                action: 0,
+                delay: 0,
+            });
+            assert_eq!(crowd.group_for(who), Some(AnimationGroup(expected_group)));
+            crowd.advance(Duration::from_millis(80));
+            assert_eq!(
+                crowd.frame_for(who, AnimationFrameCount(expected_frames)),
+                1,
+                "body {} advances its attack",
+                body.0
+            );
+        }
+    }
+
+    #[test]
+    fn an_in_flight_step_reports_the_tile_the_body_is_leaving() {
+        let who = serial(4);
+        let mut crowd = Crowd::default();
+        crowd.see(
+            who,
+            Point::new(10, 10, 0),
+            Graphic(PLAYER),
+            Facing::walking(Direction::South),
+            Hue::NONE,
+            false,
+        );
+        crowd.see(
+            who,
+            Point::new(11, 10, 0),
+            Graphic(PLAYER),
+            Facing::walking(Direction::East),
+            Hue::NONE,
+            false,
+        );
+
+        assert_eq!(crowd.stepping_from(who), Some(Point::new(10, 10, 0)));
     }
 
     /// War is a *group*, and it reaches the body through every door: the packet
@@ -1429,6 +1683,57 @@ mod tests {
             crowd.frame_for(serial(1), AnimationFrameCount(6)),
             0,
             "the walk starts at its start"
+        );
+    }
+
+    /// A turn picks a different direction's sprites, not a new walking
+    /// animation.  The clock belongs to the body and group, so the new facing
+    /// has to continue at the frame its previous facing had reached.
+    #[test]
+    fn turning_while_walking_keeps_the_stride_phase() {
+        let mut crowd = Crowd::default();
+        let who = serial(1);
+        crowd.see(
+            who,
+            Point::new(10, 10, 0),
+            Graphic(PLAYER),
+            Facing::walking(Direction::East),
+            Hue::NONE,
+            false,
+        );
+        crowd.see(
+            who,
+            Point::new(11, 10, 0),
+            Graphic(PLAYER),
+            Facing::walking(Direction::East),
+            Hue::NONE,
+            false,
+        );
+        crowd.advance(Duration::from_millis(80 * 3));
+        let before_turn = crowd.frame_for(who, AnimationFrameCount(6));
+        assert_eq!(before_turn, 3);
+
+        let turned = crowd.see(
+            who,
+            Point::new(11, 9, 0),
+            Graphic(PLAYER),
+            Facing::walking(Direction::North),
+            Hue::NONE,
+            false,
+        );
+
+        assert_eq!(turned.facing, Direction::North, "the sprite set changed");
+        assert_eq!(turned.group, AnimationGroup(0), "it is still walking");
+        assert_eq!(
+            crowd.frame_for(who, AnimationFrameCount(6)),
+            before_turn,
+            "the new direction continues the existing stride rather than restarting it"
+        );
+        crowd.advance(Duration::from_millis(80));
+        assert_eq!(
+            crowd.frame_for(who, AnimationFrameCount(6)),
+            4,
+            "the shared cycle advances"
         );
     }
 
@@ -2317,6 +2622,28 @@ mod tests {
         // resuming a walk nobody watched.
         assert_eq!(crowd.frame_for(serial(1), AnimationFrameCount(6)), 0);
         assert_eq!(crowd.frame_for(serial(2), AnimationFrameCount(6)), 1);
+    }
+
+    #[test]
+    fn an_item_corpse_holds_the_last_death_frame() {
+        let mut crowd = Crowd::default();
+        let at = Point::new(10, 10, 0);
+        let skeleton = Graphic(0x0038);
+        let corpse = crowd.corpse(serial(0x4000_0001), at, skeleton, Hue::NONE);
+
+        assert_eq!(corpse.group, BodyKind::Monster.dying());
+        assert_eq!(corpse.at, at);
+        crowd.advance(Duration::from_secs(10));
+        assert_eq!(
+            crowd.group_for(serial(0x4000_0001)),
+            Some(BodyKind::Monster.dying()),
+            "a corpse never falls back to a standing animation"
+        );
+        assert_eq!(
+            crowd.frame_for(serial(0x4000_0001), AnimationFrameCount(4)),
+            3,
+            "the final frame is the corpse pose"
+        );
     }
 
     /// A line is there the instant it is heard, and gone once the hold runs

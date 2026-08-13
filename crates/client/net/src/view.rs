@@ -684,6 +684,11 @@ impl WorldView {
             // it learns what it is wearing. It goes to the player rather than
             // into `mobiles`, which is never keyed by our own serial: a body in
             // both would be drawn twice, once at each end's idea of where it is.
+            //
+            // Its position is the reveal snapshot, not a player relocation.
+            // `Walk` deliberately treats this packet as idle; copying the
+            // coordinate here would make the authoritative world disagree with
+            // that movement core whenever equipment arrives during a walk.
             ServerPacket::MobileIncoming(incoming) if incoming.serial == self.player.serial => {
                 let fresh = Player {
                     serial: self.player.serial,
@@ -700,8 +705,8 @@ impl WorldView {
                     hits: self.player.hits,
                     // `0x78` dresses the player but does not restate status.
                     status: self.player.status.clone(),
-                    position: incoming.position,
-                    facing: incoming.facing,
+                    position: self.player.position,
+                    facing: self.player.facing,
                     equipment: incoming.equipment.clone(),
                     // Kept, for `0x20`'s reason above.
                     skills: self.player.skills.clone(),
@@ -1266,8 +1271,10 @@ mod tests {
         let mine = MobileIncoming {
             serial: view.player.serial,
             body: Graphic(0x0190),
-            position: start().position,
-            facing: start().facing,
+            // Deliberately different: an appearance snapshot must never
+            // relocate the predicted/authoritative player movement anchor.
+            position: Point::new(2000, 2000, 0),
+            facing: Facing::running(Direction::South),
             hue: Hue(0x83EA),
             flags: StatusFlags::NONE,
             notoriety: Notoriety::Innocent,
@@ -1277,6 +1284,8 @@ mod tests {
         assert!(view.mobiles.is_empty(), "we are not one of the others");
         assert_eq!(view.player.equipment, vec![shirt()]);
         assert_eq!(view.player.hue, Hue(0x83EA));
+        assert_eq!(view.player.position, start().position);
+        assert_eq!(view.player.facing, start().facing);
         assert!(
             !view.apply(&ServerPacket::MobileIncoming(mine)),
             "the same packet twice changes nothing"
@@ -1683,6 +1692,7 @@ mod tests {
     #[test]
     fn opening_a_chest_is_a_window_and_a_listing() {
         let mut view = WorldView::entered(start());
+        let movement_before = (view.player.position, view.player.facing);
         assert!(view.apply(&opened(chest())));
         assert!(view.apply(&ServerPacket::ContainerContents(ContainerContents {
             container: Some(chest()),
@@ -1691,6 +1701,11 @@ mod tests {
 
         assert_eq!(view.containers.get(&chest()), Some(&Graphic(0x003C)));
         assert_eq!(view.contents.get(&chest()).unwrap(), &[candle()]);
+        assert_eq!(
+            (view.player.position, view.player.facing),
+            movement_before,
+            "a double-clicked container only changes the container kernel"
+        );
     }
 
     /// The listing that cannot say what it is about. Nothing to fold in, and

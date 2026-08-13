@@ -8,6 +8,7 @@
 //! fields here change together, on every `Update::World`, and a method that
 //! only touches this half can be written and tested against it alone.
 
+use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
 use openshard_client_net::view::WorldView;
@@ -24,6 +25,19 @@ use openshard_uofiles::tiledata::TileData;
 use crate::crowd::{Crowd, Who};
 use crate::{clutter, link, resources};
 
+/// How long a damage number remains over the mobile it struck.
+pub const DAMAGE_NUMBER_HOLD: Duration = Duration::from_secs(1);
+/// Vertical distance, in world pixels, a damage number travels during its hold.
+pub const DAMAGE_NUMBER_RISE: i32 = 28;
+
+/// A short-lived combat number shown over a mobile.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DamageNumber {
+    pub serial: Serial,
+    pub amount: u16,
+    pub elapsed: Duration,
+}
+
 /// What the connection has told this client the world looks like — see the
 /// module docs.
 pub struct WorldState {
@@ -31,10 +45,10 @@ pub struct WorldState {
     /// on the application thread; render data is rebuilt from it below rather
     /// than sharing or mutating this record from another thread.
     pub authoritative: AuthoritativeWorld,
-    /// The local answer to where our own body should be before the shard has
-    /// confirmed it. Presentation projects this into its `player`; it never
-    /// changes [`AuthoritativeWorld::view`].
-    pub prediction: PredictionState,
+    /// The sole app-thread owner of player movement.  Presentation, planning,
+    /// camera following, and the HUD query this rather than maintaining their
+    /// own position records.
+    pub motion: PlayerMotion,
     /// The renderer-facing projection rebuilt from authoritative state and
     /// prediction before a frame is drawn.
     pub presentation: PresentationWorld,
@@ -61,7 +75,7 @@ pub struct PresentationWorld {
     pub tile_animations: StaticAnimations,
     pub flame_clock: Duration,
     /// The player's rendered body. Its position and facing are projected from
-    /// [`PredictionState`]; body, hue and equipment come from the shard.
+    /// [`PlayerMotion`]; body, hue and equipment come from the shard.
     pub player: Mobile,
     /// The guarded cutaway tile. It may deliberately lag a doomed prediction.
     pub cutaway_at: Point,
@@ -69,9 +83,14 @@ pub struct PresentationWorld {
     pub cutaway_fades: openshard_client_render::cutaway::Fades,
     /// Render mobiles beside the identity their animation clocks use.
     pub others: Vec<(Who, Mobile)>,
+    /// Item corpses projected through the mobile renderer. Their serial remains
+    /// an item serial, so double-clicking one still opens its loot container.
+    pub corpses: Vec<(Who, Mobile)>,
     /// Ground-item render data and the parallel wire serials used for picks.
     pub items: Vec<GroundItem>,
     pub item_serials: Vec<Serial>,
+    /// Damage numbers are presentation events, not authoritative world state.
+    pub damage_numbers: Vec<DamageNumber>,
     /// The corresponding transient obstacles used by local movement.
     pub clutter: clutter::Clutter,
     /// Animation and glide history, which belongs to presentation rather than
@@ -90,6 +109,22 @@ impl PresentationWorld {
         self.crowd.advance(elapsed);
         self.tile_animations.advance(elapsed);
         self.flame_clock += elapsed;
+        for number in &mut self.damage_numbers {
+            number.elapsed += elapsed;
+        }
+        self.damage_numbers
+            .retain(|number| number.elapsed < DAMAGE_NUMBER_HOLD);
+    }
+
+    /// Show the damage the last health update established for one mobile.
+    pub(crate) fn damage(&mut self, serial: Serial, amount: u16) {
+        if amount > 0 {
+            self.damage_numbers.push(DamageNumber {
+                serial,
+                amount,
+                elapsed: Duration::ZERO,
+            });
+        }
     }
 }
 
@@ -100,10 +135,13 @@ impl PresentationWorld {
 /// impossible for one caller to move `last_advance` while forgetting a clock.
 pub(crate) fn advance_presentation_to(
     presentation: &mut PresentationWorld,
+    motion: &mut PlayerMotion,
     last_advance: &mut Instant,
     now: Instant,
 ) {
-    presentation.advance(now.saturating_duration_since(*last_advance));
+    let elapsed = now.saturating_duration_since(*last_advance);
+    motion.advance_with_ease(elapsed, presentation.crowd.ease());
+    presentation.advance(elapsed);
     *last_advance = now;
 }
 
@@ -119,29 +157,446 @@ pub struct AuthoritativeWorld {
     pub facet_checked: bool,
 }
 
-/// The local movement state that may be ahead of the server's last confirmed
-/// position. It is deliberately smaller than a render [`Mobile`]: no body,
-/// equipment or animation clock belongs to a prediction.
-#[derive(Clone, Copy, Debug)]
-pub struct PredictionState {
-    /// The tile the last accepted step expects us to reach.
-    pub at: Point,
-    /// The facing that step asked for, including its walking/running mode.
-    pub facing: Facing,
+/// The player movement coordinator.
+///
+/// It deliberately joins, but does not merge, two independently valid cores:
+/// [`NetworkMotion`] is the integer-grid protocol state, while [`GameMotion`]
+/// is the continuous pose a frame draws.  `Crowd` may animate the player's
+/// body, but is never a source of either position.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PlayerMotion {
+    network: NetworkMotion,
+    game: GameMotion,
 }
 
-impl PredictionState {
-    /// Record the prediction the shard thread paired with an update.
-    pub fn apply(&mut self, body: link::Body) {
-        self.at = body.predicted.position;
-        self.facing = body.predicted.facing;
+/// Discrete, server-synchronised movement state.
+///
+/// Every point in here is a tile the protocol can name.  It has no clock and
+/// no fractional coordinate, so a normal world packet cannot accidentally
+/// advance the drawn player.
+#[derive(Clone, Debug, PartialEq)]
+struct NetworkMotion {
+    /// The latest position explicitly confirmed by the shard.
+    pub confirmed: openshard_client_net::walk::Predicted,
+    /// The end of the locally accepted step chain.
+    pub predicted: openshard_client_net::walk::Predicted,
+    pending: VecDeque<PendingStep>,
+    /// The transition currently drawn, followed by transitions accepted while
+    /// the application was busy.  Predictions have protocol identity and must
+    /// not be collapsed into one longer, faster glide.
+    transitions: VecDeque<MotionTransition>,
+    corrected: bool,
+}
+
+/// A local step waiting for the one protocol outcome that can retire it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct PendingStep {
+    sequence: openshard_protocol::world::StepSequence,
+}
+
+/// The logical endpoints that the network core gave to the game core.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct MotionTransition {
+    from: openshard_client_net::walk::Predicted,
+    to: openshard_client_net::walk::Predicted,
+}
+
+/// Continuous player pose, separate from the protocol's integer-grid state.
+/// The camera and player sprite read this core; `Crowd` supplies animation only.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct GameMotion {
+    /// The exact pose produced by the movement clock.  It remains separate
+    /// from `drawn`: the next step must begin on schedule even while the
+    /// picture deliberately eases a few pixels behind it.
+    walked: Gaze,
+    drawn: Gaze,
+    transition: Option<GameTransition>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct GameTransition {
+    from: Gaze,
+    to: Gaze,
+    elapsed: Duration,
+    takes: Duration,
+}
+
+/// Named values for interfaces that report movement without inspecting a
+/// `Mobile` or interpolation clock.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct HudMotionState {
+    pub confirmed: openshard_client_net::walk::Predicted,
+    pub predicted: openshard_client_net::walk::Predicted,
+    pub route_origin: Point,
+    pub pending_steps: usize,
+}
+
+/// The complete movement input required to project the player into a renderer.
+/// It is intentionally independent of `Mobile`: appearance is not movement.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct MotionRenderState {
+    /// The discrete endpoint of the transition currently being rendered.  It
+    /// is intentionally not necessarily the newest local prediction: later
+    /// numbered steps may be queued behind this one.
+    pub rendered: openshard_client_net::walk::Predicted,
+    pub predicted: openshard_client_net::walk::Predicted,
+    pub transition: Option<(Point, Point)>,
+    pub corrected: bool,
+}
+
+/// One internally consistent motion observation for diagnostics.  Keeping the
+/// trace input as a value prevents diagnostic code from accidentally comparing
+/// a fresh logical prediction with a stale presentation clock.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MotionSnapshot {
+    pub confirmed: openshard_client_net::walk::Predicted,
+    pub predicted: openshard_client_net::walk::Predicted,
+    pub rendered: Gaze,
+    pub route_origin: Point,
+    pub pending_steps: usize,
+    pub transition: Option<(Point, Point)>,
+}
+
+impl PlayerMotion {
+    pub fn new(at: Point, facing: Facing) -> Self {
+        let standing = openshard_client_net::walk::Predicted { position: at, facing };
+        Self {
+            network: NetworkMotion {
+                confirmed: standing,
+                predicted: standing,
+                pending: VecDeque::new(),
+                transitions: VecDeque::new(),
+                corrected: false,
+            },
+            game: GameMotion {
+                walked: Gaze::on(at),
+                drawn: Gaze::on(at),
+                transition: None,
+            },
+        }
     }
 
-    /// Record a movement made by the offline viewer or replay, which has no
-    /// shard handshake to produce a [`link::Body`].
-    pub fn set(&mut self, at: Point, facing: Facing) {
-        self.at = at;
-        self.facing = facing;
+    /// Atomically accept one local protocol step and name the transition it
+    /// starts.  The sequence survives until its matching acknowledgement.
+    pub fn accept_local(&mut self, body: link::Body, sequence: openshard_protocol::world::StepSequence) {
+        let from = self.network.predicted;
+        self.network.predicted = body.predicted;
+        self.network.corrected = false;
+        self.network.pending.push_back(PendingStep { sequence });
+        self.start_transition(from, self.network.predicted);
+        self.debug_assert_valid();
+    }
+
+    /// Incorporate a fact delivered by a packet.  A non-movement packet is a
+    /// no-op by construction; it cannot alter either movement anchor.
+    pub fn accept_network(&mut self, movement: Option<link::Movement>) {
+        let Some(movement) = movement else {
+            return;
+        };
+        self.network.confirmed = movement.confirmed();
+        self.network.corrected = matches!(
+            movement,
+            link::Movement::Reject { .. } | link::Movement::Relocation { .. }
+        );
+        match movement {
+            link::Movement::Ack { sequence, .. } => {
+                let pending = self.network.pending.pop_front().map(|step| step.sequence);
+                debug_assert_eq!(
+                    pending,
+                    Some(sequence),
+                    "walk acknowledgement must retire its own pending step"
+                );
+            }
+            link::Movement::Reject { sequence, confirmed } => {
+                debug_assert_eq!(
+                    self.network.pending.front().map(|step| step.sequence),
+                    Some(sequence),
+                    "walk rejection must name the oldest pending step"
+                );
+                self.network.predicted = confirmed;
+                self.network.pending.clear();
+                self.network.transitions.clear();
+                self.game.snap(confirmed.position);
+            }
+            link::Movement::Relocation { confirmed } => {
+                self.network.predicted = confirmed;
+                self.network.pending.clear();
+                self.network.transitions.clear();
+                self.game.snap(confirmed.position);
+            }
+        }
+        self.debug_assert_valid();
+    }
+
+    /// Put down an offline/replay movement which has no protocol identity.
+    pub fn set_local(&mut self, at: Point, facing: Facing) {
+        let standing = openshard_client_net::walk::Predicted { position: at, facing };
+        self.network.confirmed = standing;
+        self.network.predicted = standing;
+        self.network.pending.clear();
+        self.network.transitions.clear();
+        self.game.snap(at);
+        self.network.corrected = false;
+        self.debug_assert_valid();
+    }
+
+    /// Accept a step from a source that is authoritative immediately, such as
+    /// the offline map viewer.  It shares the online path's transition
+    /// ownership without inventing a protocol-pending step.
+    pub fn accept_trusted_step(&mut self, at: Point, facing: Facing) {
+        let from = self.network.predicted;
+        let to = openshard_client_net::walk::Predicted { position: at, facing };
+        self.network.confirmed = to;
+        self.network.predicted = to;
+        self.network.pending.clear();
+        self.network.corrected = false;
+        self.start_transition(from, to);
+        self.debug_assert_valid();
+    }
+
+    /// Seed a newly-entered world from the server's initial position.
+    pub fn reset(&mut self, body: link::Body) {
+        self.network.confirmed = body.predicted;
+        self.network.predicted = body.predicted;
+        self.network.pending.clear();
+        self.network.transitions.clear();
+        self.game.snap(body.predicted.position);
+        self.network.corrected = body.corrected;
+        self.debug_assert_valid();
+    }
+
+    /// The tile from which the current route should be drawn or extended.
+    pub fn route_origin(&self) -> Point {
+        match self.network.transitions.front() {
+            Some(transition) => transition.from.position,
+            None => self.network.predicted.position,
+        }
+    }
+
+    /// The authoritative starting state for the next movement decision.
+    pub const fn planning_state(&self) -> openshard_client_net::walk::Predicted {
+        self.network.predicted
+    }
+
+    /// The last player position the shard explicitly confirmed.
+    #[cfg(test)]
+    pub const fn confirmed_state(&self) -> openshard_client_net::walk::Predicted {
+        self.network.confirmed
+    }
+
+    /// The stable movement snapshot for HUDs and diagnostics.
+    pub fn hud_state(&self) -> HudMotionState {
+        HudMotionState {
+            confirmed: self.network.confirmed,
+            predicted: self.network.predicted,
+            route_origin: self.route_origin(),
+            pending_steps: self.network.pending.len(),
+        }
+    }
+
+    /// The renderer's discrete projection. Fractional placement comes only
+    /// from `GameMotion::drawn`.
+    pub fn render_state(&self) -> MotionRenderState {
+        let active = self.network.transitions.front().copied();
+        MotionRenderState {
+            rendered: active.map_or(self.network.predicted, |transition| transition.to),
+            predicted: self.network.predicted,
+            transition: active.map(|transition| (transition.from.position, transition.to.position)),
+            corrected: self.network.corrected,
+        }
+    }
+
+    /// Capture all diagnostic movement values from this one state owner.
+    pub fn snapshot(&self) -> MotionSnapshot {
+        MotionSnapshot {
+            confirmed: self.network.confirmed,
+            predicted: self.network.predicted,
+            rendered: self.game.drawn,
+            route_origin: self.route_origin(),
+            pending_steps: self.network.pending.len(),
+            transition: self
+                .network
+                .transitions
+                .front()
+                .map(|transition| (transition.from.position, transition.to.position)),
+        }
+    }
+
+    #[cfg(test)]
+    pub fn advance(&mut self, elapsed: Duration) {
+        self.advance_with_ease(elapsed, crate::crowd::Ease::NONE);
+    }
+
+    /// Advance the movement core and apply the current presentation policy to
+    /// its pose.  `Crowd` supplies the user-selected policy, but never the
+    /// local player's position: that remains owned by this core.
+    pub fn advance_with_ease(&mut self, elapsed: Duration, ease: crate::crowd::Ease) {
+        let mut remaining = elapsed;
+        while self.game.transition.is_some() {
+            remaining = self.game.advance(remaining);
+            if self.game.transition.is_some() {
+                break;
+            }
+            self.network.transitions.pop_front();
+            let Some(next) = self.network.transitions.front().copied() else {
+                break;
+            };
+            self.game
+                .start(next.from.position, next.to.position, next.to.facing.running);
+            if remaining.is_zero() {
+                break;
+            }
+        }
+        self.game.ease(ease, elapsed);
+        self.debug_assert_valid();
+    }
+
+    pub const fn drawn(&self) -> Gaze {
+        self.game.drawn
+    }
+
+    /// Whether the local movement core needs display-rate frames.  This does
+    /// not consult `Crowd`, which may be rebased after a stalled frame.
+    pub const fn is_gliding(&self) -> bool {
+        self.game.transition.is_some()
+    }
+
+    /// Whether the last accepted movement event was a server correction or
+    /// relocation and must be rendered as a snap.
+    pub const fn corrected(&self) -> bool {
+        self.network.corrected
+    }
+
+    #[cfg(test)]
+    pub fn pending_steps(&self) -> usize {
+        self.network.pending.len()
+    }
+
+    pub fn transition_from(&self) -> Option<Point> {
+        self.network
+            .transitions
+            .front()
+            .map(|transition| transition.from.position)
+    }
+
+    #[cfg(test)]
+    pub fn transition_to(&self) -> Option<Point> {
+        self.network
+            .transitions
+            .front()
+            .map(|transition| transition.to.position)
+    }
+
+    fn start_transition(
+        &mut self,
+        from: openshard_client_net::walk::Predicted,
+        to: openshard_client_net::walk::Predicted,
+    ) {
+        // A command can arrive at any point between two presentation frames.
+        // It is allowed to extend the local chain, but never to rewrite the
+        // transition that is already on screen: doing that would visibly cut a
+        // stride short whenever a player changes direction quickly.
+        let game_before = self.game;
+        if from.position == to.position {
+            // A turn has no interpolation.  In particular it must not snap an
+            // easing tail after the exact crossing finished: changing facing
+            // while rapidly circling the cursor used to move the body and the
+            // locked camera several pixels in one frame.
+            assert_eq!(
+                self.game, game_before,
+                "a turn command must not interrupt or snap the current visual pose"
+            );
+            return;
+        }
+        self.network.transitions.push_back(MotionTransition { from, to });
+        if self.game.transition.is_none() {
+            self.game.start(from.position, to.position, to.facing.running);
+        } else {
+            assert_eq!(
+                self.game, game_before,
+                "a new movement command must queue behind, not interrupt, the active animation"
+            );
+        }
+    }
+
+    /// Invariants that should hold at every app-thread movement boundary.
+    /// This checks the boundary between the discrete and continuous cores.
+    pub fn debug_assert_valid(&self) {
+        if let Some(transition) = self.network.transitions.front() {
+            debug_assert_ne!(transition.from.position, transition.to.position);
+            let game = self
+                .game
+                .transition
+                .expect("network transition needs game transition");
+            debug_assert_eq!(game.to, Gaze::on(transition.to.position));
+        }
+        debug_assert_eq!(
+            self.game.transition.is_some(),
+            !self.network.transitions.is_empty()
+        );
+        if self.network.transitions.is_empty() {
+            debug_assert_eq!(
+                self.game.walked,
+                Gaze::on(self.network.predicted.position),
+                "a settled movement clock must be at its standing tile"
+            );
+        }
+        if let Some(last) = self.network.transitions.back() {
+            debug_assert_eq!(last.to.position, self.network.predicted.position);
+        }
+        if self.network.corrected {
+            debug_assert!(self.network.pending.is_empty());
+            debug_assert!(self.network.transitions.is_empty());
+            debug_assert_eq!(self.network.confirmed, self.network.predicted);
+            debug_assert_eq!(self.game.walked, Gaze::on(self.network.predicted.position));
+            debug_assert_eq!(self.game.drawn, Gaze::on(self.network.predicted.position));
+        }
+    }
+}
+
+impl GameMotion {
+    fn start(&mut self, from: Point, to: Point, running: bool) {
+        if from == to {
+            self.snap(to);
+            return;
+        }
+        self.transition = Some(GameTransition {
+            // Starting from the last continuous pose preserves continuity if a
+            // trusted source supplies consecutive steps faster than a frame.
+            from: self.walked,
+            to: Gaze::on(to),
+            elapsed: Duration::ZERO,
+            takes: openshard_movement::step_hold(running),
+        });
+    }
+
+    fn snap(&mut self, at: Point) {
+        self.walked = Gaze::on(at);
+        self.drawn = Gaze::on(at);
+        self.transition = None;
+    }
+
+    /// Advance one transition and return the part of `elapsed` that belongs to
+    /// a queued successor.  A delayed frame may legitimately finish several
+    /// whole steps, but it may never compress them into one glide.
+    fn advance(&mut self, elapsed: Duration) -> Duration {
+        let Some(mut transition) = self.transition else {
+            return elapsed;
+        };
+        let left_to_run = transition.takes.saturating_sub(transition.elapsed);
+        let used = elapsed.min(left_to_run);
+        transition.elapsed += used;
+        let left = 1.0 - openshard_movement::step_progress(transition.elapsed, transition.takes);
+        self.walked = transition.to.back_towards(transition.from, left);
+        self.transition = (transition.elapsed < transition.takes).then_some(transition);
+        elapsed.saturating_sub(used)
+    }
+
+    /// Smooth the visual pose after the exact walk has moved.  Keeping this
+    /// state beside the authoritative local clock restores the old body ease
+    /// without making `Crowd` a second source of local coordinates.
+    fn ease(&mut self, ease: crate::crowd::Ease, elapsed: Duration) {
+        self.drawn = self.drawn.eased_towards(self.walked, ease.tau, elapsed);
     }
 }
 
@@ -154,13 +609,15 @@ impl WorldState {
         self.authoritative.view.as_ref().map(|view| view.player.serial)
     }
 
-    /// Where the body is drawn this instant, wherever the glide has it —
+    /// Where the body is drawn this instant, wherever game motion has it —
     /// [`crate::App::follow_player`]'s reason for calling this every frame.
     pub fn drawn_player(&self) -> Gaze {
-        self.presentation
-            .crowd
-            .drawn_for(self.me())
-            .unwrap_or_else(|| Gaze::on(self.presentation.player.at))
+        self.motion.drawn()
+    }
+
+    /// Whether any presentation movement needs a display-rate redraw.
+    pub fn anyone_gliding(&self) -> bool {
+        self.motion.is_gliding() || self.presentation.crowd.anyone_gliding()
     }
 }
 
@@ -240,8 +697,10 @@ mod tests {
             cutaway_at: at,
             cutaway_fades: openshard_client_render::cutaway::Fades::default(),
             others: Vec::new(),
+            corpses: Vec::new(),
             items: Vec::new(),
             item_serials: Vec::new(),
+            damage_numbers: Vec::new(),
             clutter: clutter::Clutter::default(),
             crowd: Crowd::default(),
         };
@@ -249,31 +708,392 @@ mod tests {
         let mut last_advance = Instant::now();
         let update_arrived = last_advance + update_interval;
 
-        advance_presentation_to(&mut presentation, &mut last_advance, update_arrived);
+        let mut motion = PlayerMotion::new(at, Facing::walking(Direction::South));
+        advance_presentation_to(&mut presentation, &mut motion, &mut last_advance, update_arrived);
 
         assert_eq!(presentation.tile_animations.elapsed(), update_interval);
         assert_eq!(presentation.flame_clock, update_interval);
         assert_eq!(last_advance, update_arrived);
+
+        let serial = Serial::new(7).unwrap();
+        presentation.damage(serial, 12);
+        presentation.advance(DAMAGE_NUMBER_HOLD / 2);
+        assert_eq!(presentation.damage_numbers.len(), 1);
+        assert_eq!(presentation.damage_numbers[0].amount, 12);
+        presentation.advance(DAMAGE_NUMBER_HOLD / 2);
+        assert!(presentation.damage_numbers.is_empty());
     }
 
     #[test]
     fn prediction_keeps_its_position_outside_the_authoritative_view() {
-        let mut prediction = PredictionState {
-            at: Point::new(100, 100, 0),
-            facing: Facing::walking(openshard_protocol::direction::Direction::North),
-        };
-        prediction.apply(link::Body {
-            predicted: openshard_client_net::walk::Predicted {
+        let mut motion = PlayerMotion::new(
+            Point::new(100, 100, 0),
+            Facing::walking(openshard_protocol::direction::Direction::North),
+        );
+        motion.accept_network(Some(link::Movement::Relocation {
+            confirmed: openshard_client_net::walk::Predicted {
                 position: Point::new(101, 100, 7),
                 facing: Facing::running(openshard_protocol::direction::Direction::East),
             },
-            corrected: false,
-        });
+        }));
 
-        assert_eq!(prediction.at, Point::new(101, 100, 7));
+        assert_eq!(motion.network.predicted.position, Point::new(101, 100, 7));
         assert_eq!(
-            prediction.facing,
+            motion.network.predicted.facing,
             Facing::running(openshard_protocol::direction::Direction::East)
         );
+    }
+
+    #[test]
+    fn an_ordinary_packet_cannot_change_motion() {
+        let mut motion = PlayerMotion::new(
+            Point::new(100, 100, 0),
+            Facing::walking(openshard_protocol::direction::Direction::North),
+        );
+        motion.accept_local(
+            link::Body {
+                predicted: openshard_client_net::walk::Predicted {
+                    position: Point::new(101, 100, 0),
+                    facing: Facing::walking(openshard_protocol::direction::Direction::East),
+                },
+                corrected: false,
+            },
+            openshard_protocol::world::StepSequence(7),
+        );
+        let before = motion.clone();
+
+        // This is the value a generic mutation still carries for rendering,
+        // but without a `Movement` fact it is deliberately ignored.
+        motion.accept_network(None);
+
+        assert_eq!(motion.network.confirmed, before.network.confirmed);
+        assert_eq!(motion.network.predicted, before.network.predicted);
+        assert_eq!(motion.pending_steps(), 1);
+        assert_eq!(motion.transition_from(), Some(Point::new(100, 100, 0)));
+    }
+
+    #[test]
+    fn acknowledgement_retires_only_its_matching_step_without_restarting_motion() {
+        let north = Facing::walking(openshard_protocol::direction::Direction::North);
+        let east = Facing::walking(openshard_protocol::direction::Direction::East);
+        let mut motion = PlayerMotion::new(Point::new(100, 100, 0), north);
+        motion.accept_local(
+            link::Body {
+                predicted: openshard_client_net::walk::Predicted {
+                    position: Point::new(101, 100, 0),
+                    facing: east,
+                },
+                corrected: false,
+            },
+            openshard_protocol::world::StepSequence(1),
+        );
+        motion.accept_local(
+            link::Body {
+                predicted: openshard_client_net::walk::Predicted {
+                    position: Point::new(102, 100, 0),
+                    facing: east,
+                },
+                corrected: false,
+            },
+            openshard_protocol::world::StepSequence(2),
+        );
+
+        motion.accept_network(Some(link::Movement::Ack {
+            sequence: openshard_protocol::world::StepSequence(1),
+            confirmed: openshard_client_net::walk::Predicted {
+                position: Point::new(101, 100, 0),
+                facing: east,
+            },
+        }));
+
+        assert_eq!(motion.network.confirmed.position, Point::new(101, 100, 0));
+        assert_eq!(motion.network.predicted.position, Point::new(102, 100, 0));
+        assert_eq!(motion.pending_steps(), 1);
+        assert_eq!(motion.transition_to(), Some(Point::new(101, 100, 0)));
+    }
+
+    #[test]
+    fn rejection_discards_every_pending_step_and_transition() {
+        let north = Facing::walking(openshard_protocol::direction::Direction::North);
+        let east = Facing::walking(openshard_protocol::direction::Direction::East);
+        let mut motion = PlayerMotion::new(Point::new(100, 100, 0), north);
+        motion.accept_local(
+            link::Body {
+                predicted: openshard_client_net::walk::Predicted {
+                    position: Point::new(101, 100, 0),
+                    facing: east,
+                },
+                corrected: false,
+            },
+            openshard_protocol::world::StepSequence(1),
+        );
+        motion.accept_local(
+            link::Body {
+                predicted: openshard_client_net::walk::Predicted {
+                    position: Point::new(102, 100, 0),
+                    facing: east,
+                },
+                corrected: false,
+            },
+            openshard_protocol::world::StepSequence(2),
+        );
+        let rejected = openshard_client_net::walk::Predicted {
+            position: Point::new(100, 100, 0),
+            facing: north,
+        };
+        motion.accept_network(Some(link::Movement::Reject {
+            sequence: openshard_protocol::world::StepSequence(1),
+            confirmed: rejected,
+        }));
+
+        assert_eq!(motion.network.confirmed, rejected);
+        assert_eq!(motion.network.predicted, rejected);
+        assert_eq!(motion.pending_steps(), 0);
+        assert_eq!(motion.transition_from(), None);
+        assert_eq!(motion.route_origin(), rejected.position);
+        assert_eq!(motion.hud_state().route_origin, rejected.position);
+        assert_eq!(motion.render_state().rendered, rejected);
+        assert_eq!(motion.drawn(), Gaze::on(rejected.position));
+    }
+
+    #[test]
+    fn a_trusted_step_confirms_and_projects_one_transition_without_pending_protocol_work() {
+        let north = Facing::walking(openshard_protocol::direction::Direction::North);
+        let east = Facing::walking(openshard_protocol::direction::Direction::East);
+        let mut motion = PlayerMotion::new(Point::new(100, 100, 0), north);
+
+        motion.accept_trusted_step(Point::new(101, 100, 0), east);
+
+        assert_eq!(motion.network.confirmed, motion.network.predicted);
+        assert_eq!(motion.pending_steps(), 0);
+        assert_eq!(motion.transition_from(), Some(Point::new(100, 100, 0)));
+        assert_eq!(motion.transition_to(), Some(Point::new(101, 100, 0)));
+    }
+
+    #[test]
+    fn game_motion_advances_the_drawn_body_without_a_crowd_clock() {
+        let east = Facing::walking(openshard_protocol::direction::Direction::East);
+        let start = Point::new(100, 100, 0);
+        let end = Point::new(101, 100, 0);
+        let mut motion = PlayerMotion::new(start, east);
+
+        motion.accept_trusted_step(end, east);
+        motion.advance(openshard_movement::WALK_HOLD / 2);
+
+        assert_ne!(motion.drawn(), Gaze::on(start));
+        assert_ne!(motion.drawn(), Gaze::on(end));
+        assert_eq!(motion.transition_from(), Some(start));
+
+        motion.advance(openshard_movement::WALK_HOLD / 2);
+        assert_eq!(motion.drawn(), Gaze::on(end));
+        assert_eq!(motion.transition_from(), None);
+    }
+
+    #[test]
+    fn local_motion_keeps_the_body_ease_without_delegating_its_position_to_crowd() {
+        let east = Facing::walking(openshard_protocol::direction::Direction::East);
+        let start = Point::new(100, 100, 0);
+        let end = Point::new(101, 100, 0);
+        let mut linear = PlayerMotion::new(start, east);
+        let mut eased = PlayerMotion::new(start, east);
+
+        linear.accept_trusted_step(end, east);
+        eased.accept_trusted_step(end, east);
+        linear.advance(openshard_movement::WALK_HOLD / 2);
+        eased.advance_with_ease(openshard_movement::WALK_HOLD / 2, crate::crowd::Ease::WALK);
+
+        assert!(linear.is_gliding());
+        assert!(eased.is_gliding());
+        assert_ne!(
+            linear.drawn(),
+            eased.drawn(),
+            "the configured body ease affects the local pose"
+        );
+        assert!(
+            eased.drawn().x < linear.drawn().x,
+            "the eased picture follows the exact local walk instead of snapping to it"
+        );
+        assert_eq!(
+            eased.game.walked,
+            linear.drawn(),
+            "the movement clock itself stays exact"
+        );
+    }
+
+    #[test]
+    fn local_motion_arms_display_rate_frames_even_if_crowd_is_rebased() {
+        let east = Facing::walking(openshard_protocol::direction::Direction::East);
+        let start = Point::new(100, 100, 0);
+        let end = Point::new(101, 100, 0);
+        let mut motion = PlayerMotion::new(start, east);
+
+        assert!(!motion.is_gliding());
+        motion.accept_trusted_step(end, east);
+        assert!(motion.is_gliding());
+        motion.advance(openshard_movement::WALK_HOLD);
+        assert!(!motion.is_gliding());
+    }
+
+    #[test]
+    fn rapid_direction_changes_cannot_interrupt_a_mid_frame_animation() {
+        let north = Facing::walking(openshard_protocol::direction::Direction::North);
+        let east = Facing::walking(openshard_protocol::direction::Direction::East);
+        let start = Point::new(100, 100, 0);
+        let first = Point::new(101, 100, 0);
+        let second = Point::new(101, 99, 0);
+        let mut motion = PlayerMotion::new(start, east);
+        let local = |position, facing| link::Body {
+            predicted: openshard_client_net::walk::Predicted { position, facing },
+            corrected: false,
+        };
+
+        motion.accept_local(local(first, east), openshard_protocol::world::StepSequence(1));
+        motion.advance(openshard_movement::WALK_HOLD / 2);
+        let active = motion.game;
+
+        // The direction change is a turn at the predicted endpoint, followed
+        // by a step in that new direction. Both may arrive before another
+        // frame, but neither may reset the eastbound crossing in progress.
+        motion.accept_local(local(first, north), openshard_protocol::world::StepSequence(2));
+        motion.accept_local(local(second, north), openshard_protocol::world::StepSequence(3));
+
+        assert_eq!(motion.game, active);
+        assert_eq!(motion.transition_from(), Some(start));
+        assert_eq!(motion.drawn(), active.drawn);
+
+        motion.advance(openshard_movement::WALK_HOLD / 2);
+        assert_eq!(motion.drawn(), Gaze::on(first));
+        assert_eq!(motion.transition_from(), Some(first));
+        assert_eq!(motion.render_state().rendered.position, second);
+    }
+
+    #[test]
+    fn a_turn_cannot_snap_the_easing_tail_after_a_step_lands() {
+        let north = Facing::walking(openshard_protocol::direction::Direction::North);
+        let east = Facing::walking(openshard_protocol::direction::Direction::East);
+        let start = Point::new(100, 100, 0);
+        let end = Point::new(101, 100, 0);
+        let mut motion = PlayerMotion::new(start, east);
+        let local = |position, facing| link::Body {
+            predicted: openshard_client_net::walk::Predicted { position, facing },
+            corrected: false,
+        };
+
+        motion.accept_local(local(end, east), openshard_protocol::world::StepSequence(1));
+        // At display cadence the eased body deliberately trails the exact
+        // crossing by several pixels. A hard camera follows this same gaze, so
+        // snapping it here would be a camera jump of the same size.
+        for _ in 0..25 {
+            motion.advance_with_ease(openshard_movement::WALK_HOLD / 25, crate::crowd::Ease::WALK);
+        }
+        assert!(!motion.is_gliding(), "the exact crossing has landed");
+        assert_ne!(motion.drawn(), Gaze::on(end), "the visual ease is still settling");
+        let tail = (motion.drawn().x - Gaze::on(end).x).hypot(motion.drawn().y - Gaze::on(end).y);
+        assert!(
+            tail > 2.0,
+            "the turn would have jumped the camera {tail:.1} pixels"
+        );
+        let visual_before_turn = motion.game;
+
+        motion.accept_local(local(end, north), openshard_protocol::world::StepSequence(2));
+
+        assert_eq!(
+            motion.game, visual_before_turn,
+            "turning in place must preserve the body and camera's continuous target"
+        );
+        assert_eq!(motion.drawn(), visual_before_turn.drawn);
+    }
+
+    #[test]
+    fn a_new_grid_step_keeps_the_continuous_pose_when_the_previous_one_is_mid_frame() {
+        let east = Facing::walking(openshard_protocol::direction::Direction::East);
+        let start = Point::new(100, 100, 0);
+        let first = Point::new(101, 100, 0);
+        let second = Point::new(102, 100, 0);
+        let mut motion = PlayerMotion::new(start, east);
+
+        motion.accept_trusted_step(first, east);
+        motion.advance(openshard_movement::WALK_HOLD / 2);
+        let mid_first = motion.drawn();
+
+        motion.accept_trusted_step(second, east);
+        assert_eq!(
+            motion.drawn(),
+            mid_first,
+            "a network-grid event cannot reset the fractional game pose"
+        );
+        motion.advance(openshard_movement::WALK_HOLD / 2);
+        assert_eq!(motion.drawn(), Gaze::on(first));
+        assert_eq!(motion.transition_from(), Some(first));
+        motion.advance(openshard_movement::WALK_HOLD / 4);
+        assert_ne!(motion.drawn(), Gaze::on(first));
+        assert_ne!(motion.drawn(), Gaze::on(second));
+    }
+
+    #[test]
+    fn queued_predictions_each_keep_their_own_walk_hold() {
+        let east = Facing::walking(openshard_protocol::direction::Direction::East);
+        let start = Point::new(100, 100, 0);
+        let first = Point::new(101, 100, 0);
+        let second = Point::new(102, 100, 0);
+        let mut motion = PlayerMotion::new(start, east);
+
+        for (position, sequence) in [(first, 1), (second, 2)] {
+            motion.accept_local(
+                link::Body {
+                    predicted: openshard_client_net::walk::Predicted {
+                        position,
+                        facing: east,
+                    },
+                    corrected: false,
+                },
+                openshard_protocol::world::StepSequence(sequence),
+            );
+        }
+
+        assert_eq!(motion.planning_state().position, second);
+        assert_eq!(motion.render_state().rendered.position, first);
+        assert_eq!(motion.route_origin(), start);
+
+        motion.advance(openshard_movement::WALK_HOLD);
+        assert_eq!(motion.drawn(), Gaze::on(first));
+        assert_eq!(motion.transition_from(), Some(first));
+        assert_eq!(motion.render_state().rendered.position, second);
+
+        motion.advance(openshard_movement::WALK_HOLD / 2);
+        assert_ne!(motion.drawn(), Gaze::on(first));
+        assert_ne!(motion.drawn(), Gaze::on(second));
+    }
+
+    #[test]
+    fn online_offline_and_replay_sources_share_the_same_settled_motion_snapshot() {
+        let east = Facing::walking(openshard_protocol::direction::Direction::East);
+        let start = Point::new(100, 100, 0);
+        let end = Point::new(101, 100, 0);
+        let destination = openshard_client_net::walk::Predicted {
+            position: end,
+            facing: east,
+        };
+
+        let mut online = PlayerMotion::new(start, east);
+        online.accept_local(
+            link::Body {
+                predicted: destination,
+                corrected: false,
+            },
+            openshard_protocol::world::StepSequence(17),
+        );
+        online.accept_network(Some(link::Movement::Ack {
+            sequence: openshard_protocol::world::StepSequence(17),
+            confirmed: destination,
+        }));
+
+        let mut offline = PlayerMotion::new(start, east);
+        offline.accept_trusted_step(end, east);
+        let mut replay = PlayerMotion::new(start, east);
+        replay.accept_trusted_step(end, east);
+
+        assert_eq!(online.snapshot(), offline.snapshot());
+        assert_eq!(offline.snapshot(), replay.snapshot());
     }
 }

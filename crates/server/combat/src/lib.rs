@@ -14,8 +14,9 @@
 
 use openshard_entities::EntityId;
 use openshard_gateway::ConnectionId;
-use openshard_movement::Terrain;
+use openshard_movement::{Terrain, direction_toward};
 use openshard_protocol::combat::{AttackTarget, WarMode};
+use openshard_protocol::direction::Facing;
 use openshard_protocol::feedback::{EffectKind, GraphicalEffect};
 use openshard_protocol::mobile::Notoriety;
 use openshard_protocol::serial::Serial;
@@ -23,8 +24,8 @@ use openshard_protocol::server_packet::ServerPacket;
 use openshard_protocol::wire::{Graphic, SoundId};
 use openshard_protocol::world::{Point, PoisonLevel};
 use openshard_state::components::{
-    BehaviourBuffs, Body, Client, Combat, CriminalUntil, DamageType, Equipped, Frozen, Ghost, Guard,
-    Hitpoints, MeleeDamage, MurderDecay, Murders, PoisonCharges, Poisoned, Position, RangedAttack,
+    BehaviourBuffs, Body, Client, Combat, CriminalUntil, DamageType, Equipped, Frozen, Ghost, Guard, Heading,
+    Hitpoints, MeleeDamage, Movement, MurderDecay, Murders, PoisonCharges, Poisoned, Position, RangedAttack,
     Resistance, Skills, Stamina, Stats, Steps, SwingSpeed, body_is_female, body_opens_doors,
     creature_base_sound, effect,
 };
@@ -540,6 +541,50 @@ pub fn attack(state: &mut WorldState, connection: ConnectionId, target: Option<S
     );
 }
 
+/// Put a war-mode player under attack onto the attacker, if they have not
+/// selected a target already.
+///
+/// This is retaliation rather than a new aggressive action: it deliberately
+/// bypasses [`attack`], which would flag the defending player criminal for
+/// naming an innocent attacker.  Creatures make the corresponding choice in
+/// `ai::retaliate`; players have no `Brain`, so their combat state belongs here.
+pub fn retaliate_players(state: &mut WorldState, blows: &[MobileDamaged]) {
+    for blow in blows {
+        let Some(attacker) = blow.by else {
+            continue;
+        };
+        if attacker == blow.serial || state.registry.entity_of(attacker).is_none() {
+            continue;
+        }
+        let victim = blow.entity;
+        let Some(connection) = state.connection_of(victim) else {
+            continue;
+        };
+        let ready_to_retaliate = state
+            .registry
+            .get::<Combat>(victim)
+            .is_some_and(|combat| combat.warmode && combat.target.is_none())
+            && state
+                .registry
+                .get::<Hitpoints>(victim)
+                .is_some_and(|hits| hits.current > 0);
+        if !ready_to_retaliate {
+            continue;
+        }
+        let next_swing = state.ticks + swing_speed(state, victim);
+        if let Some(combat) = state.registry.get_mut::<Combat>(victim) {
+            combat.target = Some(attacker);
+            combat.next_swing = next_swing;
+        }
+        state.send_packet(
+            connection,
+            &ServerPacket::AttackTarget(AttackTarget {
+                target: Some(attacker),
+            }),
+        );
+    }
+}
+
 /// Strike, for every mobile whose swing is due.
 ///
 /// The interactive half of combat, run each tick against the tick counter so it
@@ -654,6 +699,7 @@ pub fn swings(state: &mut WorldState) {
         {
             continue;
         }
+        face_target(state, attacker, attacker_pos, target_pos);
         // The attacker's serial rides along so a lethal blow can be blamed —
         // `damage` is the one place murder is tallied, melee or spell alike.
         let by = state.registry.serial_of(attacker);
@@ -694,6 +740,32 @@ pub fn swings(state: &mut WorldState) {
             clear_target(state, attacker);
         }
     }
+}
+
+/// Turn an attacker toward the target immediately before a visible strike.
+///
+/// Facing does not restrict UO's melee reach — a player may select any adjacent
+/// opponent — but the picture must agree with a melee blow. Updating both the
+/// rendered heading and a walker's remembered heading keeps the next AI step
+/// from treating this free combat turn as a stale turn it still owes.
+fn face_target(state: &mut WorldState, attacker: EntityId, from: Point, to: Point) {
+    let Some(direction) = direction_toward(from, to) else {
+        return;
+    };
+    let facing = Facing::walking(direction);
+    if state
+        .registry
+        .get::<Heading>(attacker)
+        .is_some_and(|heading| heading.0 == facing)
+    {
+        return;
+    }
+    if let Some(Movement(mut walker)) = state.registry.get::<Movement>(attacker).copied() {
+        walker.facing = facing;
+        state.registry.insert(attacker, Movement(walker));
+    }
+    state.registry.insert(attacker, Heading(facing));
+    state.broadcast_move(attacker);
 }
 
 /// Whether a target counts as dead: its entity already gone (reaped), or still

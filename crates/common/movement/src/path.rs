@@ -20,12 +20,13 @@
 //! (`can_step` already encodes climb and slope); this only decides *where* to try.
 
 use std::cmp::Reverse;
-use std::collections::{BinaryHeap, HashMap, HashSet};
+use std::collections::BinaryHeap;
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 use openshard_protocol::direction::Direction;
 use openshard_protocol::world::Point;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::walk::{Terrain, Tile, step_allowed};
 
@@ -169,15 +170,12 @@ fn search(terrain: &dyn Terrain, from: Point, to: Point, budget: usize, deadline
         };
     }
 
-    // The resolved point (with its real z) at each reached tile, the cheapest cost
-    // to reach it, and how — the parent tile and the step taken — to rebuild the
-    // route. `closed` finalises a tile the first time it is popped: Chebyshev is a
-    // consistent heuristic for uniform-cost eight-way movement, so the first pop is
-    // the cheapest and a later, staler copy in the heap is skipped.
-    let mut point_at: HashMap<Tile, Point> = HashMap::new();
-    let mut cost: HashMap<Tile, u32> = HashMap::new();
-    let mut came_from: HashMap<Tile, (Tile, Direction)> = HashMap::new();
-    let mut closed: HashSet<Tile> = HashSet::new();
+    // Pack the planar tile into one integer. Besides making the key cheaper to
+    // hash, this lets FxHash use its integer fast path. The resolved landing
+    // point lives in came_from, so there is no second point_at map to maintain.
+    let mut cost: FxHashMap<u32, u32> = FxHashMap::default();
+    let mut came_from: FxHashMap<u32, (u32, Direction, Point)> = FxHashMap::default();
+    let mut closed: FxHashSet<u32> = FxHashSet::default();
     // The tuple's third field is a tie-breaker, not a second admissible heuristic:
     // Chebyshev alone cannot tell a straight cardinal line from a route that
     // drifts off it and back — both cost the same eight-way step count. Manhattan
@@ -189,8 +187,7 @@ fn search(terrain: &dyn Terrain, from: Point, to: Point, budget: usize, deadline
     // asked for a straight walk on stays a straight walk.
     let mut open: BinaryHeap<Reverse<OpenEntry>> = BinaryHeap::new();
 
-    point_at.insert(start, from);
-    cost.insert(start, 0);
+    cost.insert(tile_key(start), 0);
     let h0 = heuristic(from, to);
     open.push(Reverse(OpenEntry {
         f: h0,
@@ -213,7 +210,7 @@ fn search(terrain: &dyn Terrain, from: Point, to: Point, budget: usize, deadline
         }
         let tile = Tile::new(cx, cy);
         // Skip a tile already finalised by a cheaper pop.
-        if !closed.insert(tile) {
+        if !closed.insert(tile_key(tile)) {
             continue;
         }
         let explored = closed.len();
@@ -225,8 +222,12 @@ fn search(terrain: &dyn Terrain, from: Point, to: Point, budget: usize, deadline
                 exit: SearchExit::Goal,
             };
         }
-        let current = point_at[&tile];
-        let here_cost = cost[&tile];
+        let current = if tile == start {
+            from
+        } else {
+            came_from[&tile_key(tile)].2
+        };
+        let here_cost = cost[&tile_key(tile)];
         // The first pop of a tile is its cheapest, so this is its final cost —
         // see `closed`.
         if (h, here_cost) < (closest.0, closest.1) {
@@ -245,16 +246,15 @@ fn search(terrain: &dyn Terrain, from: Point, to: Point, budget: usize, deadline
                 continue;
             };
             let next = Tile::new(landing.x, landing.y);
-            if closed.contains(&next) {
+            if closed.contains(&tile_key(next)) {
                 continue;
             }
             let next_cost = here_cost + 1;
-            if next_cost >= cost.get(&next).copied().unwrap_or(u32::MAX) {
+            if next_cost >= cost.get(&tile_key(next)).copied().unwrap_or(u32::MAX) {
                 continue;
             }
-            cost.insert(next, next_cost);
-            point_at.insert(next, landing);
-            came_from.insert(next, (tile, dir));
+            cost.insert(tile_key(next), next_cost);
+            came_from.insert(tile_key(next), (tile_key(tile), dir, landing));
             let h = heuristic(landing, to);
             open.push(Reverse(OpenEntry {
                 f: next_cost + h,
@@ -317,16 +317,26 @@ fn debug_slow(
 
 /// Walk the parent chain from the goal back to the start, collecting the steps in
 /// travel order.
-fn reconstruct(came_from: &HashMap<Tile, (Tile, Direction)>, start: Tile, goal: Tile) -> Vec<Direction> {
+fn reconstruct(
+    came_from: &FxHashMap<u32, (u32, Direction, Point)>,
+    start: Tile,
+    goal: Tile,
+) -> Vec<Direction> {
     let mut steps = Vec::new();
-    let mut tile = goal;
+    let start = tile_key(start);
+    let mut tile = tile_key(goal);
     while tile != start {
-        let (parent, dir) = came_from[&tile];
+        let (parent, dir, _) = came_from[&tile];
         steps.push(dir);
         tile = parent;
     }
     steps.reverse();
     steps
+}
+
+#[inline]
+fn tile_key(tile: Tile) -> u32 {
+    (u32::from(tile.x) << 16) | u32::from(tile.y)
 }
 
 /// The remaining distance estimate: Chebyshev, the count of eight-way steps, which

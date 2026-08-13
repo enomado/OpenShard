@@ -163,6 +163,7 @@ pub struct Hud {
     pub health_bars: Vec<HealthBar>,
     pub draw: openshard_client_render::frame::Draw,
     pub cutaway_disabled: bool,
+    pub body_overlap_transparency_disabled: bool,
     pub show_terrain: bool,
     pub terrain: Option<Arc<TerrainOverlay>>,
     pub route: Option<Arc<Route>>,
@@ -174,4 +175,17 @@ pub struct Hud {
     pub solids: (usize, usize),
     pub occluders: Option<Arc<[OccluderSurface]>>,
     pub goal: Option<PickedTile>,
+    /// Producer queue and immutable map-composite cache pressure.
+    pub composites: CompositeTelemetry,
+}
+
+/// Read-only map-composite producer and cache counters for the development HUD.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct CompositeTelemetry {
+    pub ready: usize,
+    pub pending: usize,
+    pub prepared: usize,
+    pub in_flight: usize,
+    pub gpu_bytes: u64,
+    pub gpu_budget_bytes: u64,
 }

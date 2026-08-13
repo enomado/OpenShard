@@ -190,7 +190,10 @@ pub fn collect_with_fades(
                     continue;
                 }
                 let overlaps_body = player_mask.is_some_and(|body| {
-                    body.overlaps_opaque(placed_rect(&placed), |x, y| atlas.opaque_at(placed.showing, x, y))
+                    placed.order > body.order()
+                        && body.overlaps_opaque(placed_rect(&placed), |x, y| {
+                            atlas.opaque_at(placed.showing, x, y)
+                        })
                 });
                 (
                     placed,

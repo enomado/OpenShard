@@ -172,9 +172,9 @@ impl ServerPacket {
             Self::WarMode(_) => <WarMode as EncodePacket>::ID,
             Self::AttackTarget(_) => <AttackTarget as EncodePacket>::ID,
             Self::Health(_) => <HealthBar as EncodePacket>::ID,
-            Self::PlaySound(_) => PlaySound::ID,
+            Self::PlaySound(_) => <PlaySound as EncodePacket>::ID,
             Self::Animation(_) => <Animation as EncodePacket>::ID,
-            Self::NewAnimation(_) => NewAnimation::ID,
+            Self::NewAnimation(_) => <NewAnimation as EncodePacket>::ID,
             Self::Effect(_) => GraphicalEffect::ID,
             Self::HuedEffect(_) => HuedEffect::ID,
             Self::LoginDenied(_) => <LoginDenied as EncodePacket>::ID,
@@ -190,7 +190,7 @@ impl ServerPacket {
             Self::WalkReject(_) => <WalkReject as EncodePacket>::ID,
             Self::LoginComplete(_) => <LoginComplete as EncodePacket>::ID,
             Self::LightLevel(_) => LightLevel::ID,
-            Self::PlayMusic(_) => PlayMusic::ID,
+            Self::PlayMusic(_) => <PlayMusic as EncodePacket>::ID,
             Self::SeasonChange(_) => SeasonChange::ID,
             Self::LogoutAck(_) => <LogoutAck as EncodePacket>::ID,
             Self::MapChange(_) => MapChange::ID,
@@ -235,7 +235,7 @@ impl ServerPacket {
             Self::WarMode(_) => <WarMode as EncodePacket>::LENGTH,
             Self::AttackTarget(_) => AttackTarget::LENGTH,
             Self::Health(_) => HealthBar::LENGTH,
-            Self::PlaySound(_) => PlaySound::LENGTH,
+            Self::PlaySound(_) => <PlaySound as EncodePacket>::LENGTH,
             Self::Animation(_) => Animation::LENGTH,
             Self::NewAnimation(_) => NewAnimation::LENGTH,
             Self::Effect(_) => GraphicalEffect::LENGTH,
@@ -253,7 +253,7 @@ impl ServerPacket {
             Self::WalkReject(_) => WalkReject::LENGTH,
             Self::LoginComplete(_) => <LoginComplete as EncodePacket>::LENGTH,
             Self::LightLevel(_) => LightLevel::LENGTH,
-            Self::PlayMusic(_) => PlayMusic::LENGTH,
+            Self::PlayMusic(_) => <PlayMusic as EncodePacket>::LENGTH,
             Self::SeasonChange(_) => SeasonChange::LENGTH,
             Self::LogoutAck(_) => LogoutAck::LENGTH,
             Self::MapChange(_) => MapChange::LENGTH,
@@ -478,9 +478,18 @@ impl ServerPacket {
             <HealthBar as DecodePacket>::ID => decode_server(packet, version)
                 .map(Self::Health)
                 .map_err(ServerDecodeError::Health)?,
+            <PlaySound as DecodePacket>::ID => decode_server(packet, version)
+                .map(Self::PlaySound)
+                .map_err(ServerDecodeError::PlaySound)?,
+            <PlayMusic as DecodePacket>::ID => decode_server(packet, version)
+                .map(Self::PlayMusic)
+                .map_err(ServerDecodeError::PlayMusic)?,
             <Animation as DecodePacket>::ID => decode_server(packet, version)
                 .map(Self::Animation)
                 .map_err(ServerDecodeError::Animation)?,
+            <NewAnimation as DecodePacket>::ID => decode_server(packet, version)
+                .map(Self::NewAnimation)
+                .map_err(ServerDecodeError::NewAnimation)?,
             <DeathStatus as DecodePacket>::ID => decode_server(packet, version)
                 .map(Self::DeathStatus)
                 .map_err(ServerDecodeError::DeathStatus)?,
@@ -561,8 +570,14 @@ pub enum ServerDecodeError {
     AttackTarget(DecodeError),
     /// `0xA1` did not decode.
     Health(DecodeError),
+    /// `0x54` did not decode.
+    PlaySound(DecodeError),
+    /// `0x6D` did not decode.
+    PlayMusic(DecodeError),
     /// `0x6E` did not decode.
     Animation(DecodeError),
+    /// `0xE2` did not decode.
+    NewAnimation(DecodeError),
     /// `0x2C` did not decode.
     DeathStatus(DecodeError),
     /// `0xD1` did not decode.
@@ -601,7 +616,10 @@ impl fmt::Display for ServerDecodeError {
             Self::WarMode(error) => ("0x72 war mode", error),
             Self::AttackTarget(error) => ("0xAA attack target", error),
             Self::Health(error) => ("0xA1 health bar", error),
+            Self::PlaySound(error) => ("0x54 play sound", error),
+            Self::PlayMusic(error) => ("0x6D play music", error),
             Self::Animation(error) => ("0x6E animation", error),
+            Self::NewAnimation(error) => ("0xE2 new animation", error),
             Self::DeathStatus(error) => ("0x2C death status", error),
             Self::LogoutAck(error) => ("0xD1 logout ack", error),
             Self::Skills(error) => ("0x3A skills", error),
@@ -679,10 +697,10 @@ pub fn server_packet_length(id: u8, version: ClientVersion) -> Option<PacketLeng
         0x3A => SkillsFull::LENGTH,          // and SkillUpdate: same id, both Variable
         0x3C => <ContainerContents as EncodePacket>::LENGTH,
         0x4F => LightLevel::LENGTH,
-        0x54 => PlaySound::LENGTH,
+        0x54 => <PlaySound as EncodePacket>::LENGTH,
         0x55 => <LoginComplete as EncodePacket>::LENGTH,
         0x6C => TargetCursor::LENGTH,
-        0x6D => PlayMusic::LENGTH,
+        0x6D => <PlayMusic as EncodePacket>::LENGTH,
         0x6E => Animation::LENGTH,
         0x6F => Variable,                    // secure trade, hand-written in trade.rs
         0x70 => GraphicalEffect::LENGTH,
@@ -1606,6 +1624,34 @@ mod tests {
         assert_eq!(
             ServerPacket::decode(&health.encode(version()), version()),
             Ok(Some(health))
+        );
+
+        let sound = ServerPacket::PlaySound(PlaySound {
+            sound: crate::wire::SoundId(0x0137),
+            at: crate::world::Point::new(1475, 1774, -5),
+        });
+        assert_eq!(
+            ServerPacket::decode(&sound.encode(version()), version()),
+            Ok(Some(sound))
+        );
+
+        let music = ServerPacket::PlayMusic(PlayMusic {
+            track: crate::world::MusicId(9),
+        });
+        assert_eq!(
+            ServerPacket::decode(&music.encode(version()), version()),
+            Ok(Some(music))
+        );
+
+        let animation = ServerPacket::NewAnimation(NewAnimation {
+            serial,
+            animation_type: 0,
+            action: 0,
+            delay: 0,
+        });
+        assert_eq!(
+            ServerPacket::decode(&animation.encode(version()), version()),
+            Ok(Some(animation))
         );
     }
 

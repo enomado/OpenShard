@@ -19,9 +19,27 @@ use std::collections::{BTreeMap, BTreeSet};
 use openshard_uofiles::map::BLOCK_SIZE;
 
 use crate::blit::WORLD_FORMAT;
-use crate::camera::{TILE_WIDTH, TileBounds};
+use crate::camera::{Camera, TILE_HEIGHT, TILE_WIDTH, TileBounds, WorldPixel, project};
 use crate::geometry::Rect;
 use crate::lod::BlockLod;
+
+/// Largest map-static overhang the client accepts in a block composite.
+///
+/// This is a property of the cache format, not of whichever art happens to be
+/// packed in the current viewport. The shipped static art tops out at roughly
+/// 250 pixels, so 256 preserves every sprite while giving a block one stable
+/// screen-space extent for its entire lifetime. Changing this value changes the
+/// composite format and requires invalidating existing entries.
+pub const MAX_STATIC_OVERHANG: u32 = 256;
+
+/// Virtual-pixel side of the canonical source image for one map-block
+/// composite.
+///
+/// The producer always renders this extent before a tier downsamples it.  It
+/// is deliberately neither a window size nor a camera render-target size: a
+/// map block must mean the same source pixels when the player pans, resizes,
+/// or changes zoom.
+pub const COMPOSITE_SOURCE_SIDE: u32 = BLOCK_SIZE * TILE_WIDTH as u32 + MAX_STATIC_OVERHANG * 2;
 
 /// The fixed coordinate of one 8×8 map block.
 ///
@@ -48,6 +66,107 @@ impl MapBlock {
     /// The top-left tile of this block.
     pub const fn first_tile(self) -> (u16, u16) {
         (self.x * BLOCK_SIZE as u16, self.y * BLOCK_SIZE as u16)
+    }
+
+    /// Whether a map tile belongs to this block.
+    ///
+    /// A block composite has an expanded screen-space rectangle so that a
+    /// static can overhang its ground diamond.  The rectangle can therefore
+    /// contain pixels of a neighbouring block; capture uses this ownership
+    /// rule to keep those pixels with their actual map block instead of
+    /// letting overlapping cache entries redraw one another.
+    pub const fn contains_tile(self, x: u16, y: u16) -> bool {
+        Self::containing_tile(x, y).x == self.x && Self::containing_tile(x, y).y == self.y
+    }
+}
+
+/// The fixed, viewport-independent contract for producing one composite.
+///
+/// A producer receives only this value and immutable map inputs.  In
+/// particular it has no main-frame attachment or camera rectangle to sample.
+/// `camera` looks at the centre of the padded source extent at 1:1, so its
+/// block rect is exactly `0..COMPOSITE_SOURCE_SIDE` in both axes.  Both LOD
+/// tiers consequently derive from the same canonical rasterisation rather
+/// than from differently cropped camera frames.
+#[derive(Clone, Copy, Debug)]
+pub struct CompositeProducerJob {
+    key: CompositeKey,
+    camera: Camera,
+}
+
+impl CompositeProducerJob {
+    /// Define the canonical producer for one dispatched cache identity.
+    pub fn new(key: CompositeKey) -> Self {
+        let (x, y) = key.block.first_tile();
+        // The ground diamond for 8×8 tiles has its vertical centre 22 pixels
+        // above the centre of tile `(x + 4, y + 4)`.  Looking there centres
+        // the 352-pixel diamond plus its 256-pixel static margin in the fixed
+        // 864-pixel producer target.
+        let centre = project(openshard_protocol::world::Point::new(x + 4, y + 4, 0));
+        let mut camera = Camera::new(
+            openshard_protocol::world::Point::new(x + 4, y + 4, 0),
+            COMPOSITE_SOURCE_SIDE,
+            COMPOSITE_SOURCE_SIDE,
+        );
+        camera.look_at_pixel(WorldPixel {
+            x: centre.x,
+            y: centre.y - TILE_HEIGHT / 2,
+        });
+        Self { key, camera }
+    }
+
+    /// The immutable cache identity this producer is allowed to complete.
+    pub const fn key(self) -> CompositeKey {
+        self.key
+    }
+
+    /// Fixed, local 1:1 camera used for the offscreen map-only draw.
+    pub const fn camera(self) -> Camera {
+        self.camera
+    }
+
+    /// Fixed source attachment dimensions, before downsampling for the tier.
+    pub const fn source_size(self) -> CompositeSize {
+        CompositeSize {
+            width: COMPOSITE_SOURCE_SIDE,
+            height: COMPOSITE_SOURCE_SIDE,
+        }
+    }
+
+    /// The tier's final cached texture dimensions.
+    pub const fn output_size(self) -> CompositeSize {
+        CompositeSize::for_block(self.key.tier, MAX_STATIC_OVERHANG)
+    }
+
+    /// Every map cell the producer's camera can ask the frame assembler to
+    /// visit.  This is intentionally wider than the owned 8×8 block: the
+    /// fixed source image includes its static-overhang margin, and the normal
+    /// assembler walks a conservative tile rectangle for that image.
+    ///
+    /// Callers preparing atlases must use this bound (after map clipping), not
+    /// just [`MapBlock::first_tile`].  Otherwise a producer can reach a map
+    /// static whose atlas page was never appended, yielding a clear source
+    /// pixel that later looks like a hole when the composite replaces LOD 0.
+    pub fn source_tiles(self) -> TileBounds {
+        self.camera.visible_tiles()
+    }
+
+    /// The padded block footprint in this job's own source attachment.
+    pub fn rect_in(self, camera: Camera) -> Rect {
+        let (x, y) = self.key.block.first_tile();
+        let top = camera.to_screen(openshard_protocol::world::Point::new(x, y, 0));
+        let side = COMPOSITE_SOURCE_SIDE as f32;
+        Rect {
+            x: top.x as f32 - side / 2.0,
+            y: top.y as f32 - TILE_WIDTH as f32 / 2.0 - MAX_STATIC_OVERHANG as f32,
+            width: side,
+            height: side,
+        }
+    }
+
+    /// The padded block footprint in this job's own source attachment.
+    pub fn source_rect(self) -> Rect {
+        self.rect_in(self.camera)
     }
 }
 
@@ -180,8 +299,10 @@ impl CompositeTier {
 
 /// A revision of the immutable inputs to a composite.
 ///
-/// A producer increments this for map/static mutation, art/atlas revision,
-/// cutaway state, or output format changes.  Work 3 can then request only the
+/// A producer increments this for map/static mutation or a change in the
+/// rendered composite contract. Static-atlas growth is intentionally not such
+/// a change: atlas pages are append-only and a composite has already captured
+/// final pixels rather than retaining atlas UVs. Work 3 can then request only
 /// stale `(block, tier)` entries; no cache-wide synchronous rebuild is implied.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ImmutableRevision(pub u64);
@@ -219,15 +340,15 @@ impl CompositeSize {
     /// A square extent for the ground diamond plus a caller-provided static
     /// overhang, downsampled exactly for `tier`.
     ///
-    /// `overhang_source_pixels` is normally the largest map-static dimension
-    /// known from the atlas.  Keeping it in the extent makes a tall tree at a
-    /// block edge part of exactly one cached image instead of being clipped or
-    /// forcing its neighbours to rebuild.
+    /// `overhang_source_pixels` is the cache format's fixed static-overhang
+    /// allowance. Keeping it in the extent makes a tall tree at a block edge
+    /// part of exactly one cached image instead of being clipped or forcing its
+    /// neighbours to rebuild.
     pub const fn for_block(tier: CompositeTier, overhang_source_pixels: u32) -> Self {
         let source = BLOCK_SIZE * TILE_WIDTH as u32 + overhang_source_pixels * 2;
         let divisor = tier.source_pixels_per_texel();
         // ceil(source / divisor), preserving the right/bottom edge.
-        let side = (source + divisor - 1) / divisor;
+        let side = source.div_ceil(divisor);
         Self {
             width: side,
             height: side,
@@ -459,7 +580,9 @@ impl CompositeTexture {
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format: WORLD_FORMAT,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::RENDER_ATTACHMENT,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::RENDER_ATTACHMENT
+                | wgpu::TextureUsages::COPY_SRC,
             view_formats: &[],
         });
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
@@ -520,6 +643,18 @@ impl CompositeTexture {
     fn deferred_textures(&self) -> Option<(&wgpu::Texture, &wgpu::Texture, &wgpu::Texture, &wgpu::Texture)> {
         let planes = self.deferred.as_ref()?;
         Some((&planes._ids, &planes._position, &planes._normal, &planes._depth))
+    }
+
+    /// The deferred attachment textures, for an explicit diagnostic readback.
+    ///
+    /// Normal composition must use [`Self::deferred_views`] and stays entirely
+    /// on the GPU.  This accessor exists so an opt-in field scenario can
+    /// inspect a completed cache entry itself, before that entry is restored
+    /// into a camera frame.
+    pub fn deferred_textures_for_audit(
+        &self,
+    ) -> Option<(&wgpu::Texture, &wgpu::Texture, &wgpu::Texture, &wgpu::Texture)> {
+        self.deferred_textures()
     }
 
     /// The underlying texture, for diagnostics and GPU-memory accounting.
@@ -634,7 +769,9 @@ impl DeferredTextures {
                 view_formats: &[],
             })
         };
-        let sampled = wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::RENDER_ATTACHMENT;
+        let sampled = wgpu::TextureUsages::TEXTURE_BINDING
+            | wgpu::TextureUsages::RENDER_ATTACHMENT
+            | wgpu::TextureUsages::COPY_SRC;
         let ids = texture("captured map composite ids", crate::gbuffer::IDS_FORMAT, sampled);
         let position = texture(
             "captured map composite position",
@@ -649,7 +786,9 @@ impl DeferredTextures {
         let depth = texture(
             "captured map composite depth",
             wgpu::TextureFormat::R32Float,
-            wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::RENDER_ATTACHMENT,
+            wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::RENDER_ATTACHMENT
+                | wgpu::TextureUsages::COPY_SRC,
         );
         Self {
             ids_view: ids.create_view(&wgpu::TextureViewDescriptor::default()),
@@ -985,6 +1124,7 @@ pub struct CompositeWorkQueue {
     max_pending: usize,
     builds_per_frame: usize,
     pending: BTreeMap<CompositeKey, QueueOrder>,
+    prepared: BTreeSet<CompositeKey>,
     in_flight: BTreeSet<CompositeKey>,
     previous_visible: Option<MapBlockBounds>,
 }
@@ -1002,6 +1142,7 @@ impl CompositeWorkQueue {
             max_pending,
             builds_per_frame,
             pending: BTreeMap::new(),
+            prepared: BTreeSet::new(),
             in_flight: BTreeSet::new(),
             previous_visible: None,
         })
@@ -1015,6 +1156,44 @@ impl CompositeWorkQueue {
     /// Requests a producer currently owns.
     pub fn in_flight_len(&self) -> usize {
         self.in_flight.len()
+    }
+
+    /// Pending jobs whose immutable atlas inputs are ready for the producer.
+    pub fn prepared_len(&self) -> usize {
+        self.prepared.len()
+    }
+
+    /// Record that the exact pending job's immutable inputs are ready.
+    ///
+    /// A stale/cancelled key cannot be made ready again: it has to be refreshed
+    /// and selected as a new pending request first.
+    pub fn mark_prepared(&mut self, key: CompositeKey) -> bool {
+        self.pending.contains_key(&key) && self.prepared.insert(key)
+    }
+
+    /// The next bounded set of requests whose immutable inputs should be
+    /// prepared.
+    ///
+    /// This does not dispatch work or alter queue ownership.  It lets an app
+    /// append the map art required by a block before it calls
+    /// [`take_prepared_for_frame`](Self::take_prepared_for_frame); a failed
+    /// preparation leaves the exact request pending for a later retry.
+    pub fn preparation_candidates(&self) -> Vec<CompositeWork> {
+        let mut ordered: Vec<_> = self
+            .pending
+            .values()
+            .copied()
+            .filter(|order| !self.prepared.contains(&order.key))
+            .collect();
+        ordered.sort();
+        ordered
+            .into_iter()
+            .take(self.builds_per_frame)
+            .map(|order| CompositeWork {
+                key: order.key,
+                priority: order.priority,
+            })
+            .collect()
     }
 
     /// Enqueue the selected tier for every visible block, then one viewport of
@@ -1033,6 +1212,7 @@ impl CompositeWorkQueue {
     ) {
         let Some(tier) = CompositeTier::from_lod(selected) else {
             self.pending.clear();
+            self.prepared.clear();
             self.previous_visible = Some(visible);
             return;
         };
@@ -1048,6 +1228,7 @@ impl CompositeWorkQueue {
                 && key.revision == revision
                 && (visible.contains(key.block) || ahead.is_some_and(|bounds| bounds.contains(key.block)))
         });
+        self.prepared.retain(|key| self.pending.contains_key(key));
         for block in visible.blocks() {
             self.request(
                 block,
@@ -1109,6 +1290,7 @@ impl CompositeWorkQueue {
                 .expect("the queue is non-empty while enforcing its bound")
                 .key;
             self.pending.remove(&drop);
+            self.prepared.remove(&drop);
         }
     }
 
@@ -1118,17 +1300,69 @@ impl CompositeWorkQueue {
     /// idle/worker producer leaves the requests pending; it must not call a
     /// large compose operation from its camera frame to empty this queue.
     pub fn take_for_frame(&mut self) -> Vec<CompositeWork> {
-        let mut ordered: Vec<_> = self.pending.values().copied().collect();
+        self.take_prepared_for_frame(|_| true)
+    }
+
+    /// Dispatch only jobs previously accepted by [`mark_prepared`](Self::mark_prepared).
+    ///
+    /// This is the producer path for map-block LOD.  It makes the preparation
+    /// gate structural: an atlas-page-limit or other preparation failure cannot
+    /// move the job into `in_flight`, so the visible renderer has only its LOD0
+    /// fallback for that block.
+    pub fn take_marked_prepared_for_frame(&mut self) -> Vec<CompositeWork> {
+        let mut ordered: Vec<_> = self
+            .pending
+            .values()
+            .copied()
+            .filter(|order| self.prepared.contains(&order.key))
+            .collect();
         ordered.sort();
         ordered.truncate(self.builds_per_frame);
         let mut work = Vec::with_capacity(ordered.len());
         for order in ordered {
             self.pending.remove(&order.key);
+            self.prepared.remove(&order.key);
             self.in_flight.insert(order.key);
             work.push(CompositeWork {
                 key: order.key,
                 priority: order.priority,
             });
+        }
+        work
+    }
+
+    /// Dispatch only work whose immutable inputs are ready to be rendered.
+    ///
+    /// Unlike a cancellation, a `false` answer leaves the request pending in
+    /// its stable queue position.  The caller can therefore prefetch map art
+    /// and append atlas pages before it hands a job to the offscreen producer;
+    /// a visible block that is not ready simply continues through LOD 0.
+    ///
+    /// `prepared` is deliberately checked before a key enters `in_flight`.
+    /// Once dispatched, a producer owns its source data and the queue may no
+    /// longer safely assume that abandoning it is free.
+    pub fn take_prepared_for_frame(
+        &mut self,
+        mut prepared: impl FnMut(CompositeWork) -> bool,
+    ) -> Vec<CompositeWork> {
+        let mut ordered: Vec<_> = self.pending.values().copied().collect();
+        ordered.sort();
+        let mut work = Vec::with_capacity(self.builds_per_frame);
+        for order in ordered {
+            if work.len() == self.builds_per_frame {
+                break;
+            }
+            let candidate = CompositeWork {
+                key: order.key,
+                priority: order.priority,
+            };
+            if !prepared(candidate) {
+                continue;
+            }
+            self.pending.remove(&order.key);
+            self.prepared.remove(&order.key);
+            self.in_flight.insert(order.key);
+            work.push(candidate);
         }
         work
     }
@@ -1170,6 +1404,7 @@ impl CompositeWorkQueue {
     pub fn clear(&mut self) -> usize {
         let removed = self.pending.len() + self.in_flight.len();
         self.pending.clear();
+        self.prepared.clear();
         self.in_flight.clear();
         removed
     }
@@ -1178,6 +1413,7 @@ impl CompositeWorkQueue {
         let pending_before = self.pending.len();
         let flight_before = self.in_flight.len();
         self.pending.retain(|key, _| !stale(key));
+        self.prepared.retain(|key| !stale(key));
         self.in_flight.retain(|key| !stale(key));
         pending_before - self.pending.len() + flight_before - self.in_flight.len()
     }
@@ -1207,6 +1443,7 @@ impl CompositeWorkQueue {
     /// current frame into GPU-resident cache planes.  This is intentionally a
     /// no-op for a key that was not dispatched: a late capture must not make a
     /// stale block authoritative.
+    #[allow(clippy::too_many_arguments)] // GPU capture must name its queue, encoder and cache ownership separately.
     pub fn finish_capture<'a>(
         &mut self,
         device: &wgpu::Device,
@@ -1258,7 +1495,24 @@ pub struct CompositeRenderer {
     quad: wgpu::Buffer,
     instances: wgpu::Buffer,
     capacity: u64,
+    /// One immutable binding pair per deferred group encoded into the current
+    /// submission.  The cursor resets only after the caller submitted the
+    /// preceding frame, never between groups in that frame.
+    deferred_batches: Vec<DeferredBatch>,
+    deferred_batch_cursor: usize,
+    /// Deferred ownership is a discrete G-buffer fact.  Its colour must use
+    /// the same texel selection, otherwise a valid edge texel blends with a
+    /// transparent neighbour discarded by the ID plane.
+    deferred_nearest: wgpu::Sampler,
     sampler: wgpu::Sampler,
+}
+
+/// Buffers owned by one deferred depth-base group in one encoded frame.
+#[derive(Debug)]
+struct DeferredBatch {
+    viewport: wgpu::Buffer,
+    instances: wgpu::Buffer,
+    capacity: u64,
 }
 
 fn write_capture_uniform(
@@ -1266,6 +1520,7 @@ fn write_capture_uniform(
     buffer: &wgpu::Buffer,
     size: CompositeSize,
     source: crate::blit::ViewportRect,
+    block: MapBlock,
 ) {
     let values = [
         size.width as f32,
@@ -1274,6 +1529,8 @@ fn write_capture_uniform(
         source.y as f32,
         source.width as f32,
         source.height as f32,
+        f32::from(block.x * BLOCK_SIZE as u16),
+        f32::from(block.y * BLOCK_SIZE as u16),
         0.0,
         0.0,
     ];
@@ -1328,6 +1585,16 @@ impl CompositeRenderer {
             address_mode_w: wgpu::AddressMode::ClampToEdge,
             mag_filter: wgpu::FilterMode::Linear,
             min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::MipmapFilterMode::Nearest,
+            ..Default::default()
+        });
+        let deferred_nearest = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("map block deferred composite nearest sampler"),
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            address_mode_w: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Nearest,
+            min_filter: wgpu::FilterMode::Nearest,
             mipmap_filter: wgpu::MipmapFilterMode::Nearest,
             ..Default::default()
         });
@@ -1725,7 +1992,7 @@ impl CompositeRenderer {
         });
         let capture_uniform = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("map composite depth capture"),
-            size: 32,
+            size: 48,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -1759,6 +2026,9 @@ impl CompositeRenderer {
             quad,
             instances,
             capacity: 1,
+            deferred_batches: Vec::new(),
+            deferred_batch_cursor: 0,
+            deferred_nearest,
             sampler,
         }
     }
@@ -1770,6 +2040,41 @@ impl CompositeRenderer {
             usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         })
+    }
+
+    fn deferred_batch(device: &wgpu::Device, capacity: u64) -> DeferredBatch {
+        DeferredBatch {
+            viewport: device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("map block deferred composite viewport"),
+                size: 16,
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            }),
+            instances: Self::instance_buffer(device, capacity),
+            capacity,
+        }
+    }
+
+    /// Start recording a fresh camera frame.
+    ///
+    /// The caller invokes this before its first [`Self::render_deferred`] call
+    /// for a command encoder.  Each subsequent deferred group receives a
+    /// distinct slot, so queue writes cannot replace a prior group's data
+    /// before that encoder is submitted.
+    pub fn begin_frame(&mut self) {
+        self.deferred_batch_cursor = 0;
+    }
+
+    fn next_deferred_batch(&mut self, device: &wgpu::Device, instances: u64) -> usize {
+        let index = self.deferred_batch_cursor;
+        self.deferred_batch_cursor += 1;
+        if self.deferred_batches.len() == index {
+            self.deferred_batches
+                .push(Self::deferred_batch(device, instances));
+        } else if instances > self.deferred_batches[index].capacity {
+            self.deferred_batches[index] = Self::deferred_batch(device, instances.next_power_of_two());
+        }
+        index
     }
 
     /// Draw all ready blocks as one quad each over an already-cleared colour
@@ -1880,18 +2185,27 @@ impl CompositeRenderer {
         for value in [target.width as f32, target.height as f32, depth_adjust, 0.0] {
             viewport.extend_from_slice(&value.to_le_bytes());
         }
-        queue.write_buffer(&self.viewport, 0, &viewport);
-        if blocks.len() as u64 > self.capacity {
-            self.capacity = (blocks.len() as u64).next_power_of_two();
-            self.instances = Self::instance_buffer(device, self.capacity);
-        }
+        // One camera frame can restore groups captured with several source
+        // depth bases.  Each group needs its own depth adjustment, and
+        // `Queue::write_buffer` applies every write made before a submit ahead
+        // of every encoder command in that submit.  Reusing `self.viewport` or
+        // `self.instances` here would consequently make each earlier group
+        // read the *last* group's rectangle and depth adjustment.  That looks
+        // exactly like old sprites slowly being rewritten as the camera pans.
+        //
+        // Keep the colour-only renderer's reusable buffers above; deferred
+        // groups take distinct per-frame slots so their binding state remains
+        // immutable until this encoder has been submitted.
+        let batch_index = self.next_deferred_batch(device, blocks.len() as u64);
+        let batch = &self.deferred_batches[batch_index];
+        queue.write_buffer(&batch.viewport, 0, &viewport);
         let mut instances = Vec::with_capacity(blocks.len() * 16);
         for block in &blocks {
             for value in [block.rect.x, block.rect.y, block.rect.width, block.rect.height] {
                 instances.extend_from_slice(&value.to_le_bytes());
             }
         }
-        queue.write_buffer(&self.instances, 0, &instances);
+        queue.write_buffer(&batch.instances, 0, &instances);
         let bind_groups: Vec<_> = blocks
             .iter()
             .map(|block| {
@@ -1902,7 +2216,7 @@ impl CompositeRenderer {
                     entries: &[
                         wgpu::BindGroupEntry {
                             binding: 0,
-                            resource: self.viewport.as_entire_binding(),
+                            resource: batch.viewport.as_entire_binding(),
                         },
                         wgpu::BindGroupEntry {
                             binding: 1,
@@ -1926,7 +2240,7 @@ impl CompositeRenderer {
                         },
                         wgpu::BindGroupEntry {
                             binding: 6,
-                            resource: wgpu::BindingResource::Sampler(&self.sampler),
+                            resource: wgpu::BindingResource::Sampler(&self.deferred_nearest),
                         },
                     ],
                 })
@@ -1986,7 +2300,7 @@ impl CompositeRenderer {
         });
         pass.set_pipeline(&self.deferred_pipeline);
         pass.set_vertex_buffer(0, self.quad.slice(..));
-        pass.set_vertex_buffer(1, self.instances.slice(..));
+        pass.set_vertex_buffer(1, batch.instances.slice(..));
         for (index, bind_group) in bind_groups.iter().enumerate() {
             pass.set_bind_group(0, bind_group, &[]);
             pass.draw(0..4, index as u32..index as u32 + 1);
@@ -2006,7 +2320,13 @@ impl CompositeRenderer {
             return;
         };
         let size = captured.size;
-        write_capture_uniform(queue, &self.capture_uniform, size, source.rect);
+        write_capture_uniform(
+            queue,
+            &self.capture_uniform,
+            size,
+            source.rect,
+            captured.key().block,
+        );
         let color = source.color.create_view(&wgpu::TextureViewDescriptor::default());
         let source_ids = source.ids.create_view(&wgpu::TextureViewDescriptor::default());
         let source_position = source
@@ -2106,7 +2426,13 @@ impl CompositeRenderer {
             return;
         };
         let size = captured.size;
-        write_capture_uniform(queue, &self.capture_uniform, size, source.rect);
+        write_capture_uniform(
+            queue,
+            &self.capture_uniform,
+            size,
+            source.rect,
+            captured.key().block,
+        );
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("map composite depth capture"),
             layout: &self.capture_depth_layout,
@@ -2149,28 +2475,798 @@ impl CompositeRenderer {
 mod tests {
     use super::*;
 
-    #[test]
-    fn gpu_capture_pipelines_construct_when_a_renderable_adapter_is_available() {
+    /// A GPU suitable for the complete capture-and-restore oracle, or `None`
+    /// on a headless machine whose adapter cannot expose the client's G-buffer
+    /// attachments.
+    fn renderable_device() -> Option<(wgpu::Device, wgpu::Queue)> {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
-        let Some(adapter) =
-            pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).ok()
-        else {
-            return;
-        };
+        let adapter =
+            pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).ok()?;
         if !adapter
             .get_texture_format_features(crate::gbuffer::POSITION_FORMAT)
             .allowed_usages
             .contains(wgpu::TextureUsages::RENDER_ATTACHMENT)
         {
-            return;
+            return None;
         }
-        let Ok((device, _)) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+        pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
             required_limits: crate::gbuffer::required_limits(),
             ..Default::default()
-        })) else {
+        }))
+        .ok()
+    }
+
+    /// Make a source attachment for the capture half of the oracle.  Unlike a
+    /// normal world attachment it only needs to be written by the fixture and
+    /// sampled by the capture shader.
+    fn source_texture(
+        device: &wgpu::Device,
+        label: &'static str,
+        format: wgpu::TextureFormat,
+    ) -> wgpu::Texture {
+        device.create_texture(&wgpu::TextureDescriptor {
+            label: Some(label),
+            size: wgpu::Extent3d {
+                width: 64,
+                height: 64,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        })
+    }
+
+    /// Read one four-byte attachment, padding rows when its width does not
+    /// happen to meet WebGPU's copy alignment.
+    fn read_attachment(device: &wgpu::Device, queue: &wgpu::Queue, texture: &wgpu::Texture) -> Vec<u8> {
+        read_attachment_with_texel_bytes(device, queue, texture, 4)
+    }
+
+    /// Read one attachment with an explicitly supplied packed texel size.
+    fn read_attachment_with_texel_bytes(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        texture: &wgpu::Texture,
+        bytes_per_texel: u32,
+    ) -> Vec<u8> {
+        let row = texture.width() * bytes_per_texel;
+        let stride = row.div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT) * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
+        let bytes = u64::from(stride) * u64::from(texture.height());
+        let readback = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("composite test readback"),
+            size: bytes,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+        encoder.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo {
+                texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyBufferInfo {
+                buffer: &readback,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(stride),
+                    rows_per_image: Some(texture.height()),
+                },
+            },
+            wgpu::Extent3d {
+                width: texture.width(),
+                height: texture.height(),
+                depth_or_array_layers: 1,
+            },
+        );
+        queue.submit([encoder.finish()]);
+        let slice = readback.slice(..);
+        slice.map_async(wgpu::MapMode::Read, |result| {
+            result.expect("the test submitted the copy")
+        });
+        device
+            .poll(wgpu::PollType::wait_indefinitely())
+            .expect("the test's readback completes");
+        let padded = slice
+            .get_mapped_range()
+            .expect("the completed mapping has bytes")
+            .to_vec();
+        readback.unmap();
+        padded
+            .chunks_exact(stride as usize)
+            .flat_map(|source_row| source_row[..row as usize].iter().copied())
+            .collect()
+    }
+
+    /// A deliberately tiny stand-in for the ordinary item/mobile pass.  It
+    /// exercises the one contract composites must preserve for every later
+    /// dynamic renderer: the restored map depth remains a normal depth target.
+    fn dynamic_depth_pipeline(device: &wgpu::Device, depth: f32, color: [f32; 4]) -> wgpu::RenderPipeline {
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("composite dynamic-depth test"),
+            source: wgpu::ShaderSource::Wgsl(
+                format!(
+                    "
+                    struct VertexOut {{ @builtin(position) position: vec4<f32> }};
+
+                    @vertex
+                    fn vs_main(@builtin(vertex_index) index: u32) -> VertexOut {{
+                        var points = array<vec2<f32>, 4>(
+                            vec2(-1.0, -1.0), vec2(1.0, -1.0),
+                            vec2(-1.0, 1.0), vec2(1.0, 1.0));
+                        var out: VertexOut;
+                        out.position = vec4(points[index], {depth}, 1.0);
+                        return out;
+                    }}
+
+                    @fragment
+                    fn fs_main() -> @location(0) vec4<f32> {{
+                        return vec4({}, {}, {}, {});
+                    }}",
+                    color[0], color[1], color[2], color[3]
+                )
+                .into(),
+            ),
+        });
+        let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("composite dynamic-depth test"),
+            bind_group_layouts: &[],
+            immediate_size: 0,
+        });
+        device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("composite dynamic-depth test"),
+            layout: Some(&layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vs_main"),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                buffers: &[],
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some("fs_main"),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: crate::blit::WORLD_FORMAT,
+                    blend: None,
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleStrip,
+                strip_index_format: None,
+                ..Default::default()
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: crate::renderer::DEPTH_FORMAT,
+                depth_write_enabled: Some(true),
+                depth_compare: Some(wgpu::CompareFunction::Less),
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
+            }),
+            multisample: wgpu::MultisampleState::default(),
+            multiview_mask: None,
+            cache: None,
+        })
+    }
+
+    fn render_dynamic_depth_test(
+        encoder: &mut wgpu::CommandEncoder,
+        pipeline: &wgpu::RenderPipeline,
+        world: &wgpu::TextureView,
+        depth: &wgpu::TextureView,
+    ) {
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("composite dynamic-depth test"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: world,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Load,
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                view: depth,
+                depth_ops: Some(wgpu::Operations {
+                    load: wgpu::LoadOp::Load,
+                    store: wgpu::StoreOp::Store,
+                }),
+                stencil_ops: None,
+            }),
+            multiview_mask: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+        });
+        pass.set_pipeline(pipeline);
+        pass.draw(0..4, 0..1);
+    }
+
+    #[test]
+    fn deferred_groups_in_one_submit_keep_their_own_rectangles() {
+        let Some((device, queue)) = renderable_device() else {
+            return;
+        };
+        const SIZE: u32 = 64;
+        const BLOCK: u32 = SIZE / 2;
+        let block_size = CompositeSize::new(BLOCK, SIZE).unwrap();
+        let deferred = |color: [u8; 4], depth_base| {
+            let mut rgba = Vec::with_capacity((BLOCK * SIZE * 4) as usize);
+            for _ in 0..BLOCK * SIZE {
+                rgba.extend_from_slice(&color);
+            }
+            let texels = (BLOCK * SIZE) as usize;
+            let pixels = CompositePixels::new(block_size, rgba).unwrap();
+            pixels
+                .with_deferred(
+                    DeferredPixels::new(
+                        block_size,
+                        vec![crate::gbuffer::pack_ids(
+                            0,
+                            crate::place::Stance::Flat,
+                            crate::place::Kind::Land,
+                        ); texels],
+                        vec![0.0; texels * 4],
+                        vec![crate::gbuffer::NORMAL_DRAWN; texels],
+                        vec![0.5; texels],
+                        depth_base,
+                    )
+                    .unwrap(),
+                )
+                .unwrap()
+        };
+        let left_key = CompositeKey {
+            block: MapBlock { x: 0, y: 0 },
+            tier: CompositeTier::Lod1,
+            revision: ImmutableRevision::default(),
+        };
+        let right_key = CompositeKey {
+            block: MapBlock { x: 1, y: 0 },
+            tier: CompositeTier::Lod1,
+            revision: ImmutableRevision::default(),
+        };
+        let mut cache = CompositeCache::default();
+        cache.insert(&device, &queue, left_key, deferred([213, 29, 17, u8::MAX], 0));
+        cache.insert(&device, &queue, right_key, deferred([17, 71, 213, u8::MAX], 8));
+
+        let restored = crate::blit::world_texture(&device, SIZE, SIZE);
+        let restored_view = restored.create_view(&wgpu::TextureViewDescriptor::default());
+        let restored_gbuffer = crate::gbuffer::Gbuffer::new(&device, SIZE, SIZE);
+        let restored_views = restored_gbuffer.views();
+        let restored_depth = crate::renderer::depth_texture(&device, SIZE, SIZE);
+        let restored_depth_view = restored_depth.create_view(&wgpu::TextureViewDescriptor::default());
+        let target =
+            crate::renderer::Target::whole(&restored_view, &restored_depth_view, &restored_views, SIZE, SIZE);
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+        {
+            let _clear = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("deferred composite group test clear"),
+                color_attachments: &[
+                    Some(wgpu::RenderPassColorAttachment {
+                        view: &restored_view,
+                        depth_slice: None,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                            store: wgpu::StoreOp::Store,
+                        },
+                    }),
+                    Some(wgpu::RenderPassColorAttachment {
+                        view: &restored_views.ids,
+                        depth_slice: None,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(crate::gbuffer::IDS_CLEAR),
+                            store: wgpu::StoreOp::Store,
+                        },
+                    }),
+                    Some(wgpu::RenderPassColorAttachment {
+                        view: &restored_views.position,
+                        depth_slice: None,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(crate::gbuffer::POSITION_CLEAR),
+                            store: wgpu::StoreOp::Store,
+                        },
+                    }),
+                    Some(wgpu::RenderPassColorAttachment {
+                        view: &restored_views.normal,
+                        depth_slice: None,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(crate::gbuffer::NORMAL_CLEAR),
+                            store: wgpu::StoreOp::Store,
+                        },
+                    }),
+                ],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &restored_depth_view,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(1.0),
+                        store: wgpu::StoreOp::Store,
+                    }),
+                    stencil_ops: None,
+                }),
+                multiview_mask: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+        }
+        let mut composite = CompositeRenderer::new(&device);
+        composite.begin_frame();
+        let left = cache.get(left_key).unwrap();
+        composite.render_deferred(
+            &device,
+            &queue,
+            &mut encoder,
+            target,
+            0.0,
+            &[CompositeQuad {
+                texture: left,
+                rect: Rect {
+                    x: 0.0,
+                    y: 0.0,
+                    width: BLOCK as f32,
+                    height: SIZE as f32,
+                },
+            }],
+        );
+        let right = cache.get(right_key).unwrap();
+        composite.render_deferred(
+            &device,
+            &queue,
+            &mut encoder,
+            target,
+            0.01,
+            &[CompositeQuad {
+                texture: right,
+                rect: Rect {
+                    x: BLOCK as f32,
+                    y: 0.0,
+                    width: BLOCK as f32,
+                    height: SIZE as f32,
+                },
+            }],
+        );
+        queue.submit([encoder.finish()]);
+        assert_eq!(composite.deferred_batches.len(), 2);
+        composite.begin_frame();
+        assert_eq!(composite.next_deferred_batch(&device, 1), 0);
+        assert_eq!(
+            composite.deferred_batches.len(),
+            2,
+            "a new submitted frame reuses its first deferred binding slot"
+        );
+
+        let colors = read_attachment(&device, &queue, &restored);
+        let pixel = |x, y| {
+            let at = ((y * SIZE + x) * 4) as usize;
+            [colors[at], colors[at + 1], colors[at + 2], colors[at + 3]]
+        };
+        assert_eq!(pixel(BLOCK / 2, SIZE / 2), [213, 29, 17, u8::MAX]);
+        assert_eq!(pixel(BLOCK + BLOCK / 2, SIZE / 2), [17, 71, 213, u8::MAX]);
+    }
+
+    #[test]
+    fn gpu_capture_pipelines_construct_when_a_renderable_adapter_is_available() {
+        let Some((device, _)) = renderable_device() else {
             return;
         };
         let _ = CompositeRenderer::new(&device);
+    }
+
+    /// One captured rectangle necessarily includes a neighbour's overhang.
+    /// This is the exact pan regression: without the ownership gate, both
+    /// cache entries restore the same wall pixels and the draw order changes as
+    /// the camera moves.  The fixture's left half belongs to block `(0, 0)`;
+    /// the blue right half belongs to `(1, 0)`.  A full capture/restore must
+    /// retain the former, discard the latter, and leave a valid composite-map
+    /// G-buffer identity only on the owner pixels.
+    #[test]
+    fn captured_block_never_restores_neighbour_pixels_or_their_picking_identity() {
+        let Some((device, queue)) = renderable_device() else {
+            return;
+        };
+        const SIZE: u32 = 64;
+        let color = source_texture(&device, "composite test color", crate::blit::WORLD_FORMAT);
+        let ids = source_texture(&device, "composite test ids", crate::gbuffer::IDS_FORMAT);
+        let position = source_texture(
+            &device,
+            "composite test position",
+            crate::gbuffer::POSITION_FORMAT,
+        );
+        let normal = source_texture(&device, "composite test normal", crate::gbuffer::NORMAL_FORMAT);
+
+        let mut colors = Vec::with_capacity((SIZE * SIZE * 4) as usize);
+        let mut source_ids = Vec::with_capacity((SIZE * SIZE * 4) as usize);
+        let mut positions = Vec::with_capacity((SIZE * SIZE * 16) as usize);
+        let mut normals = Vec::with_capacity((SIZE * SIZE * 4) as usize);
+        let map_id = crate::gbuffer::pack_ids(7, crate::place::Stance::Flat, crate::place::Kind::Land);
+        for _y in 0..SIZE {
+            for x in 0..SIZE {
+                let owned = x < SIZE / 2;
+                colors.extend_from_slice(if owned {
+                    &[219, 31, 17, u8::MAX]
+                } else {
+                    &[17, 49, 211, u8::MAX]
+                });
+                source_ids.extend_from_slice(&map_id.to_le_bytes());
+                // `x = 3` belongs to the first block; `x = 8` is the first
+                // tile of its east neighbour.  The source pixels deliberately
+                // have no visible geometric seam, so only the G-buffer owner
+                // rule can distinguish them.
+                for value in [if owned { 3.0_f32 } else { 8.0 }, 3.0, 0.0, 0.0] {
+                    positions.extend_from_slice(&value.to_le_bytes());
+                }
+                normals.extend_from_slice(&crate::gbuffer::NORMAL_DRAWN.to_le_bytes());
+            }
+        }
+        let write = |texture: &wgpu::Texture, bytes: &[u8], bytes_per_row| {
+            queue.write_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::All,
+                },
+                bytes,
+                wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(bytes_per_row),
+                    rows_per_image: Some(SIZE),
+                },
+                wgpu::Extent3d {
+                    width: SIZE,
+                    height: SIZE,
+                    depth_or_array_layers: 1,
+                },
+            );
+        };
+        write(&color, &colors, 4 * SIZE);
+        write(&ids, &source_ids, 4 * SIZE);
+        write(&position, &positions, 16 * SIZE);
+        write(&normal, &normals, 4 * SIZE);
+
+        let source_depth = crate::renderer::depth_texture(&device, SIZE, SIZE);
+        let source_depth_view = source_depth.create_view(&wgpu::TextureViewDescriptor::default());
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+        {
+            let _clear = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("composite test source depth"),
+                color_attachments: &[],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &source_depth_view,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(0.5),
+                        store: wgpu::StoreOp::Store,
+                    }),
+                    stencil_ops: None,
+                }),
+                multiview_mask: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+        }
+
+        let block = MapBlock { x: 0, y: 0 };
+        let key = CompositeKey {
+            block,
+            tier: CompositeTier::Lod1,
+            revision: ImmutableRevision::default(),
+        };
+        let bounds = MapBlockBounds {
+            min_x: 0,
+            max_x: 0,
+            min_y: 0,
+            max_y: 0,
+        };
+        let mut work = CompositeWorkQueue::new(1, 1).unwrap();
+        work.refresh(bounds, bounds, BlockLod::Lod1, key.revision, |_| false);
+        assert_eq!(
+            work.take_for_frame(),
+            vec![CompositeWork {
+                key,
+                priority: CompositePriority::Visible
+            }]
+        );
+        let mut cache = CompositeCache::default();
+        let mut composite = CompositeRenderer::new(&device);
+        let source = CaptureSource {
+            color: &color,
+            ids: &ids,
+            position: &position,
+            normal: &normal,
+            depth: &source_depth_view,
+            depth_base: 0,
+            rect: crate::blit::ViewportRect {
+                x: 0,
+                y: 0,
+                width: SIZE,
+                height: SIZE,
+            },
+        };
+        assert!(
+            work.finish_capture(
+                &device,
+                &queue,
+                &mut encoder,
+                &mut composite,
+                &mut cache,
+                key,
+                source
+            )
+            .is_some()
+        );
+
+        let restored = crate::blit::world_texture(&device, SIZE, SIZE);
+        let restored_view = restored.create_view(&wgpu::TextureViewDescriptor::default());
+        let restored_gbuffer = crate::gbuffer::Gbuffer::new(&device, SIZE, SIZE);
+        let restored_views = restored_gbuffer.views();
+        let restored_depth = crate::renderer::depth_texture(&device, SIZE, SIZE);
+        let restored_depth_view = restored_depth.create_view(&wgpu::TextureViewDescriptor::default());
+        {
+            let _clear = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("composite test restore clear"),
+                color_attachments: &[
+                    Some(wgpu::RenderPassColorAttachment {
+                        view: &restored_view,
+                        depth_slice: None,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                            store: wgpu::StoreOp::Store,
+                        },
+                    }),
+                    Some(wgpu::RenderPassColorAttachment {
+                        view: &restored_views.ids,
+                        depth_slice: None,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(crate::gbuffer::IDS_CLEAR),
+                            store: wgpu::StoreOp::Store,
+                        },
+                    }),
+                    Some(wgpu::RenderPassColorAttachment {
+                        view: &restored_views.position,
+                        depth_slice: None,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(crate::gbuffer::POSITION_CLEAR),
+                            store: wgpu::StoreOp::Store,
+                        },
+                    }),
+                    Some(wgpu::RenderPassColorAttachment {
+                        view: &restored_views.normal,
+                        depth_slice: None,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(crate::gbuffer::NORMAL_CLEAR),
+                            store: wgpu::StoreOp::Store,
+                        },
+                    }),
+                ],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &restored_depth_view,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(1.0),
+                        store: wgpu::StoreOp::Store,
+                    }),
+                    stencil_ops: None,
+                }),
+                multiview_mask: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+        }
+        let texture = cache.get(key).expect("the dispatched capture completed");
+        composite.render_deferred(
+            &device,
+            &queue,
+            &mut encoder,
+            crate::renderer::Target::whole(&restored_view, &restored_depth_view, &restored_views, SIZE, SIZE),
+            0.0,
+            &[CompositeQuad {
+                texture,
+                rect: Rect {
+                    x: 0.0,
+                    y: 0.0,
+                    width: SIZE as f32,
+                    height: SIZE as f32,
+                },
+            }],
+        );
+        queue.submit([encoder.finish()]);
+
+        let colors = read_attachment(&device, &queue, &restored);
+        let restored_ids = read_attachment(&device, &queue, restored_gbuffer.ids());
+        let pixel = |bytes: &[u8], x, y| {
+            let at = ((y * SIZE + x) * 4) as usize;
+            [bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]]
+        };
+        assert_eq!(pixel(&colors, 16, 32), [219, 31, 17, u8::MAX]);
+        assert_eq!(pixel(&colors, 48, 32), [0, 0, 0, 0]);
+        let owner_id = u32::from_le_bytes(pixel(&restored_ids, 16, 32));
+        assert_eq!(crate::gbuffer::ids_kind(owner_id), Some(crate::place::Kind::Land));
+        assert_ne!(owner_id & crate::gbuffer::IDS_COMPOSITE_MAP, 0);
+        assert_eq!(u32::from_le_bytes(pixel(&restored_ids, 48, 32)), 0);
+
+        // The same source depth that prevents a real item/mobile behind map
+        // geometry must still reject it after the cached block restores.  The
+        // neighbour half has no composite depth, so that very same dynamic
+        // quad is visible there.  This catches the subtle failure where colour
+        // and G-buffer planes are restored but depth is left cleared.
+        let behind = dynamic_depth_pipeline(&device, 0.6, [0.0, 1.0, 0.0, 1.0]);
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+        render_dynamic_depth_test(&mut encoder, &behind, &restored_view, &restored_depth_view);
+        queue.submit([encoder.finish()]);
+        let behind_colors = read_attachment(&device, &queue, &restored);
+        assert_eq!(pixel(&behind_colors, 16, 32), [219, 31, 17, u8::MAX]);
+        assert_eq!(pixel(&behind_colors, 48, 32), [0, 255, 0, 255]);
+
+        // Conversely, a nearer dynamic producer wins the normal depth test
+        // over the restored map just as it does over LOD0 geometry.
+        let in_front = dynamic_depth_pipeline(&device, 0.4, [1.0, 0.0, 1.0, 1.0]);
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+        render_dynamic_depth_test(&mut encoder, &in_front, &restored_view, &restored_depth_view);
+        queue.submit([encoder.finish()]);
+        let front_colors = read_attachment(&device, &queue, &restored);
+        assert_eq!(pixel(&front_colors, 16, 32), [255, 0, 255, 255]);
+
+        // The producer target is deliberately reusable. Capture another key
+        // after replacing *every* source plane, then read the first cached
+        // planes themselves. This catches an attachment alias that a screen
+        // picture could only suggest after the fact.
+        let first = cache.get(key).unwrap();
+        let (_, first_ids, first_position, first_normal, first_depth) = (
+            read_attachment(&device, &queue, first.texture()),
+            read_attachment(
+                &device,
+                &queue,
+                first.deferred_textures().expect("captured planes").0,
+            ),
+            read_attachment_with_texel_bytes(
+                &device,
+                &queue,
+                first.deferred_textures().expect("captured planes").1,
+                16,
+            ),
+            read_attachment(
+                &device,
+                &queue,
+                first.deferred_textures().expect("captured planes").2,
+            ),
+            read_attachment(
+                &device,
+                &queue,
+                first.deferred_textures().expect("captured planes").3,
+            ),
+        );
+        let first_color = read_attachment(&device, &queue, first.texture());
+        let overwritten: Vec<_> = (0..SIZE * SIZE).flat_map(|_| [0, 255, 0, 255]).collect();
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &color,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            &overwritten,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(4 * SIZE),
+                rows_per_image: Some(SIZE),
+            },
+            wgpu::Extent3d {
+                width: SIZE,
+                height: SIZE,
+                depth_or_array_layers: 1,
+            },
+        );
+        let overwritten_ids: Vec<_> = (0..SIZE * SIZE)
+            .flat_map(|_| {
+                crate::gbuffer::pack_ids(31, crate::place::Stance::Upright, crate::place::Kind::Static)
+                    .to_le_bytes()
+            })
+            .collect();
+        write(&ids, &overwritten_ids, 4 * SIZE);
+        let overwritten_position: Vec<_> = (0..SIZE * SIZE)
+            .flat_map(|_| [3.5_f32, 3.5, 17.0, 1.0])
+            .flat_map(f32::to_le_bytes)
+            .collect();
+        write(&position, &overwritten_position, 16 * SIZE);
+        let overwritten_normals: Vec<_> = (0..SIZE * SIZE).flat_map(|_| 0_u32.to_le_bytes()).collect();
+        write(&normal, &overwritten_normals, 4 * SIZE);
+        let second_key = CompositeKey {
+            revision: ImmutableRevision(1),
+            ..key
+        };
+        let mut second_work = CompositeWorkQueue::new(1, 1).unwrap();
+        second_work.refresh(bounds, bounds, BlockLod::Lod1, second_key.revision, |_| false);
+        assert_eq!(second_work.take_for_frame().len(), 1);
+        let mut second_encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+        {
+            let _clear = second_encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("composite test second source depth"),
+                color_attachments: &[],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &source_depth_view,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(0.25),
+                        store: wgpu::StoreOp::Store,
+                    }),
+                    stencil_ops: None,
+                }),
+                multiview_mask: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+        }
+        assert!(
+            second_work
+                .finish_capture(
+                    &device,
+                    &queue,
+                    &mut second_encoder,
+                    &mut composite,
+                    &mut cache,
+                    second_key,
+                    CaptureSource {
+                        color: &color,
+                        ids: &ids,
+                        position: &position,
+                        normal: &normal,
+                        depth: &source_depth_view,
+                        depth_base: 0,
+                        rect: crate::blit::ViewportRect {
+                            x: 0,
+                            y: 0,
+                            width: SIZE,
+                            height: SIZE,
+                        },
+                    },
+                )
+                .is_some()
+        );
+        queue.submit([second_encoder.finish()]);
+        let first_after = cache.get(key).unwrap();
+        let (_, after_ids, after_position, after_normal, after_depth) = (
+            read_attachment(&device, &queue, first_after.texture()),
+            read_attachment(
+                &device,
+                &queue,
+                first_after.deferred_textures().expect("captured planes").0,
+            ),
+            read_attachment_with_texel_bytes(
+                &device,
+                &queue,
+                first_after.deferred_textures().expect("captured planes").1,
+                16,
+            ),
+            read_attachment(
+                &device,
+                &queue,
+                first_after.deferred_textures().expect("captured planes").2,
+            ),
+            read_attachment(
+                &device,
+                &queue,
+                first_after.deferred_textures().expect("captured planes").3,
+            ),
+        );
+        assert_eq!(
+            read_attachment(&device, &queue, first_after.texture()),
+            first_color
+        );
+        assert_eq!(after_ids, first_ids);
+        assert_eq!(after_position, first_position);
+        assert_eq!(after_normal, first_normal);
+        assert_eq!(after_depth, first_depth);
     }
 
     #[test]
@@ -2188,11 +3284,106 @@ mod tests {
     }
 
     #[test]
+    fn block_ownership_excludes_neighbouring_capture_pixels() {
+        let block = MapBlock { x: 2, y: 3 };
+        assert!(block.contains_tile(16, 24));
+        assert!(block.contains_tile(23, 31));
+        assert!(!block.contains_tile(15, 24));
+        assert!(!block.contains_tile(24, 31));
+        assert!(!block.contains_tile(16, 32));
+    }
+
+    #[test]
     fn tiers_downsample_the_same_padded_source_extent() {
         let lod1 = CompositeSize::for_block(CompositeTier::Lod1, 64);
         let lod2 = CompositeSize::for_block(CompositeTier::Lod2, 64);
         assert_eq!(lod1, CompositeSize::new(240, 240).unwrap());
         assert_eq!(lod2, CompositeSize::new(120, 120).unwrap());
+    }
+
+    #[test]
+    fn canonical_block_extent_does_not_depend_on_current_atlas_contents() {
+        let lod1 = CompositeSize::for_block(CompositeTier::Lod1, MAX_STATIC_OVERHANG);
+        let lod2 = CompositeSize::for_block(CompositeTier::Lod2, MAX_STATIC_OVERHANG);
+        assert_eq!(lod1, CompositeSize::new(432, 432).unwrap());
+        assert_eq!(lod2, CompositeSize::new(216, 216).unwrap());
+    }
+
+    #[test]
+    fn producer_job_has_a_fixed_local_camera_and_canonical_source_extent() {
+        let key = CompositeKey {
+            block: MapBlock { x: 12, y: 19 },
+            tier: CompositeTier::Lod2,
+            revision: ImmutableRevision(41),
+        };
+        let job = CompositeProducerJob::new(key);
+        assert_eq!(job.key(), key);
+        assert_eq!(job.source_size(), CompositeSize::new(864, 864).unwrap());
+        assert_eq!(job.output_size(), CompositeSize::new(216, 216).unwrap());
+        assert_eq!(job.camera().width, COMPOSITE_SOURCE_SIDE);
+        assert_eq!(job.camera().height, COMPOSITE_SOURCE_SIDE);
+        assert_eq!(
+            job.source_rect(),
+            Rect {
+                x: 0.0,
+                y: 0.0,
+                width: COMPOSITE_SOURCE_SIDE as f32,
+                height: COMPOSITE_SOURCE_SIDE as f32,
+            }
+        );
+    }
+
+    #[test]
+    fn producer_source_and_runtime_rects_share_one_canonical_transform() {
+        let key = CompositeKey {
+            block: MapBlock { x: 12, y: 19 },
+            tier: CompositeTier::Lod1,
+            revision: ImmutableRevision::default(),
+        };
+        let job = CompositeProducerJob::new(key);
+        assert_eq!(job.source_rect(), job.rect_in(job.camera()));
+
+        let east = CompositeProducerJob::new(CompositeKey {
+            block: MapBlock { x: 13, y: 19 },
+            ..key
+        });
+        let south = CompositeProducerJob::new(CompositeKey {
+            block: MapBlock { x: 12, y: 20 },
+            ..key
+        });
+        let mut camera = Camera::new(openshard_protocol::world::Point::new(100, 100, 0), 640, 480);
+        for zoom in [
+            crate::camera::Zoom::ONE.scale_down(),
+            crate::camera::Zoom::ONE,
+            crate::camera::Zoom::ONE.scale_up(),
+        ] {
+            camera.zoom_about(crate::camera::RealPixel::new(320, 240), zoom);
+            let here = job.rect_in(camera);
+            let east_rect = east.rect_in(camera);
+            let south_rect = south.rect_in(camera);
+            assert_eq!(here.width, COMPOSITE_SOURCE_SIDE as f32);
+            assert_eq!(here.height, COMPOSITE_SOURCE_SIDE as f32);
+            assert_eq!(east_rect.x - here.x, 4.0 * TILE_WIDTH as f32);
+            assert_eq!(east_rect.y - here.y, 4.0 * TILE_HEIGHT as f32);
+            assert_eq!(south_rect.x - here.x, -4.0 * TILE_WIDTH as f32);
+            assert_eq!(south_rect.y - here.y, 4.0 * TILE_HEIGHT as f32);
+        }
+    }
+
+    #[test]
+    fn producer_source_tiles_cover_more_than_its_owned_block() {
+        let job = CompositeProducerJob::new(CompositeKey {
+            block: MapBlock { x: 50, y: 50 },
+            tier: CompositeTier::Lod1,
+            revision: ImmutableRevision::default(),
+        });
+        let tiles = job.source_tiles();
+        let (x, y) = job.key().block.first_tile();
+        assert!(tiles.min_x <= i32::from(x));
+        assert!(tiles.max_x >= i32::from(x) + 7);
+        assert!(tiles.min_y <= i32::from(y));
+        assert!(tiles.max_y >= i32::from(y) + 7);
+        assert!(tiles.width() > 8 || tiles.height() > 8);
     }
 
     #[test]
@@ -2247,6 +3438,132 @@ mod tests {
         assert!(work.iter().skip(visible.len()).all(|job| {
             job.priority == CompositePriority::Visible || job.priority == CompositePriority::Ahead
         }));
+    }
+
+    #[test]
+    fn an_unprepared_job_stays_pending_until_its_map_inputs_are_available() {
+        let mut queue = CompositeWorkQueue::new(8, 1).unwrap();
+        let visible = blocks(3, 3, 4, 4);
+        queue.refresh(visible, visible, BlockLod::Lod1, ImmutableRevision(9), |_| false);
+
+        assert!(queue.take_prepared_for_frame(|_| false).is_empty());
+        assert_eq!(queue.pending_len(), 1);
+        assert_eq!(queue.in_flight_len(), 0);
+
+        let work = queue.take_prepared_for_frame(|_| true);
+        assert_eq!(work.len(), 1);
+        assert_eq!(work[0].key.block, MapBlock { x: 3, y: 4 });
+        assert_eq!(queue.pending_len(), 0);
+        assert_eq!(queue.in_flight_len(), 1);
+    }
+
+    #[test]
+    fn preparation_uses_the_same_bounded_priority_order_without_dispatching() {
+        let mut queue = CompositeWorkQueue::new(8, 1).unwrap();
+        let map = blocks(0, 9, 0, 9);
+        queue.refresh(
+            blocks(1, 1, 1, 1),
+            map,
+            BlockLod::Lod1,
+            ImmutableRevision(4),
+            |_| false,
+        );
+        queue.refresh(
+            blocks(2, 2, 1, 1),
+            map,
+            BlockLod::Lod1,
+            ImmutableRevision(4),
+            |_| false,
+        );
+
+        let candidates = queue.preparation_candidates();
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].priority, CompositePriority::Visible);
+        assert!(queue.mark_prepared(candidates[0].key));
+        let next = queue.preparation_candidates();
+        assert_eq!(next.len(), 1);
+        assert_ne!(next[0].key, candidates[0].key);
+        assert_eq!(queue.take_marked_prepared_for_frame(), candidates);
+        assert_eq!(queue.pending_len(), 1);
+        assert_eq!(queue.in_flight_len(), 1);
+    }
+
+    /// A deterministic far-zoom pan benchmark: every entered block can add
+    /// work, but the producer receives no more than its one-job frame budget.
+    /// It deliberately uses the preparation gate the app uses, so this guards
+    /// against a future shortcut that turns a long pan into synchronous bursts.
+    #[test]
+    fn steady_far_zoom_pan_benchmark_keeps_producer_work_bounded() {
+        let mut queue = CompositeWorkQueue::new(128, 1).unwrap();
+        let map = blocks(0, 511, 0, 3);
+        let revision = ImmutableRevision(12);
+        let mut ready = BTreeSet::new();
+        let mut produced = 0;
+
+        for x in 0..256 {
+            let visible = blocks(x, x, 1, 1);
+            queue.refresh(visible, map, BlockLod::Lod2, revision, |key| ready.contains(&key));
+            for candidate in queue.preparation_candidates() {
+                assert!(queue.mark_prepared(candidate.key));
+            }
+            let frame = queue.take_marked_prepared_for_frame();
+            assert!(
+                frame.len() <= 1,
+                "pan frame {x} exceeded the configured producer budget: {frame:?}"
+            );
+            for work in frame {
+                produced += 1;
+                ready.insert(work.key);
+                queue.finished(work.key);
+            }
+            assert!(queue.pending_len() <= 128);
+        }
+
+        assert!(produced > 0, "the benchmark must exercise newly entered blocks");
+        assert_eq!(queue.in_flight_len(), 0);
+    }
+
+    /// Returning to the detailed renderer at a max zoom must stop composite
+    /// preparation immediately.  A producer already handed a job keeps its
+    /// reservation until it finishes, but repeated camera pans at LOD0 cannot
+    /// create another atlas-preparation or producer pass.
+    #[test]
+    fn detailed_max_zoom_pan_never_requeues_composite_work() {
+        let mut queue = CompositeWorkQueue::new(128, 1).unwrap();
+        let map = blocks(0, 63, 0, 63);
+        let first = blocks(20, 21, 20, 21);
+        queue.refresh(first, map, BlockLod::Lod1, ImmutableRevision::default(), |_| {
+            false
+        });
+        assert!(!queue.preparation_candidates().is_empty());
+        let dispatched = queue.take_for_frame();
+        assert_eq!(dispatched.len(), 1, "one earlier producer may finish safely");
+
+        for offset in 0..256 {
+            let at = blocks(
+                20 + offset % 8,
+                20 + (offset / 8) % 8,
+                20 + offset % 8,
+                20 + (offset / 8) % 8,
+            );
+            queue.refresh(at, map, BlockLod::Lod0, ImmutableRevision::default(), |_| false);
+            assert_eq!(queue.pending_len(), 0, "LOD0 pan {offset} queued composite work");
+            assert_eq!(
+                queue.prepared_len(),
+                0,
+                "LOD0 pan {offset} prepared composite work"
+            );
+            assert!(queue.preparation_candidates().is_empty());
+            assert!(
+                queue.take_for_frame().is_empty(),
+                "LOD0 pan {offset} dispatched composite work"
+            );
+        }
+        assert_eq!(
+            queue.in_flight_len(),
+            1,
+            "only the pre-existing job remains to finish"
+        );
     }
 
     #[test]

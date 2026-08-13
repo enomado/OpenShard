@@ -90,6 +90,74 @@ The latest playground log showed two separate jank sources:
   incremental cells and one-query fit consolidation as the next implementation
   backlog rather than treating the bounds cache as the final fix.
 
+### Additional pathfinding measurement — 2026-08-13
+
+The playground could not be replayed in the current environment because there
+is no Wayland compositor, so this was measured against the same Felucca client
+map and `MapTerrain` used by the client planner. The reusable probe is
+`crates/common/movement/examples/map_path_probe.rs`:
+
+```text
+cargo run --release -p openshard-movement --example map_path_probe -- \
+  --client "/home/sc/t/uo_files/Electronic Arts/Ultima Online Classic" \
+  --x 1363 --y 1600 --radius 96 --budget 600
+```
+
+Observed result: 37,248 destinations, 4,436 reachable, 0.615 ms mean for one
+`find_path`, 1.159 ms maximum, measured from `(1363, 1600, z=30)`. The slow
+destinations are spatially concentrated rather than uniformly expensive:
+
+| Area | Slow targets | One exact search |
+| --- | --- | ---: |
+| south of the start | `(1364..1366, 1541)` | 1.134–1.159 ms |
+| west/central obstacle edges | `(1330,1509)`, `(1318,1508)`, `(1391,1552)` | 1.064–1.113 ms |
+| east and south-east obstacle edges | `(1401..1455, 1538..1656)` | 0.993–1.049 ms |
+
+Those top cases return no complete route and therefore explore the bounded
+search around an obstruction. Repeating the same fallback question with
+`find_path_toward` costs up to 0.815 ms and returns a partial route of 38–80
+steps. This explains why a blocked click can be materially more expensive than
+an ordinary open-ground route: `plan` may ask the real terrain, the
+doors-open terrain, and then the toward fallback. The measurement is static
+terrain only; dynamic `Clutter` and the UI timer are not included. It still
+matches the existing `ui_route` spikes around 1.17–1.21 ms closely enough to
+make the blocked/obstacle-edge path the next thing to instrument, rather than
+the route preview drawing itself.
+
+Next diagnostic: collect the same coordinate/answer breakdown from a real
+window run, then count how often these failed exact searches cause the
+doors-open/fallback branches. The probe's single-query result must not be added
+to `ui_route` as three times its value without confirming which branches ran.
+
+### Pathfinding jank fix — 2026-08-13
+
+The fresh jank trace confirmed a second, much larger path cost than the offline
+single-query probe: `ui_route` reached 28.4–28.6 ms and then 128.4–129.3 ms in
+repeated frames, while geometry, static walking, encoding and GPU stayed at
+their normal values. The HUD route cache was keyed by the exact current player
+position, so walking one step toward an unchanged goal discarded the usable
+prefix and planned the same destination again.
+
+`route_shown` now reuses a cached route for the same goal while the player is
+still on that route, trims the already walked prefix by tile coordinates, and
+keeps the existing terrain-change invalidation. The comparison intentionally
+ignores `z`: prediction and a sloped landing can disagree in height while
+still naming the same traversed tile. A route through a newly changed item
+therefore cannot be reused, but ordinary movement no longer launches a full A*
+again just because `from` advanced by one tile. The client-app unit suite passes
+after the change. Re-run the same playground scenario and verify that
+`ui_route` no longer contains the 28/129 ms plateaus; remaining jank should
+again expose the separate geometry/static/encoding baseline.
+
+The A* data-path was also made cheaper without changing the search policy:
+`path.rs` now uses `rustc_hash::FxHashMap/FxHashSet`, packs `(x, y)` into a
+`u32` key, and stores the resolved landing `Point` in the parent record rather
+than maintaining a separate `point_at` map. On the same release probe and
+coordinates, mean `find_path` fell from 0.615 ms to 0.480 ms (about 22%), and
+the worst single query fell from 1.159 ms to 1.026 ms. This is a useful
+constant-factor improvement, but it cannot remove multi-search preview spikes
+by itself; the UI-thread/fallback issue remains a separate concern.
+
 ## Context and baseline
 
 The playground writes every frame over the 16 ms budget to
@@ -190,10 +258,12 @@ last-mile optimisation.
 4. Keep server items, mobiles, effects, selection, cursor picking and UI out
    of the composite. The source map remains the authority for picking and game
    logic, regardless of which visual LOD was drawn.
-5. Invalidate only a block and its affected LOD levels for map/static mutation,
-   art/atlas revision, cutaway state or an output-format change. Establish a
-   bounded GPU-memory policy with an LRU tail outside the viewport hysteresis
-   margin.
+5. Invalidate only a block and its affected LOD levels for map/static *content*
+   mutation or a composite-output-format change. Atlas packing growth and a
+   temporary cutaway must not invalidate completed entries: pages are
+   append-only, composites retain final pixels/G-buffer facts rather than UVs,
+   and cutaway simply bypasses the cache for that frame. Establish a bounded
+   GPU-memory policy with an LRU tail outside the viewport hysteresis margin.
 6. Add fixed-camera screenshot tests around each LOD threshold and regression
     tests that compare map picking and dynamic-object placement with LOD 0.
 
@@ -201,11 +271,25 @@ last-mile optimisation.
 
 `CompositeCache` exposes block- and tier-scoped invalidation for map/static
 mutation, plus matching cancellation for queued or in-flight work so a late
-capture cannot restore stale pixels.  The app invalidates the affected visible
-blocks when static atlas content or the cutaway changes; a world-output-format
-change clears the cache because a texture cannot cross formats.  Atlas growth
-also cancels the bounded prefetch queue, since that queue has no per-graphic
-dependency index yet.
+capture cannot restore stale pixels. A world-output-format change clears the
+cache because a texture cannot cross formats. Static atlas pages are
+append-only; packing an image for an entered block therefore neither clears
+completed composites nor cancels their bounded prefetch queue. This is a
+correctness property as well as a performance one: a composite stores sampled
+colour and deferred facts, not a reference to an atlas UV rectangle.
+
+The rectangle is likewise cache-format data, not an observation of the current
+atlas. `MAX_STATIC_OVERHANG` is 256 source pixels (the shipped art maximum is
+about 250), so a completed entry always restores into the same 864×864 source
+rectangle. Letting `max_sprite_size()` grow while scrolling had changed the
+destination rectangle of entries made earlier, visibly stretching and moving
+walls even though their cached pixels had not changed.
+
+While a cutaway is active, the renderer bypasses cache restore and releases any
+dispatched capture jobs without capturing them: the normal map attachments omit
+the cut-away rows and are not a complete immutable source. The first ordinary
+frame can schedule those jobs again. This keeps cutaway state out of the cache
+key without ever admitting a partially cut-away entry.
 
 The shipped GPU cache tail is capped at 128 MiB.  A completed deferred
 composite retains colour plus its deferred planes (eight RGBA-sized planes in
@@ -222,6 +306,18 @@ the protected overage for future diagnostics.
 - crossing an LOD threshold produces no visible flashing or per-frame
   rebuilds;
 - dynamic entities and picking agree with the detailed renderer.
+
+### Work 6 oracle status
+
+The LOD selector has exact tests at both hysteresis boundaries and through both
+hysteresis bands. The composite renderer also has a real GPU capture/restore
+oracle: a fixed 64×64 frame deliberately places red map pixels from block
+`(0,0)` beside blue pixels owned by its east neighbour. It captures and restores
+the first block, then asserts pixel-for-pixel that red and its composite-map
+G-buffer identity survive while blue and its picking identity are discarded.
+That is the overlap/pan regression that previously made a wall briefly redraw
+from a neighbouring block. The test skips only when the host has no adapter
+that can render the production G-buffer format.
 
 ## Session 3 — incremental static geometry
 

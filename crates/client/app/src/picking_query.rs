@@ -28,8 +28,8 @@ use std::time::{Duration, Instant};
 use crate::app::App;
 use crate::crowd::Who;
 use crate::diagnostics::{
-    HealthBar, Height, Hud, OccluderSurface, Pick, PickedItem, PickedMobile, PickedTile, PriorityZ, Route,
-    Selection, TerrainOverlay, TileDepth,
+    CompositeTelemetry, HealthBar, Height, Hud, OccluderSurface, Pick, PickedItem, PickedMobile, PickedTile,
+    PriorityZ, Route, Selection, TerrainOverlay, TileDepth,
 };
 use crate::graphics::HighlightTarget;
 use crate::picking::SelectedIdentity;
@@ -118,7 +118,7 @@ impl App {
         // "which surface, coming from here" the walk itself uses, asked from the
         // body's own height so a floor overhead does not win over the street.
         let terrain = terrain(&self.resources);
-        let stand = terrain.predict_z(x, y, i32::from(self.world.presentation.player.at.z));
+        let stand = terrain.predict_z(x, y, i32::from(self.world.motion.planning_state().position.z));
         // Clamped rather than unwrapped: a `z` outside `i8` is a corrupt
         // block, and a diamond at the wrong height beats a panic in a HUD.
         let stand_z = stand.clamp(i32::from(i8::MIN), i32::from(i8::MAX)) as i8;
@@ -246,8 +246,9 @@ impl App {
     pub(crate) fn pick_tile(&self, camera: Camera) -> Option<PickedTile> {
         let cursor = self.control.cursor();
         let world_px = camera.pick(cursor);
-        let near = i32::from(self.world.presentation.player.at.z);
-        let (mut x, mut y) = camera::unproject(world_px, self.world.presentation.player.at.z);
+        let planning = self.world.motion.planning_state();
+        let near = i32::from(planning.position.z);
+        let (mut x, mut y) = camera::unproject(world_px, planning.position.z);
         if let Some(tile) = Self::in_bounds(x, y, &self.resources.map) {
             let terrain = terrain(&self.resources);
             let z = terrain.predict_z(tile.x, tile.y, near);
@@ -341,7 +342,7 @@ impl App {
 
         match self.graphics.solids_everything {
             true => Cut::Nothing,
-            false => Cut::BelowFeet(self.world.presentation.player.at.z),
+            false => Cut::BelowFeet(self.world.motion.planning_state().position.z),
         }
     }
 
@@ -395,7 +396,7 @@ impl App {
         use openshard_movement::{PLAYER_HEIGHT, Tile};
 
         let terrain = cluttered(&self.world, &self.resources);
-        let near = i32::from(self.world.presentation.player.at.z);
+        let near = i32::from(self.world.motion.planning_state().position.z);
         let mut open = Vec::new();
         let mut blocked = Vec::new();
         // The same clamp the ground pass uses, so the wash covers exactly the
@@ -438,7 +439,7 @@ impl App {
     /// ordinary redraws: zoomed out, re-asking every tile is much dearer than
     /// painting the already-known diamonds.
     fn terrain_shown(&mut self, camera: Camera) -> Arc<TerrainOverlay> {
-        let from = self.world.presentation.player.at;
+        let from = self.world.motion.route_origin();
         let bounds = camera.visible_tiles();
         if let Some(cached) = self
             .terrain_cache
@@ -478,7 +479,9 @@ impl App {
     /// start, destination, or world snapshot changes: a standing route costs
     /// no A* searches per frame.
     pub(crate) fn route_shown(&mut self, hover: Option<&PickedTile>) -> Option<Arc<Route>> {
-        let from = self.world.presentation.player.at;
+        // The movement core names the route origin explicitly; the HUD does
+        // not infer it from either a renderer `Mobile` or Crowd's clock.
+        let from = self.world.motion.route_origin();
         let goal = match self.steer.goal() {
             Some(tile) => tile,
             // No destination: the hover preview is the terrain overlay's own
@@ -489,12 +492,38 @@ impl App {
                 tile.at
             }
         };
-        if let Some(cached) = self
-            .route_cache
-            .as_ref()
-            .filter(|cached| cached.from == from && cached.goal == goal)
-        {
-            return cached.route.clone();
+        if let Some(cached) = self.route_cache.as_ref().filter(|cached| cached.goal == goal) {
+            if cached.from == from {
+                return cached.route.clone();
+            }
+            // While a destination is being walked, the body advances along the
+            // already validated route.  Requiring an exact `from` match here
+            // made the HUD re-run the expensive plan for every step, even when
+            // neither the goal nor the terrain had changed.  Trim the consumed
+            // prefix instead. `entered` clears this cache whenever the item
+            // terrain changes, so this cannot preserve a route through a new
+            // blocker.
+            if self.steer.goal().is_some() {
+                if let Some(route) = cached.route.as_ref() {
+                    if let Some(index) = route
+                        .open
+                        .iter()
+                        .position(|point| point.x == from.x && point.y == from.y)
+                    {
+                        let route = Route {
+                            open: route.open[index..].to_vec(),
+                            barred: route.barred.clone(),
+                        };
+                        let route = Arc::new(route);
+                        self.route_cache = Some(crate::app::RouteCache {
+                            from,
+                            goal,
+                            route: Some(Arc::clone(&route)),
+                        });
+                        return Some(route);
+                    }
+                }
+            }
         }
         let guide = terrain(&self.resources);
         let opened = cluttered_with_doors_open(&self.world, &self.resources);
@@ -603,6 +632,9 @@ impl App {
         // measures is the eye against the body it was given.
         if let Some(ease) = request.ease {
             self.world.presentation.crowd.set_ease(ease);
+        }
+        if let Some(audio) = request.audio {
+            self.audio.set_volumes(audio.effects, audio.music);
         }
         if let Some(draw) = request.draw {
             self.graphics.drawing = draw;
@@ -792,6 +824,17 @@ impl App {
                 .map(|identity| self.resolve_selection(identity)),
             health_bars: self.health_bars(camera, drawn_mobiles),
             goal: self.steer.goal().map(|tile| self.tile_info(tile)),
+            composites: self
+                .window
+                .as_ref()
+                .map_or_else(CompositeTelemetry::default, |window| CompositeTelemetry {
+                    ready: window.composites.len(),
+                    pending: self.composite_work.pending_len(),
+                    prepared: self.composite_work.prepared_len(),
+                    in_flight: self.composite_work.in_flight_len(),
+                    gpu_bytes: window.composites.gpu_bytes(),
+                    gpu_budget_bytes: window.composites.limits().max_gpu_bytes,
+                }),
         };
         let picking_cost = picking_started.elapsed();
 

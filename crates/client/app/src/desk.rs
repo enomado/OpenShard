@@ -58,6 +58,8 @@ pub enum Tab {
     /// How big the HUD chat box's glyphs draw and what colour the player's own
     /// line takes — [`Chat`].
     Chat,
+    /// The effects and music mixer gains.
+    Audio,
 }
 
 impl Tab {
@@ -65,7 +67,7 @@ impl Tab {
     ///
     /// One list, so the bar and anything that iterates the pages cannot come to
     /// disagree about which tabs exist.
-    pub const ALL: [Tab; 7] = [
+    pub const ALL: [Tab; 8] = [
         Tab::Camera,
         Tab::Rig,
         Tab::Frames,
@@ -73,6 +75,7 @@ impl Tab {
         Tab::Tile,
         Tab::Light,
         Tab::Chat,
+        Tab::Audio,
     ];
 
     /// What the bar calls it.
@@ -85,6 +88,7 @@ impl Tab {
             Tab::Tile => "Tile",
             Tab::Light => "Light",
             Tab::Chat => "Chat",
+            Tab::Audio => "Audio",
         }
     }
 }
@@ -342,6 +346,46 @@ pub struct Chat {
     pub hue: u16,
 }
 
+/// The two independent gains the sound mixer exposes.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Audio {
+    /// Positional effects such as strikes, spells and creature voices.
+    pub effects: f32,
+    /// Region and combat music.
+    pub music: f32,
+}
+
+impl Default for Audio {
+    fn default() -> Self {
+        Self {
+            effects: 0.8,
+            music: 0.45,
+        }
+    }
+}
+
+impl Audio {
+    /// Keep hand-edited persisted values inside the mixer's meaningful range.
+    pub fn clamped(self) -> Self {
+        let defaults = Self::default();
+        Self {
+            effects: self
+                .effects
+                .is_finite()
+                .then_some(self.effects)
+                .unwrap_or(defaults.effects)
+                .clamp(0.0, 1.0),
+            music: self
+                .music
+                .is_finite()
+                .then_some(self.music)
+                .unwrap_or(defaults.music)
+                .clamp(0.0, 1.0),
+        }
+    }
+}
+
 /// Where the dev window sits inside the HUD, in egui's logical points.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Panel {
@@ -415,6 +459,8 @@ pub struct Desk {
     pub light: Light,
     /// What the HUD chat box has been turned to — [`Chat`].
     pub chat: Chat,
+    /// What the audio mixer has been turned to — [`Audio`].
+    pub audio: Audio,
 }
 
 impl Default for Desk {
@@ -429,6 +475,7 @@ impl Default for Desk {
             light: Light::new(),
             window: None,
             chat: Chat::default(),
+            audio: Audio::default(),
         }
     }
 }
@@ -556,6 +603,10 @@ mod tests {
                 scale: ChatScale::new(3),
                 hue: 33,
             },
+            audio: Audio {
+                effects: 0.25,
+                music: 0.75,
+            },
         };
         desk.save(&path).unwrap();
         let back = Desk::load(&path).unwrap();
@@ -566,6 +617,7 @@ mod tests {
         assert_eq!(back.window, desk.window);
         assert_eq!(back.light, desk.light);
         assert_eq!(back.chat, desk.chat);
+        assert_eq!(back.audio, desk.audio);
         std::fs::remove_file(&path).unwrap();
     }
 

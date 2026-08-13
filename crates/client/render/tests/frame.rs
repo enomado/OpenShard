@@ -10,6 +10,7 @@
 //! `OPENSHARD_CLIENT`, because no client files live in this repository, and the
 //! presence of an adapter, because CI machines do not always have one.
 
+use std::collections::BTreeSet;
 use std::path::PathBuf;
 
 use openshard_client_render::animate::StaticAnimations;
@@ -36,13 +37,17 @@ use openshard_client_render::light::{Light, Lighting, Surface, WorldVec};
 /// "outside" to compare against inside the picture.
 const TORCH_TILES: f32 = 3.0;
 use openshard_client_render::camera::TileBounds;
+use openshard_client_render::composite::{
+    CaptureSource, CompositeCache, CompositeKey, CompositeProducerJob, CompositeQuad, CompositeRenderer,
+    CompositeTier, CompositeWorkQueue, ImmutableRevision, MapBlock, MapBlockBounds,
+};
 use openshard_client_render::gbuffer;
 use openshard_client_render::mobiles::{self, Mobile};
 use openshard_client_render::occlusion::{self, Builder, Occlusion, OwnerId, Shape, SolidId};
 use openshard_client_render::outline::{self, Outline, Ring};
 use openshard_client_render::place::{Kind, Place};
 use openshard_client_render::renderer::{self, GroundRenderer, SpriteRenderer, Target};
-use openshard_client_render::sprite::SpriteQuad;
+use openshard_client_render::sprite::{SpriteQuad, split_corners};
 use openshard_client_render::statics;
 use openshard_protocol::direction::Direction;
 use openshard_protocol::wire::Graphic;
@@ -826,6 +831,391 @@ fn read_back(device: &wgpu::Device, queue: &wgpu::Queue, texture: &wgpu::Texture
         .to_vec();
     readback.unmap();
     Frame { width, pixels }
+}
+
+/// Read a texture whose row may not be a WebGPU copy-alignment multiple.
+///
+/// The producer's fixed 864-pixel source is deliberately not 256-byte aligned
+/// as RGBA8.  Test readback pads rows for the transfer, then removes that
+/// padding before callers inspect pixels in the normal `width * height` order.
+fn read_texture(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    texture: &wgpu::Texture,
+    bytes_per_texel: u32,
+) -> Vec<u8> {
+    let (width, height) = (texture.width(), texture.height());
+    let row = width * bytes_per_texel;
+    let stride = row.div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT) * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
+    let readback = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("producer coverage readback"),
+        size: u64::from(stride) * u64::from(height),
+        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+        mapped_at_creation: false,
+    });
+    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+    encoder.copy_texture_to_buffer(
+        wgpu::TexelCopyTextureInfo {
+            texture,
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
+        wgpu::TexelCopyBufferInfo {
+            buffer: &readback,
+            layout: wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(stride),
+                rows_per_image: Some(height),
+            },
+        },
+        wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
+    );
+    queue.submit([encoder.finish()]);
+    let slice = readback.slice(..);
+    slice.map_async(wgpu::MapMode::Read, |result| {
+        result.expect("mapping a producer attachment we just copied");
+    });
+    device
+        .poll(wgpu::PollType::wait_indefinitely())
+        .expect("waiting for the producer attachment readback");
+    let padded = slice
+        .get_mapped_range()
+        .expect("the producer attachment map completed");
+    let mut compact = Vec::with_capacity((row * height) as usize);
+    for source_row in padded.chunks_exact(stride as usize) {
+        compact.extend_from_slice(&source_row[..row as usize]);
+    }
+    drop(padded);
+    readback.unmap();
+    compact
+}
+
+fn producer_owner_tiles(
+    block: MapBlock,
+    width: u32,
+    kind: Kind,
+    ids: &[u8],
+    positions: &[u8],
+    color: &[u8],
+) -> BTreeSet<(u16, u16)> {
+    let mut owned = BTreeSet::new();
+    for at in 0..(width * width) as usize {
+        let id = u32::from_le_bytes(ids[at * 4..at * 4 + 4].try_into().expect("one ID texel"));
+        if openshard_client_render::gbuffer::ids_kind(id) != Some(kind) {
+            continue;
+        }
+        assert_ne!(
+            color[at * 4 + 3],
+            0,
+            "{kind:?} ID at texel {at} has transparent producer colour"
+        );
+        let x = f32::from_le_bytes(positions[at * 16..at * 16 + 4].try_into().expect("position x"));
+        let y = f32::from_le_bytes(
+            positions[at * 16 + 4..at * 16 + 8]
+                .try_into()
+                .expect("position y"),
+        );
+        assert!(
+            x.is_finite() && y.is_finite(),
+            "{kind:?} ID at texel {at} has no finite world position"
+        );
+        let tile = (x.floor() as u16, y.floor() as u16);
+        if block.contains_tile(tile.0, tile.1) {
+            owned.insert(tile);
+        }
+    }
+    owned
+}
+
+/// A real map producer must retain every owned land and map-static tile after
+/// it is captured and restored at LOD1. This is the coverage gate synthetic
+/// attachment tests cannot provide: fixed camera, real map art, ownership
+/// filtering, downsampled cache planes and deferred restore form one chain.
+#[test]
+fn real_map_block_producer_keeps_every_owned_map_tile_after_restore() {
+    let (Some(dir), Some((device, queue))) = (client_dir(), gpu()) else {
+        return;
+    };
+    let map = Map::load_facet(&dir, 0).expect("Felucca");
+    let art = Art::open(&dir).expect("artLegacyMUL.uop");
+    let tiledata = TileData::load(dir.join("tiledata.mul")).expect("tiledata.mul");
+    // A dense central-Britain block: a quiet sea block proves only ground.
+    let block = MapBlock { x: 186, y: 203 };
+    let key = CompositeKey {
+        block,
+        tier: CompositeTier::Lod1,
+        revision: ImmutableRevision::default(),
+    };
+    let job = CompositeProducerJob::new(key);
+    let size = job.source_size();
+    let wanted = ground::visible_graphics(&map, &job.camera());
+    let land = LandAtlas::build(&art, wanted.iter().copied()).expect("producer land atlas fits");
+    let texmaps = texmap_atlas(&dir, wanted);
+    let ground = ground::collect(&map, &job.camera(), &land, &texmaps, &Cutaway::OPEN);
+    assert!(!ground.is_empty(), "the producer camera collected no map land");
+    let animations = StaticAnimations::default();
+    let wanted_statics = statics::visible_graphics(&map, &job.camera(), &animations);
+    let static_atlas = StaticAtlas::build(&art, wanted_statics).expect("producer static atlas fits");
+    let static_geometry = statics::collect(
+        &map,
+        &job.camera(),
+        &tiledata,
+        &animations,
+        &static_atlas,
+        &Cutaway::OPEN,
+        &openshard_client_render::occlusion::Occlusion::EMPTY,
+        None,
+        None,
+    );
+    let static_rows = split_corners(static_geometry.quads);
+
+    let source_world = openshard_client_render::blit::world_texture(&device, size.width, size.height);
+    let source_world_view = source_world.create_view(&wgpu::TextureViewDescriptor::default());
+    let source_depth = renderer::depth_texture(&device, size.width, size.height);
+    let source_depth_view = source_depth.create_view(&wgpu::TextureViewDescriptor::default());
+    let source_gbuffer = openshard_client_render::gbuffer::Gbuffer::new(&device, size.width, size.height);
+    let source_views = source_gbuffer.views();
+    let mut ground_pass = GroundRenderer::new(
+        &device,
+        &queue,
+        openshard_client_render::blit::WORLD_FORMAT,
+        &land,
+        &texmaps,
+    );
+    let hues = HueRamp::build(&Hues::parse(&[0u8; 708]).expect("one empty hue group"));
+    let mut statics_pass = SpriteRenderer::new(
+        &device,
+        &queue,
+        openshard_client_render::blit::WORLD_FORMAT,
+        static_atlas.pixels(),
+        &hues,
+    );
+    let mut composite = CompositeRenderer::new(&device);
+    let mut cache = CompositeCache::default();
+    let mut work = CompositeWorkQueue::new(1, 1).expect("one bounded producer job");
+    let bounds = MapBlockBounds {
+        min_x: block.x,
+        max_x: block.x,
+        min_y: block.y,
+        max_y: block.y,
+    };
+    work.refresh(
+        bounds,
+        bounds,
+        openshard_client_render::lod::BlockLod::Lod1,
+        key.revision,
+        |_| false,
+    );
+    assert_eq!(
+        work.take_for_frame().len(),
+        1,
+        "the oracle must dispatch its producer key"
+    );
+
+    let restored_world = openshard_client_render::blit::world_texture(&device, size.width, size.height);
+    let restored_world_view = restored_world.create_view(&wgpu::TextureViewDescriptor::default());
+    let restored_depth = renderer::depth_texture(&device, size.width, size.height);
+    let restored_depth_view = restored_depth.create_view(&wgpu::TextureViewDescriptor::default());
+    let restored_gbuffer = openshard_client_render::gbuffer::Gbuffer::new(&device, size.width, size.height);
+    let restored_views = restored_gbuffer.views();
+    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+    let source_target = Target::whole(
+        &source_world_view,
+        &source_depth_view,
+        &source_views,
+        size.width,
+        size.height,
+    );
+    ground_pass.render(&device, &queue, &mut encoder, source_target, &ground);
+    statics_pass.render(
+        &device,
+        &queue,
+        &mut encoder,
+        source_target,
+        &static_rows.rows,
+        &static_geometry.boxes,
+        Some(static_rows.drawn),
+    );
+    let source = CaptureSource {
+        color: &source_world,
+        ids: source_gbuffer.ids(),
+        position: source_gbuffer.position(),
+        normal: source_gbuffer.normal(),
+        depth: &source_depth_view,
+        depth_base: 0,
+        rect: ViewportRect {
+            x: 0,
+            y: 0,
+            width: size.width,
+            height: size.height,
+        },
+    };
+    work.finish_capture(
+        &device,
+        &queue,
+        &mut encoder,
+        &mut composite,
+        &mut cache,
+        key,
+        source,
+    )
+    .expect("the dispatched producer capture completes");
+    let texture = cache.get(key).expect("the capture inserted its exact key");
+    {
+        // `render_deferred` deliberately loads its target in the client: it
+        // interleaves cached and detailed blocks. This isolated oracle has no
+        // detailed neighbours, so make its untouched pixels deterministically
+        // empty before asking the cache image to restore into them.
+        let _clear = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("producer coverage restore clear"),
+            color_attachments: &[
+                Some(wgpu::RenderPassColorAttachment {
+                    view: &restored_world_view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                        store: wgpu::StoreOp::Store,
+                    },
+                }),
+                Some(wgpu::RenderPassColorAttachment {
+                    view: &restored_views.ids,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(openshard_client_render::gbuffer::IDS_CLEAR),
+                        store: wgpu::StoreOp::Store,
+                    },
+                }),
+                Some(wgpu::RenderPassColorAttachment {
+                    view: &restored_views.position,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(openshard_client_render::gbuffer::POSITION_CLEAR),
+                        store: wgpu::StoreOp::Store,
+                    },
+                }),
+                Some(wgpu::RenderPassColorAttachment {
+                    view: &restored_views.normal,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(openshard_client_render::gbuffer::NORMAL_CLEAR),
+                        store: wgpu::StoreOp::Store,
+                    },
+                }),
+            ],
+            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                view: &restored_depth_view,
+                depth_ops: Some(wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(1.0),
+                    store: wgpu::StoreOp::Store,
+                }),
+                stencil_ops: None,
+            }),
+            multiview_mask: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+        });
+    }
+    composite.render_deferred(
+        &device,
+        &queue,
+        &mut encoder,
+        Target::whole(
+            &restored_world_view,
+            &restored_depth_view,
+            &restored_views,
+            size.width,
+            size.height,
+        ),
+        0.0,
+        &[CompositeQuad {
+            texture,
+            rect: job.source_rect(),
+        }],
+    );
+    queue.submit([encoder.finish()]);
+
+    let expected: BTreeSet<_> = (block.first_tile().1..block.first_tile().1 + 8)
+        .flat_map(|y| (block.first_tile().0..block.first_tile().0 + 8).map(move |x| (x, y)))
+        .filter(|&(x, y)| map.land(x, y).is_some())
+        .collect();
+    assert_eq!(
+        expected.len(),
+        64,
+        "the selected producer block must be a complete map block"
+    );
+    let source_owned = producer_owner_tiles(
+        block,
+        size.width,
+        Kind::Land,
+        &read_texture(&device, &queue, &source_gbuffer.ids(), 4),
+        &read_texture(&device, &queue, source_gbuffer.position(), 16),
+        &read_texture(&device, &queue, &source_world, 4),
+    );
+    let restored_land = producer_owner_tiles(
+        block,
+        size.width,
+        Kind::Land,
+        &read_texture(&device, &queue, restored_gbuffer.ids(), 4),
+        &read_texture(&device, &queue, restored_gbuffer.position(), 16),
+        &read_texture(&device, &queue, &restored_world, 4),
+    );
+    let source_statics = producer_owner_tiles(
+        block,
+        size.width,
+        Kind::Static,
+        &read_texture(&device, &queue, &source_gbuffer.ids(), 4),
+        &read_texture(&device, &queue, source_gbuffer.position(), 16),
+        &read_texture(&device, &queue, &source_world, 4),
+    );
+    let restored_statics = producer_owner_tiles(
+        block,
+        size.width,
+        Kind::Static,
+        &read_texture(&device, &queue, restored_gbuffer.ids(), 4),
+        &read_texture(&device, &queue, restored_gbuffer.position(), 16),
+        &read_texture(&device, &queue, &restored_world, 4),
+    );
+    assert!(
+        source_statics.len() >= 8,
+        "the dense producer block exercised only {source_statics:?}"
+    );
+    // A tall/opaque map static can cover every land fragment of its own tile.
+    // The immutable map representation still covers that tile, but with a
+    // static ID rather than a land ID. Assert complete *visible map* coverage
+    // and then compare each plane's identity across capture/restore.
+    let source_visible = source_owned
+        .union(&source_statics)
+        .copied()
+        .collect::<BTreeSet<_>>();
+    let restored_visible = restored_land
+        .union(&restored_statics)
+        .copied()
+        .collect::<BTreeSet<_>>();
+    assert_eq!(
+        source_visible, expected,
+        "the producer source omitted an owned visible map tile"
+    );
+    assert_eq!(
+        restored_visible, expected,
+        "the cached composite omitted an owned visible map tile"
+    );
+    assert_eq!(
+        restored_land, source_owned,
+        "the cached composite changed owned land identity"
+    );
+    assert_eq!(
+        restored_statics, source_statics,
+        "the cached composite omitted an owned map-static tile"
+    );
 }
 
 /// At zoom 1 the blit moves no pixel: every texel of the surface is the world

@@ -94,6 +94,8 @@ pub struct Request {
     pub draw: Option<openshard_client_render::frame::Draw>,
     /// Switch the architectural cutaway on or off.
     pub cutaway_disabled: Option<bool>,
+    /// Switch body-overlap transparency on or off.
+    pub body_overlap_transparency_disabled: Option<bool>,
     /// Switch the occluder wireframe on or off, on the frame the box was ticked.
     ///
     /// Sent on the change and not every frame, like the terrain overlay, and for
@@ -132,6 +134,8 @@ pub struct Request {
     /// and repacks so the shape redraws immediately, and nothing here writes
     /// to disk. See `App::apply`.
     pub authored_prism: Option<(Graphic, Prism)>,
+    /// New effect and music gains from the Audio tab.
+    pub audio: Option<crate::desk::Audio>,
 }
 
 /// What the script picker asked for.
@@ -429,7 +433,7 @@ fn layout(root: &mut egui::Ui, hud: &Hud, camera: Camera, world: &WorldState, de
                 None => ui.label("no serial"),
             };
             ui.separator();
-            let at = world.presentation.player.at;
+            let at = world.motion.hud_state().predicted.position;
             ui.label(format!("{}, {}, {}", at.x, at.y, at.z));
             ui.separator();
             // What the frame cost to *build*, and not how long it took: paced by
@@ -508,6 +512,7 @@ fn layout(root: &mut egui::Ui, hud: &Hud, camera: Camera, world: &WorldState, de
                 Tab::Tile => tile_tab(ui, hud, world, &mut request),
                 Tab::Light => light_panel(ui, hud, &mut desk.light, &mut request),
                 Tab::Chat => chat_panel(ui, &mut desk.chat),
+                Tab::Audio => audio_panel(ui, &mut desk.audio, &mut request),
             });
     });
     desk.open = open;
@@ -677,6 +682,16 @@ fn light_panel(ui: &mut egui::Ui, hud: &Hud, light: &mut crate::desk::Light, req
     {
         request.cutaway_disabled = Some(cutaway_disabled);
     }
+    let mut body_overlap_transparency_disabled = hud.body_overlap_transparency_disabled;
+    if ui
+        .checkbox(
+            &mut body_overlap_transparency_disabled,
+            "disable neighbour transparency",
+        )
+        .changed()
+    {
+        request.body_overlap_transparency_disabled = Some(body_overlap_transparency_disabled);
+    }
     ui.label(
         egui::RichText::new(
             "Diagnostic: keeps walls, bridges and roofs opaque while testing the cutaway transparency bug.",
@@ -691,6 +706,41 @@ fn light_panel(ui: &mut egui::Ui, hud: &Hud, light: &mut crate::desk::Light, req
     // untouched" has to be one click and not nine numbers typed in.
     if ui.button("back to the defaults").clicked() {
         *light = crate::desk::Light::new();
+    }
+}
+
+/// Sound controls are live mixer gains, kept in the desk for the same reason
+/// the Light tab keeps its numbers: the sliders are the source of truth until
+/// the next frame applies their one-shot request to the platform subsystem.
+fn audio_panel(ui: &mut egui::Ui, audio: &mut crate::desk::Audio, request: &mut Request) {
+    ui.label("Volume");
+    let effects_changed = ui
+        .add(
+            egui::Slider::new(&mut audio.effects, 0.0..=1.0)
+                .text("effects")
+                .custom_formatter(|value, _| format!("{:.0}%", value * 100.0)),
+        )
+        .changed();
+    let music_changed = ui
+        .add(
+            egui::Slider::new(&mut audio.music, 0.0..=1.0)
+                .text("music")
+                .custom_formatter(|value, _| format!("{:.0}%", value * 100.0)),
+        )
+        .changed();
+    if effects_changed || music_changed {
+        request.audio = Some(*audio);
+    }
+    ui.label(
+        egui::RichText::new(
+            "Effects include world sounds such as swings and spells. Music changes the current track immediately and applies to the next one too.",
+        )
+        .small()
+        .weak(),
+    );
+    if ui.button("back to the defaults").clicked() {
+        *audio = crate::desk::Audio::default();
+        request.audio = Some(*audio);
     }
 }
 
@@ -1003,7 +1053,10 @@ fn tile_tab(ui: &mut egui::Ui, hud: &Hud, world: &WorldState, request: &mut Requ
     ui.horizontal(|ui| {
         ui.label("draw (F4)");
         for (cut, name) in [
-            (Cut::BelowFeet(world.presentation.player.at.z), "above your feet"),
+            (
+                Cut::BelowFeet(world.motion.hud_state().predicted.position.z),
+                "above your feet",
+            ),
             (Cut::Nothing, "everything"),
         ] {
             let picked = std::mem::discriminant(&hud.solid_cut) == std::mem::discriminant(&cut);
@@ -1243,7 +1296,7 @@ fn overlays(root: &mut egui::Ui, hud: &Hud, camera: Camera) {
     if let Some(route) = &hud.route {
         draw_route(&world, &camera, route, viewport.min);
     }
-    draw_health_bars(&world, &hud.health_bars, viewport.min);
+    draw_health_bars(&world, &camera, &hud.health_bars, viewport.min);
     // The tile marker, and only when the tile is what is lit: an item under the
     // cursor takes the highlight, and a diamond drawn under its ring would be
     // the client answering "what would a click do here" twice.
@@ -1299,20 +1352,32 @@ fn overlays(root: &mut egui::Ui, hud: &Hud, camera: Camera) {
     }
 }
 
-fn draw_health_bars(painter: &egui::Painter, bars: &[HealthBar], viewport_origin: egui::Pos2) {
+fn draw_health_bars(
+    painter: &egui::Painter,
+    camera: &Camera,
+    bars: &[HealthBar],
+    viewport_origin: egui::Pos2,
+) {
     const WIDTH: f32 = 42.0;
     const HEIGHT: f32 = 5.0;
     const GAP: f32 = 8.0;
 
-    let scale = 1.0 / painter.ctx().pixels_per_point();
+    // The anchor belongs to the rendered world, not to egui. Project it
+    // through the camera first: this spends the same zoom/blit transform as
+    // the world image and prevents a second, guessed projection here.
+    let physical_to_points = 1.0 / painter.ctx().pixels_per_point();
     for bar in bars {
         let ratio = if bar.max == 0 {
             0.0
         } else {
             f32::from(bar.current).min(f32::from(bar.max)) / f32::from(bar.max)
         };
-        let centre =
-            viewport_origin + egui::vec2(bar.anchor.x as f32 * scale, (bar.anchor.y as f32 - GAP) * scale);
+        let projected = camera.to_viewport(bar.anchor);
+        let centre = viewport_origin
+            + egui::vec2(
+                projected.x * physical_to_points,
+                projected.y * physical_to_points - GAP,
+            );
         let rect = egui::Rect::from_center_size(centre, egui::vec2(WIDTH, HEIGHT));
         let fill = egui::Rect::from_min_size(rect.min, egui::vec2(rect.width() * ratio, rect.height()));
         painter.rect_filled(
@@ -1550,6 +1615,7 @@ fn rig_panel(ui: &mut egui::Ui, hud: &Hud, world: &WorldState, request: &mut Req
 /// that says how much of the frame was still free. See [`crate::frames`].
 fn frames_panel(ui: &mut egui::Ui, hud: &Hud) {
     let ms = |duration: Duration| duration.as_secs_f64() * 1_000.0;
+    let mib = |bytes: u64| bytes as f64 / (1024.0 * 1024.0);
     let last = hud.perf.frames.last();
     egui::Grid::new("frames").num_columns(4).show(ui, |ui| {
         ui.label("fps");
@@ -1643,6 +1709,23 @@ fn frames_panel(ui: &mut egui::Ui, hud: &Hud) {
                 });
             });
     }
+    ui.separator();
+    ui.label("map composites");
+    egui::Grid::new("map composites").num_columns(4).show(ui, |ui| {
+        ui.label("ready");
+        ui.label(hud.composites.ready.to_string());
+        ui.label("queue");
+        ui.label(format!(
+            "{} pending, {} prepared, {} in flight",
+            hud.composites.pending, hud.composites.prepared, hud.composites.in_flight
+        ));
+        ui.end_row();
+        ui.label("gpu cache");
+        ui.label(format!("{:.1} MiB", mib(hud.composites.gpu_bytes)));
+        ui.label("budget");
+        ui.label(format!("{:.1} MiB", mib(hud.composites.gpu_budget_bytes)));
+        ui.end_row();
+    });
     // The counter `docs/camera.md` asks for: without it, a full atlas repack
     // is indistinguishable from an ordinary heavy frame, both being a large
     // number in `world` above. `repacked` marks which frame in the window

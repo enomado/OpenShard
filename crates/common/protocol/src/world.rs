@@ -974,6 +974,19 @@ impl EncodePacket for PlayMusic {
     }
 }
 
+impl DecodePacket for PlayMusic {
+    const ID: u8 = 0x6D;
+
+    fn decode_body(
+        reader: &mut crate::codec::PacketReader<'_>,
+        _version: ClientVersion,
+    ) -> Result<Self, crate::error::DecodeError> {
+        Ok(Self {
+            track: MusicId(reader.u16()?),
+        })
+    }
+}
+
 /// Which season the client draws its trees and ground in.
 ///
 /// Five, and the client knows no others — a sixth byte draws nothing at all,

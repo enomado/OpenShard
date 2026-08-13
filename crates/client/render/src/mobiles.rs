@@ -738,6 +738,7 @@ pub fn screen_rect(mobile: &Mobile, camera: &Camera, atlas: &AnimAtlas) -> Optio
 #[derive(Clone, Debug)]
 pub struct OpaqueMask {
     rect: Rect,
+    order: depth::Order,
     width: u16,
     pixels: Vec<bool>,
 }
@@ -749,6 +750,12 @@ impl OpaqueMask {
     #[must_use]
     pub const fn rect(&self) -> Rect {
         self.rect
+    }
+
+    /// The depth order of the body this mask belongs to.
+    #[must_use]
+    pub const fn order(&self) -> depth::Order {
+        self.order
     }
 
     /// Whether this body's and `other`'s *drawn* texels share a viewport
@@ -803,6 +810,10 @@ impl OpaqueMask {
         let height = rect.height as u16;
         Self {
             rect,
+            order: depth::Order {
+                tile: i32::MIN,
+                priority_z: i32::MIN,
+            },
             width,
             pixels: vec![true; usize::from(width) * usize::from(height)],
         }
@@ -835,6 +846,7 @@ pub fn opaque_mask(mobile: &Mobile, camera: &Camera, atlas: &AnimAtlas) -> Optio
     }
     Some(OpaqueMask {
         rect: placement.rect,
+        order: placement.order,
         width,
         pixels,
     })

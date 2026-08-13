@@ -113,6 +113,15 @@ impl StaticAnimations {
         self.cycles.is_empty()
     }
 
+    /// Whether this base graphic changes with the presentation clock.
+    ///
+    /// Immutable map-block composites use this to keep a whole block on the
+    /// detailed path when it contains animated art; baking a fire into a cache
+    /// entry would make its next animation step permanently stale.
+    pub fn is_animated(&self, graphic: Graphic) -> bool {
+        self.cycles.contains_key(&graphic.0)
+    }
+
     /// Move the clock forward. The one writer, and it takes the frame's span.
     pub fn advance(&mut self, dt: Duration) {
         self.elapsed += dt;
@@ -260,6 +269,8 @@ mod tests {
     fn a_static_that_does_not_animate_is_itself() {
         let mut animations = fixture(&[(9, sequence(&[1], 1))]);
         animations.advance(Duration::from_secs(37));
+        assert!(animations.is_animated(Graphic(9)));
+        assert!(!animations.is_animated(Graphic(0x0FAC)));
         assert_eq!(animations.showing(Graphic(0x0FAC)), Graphic(0x0FAC));
         assert_eq!(
             animations.cycle(Graphic(0x0FAC)).collect::<Vec<_>>(),

@@ -23,6 +23,7 @@ use openshard_protocol::direction::{Direction, Facing};
 use openshard_protocol::world::Point;
 
 use crate::app::App;
+use crate::net_command::project_motion;
 use crate::world::{advance_presentation_to, cluttered, cluttered_with_doors_open, terrain};
 use crate::{DEAD_ZONE, TURN_ZONE, steer};
 
@@ -45,6 +46,14 @@ impl App {
         // rolled back.
         if let Some(link) = self.world.link.as_ref() {
             link.step(facing);
+            if let Some(trace) = self.movement_trace.as_mut() {
+                trace.record_detail(
+                    "command_step",
+                    &format!("facing={facing:?} goal={:?}", self.steer.goal()),
+                    &self.world,
+                    self.control.camera(),
+                );
+            }
             return false;
         }
 
@@ -59,25 +68,17 @@ impl App {
         // right after another within a single event-loop wake — and moving
         // the body on every one of them was a real body covering twice the
         // ground its pace implied.
+        let motion = self.world.motion.planning_state();
         let turn = matches!(
-            openshard_movement::intend(
-                self.world.presentation.player.at,
-                Facing::walking(self.world.presentation.player.facing),
-                facing
-            ),
+            openshard_movement::intend(motion.position, motion.facing, facing),
             openshard_movement::Intent::Turned { .. }
         );
         let (x, y) = match turn {
-            true => (
-                self.world.presentation.player.at.x,
-                self.world.presentation.player.at.y,
-            ),
+            true => (motion.position.x, motion.position.y),
             false => {
                 let (dx, dy) = facing.direction.step();
-                let x = (i32::from(self.world.presentation.player.at.x) + dx)
-                    .clamp(0, self.resources.map.width() as i32 - 1);
-                let y = (i32::from(self.world.presentation.player.at.y) + dy)
-                    .clamp(0, self.resources.map.height() as i32 - 1);
+                let x = (i32::from(motion.position.x) + dx).clamp(0, self.resources.map.width() as i32 - 1);
+                let y = (i32::from(motion.position.y) + dy).clamp(0, self.resources.map.height() as i32 - 1);
                 (x as u16, y as u16)
             }
         };
@@ -92,8 +93,7 @@ impl App {
         // `link.rs`'s online `Command::Step`, which wants the identical answer
         // once a server is involved.
         let terrain = terrain(&self.resources);
-        let ground = i8::try_from(terrain.predict_step(self.world.presentation.player.at, x, y))
-            .unwrap_or(self.world.presentation.player.at.z);
+        let ground = i8::try_from(terrain.predict_step(motion.position, x, y)).unwrap_or(motion.position.z);
         // The presentation clocks first, before the step is folded in, and for
         // the same reason `App::user_event` does it for a step off the wire: a
         // step is timestamped with `Crowd`'s own `now`, and this is called from
@@ -103,35 +103,31 @@ impl App {
         // stale instant. This is the offline half of the walk and it had the
         // defect the online half was already fixed for.
         let now = Instant::now();
-        advance_presentation_to(&mut self.world.presentation, &mut self.last_advance, now);
-        // Through the crowd like anyone else, so the placeholder walks when it
-        // walks and stands when it stops. `None` is who it is: no shard has
-        // named it, so it has no serial.
-        // `Crowd::see` starts a fresh `Mobile` with no equipment — nobody
-        // sent this placeholder a `0x78` — so whatever it was already wearing
-        // is carried across by hand, the way `WorldView` carries it across a
-        // `0x77`/`0x20` that names none either.
-        let equipment = std::mem::take(&mut self.world.presentation.player.equipment);
-        self.world.presentation.player = self.world.presentation.crowd.see(
-            None,
-            Point::new(x, y, ground),
-            self.world.presentation.player.body,
-            facing,
-            self.world.presentation.player.hue,
-            // At peace, and not a placeholder for an unknown: this is the
-            // offline viewer's body, and there is no shard to have put it in a
-            // stance. See `App::walk`'s own docs.
-            false,
+        advance_presentation_to(
+            &mut self.world.presentation,
+            &mut self.world.motion,
+            &mut self.last_advance,
+            now,
         );
-        self.world.presentation.player.equipment = equipment;
-        self.world.prediction.set(
-            self.world.presentation.player.at,
-            Facing::walking(self.world.presentation.player.facing),
+        let landed = Point::new(x, y, ground);
+        // Offline movement is authoritative immediately, but it still changes
+        // the one movement core before its renderer projection is updated.
+        self.world.motion.accept_trusted_step(landed, facing);
+        // The offline viewer is authoritative immediately, but it still uses
+        // the same motion-to-Crowd adapter as a predicted online step.  This
+        // keeps its glide source in PlayerMotion rather than asking Crowd to
+        // rediscover it from two tiles.
+        project_motion(
+            &mut self.world.presentation.crowd,
+            None,
+            &mut self.world.presentation.player,
+            self.world.motion.render_state(),
+            false,
         );
         // Offline there is no shard to refuse a step, so nothing here is
         // speculative the way an online prediction is — trusted outright,
         // same as a correction is.
-        self.world.presentation.cutaway_at = self.world.presentation.player.at;
+        self.world.presentation.cutaway_at = self.world.motion.planning_state().position;
         // Offline the body is what the camera is locked to, exactly as the
         // server's is when there is a server. Unlocked, walking still walks and
         // the body may leave the screen — walking and looking are different
@@ -172,20 +168,21 @@ impl App {
             guide: &guide,
             coarse: self.resources.coarse.as_ref(),
         };
+        let motion = self.world.motion.planning_state();
         let facing = if self.input.ctrl_held {
             self.steer.go_to(
                 tile.at,
-                self.world.presentation.player.at,
+                motion.position,
                 Instant::now(),
-                self.world.presentation.player.facing,
+                motion.facing.direction,
                 ground,
             )
         } else {
             self.steer.steer(
                 self.ask_to_cursor(*self.control.camera()),
-                self.world.presentation.player.at,
+                motion.position,
                 Instant::now(),
-                self.world.presentation.player.facing,
+                motion.facing.direction,
                 ground,
             )
         };
@@ -243,10 +240,7 @@ impl App {
         let cursor = self.control.cursor();
         // The body's *drawn* pixel, height and all: what a player aims relative
         // to is the sprite they can see, not the tile beneath it.
-        ask_between(
-            camera::project(self.world.presentation.player.at),
-            camera.pick(cursor),
-        )
+        ask_between(self.world.drawn_player().eye().pixel(), camera.pick(cursor))
     }
 
     /// Double-click whatever the cursor is over: ask the shard to use it.
@@ -355,7 +349,7 @@ impl App {
     /// here. That is `use_under_cursor`'s own rule turned into the one it should
     /// always have been: what the player clicked is what they were shown they
     /// were pointing at.
-    pub(crate) fn attack_under_cursor(&self) {
+    pub(crate) fn attack_under_cursor(&mut self) {
         let Some(view) = self.world.authoritative.view.as_ref() else {
             return;
         };
@@ -368,6 +362,11 @@ impl App {
         let Some(Some(mobile)) = self.picking.on_mobile else {
             return;
         };
+        // A corpse is drawn through the mobile renderer so its body is visible,
+        // but its serial still names an item. It can be opened, never attacked.
+        if !view.mobiles.contains_key(&mobile) {
+            return;
+        }
         // Attacking yourself is a packet the shard refuses (`combat::attack`
         // checks it) and a click a player never means. Stopped here so the
         // refusal is not a round trip.
@@ -375,6 +374,10 @@ impl App {
             return;
         }
         match self.world.link.as_ref() {
+            // The same war-mode click that chose this target gives it up. The
+            // server remains the authority and confirms the cleared target with
+            // `0xAA`, so the marker cannot get ahead of the actual combat state.
+            Some(link) if view.player.attacking == Some(mobile) => link.stop_attacking(),
             Some(link) => link.attack(mobile),
             None => tracing::info!(serial = mobile.raw(), "nothing attacked: no shard is connected"),
         }

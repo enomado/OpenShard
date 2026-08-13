@@ -15,6 +15,7 @@ workspace = true
 clap.workspace = true
 openshard-protocol.workspace = true
 openshard-uofiles.workspace = true
+rustc-hash.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true

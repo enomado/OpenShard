@@ -27,11 +27,12 @@ use openshard_client_net::transport::{Dial, enter_world_with};
 use openshard_client_net::view::WorldView;
 use openshard_client_net::walk::{Moved, Walk};
 use openshard_protocol::direction::Facing;
-use openshard_protocol::feedback::Animation;
+use openshard_protocol::feedback::{Animation, NewAnimation};
 use openshard_protocol::gump::GumpId;
 use openshard_protocol::serial::Serial;
 use openshard_protocol::version::ClientVersion;
 use openshard_protocol::world::ResyncRequest;
+use openshard_protocol::world::StepSequence;
 use openshard_uofiles::map::Map;
 use openshard_uofiles::tiledata::TileData;
 
@@ -66,6 +67,42 @@ pub struct Body {
     pub corrected: bool,
 }
 
+/// The movement fact a packet carried across the app boundary.
+///
+/// Ordinary world packets deliberately have no value of this type.  Keeping
+/// this distinct from the latest local [`Body`] prediction prevents a vendor,
+/// speech line, or item update from being mistaken for a player relocation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Movement {
+    /// The shard accepted this locally numbered step and thereby confirmed its
+    /// destination.
+    Ack {
+        sequence: StepSequence,
+        confirmed: openshard_client_net::walk::Predicted,
+    },
+    /// The shard refused a step and supplied the position to use instead.
+    Reject {
+        /// The refused pending step. Subsequent pending steps are invalidated
+        /// by the correction, but this identity records the event's source.
+        sequence: StepSequence,
+        confirmed: openshard_client_net::walk::Predicted,
+    },
+    /// A packet relocated the player independently of the walk handshake.
+    Relocation {
+        confirmed: openshard_client_net::walk::Predicted,
+    },
+}
+
+impl Movement {
+    pub const fn confirmed(self) -> openshard_client_net::walk::Predicted {
+        match self {
+            Self::Ack { confirmed, .. } | Self::Reject { confirmed, .. } | Self::Relocation { confirmed } => {
+                confirmed
+            }
+        }
+    }
+}
+
 /// What the shard thread tells the window.
 #[derive(Clone, Debug)]
 pub enum Update {
@@ -78,16 +115,31 @@ pub enum Update {
         /// Where our own body is drawn. See [`Body`].
         body: Body,
     },
-    /// A decoded server packet. The event-loop thread applies it to its sole
-    /// `WorldView` owner and then rebuilds the presentation projection.
+    /// A decoded server packet that does not change the player's authoritative
+    /// movement state. The event-loop thread applies it to its sole `WorldView`
+    /// owner and then rebuilds the presentation projection.
     Mutation {
         packet: openshard_protocol::server_packet::ServerPacket,
-        body: Body,
+    },
+    /// A decoded packet that changed or confirmed the player's authoritative
+    /// movement state.
+    ///
+    /// Kept distinct from [`Update::Mutation`] so an ordinary packet cannot
+    /// reach the authoritative movement write path by accident.
+    Movement {
+        packet: openshard_protocol::server_packet::ServerPacket,
+        movement: Movement,
     },
     /// A locally accepted walk, before the server acknowledges it.
-    Prediction(Body),
+    Prediction {
+        body: Body,
+        /// The protocol identity later named by `WalkAck`.
+        sequence: StepSequence,
+    },
     /// The server asked one mobile to play a one-shot body animation.
     Animation(Animation),
+    /// The server asked one mobile to play a modern, body-agnostic animation.
+    NewAnimation(NewAnimation),
     /// The connection ended, and why. Nothing further will arrive.
     ///
     /// The window stays open on one of these: a client that vanished when a
@@ -101,11 +153,9 @@ const COMMAND_CAPACITY: usize = 16;
 /// Updates crossing from the shard thread to the application thread.
 ///
 /// A network mutation is a fact in a sequence and is never merged with another
-/// one. A prediction, by contrast, is only the newest answer to "where should
-/// the next frame draw our body?"; while the application is busy, keeping each
-/// older answer turns a delayed redraw into a visible catch-up animation. The
-/// mailbox therefore retains mutation order, while coalescing consecutive
-/// predictions within their own stage.
+/// one.  Local movement events are also ordered: each has a protocol sequence
+/// and starts exactly one visual transition.  Coalescing them would lose the
+/// identity that an acknowledgement must retire.
 ///
 /// The producer asks the platform loop to wake only when this mailbox changes
 /// from idle to non-idle. The loop drains it as one staged batch, rather than
@@ -139,8 +189,6 @@ struct PendingUpdates {
 enum UpdateStage {
     /// Facts whose order is part of their meaning.
     Ordered(VecDeque<Update>),
-    /// A latest-value frame update between two mutation boundaries.
-    Prediction(Body),
 }
 
 impl Updates {
@@ -169,10 +217,6 @@ impl Updates {
             .lock()
             .expect("the update mailbox is not poisoned");
         match update {
-            Update::Prediction(body) => match pending.stages.back_mut() {
-                Some(UpdateStage::Prediction(previous)) => *previous = body,
-                _ => pending.stages.push_back(UpdateStage::Prediction(body)),
-            },
             update => {
                 // Mutations cannot be merged or dropped. Stopping the socket
                 // reader here applies backpressure all the way to TCP instead
@@ -230,7 +274,6 @@ impl Updates {
             .into_iter()
             .flat_map(|stage| match stage {
                 UpdateStage::Ordered(updates) => updates,
-                UpdateStage::Prediction(body) => VecDeque::from([Update::Prediction(body)]),
             })
             .collect()
     }
@@ -335,6 +378,11 @@ impl Link {
     /// Aim at a mobile. See [`Outgoing::Attack`].
     pub fn attack(&self, mobile: Serial) {
         self.send(Command::Outgoing(Outgoing::Attack(mobile)));
+    }
+
+    /// Give up the current combat target. See [`Outgoing::StopAttacking`].
+    pub fn stop_attacking(&self) {
+        self.send(Command::Outgoing(Outgoing::StopAttacking));
     }
 
     /// Announce that the player is leaving.
@@ -518,15 +566,15 @@ async fn play<D: Dial, F: Fn(Update) + Send>(
                 if let openshard_protocol::server_packet::ServerPacket::Animation(animation) = packet {
                     report(Update::Animation(animation));
                 }
+                if let openshard_protocol::server_packet::ServerPacket::NewAnimation(animation) = packet {
+                    report(Update::NewAnimation(animation));
+                }
                 // A correction is worth sending even when the view is unchanged:
                 // the view never held the prediction, so rolling one back moves
                 // the *drawn* body and nothing else.
-                report(Update::Mutation {
-                    packet,
-                    body: Body {
-                        predicted: walk.predicted(),
-                        corrected: folded.corrected,
-                    },
+                report(match folded.movement {
+                    Some(movement) => Update::Movement { packet, movement },
+                    None => Update::Mutation { packet },
                 });
             }
             command = commands.recv() => {
@@ -571,10 +619,15 @@ async fn play<D: Dial, F: Fn(Update) + Send>(
                                 // when the `0x22` says it may. That is the whole
                                 // of the lag compensation: the ack changes
                                 // nothing on screen, and only a refusal does.
-                                report(Update::Prediction(Body {
-                                    predicted: walk.predicted(),
-                                    corrected: false,
-                                }));
+                                report(Update::Prediction {
+                                    body: Body {
+                                        predicted: walk.predicted(),
+                                        corrected: false,
+                                    },
+                                    sequence: walk
+                                        .newest_pending_sequence()
+                                        .expect("an accepted step is pending"),
+                                });
                                 bytes
                             }
                             // A step this end refused on its own: the edge of the
@@ -620,9 +673,9 @@ fn snapshot(view: WorldView, walk: &Walk, corrected: bool) -> Update {
 /// Two answers rather than one because they are independent — a `0x21` that
 /// rolls the body back to where the *view* already had it changes nothing in the
 /// view and everything on screen.
-struct Folded {
-    /// The server put the body somewhere: whatever was predicted is void.
-    corrected: bool,
+pub(crate) struct Folded {
+    /// The authoritative movement fact, if this packet contained one.
+    pub(crate) movement: Option<Movement>,
 }
 
 /// One packet into both records of where we are, answering whether anything
@@ -635,28 +688,51 @@ struct Folded {
 /// rollback to what the server says, and the view has no arm for either. Fold
 /// only one of the two and the client's own body stands still while everyone
 /// else moves around it.
-fn fold(
+pub(crate) fn fold(
     walk: &mut Walk,
     packet: &openshard_protocol::server_packet::ServerPacket,
 ) -> Result<Folded, openshard_client_net::walk::UnexpectedAck> {
-    let mut corrected = false;
-    match walk.on_packet(packet)? {
-        Moved::Stepped { .. } => {}
-        Moved::Snapped { .. } => {
-            corrected = true;
+    let movement = match walk.on_packet(packet)? {
+        Moved::Stepped { position, facing, .. } => {
+            let openshard_protocol::server_packet::ServerPacket::WalkAck(ack) = packet else {
+                unreachable!("only a WalkAck can confirm a pending step");
+            };
+            Some(Movement::Ack {
+                sequence: ack.sequence,
+                confirmed: openshard_client_net::walk::Predicted { position, facing },
+            })
         }
-        Moved::Idle => {}
-    }
-    Ok(Folded { corrected })
+        Moved::Snapped { position, facing } => {
+            let confirmed = openshard_client_net::walk::Predicted { position, facing };
+            Some(match packet {
+                openshard_protocol::server_packet::ServerPacket::WalkReject(reject) => Movement::Reject {
+                    sequence: reject.sequence,
+                    confirmed,
+                },
+                openshard_protocol::server_packet::ServerPacket::PlayerUpdate(_)
+                | openshard_protocol::server_packet::ServerPacket::PlayerStart(_) => {
+                    Movement::Relocation { confirmed }
+                }
+                _ => unreachable!("only a relocation packet can snap Walk"),
+            })
+        }
+        Moved::Idle => None,
+    };
+    Ok(Folded { movement })
 }
 
 #[cfg(test)]
 mod tests {
+    use openshard_protocol::containers::{
+        AddToContainer, ContainedItem, ContainerContents, GridSlot, OpenContainer,
+    };
     use openshard_protocol::direction::Direction;
+    use openshard_protocol::gump::GumpPoint;
     use openshard_protocol::mobile::Notoriety;
     use openshard_protocol::serial::Serial;
     use openshard_protocol::server_packet::ServerPacket;
-    use openshard_protocol::wire::Graphic;
+    use openshard_protocol::vendor::{BuyList, SellList};
+    use openshard_protocol::wire::{Graphic, Hue};
     use openshard_protocol::world::{MapSize, PlayerStart, Point, StepSequence, WalkAck, WalkReject};
 
     use super::*;
@@ -675,17 +751,20 @@ mod tests {
     }
 
     fn prediction(x: u16) -> Update {
-        Update::Prediction(Body {
-            predicted: openshard_client_net::walk::Predicted {
-                position: Point::new(x, 100, 0),
-                facing: Facing::walking(Direction::East),
+        Update::Prediction {
+            body: Body {
+                predicted: openshard_client_net::walk::Predicted {
+                    position: Point::new(x, 100, 0),
+                    facing: Facing::walking(Direction::East),
+                },
+                corrected: false,
             },
-            corrected: false,
-        })
+            sequence: StepSequence(x as u8),
+        }
     }
 
     #[test]
-    fn a_busy_frame_keeps_only_its_newest_prediction() {
+    fn a_busy_frame_keeps_each_numbered_prediction() {
         let updates = Updates::new();
         assert!(
             updates.publish(prediction(101)),
@@ -697,10 +776,14 @@ mod tests {
         );
 
         let staged = updates.take();
-        let [Update::Prediction(body)] = staged.as_slice() else {
-            panic!("one latest prediction should remain");
-        };
-        assert_eq!(body.predicted.position, Point::new(102, 100, 0));
+        assert!(matches!(
+            staged.as_slice(),
+            [
+                Update::Prediction { body: first, sequence: StepSequence(101) },
+                Update::Prediction { body: second, sequence: StepSequence(102) },
+            ] if first.predicted.position == Point::new(101, 100, 0)
+                && second.predicted.position == Point::new(102, 100, 0)
+        ));
         assert!(
             updates.publish(prediction(103)),
             "a drained mailbox needs a new wake-up"
@@ -717,7 +800,7 @@ mod tests {
         let staged = updates.take();
         assert!(matches!(&staged[0], Update::Lost(reason) if reason == "before"));
         assert!(
-            matches!(&staged[1], Update::Prediction(body) if body.predicted.position == Point::new(101, 100, 0))
+            matches!(&staged[1], Update::Prediction { body, .. } if body.predicted.position == Point::new(101, 100, 0))
         );
         assert!(matches!(&staged[2], Update::Lost(reason) if reason == "after"));
     }
@@ -802,18 +885,15 @@ mod tests {
     }
 
     /// A slow or occluded window must not turn an active socket into an
-    /// unbounded queue. Packets retain their order, while the transient walk
-    /// picture is reduced to the one position the first redraw can actually
-    /// show once the window becomes available again.
+    /// unbounded queue.  Numbered movement events retain their order and are
+    /// consequently covered by the same backpressure as packets.
     #[test]
-    fn a_stalled_window_bounds_packets_and_collapses_walk_predictions() {
+    fn a_stalled_window_bounds_numbered_walk_predictions() {
         let updates = Updates::new();
-        for packet in 0..MAX_ORDERED_UPDATES {
+        for packet in 0..MAX_ORDERED_UPDATES - 1 {
             updates.publish(Update::Lost(format!("packet {packet}")));
         }
-        for position in 101..=10_100 {
-            updates.publish(prediction(position));
-        }
+        updates.publish(prediction(101));
 
         let producer = updates.clone();
         let (started_by_producer, started) = std::sync::mpsc::channel();
@@ -838,14 +918,15 @@ mod tests {
         );
 
         let staged = updates.take();
-        assert_eq!(staged.len(), MAX_ORDERED_UPDATES + 1);
-        for (packet, update) in staged.iter().take(MAX_ORDERED_UPDATES).enumerate() {
+        assert_eq!(staged.len(), MAX_ORDERED_UPDATES);
+        for (packet, update) in staged.iter().take(MAX_ORDERED_UPDATES - 1).enumerate() {
             assert!(matches!(update, Update::Lost(reason) if reason == &format!("packet {packet}")));
         }
-        let Some(Update::Prediction(body)) = staged.last() else {
-            panic!("only the newest walk picture survives the stall");
+        let Some(Update::Prediction { body, sequence }) = staged.last() else {
+            panic!("the numbered walk remains ordered with packets");
         };
-        assert_eq!(body.predicted.position, Point::new(10_100, 100, 0));
+        assert_eq!(body.predicted.position, Point::new(101, 100, 0));
+        assert_eq!(*sequence, StepSequence(101));
 
         assert!(
             finished
@@ -892,8 +973,15 @@ mod tests {
         });
         let folded = fold(&mut walk, &ack).unwrap();
         view.apply(&ack);
-        view.player_stepped(walk.predicted().position, walk.predicted().facing);
-        assert!(!folded.corrected, "an allowed step is not a rollback");
+        let confirmed = folded
+            .movement
+            .expect("an acknowledgement is movement")
+            .confirmed();
+        view.player_stepped(confirmed.position, confirmed.facing);
+        assert!(
+            matches!(folded.movement, Some(Movement::Ack { .. })),
+            "an allowed step is not a rollback"
+        );
         assert_eq!(view.player.position, Point::new(100, 99, 0));
     }
 
@@ -911,16 +999,61 @@ mod tests {
         });
         let folded = fold(&mut walk, &reject).unwrap();
         view.apply(&reject);
+        assert!(matches!(
+            folded.movement,
+            Some(Movement::Reject {
+                sequence: StepSequence(0),
+                ..
+            })
+        ));
         assert_eq!(view.player.position, Point::new(100, 100, 0));
-        assert!(
-            folded.corrected,
-            "and the drawn body has to be told, or it stays a tile ahead for ever"
-        );
         assert_eq!(
             walk.predicted().position,
             Point::new(100, 100, 0),
             "and the prediction is thrown away with it"
         );
+    }
+
+    #[test]
+    fn vendor_and_container_packets_are_not_movement_events() {
+        let (_, mut walk) = entered();
+        walk.step(Facing::walking(Direction::East), |_, _| None).unwrap();
+        let predicted_before = walk.predicted();
+        let container = Serial::new(0x4000_0001).unwrap();
+        let vendor = Serial::new(0x0000_002A).unwrap();
+        let item = ContainedItem {
+            serial: Serial::new(0x4000_0002).unwrap(),
+            graphic: Graphic(0x0EED),
+            amount: 1,
+            at: GumpPoint { x: 20, y: 30 },
+            grid: GridSlot(0),
+            hue: Hue::NONE,
+        };
+        let packets = [
+            ServerPacket::OpenContainer(OpenContainer {
+                container,
+                gump: Graphic(0x003C),
+            }),
+            ServerPacket::AddToContainer(AddToContainer { item, container }),
+            ServerPacket::ContainerContents(ContainerContents {
+                container: Some(container),
+                items: vec![item],
+            }),
+            ServerPacket::BuyList(BuyList {
+                container,
+                lines: Vec::new(),
+            }),
+            ServerPacket::SellList(SellList {
+                vendor,
+                lines: Vec::new(),
+            }),
+        ];
+
+        for packet in packets {
+            let folded = fold(&mut walk, &packet).expect("vendor traffic cannot desync walking");
+            assert!(folded.movement.is_none(), "{packet:?} is not movement");
+            assert_eq!(walk.predicted(), predicted_before);
+        }
     }
 
     /// The whole of the lag compensation, stated once: what is drawn is the

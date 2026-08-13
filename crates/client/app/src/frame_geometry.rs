@@ -55,7 +55,8 @@ pub(crate) struct FrameGeometry {
     pub(crate) select_quads: Vec<SpriteQuad>,
     /// The silhouette the hover ring is grown from.
     pub(crate) outline_quads: Vec<SpriteQuad>,
-    /// The same, for what a click is holding.
+    /// The same, for the server-confirmed combat target or what a click is
+    /// holding when no target is active.
     pub(crate) held_item_outline: Vec<SpriteQuad>,
     /// The creature silhouette the hover ring is grown from.
     pub(crate) mobile_outline: Vec<SpriteQuad>,
@@ -70,14 +71,28 @@ pub(crate) struct FrameGeometry {
 }
 
 impl FrameGeometry {
-    /// LOD 0 land excluding blocks that a ready deferred cache entry owns.
     /// The source map still assembled these quads for picking and for a cache
     /// miss; this is only the final draw list.
     pub(crate) fn detail_ground(&self, cached: &BTreeSet<MapBlock>) -> Vec<ground::GroundQuad> {
         self.quads
             .iter()
             .copied()
-            .filter(|quad| !cached.contains(&MapBlock::containing_tile(quad.place.x, quad.place.y)))
+            .filter(|quad| {
+                let block = MapBlock::containing_tile(quad.place.x, quad.place.y);
+                // The cached image owns an expanded rectangle, but its capture
+                // deliberately discards pixels whose G-buffer position belongs
+                // to a neighbouring block. Keep one detailed ground-tile rim
+                // beneath every cached block: the deferred restore overwrites
+                // it where its cache texel is valid, and it fills any ownership
+                // or downsampling seam instead of exposing a large block gap.
+                !cached.contains(&block)
+                    || quad.place.x % openshard_uofiles::map::BLOCK_SIZE as u16 == 0
+                    || quad.place.x % openshard_uofiles::map::BLOCK_SIZE as u16
+                        == openshard_uofiles::map::BLOCK_SIZE as u16 - 1
+                    || quad.place.y % openshard_uofiles::map::BLOCK_SIZE as u16 == 0
+                    || quad.place.y % openshard_uofiles::map::BLOCK_SIZE as u16
+                        == openshard_uofiles::map::BLOCK_SIZE as u16 - 1
+            })
             .collect()
     }
 
@@ -148,6 +163,11 @@ pub(crate) fn assemble_geometry(
     // handed an empty list.
     let hued = graphics.highlight_style.hues().then_some(lit_item).flatten();
     let ringed = graphics.highlight_style.rings().then_some(lit_item).flatten();
+    // The local body may be half way through a predicted transition while its
+    // renderer-facing `Mobile` is rebuilt from an unrelated world packet.
+    // Keep every movement endpoint for this frame in the motion snapshot;
+    // `Mobile` contributes only appearance and its already-projected offset.
+    let motion = world.motion.render_state();
 
     // The body mask is made before statics are collected. Architecture needs
     // its actual silhouette, not merely the wide rectangle that contains a
@@ -155,7 +175,9 @@ pub(crate) fn assemble_geometry(
     // keeps the rectangle as its separate canopy policy. `None` only when the
     // atlas has not yet grown a frame for this body and group, the same gap
     // `mobiles::head_anchor` has.
-    let player_mask = mobiles::opaque_mask(&world.presentation.player, &camera, &window.atlases.mobiles);
+    let player_mask = (!graphics.body_overlap_transparency_disabled)
+        .then(|| mobiles::opaque_mask(&world.presentation.player, &camera, &window.atlases.mobiles))
+        .flatten();
     let player_rect = player_mask
         .as_ref()
         .map(openshard_client_render::mobiles::OpaqueMask::rect);
@@ -196,9 +218,9 @@ pub(crate) fn assemble_geometry(
         // sprite is *actually* drawn this instant, past `at`'s tile, so the
         // pool glides with the walk instead of jumping once a step.
         carried: graphics.lantern.then_some((
-            world.presentation.player.at,
+            motion.rendered.position,
             mobiles::walked_offset(&world.presentation.player),
-            world.presentation.player.facing,
+            motion.rendered.facing.direction,
         )),
         tuning,
         flame_time: world.presentation.flame_clock.as_secs_f32(),
@@ -383,8 +405,8 @@ pub(crate) struct FrameFacts {
     /// The item the cursor is over, indexing `self.world.presentation.items` — the
     /// unfiltered form of [`Pick::item`], for the same reason.
     pub(crate) on_item: Option<openshard_client_render::items::ItemIndex>,
-    /// What a click is holding, turned back into an index into
-    /// `drawn_mobiles`.
+    /// The server-confirmed combat target, or what a click is holding when no
+    /// target is active, turned back into an index into `drawn_mobiles`.
     pub(crate) held_mobile: Option<openshard_client_render::mobiles::MobileIndex>,
     /// What a click is holding, turned back into an index into
     /// `self.world.presentation.item_serials`.

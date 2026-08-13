@@ -63,7 +63,10 @@ impl ApplicationHandler<()> for App {
             return;
         }
         match self.create_window(event_loop) {
-            Ok(window) => self.window = Some(window),
+            Ok(window) => {
+                self.window = Some(window);
+                self.begin_opening_scenario();
+            }
             Err(error) => {
                 eprintln!("{error}");
                 event_loop.exit();
@@ -190,11 +193,12 @@ impl ApplicationHandler<()> for App {
                             let guide = terrain(&self.resources);
                             let opened = cluttered_with_doors_open(&self.world, &self.resources);
                             let cluttered = cluttered(&self.world, &self.resources);
+                            let motion = self.world.motion.planning_state();
                             self.steer.press(
                                 direction,
-                                self.world.presentation.player.at,
+                                motion.position,
                                 Instant::now(),
-                                self.world.presentation.player.facing,
+                                motion.facing.direction,
                                 steer::Ground {
                                     real: &cluttered,
                                     through_doors: &opened,
@@ -688,12 +692,11 @@ impl ApplicationHandler<()> for App {
                 guide: &guide,
                 coarse: self.resources.coarse.as_ref(),
             };
-            let Some(facing) = self.steer.due(
-                now,
-                self.world.presentation.player.at,
-                self.world.presentation.player.facing,
-                ground,
-            ) else {
+            let motion = self.world.motion.planning_state();
+            let Some(facing) = self
+                .steer
+                .due(now, motion.position, motion.facing.direction, ground)
+            else {
                 break;
             };
             moved |= self.walk(facing);
