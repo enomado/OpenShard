@@ -17,8 +17,8 @@ use openshard_protocol::serial::Serial;
 use openshard_protocol::wire::Graphic;
 use openshard_skills::SkillBand;
 use openshard_state::components::{
-    BehaviourBuff, BehaviourBuffKind, BehaviourBuffs, Frozen, Hitpoints, Mana, Meditating, Stamina, StatMod,
-    StatMods, Stats, stat_shift,
+    BehaviourBuff, BehaviourBuffKind, BehaviourBuffs, Frozen, Hitpoints, Mana, Meditating, Stamina,
+    StatEffectKind, StatMod, StatMods, Stats, stat_shift,
 };
 use openshard_state::{Skill, TICKS_PER_SECOND, WorldState};
 
@@ -254,7 +254,7 @@ fn apply_delta(value: u16, delta: i16) -> u16 {
 /// Strength moves the hit-points cap, intelligence the mana cap, and dexterity
 /// the stamina cap. A shrinking maximum clamps the current pool down with it; a
 /// growing one leaves the current where it is, to be healed or regenerated into.
-fn shift_stats(state: &mut WorldState, entity: EntityId, kind: u8, offset: i16) {
+fn shift_stats(state: &mut WorldState, entity: EntityId, kind: StatEffectKind, offset: i16) {
     let (ds, dd, di) = stat_shift(kind, offset);
     if let Some(&Stats {
         strength,
@@ -316,7 +316,13 @@ fn shift_stats(state: &mut WorldState, entity: EntityId, kind: u8, offset: i16) 
 /// backed out cleanly, then the new one applied, so a Bless recast never stacks a
 /// second bonus. The shift folds into the live [`Stats`] at once; the ledger entry
 /// remembers how to give it back.
-pub fn apply_stat_buff(state: &mut WorldState, serial: Serial, kind: u8, offset: i16, expires_at: u64) {
+pub fn apply_stat_buff(
+    state: &mut WorldState,
+    serial: Serial,
+    kind: StatEffectKind,
+    offset: i16,
+    expires_at: u64,
+) {
     let Some(entity) = state.registry.entity_of(serial) else {
         return;
     };

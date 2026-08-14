@@ -102,10 +102,10 @@ pub enum SpellEffect {
     AreaCure,
     /// Move the caster to the targeted spot.
     Teleport,
-    /// A timed stat modifier — the Bless/Curse family. The `u8` is the effect
-    /// kind ([`openshard_state::effect`]); its magnitude and duration scale from
-    /// the caster's Magery when it lands.
-    StatMod(u8),
+    /// A timed stat modifier — the Bless/Curse family. Its kind is constrained
+    /// to the valid stat-effect tags; magnitude and duration scale from the
+    /// caster's Magery when it lands.
+    StatMod(StatEffectKind),
     /// Bring the targeted ghost back to life — Resurrection. The core runs it off
     /// the ghost slice: lifts the `Ghost` state, restores the living body, and
     /// hands back a fraction of the target's hit points. A no-op on the living.
@@ -161,7 +161,7 @@ use SpellEffect::{
 };
 use SpellTarget::{Item, Location, Mobile, SelfCast};
 use openshard_protocol::wire::Graphic;
-use openshard_state::effect;
+use openshard_state::components::StatEffectKind;
 
 /// One table entry, kept terse so all 64 read at a glance.
 const fn spell(
@@ -193,7 +193,7 @@ pub static MAGERY: [SpellInfo; 64] = [
         1,
         &[BLOOD_MOSS, NIGHTSHADE],
         Mobile,
-        StatMod(effect::CLUMSY),
+        StatMod(StatEffectKind::CLUMSY),
     ),
     spell(
         "Create Food",
@@ -207,7 +207,7 @@ pub static MAGERY: [SpellInfo; 64] = [
         1,
         &[GINSENG, NIGHTSHADE],
         Mobile,
-        StatMod(effect::FEEBLEMIND),
+        StatMod(StatEffectKind::FEEBLEMIND),
     ),
     spell("Heal", 1, &[GARLIC, GINSENG, SPIDERS_SILK], Mobile, Heal(15)),
     spell("Magic Arrow", 1, &[SULFUROUS_ASH], Mobile, Damage(Fire, 6)),
@@ -230,7 +230,7 @@ pub static MAGERY: [SpellInfo; 64] = [
         1,
         &[GARLIC, NIGHTSHADE],
         Mobile,
-        StatMod(effect::WEAKEN),
+        StatMod(StatEffectKind::WEAKEN),
     ),
     // -- Second circle -------------------------------------------------------
     spell(
@@ -238,14 +238,14 @@ pub static MAGERY: [SpellInfo; 64] = [
         2,
         &[BLOOD_MOSS, MANDRAKE_ROOT],
         Mobile,
-        StatMod(effect::AGILITY),
+        StatMod(StatEffectKind::AGILITY),
     ),
     spell(
         "Cunning",
         2,
         &[GINSENG, MANDRAKE_ROOT],
         Mobile,
-        StatMod(effect::CUNNING),
+        StatMod(StatEffectKind::CUNNING),
     ),
     spell("Cure", 2, &[GARLIC, GINSENG], Mobile, Cure),
     spell("Harm", 2, &[NIGHTSHADE, SPIDERS_SILK], Mobile, Damage(Cold, 8)),
@@ -275,7 +275,7 @@ pub static MAGERY: [SpellInfo; 64] = [
         2,
         &[MANDRAKE_ROOT, NIGHTSHADE],
         Mobile,
-        StatMod(effect::STRENGTH),
+        StatMod(StatEffectKind::STRENGTH),
     ),
     // -- Third circle --------------------------------------------------------
     spell(
@@ -283,7 +283,7 @@ pub static MAGERY: [SpellInfo; 64] = [
         3,
         &[GARLIC, MANDRAKE_ROOT],
         Mobile,
-        StatMod(effect::BLESS),
+        StatMod(StatEffectKind::BLESS),
     ),
     spell("Fireball", 3, &[BLACK_PEARL], Mobile, Damage(Fire, 12)),
     spell(
@@ -324,7 +324,7 @@ pub static MAGERY: [SpellInfo; 64] = [
         4,
         &[GARLIC, NIGHTSHADE, SPIDERS_SILK],
         Mobile,
-        StatMod(effect::CURSE),
+        StatMod(StatEffectKind::CURSE),
     ),
     spell(
         "Fire Field",

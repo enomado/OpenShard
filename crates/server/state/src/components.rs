@@ -770,6 +770,40 @@ pub mod effect {
     pub const PARALYZE: u8 = 13;
 }
 
+/// Valid kinds for a live stat modifier. Persistence keeps the raw tag and
+/// uses `from_u8` at its boundary.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct StatEffectKind(u8);
+
+impl StatEffectKind {
+    pub const STRENGTH: Self = Self(effect::STRENGTH);
+    pub const AGILITY: Self = Self(effect::AGILITY);
+    pub const CUNNING: Self = Self(effect::CUNNING);
+    pub const BLESS: Self = Self(effect::BLESS);
+    pub const WEAKEN: Self = Self(effect::WEAKEN);
+    pub const CLUMSY: Self = Self(effect::CLUMSY);
+    pub const FEEBLEMIND: Self = Self(effect::FEEBLEMIND);
+    pub const CURSE: Self = Self(effect::CURSE);
+    #[must_use]
+    pub const fn as_u8(self) -> u8 {
+        self.0
+    }
+    #[must_use]
+    pub const fn from_u8(value: u8) -> Option<Self> {
+        match value {
+            effect::STRENGTH
+            | effect::AGILITY
+            | effect::CUNNING
+            | effect::BLESS
+            | effect::WEAKEN
+            | effect::CLUMSY
+            | effect::FEEBLEMIND
+            | effect::CURSE => Some(Self(value)),
+            _ => None,
+        }
+    }
+}
+
 /// The kind of a timed magical buff that changes behaviour rather than stats.
 ///
 /// Its raw value is stable in saved effect records, but live code must not mix
@@ -807,9 +841,9 @@ impl BehaviourBuffKind {
 /// `offset` — so the same function undoes a buff by being called with the offset
 /// negated, which is exactly how [`StatMod`] reversal works.
 #[must_use]
-pub fn stat_shift(kind: u8, offset: i16) -> (i16, i16, i16) {
+pub fn stat_shift(kind: StatEffectKind, offset: i16) -> (i16, i16, i16) {
     use effect::*;
-    match kind {
+    match kind.as_u8() {
         STRENGTH | WEAKEN => (offset, 0, 0),
         AGILITY | CLUMSY => (0, offset, 0),
         CUNNING | FEEBLEMIND => (0, 0, offset),
@@ -821,9 +855,9 @@ pub fn stat_shift(kind: u8, offset: i16) -> (i16, i16, i16) {
 /// Whether an effect kind lowers a stat rather than raising it — the sign the
 /// caster gives its magnitude.
 #[must_use]
-pub fn is_debuff(kind: u8) -> bool {
+pub fn is_debuff(kind: StatEffectKind) -> bool {
     use effect::*;
-    matches!(kind, WEAKEN | CLUMSY | FEEBLEMIND | CURSE)
+    matches!(kind.as_u8(), WEAKEN | CLUMSY | FEEBLEMIND | CURSE)
 }
 
 /// One timed stat modifier: which effect, how much, and the tick it lifts.
@@ -834,7 +868,7 @@ pub fn is_debuff(kind: u8) -> bool {
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct StatMod {
     /// Which effect — an [`effect`] kind (Strength..Curse).
-    pub kind: u8,
+    pub kind: StatEffectKind,
     /// The signed magnitude applied to each stat the kind selects.
     pub offset: i16,
     /// The tick it wears off.

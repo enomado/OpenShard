@@ -528,7 +528,7 @@ impl World {
     /// `+10` at grandmaster, the duration to a couple of minutes. A debuff kind
     /// takes the same magnitude with the sign flipped — the negation the `magic`
     /// crate then folds in and, later, backs out.
-    fn stat_buff_terms(&self, caster: EntityId, kind: u8) -> (i16, u64) {
+    fn stat_buff_terms(&self, caster: EntityId, kind: openshard_state::StatEffectKind) -> (i16, u64) {
         let magery = self
             .state
             .registry

@@ -676,7 +676,7 @@ impl World {
         if let Some(mods) = registry.get::<StatMods>(entity) {
             for m in &mods.active {
                 effects.push(EffectRecord {
-                    kind: m.kind,
+                    kind: m.kind.as_u8(),
                     amount: m.offset,
                     remaining: m.expires_at.saturating_sub(now).min(u64::from(u16::MAX)) as u16,
                 });
@@ -733,19 +733,9 @@ impl World {
                         pulses_left: record.remaining.min(u16::from(u8::MAX)) as u8,
                     },
                 );
-            } else if matches!(
-                record.kind,
-                effect::STRENGTH
-                    | effect::AGILITY
-                    | effect::CUNNING
-                    | effect::BLESS
-                    | effect::WEAKEN
-                    | effect::CLUMSY
-                    | effect::FEEBLEMIND
-                    | effect::CURSE
-            ) {
+            } else if let Some(kind) = openshard_state::StatEffectKind::from_u8(record.kind) {
                 mods.active.push(StatMod {
-                    kind: record.kind,
+                    kind,
                     offset: record.amount,
                     expires_at: now + u64::from(record.remaining),
                 });

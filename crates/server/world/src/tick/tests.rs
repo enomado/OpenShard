@@ -5156,8 +5156,8 @@ fn a_poisoned_creature_comes_back_poisoned() {
 
 #[test]
 fn a_stat_buff_shifts_stats_and_pools_then_expires() {
+    use openshard_state::components::StatEffectKind;
     use openshard_state::components::{Mana, StatMods, Stats};
-    use openshard_state::effect;
     let now = Instant::now();
     let mut world = world();
     let connection = enter(&mut world, now);
@@ -5170,7 +5170,7 @@ fn a_stat_buff_shifts_stats_and_pools_then_expires() {
 
     // Bless folds into the live stats and the caps that hang off them at once.
     let expires_at = world.state.ticks + 100;
-    magic::apply_stat_buff(&mut world.state, serial, effect::BLESS, 10, expires_at);
+    magic::apply_stat_buff(&mut world.state, serial, StatEffectKind::BLESS, 10, expires_at);
     let blessed = *world.registry().get::<Stats>(entity).unwrap();
     assert_eq!(blessed.strength, base.strength + 10, "str rose");
     assert_eq!(blessed.dexterity, base.dexterity + 10, "dex rose");
@@ -5210,8 +5210,8 @@ fn a_stat_buff_shifts_stats_and_pools_then_expires() {
 
 #[test]
 fn recasting_a_buff_refreshes_rather_than_stacks() {
+    use openshard_state::components::StatEffectKind;
     use openshard_state::components::{StatMods, Stats};
-    use openshard_state::effect;
     let now = Instant::now();
     let mut world = world();
     let connection = enter(&mut world, now);
@@ -5220,8 +5220,8 @@ fn recasting_a_buff_refreshes_rather_than_stacks() {
     let base = *world.registry().get::<Stats>(entity).unwrap();
 
     let at = world.state.ticks;
-    magic::apply_stat_buff(&mut world.state, serial, effect::STRENGTH, 5, at + 100);
-    magic::apply_stat_buff(&mut world.state, serial, effect::STRENGTH, 5, at + 200);
+    magic::apply_stat_buff(&mut world.state, serial, StatEffectKind::STRENGTH, 5, at + 100);
+    magic::apply_stat_buff(&mut world.state, serial, StatEffectKind::STRENGTH, 5, at + 200);
 
     assert_eq!(
         world.registry().get::<Stats>(entity).unwrap().strength,
@@ -5237,7 +5237,7 @@ fn recasting_a_buff_refreshes_rather_than_stacks() {
 
 #[test]
 fn a_debuff_clamps_the_current_pool_to_the_lowered_cap() {
-    use openshard_state::effect;
+    use openshard_state::components::StatEffectKind;
     let now = Instant::now();
     let mut world = world();
     let connection = enter(&mut world, now);
@@ -5248,7 +5248,7 @@ fn a_debuff_clamps_the_current_pool_to_the_lowered_cap() {
     // Curse lowers strength, so the hit-point cap drops; a full bar must follow it
     // down rather than sit above the new maximum.
     let at = world.state.ticks;
-    magic::apply_stat_buff(&mut world.state, serial, effect::CURSE, -10, at + 100);
+    magic::apply_stat_buff(&mut world.state, serial, StatEffectKind::CURSE, -10, at + 100);
     let hits = *world.registry().get::<Hitpoints>(entity).unwrap();
     assert_eq!(hits.max, full - 10, "the cap dropped");
     assert_eq!(hits.current, full - 10, "and the full bar dropped with it");
@@ -5260,6 +5260,7 @@ fn a_stat_buff_survives_a_relogin() {
     // character (its shift folded into the saved stats, its timer on the effects
     // list) and comes back on relog — still buffed, and still counting down to the
     // same base it would have returned to.
+    use openshard_state::components::StatEffectKind;
     use openshard_state::components::{StatMods, Stats};
     use openshard_state::effect;
     let now = Instant::now();
@@ -5270,7 +5271,7 @@ fn a_stat_buff_survives_a_relogin() {
     let base = *world.registry().get::<Stats>(entity).unwrap();
 
     let at = world.state.ticks;
-    magic::apply_stat_buff(&mut world.state, serial, effect::BLESS, 10, at + 100);
+    magic::apply_stat_buff(&mut world.state, serial, StatEffectKind::BLESS, 10, at + 100);
     let buffed = *world.registry().get::<Stats>(entity).unwrap();
 
     world.take_snapshot();
