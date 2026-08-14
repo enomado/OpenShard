@@ -15,6 +15,7 @@
 
 use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet};
+use std::time::{Duration, Instant};
 
 use openshard_uofiles::map::BLOCK_SIZE;
 
@@ -1707,20 +1708,40 @@ pub struct CompositeRenderer {
     quad: wgpu::Buffer,
     instances: wgpu::Buffer,
     capacity: u64,
-    /// One immutable binding pair per deferred group encoded into the current
-    /// submission.  The cursor resets only after the caller submitted the
-    /// preceding frame, never between groups in that frame.
+    /// One immutable binding pair per deferred call encoded into the current
+    /// submission. Source-depth adjustment is per instance, so the camera
+    /// needs one call for all source depths; separate calls still cannot share
+    /// a buffer before the encoder has been submitted.
     deferred_batches: Vec<DeferredBatch>,
     deferred_batch_cursor: usize,
+    deferred_bindings_created: usize,
+    deferred_bindings_reused: usize,
+    deferred_cpu: DeferredCpuCosts,
     sampler: wgpu::Sampler,
 }
 
-/// Buffers owned by one deferred depth-base group in one encoded frame.
+/// CPU time spent in the deferred composite restore itself.
+///
+/// This intentionally splits command recording from the surrounding world
+/// pass: cached terrain may use a multi-attachment pass, so a high aggregate
+/// `encode_composites` needs to say whether uploads, binding work, or wgpu pass
+/// encoding is responsible before its representation is changed.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct DeferredCpuCosts {
+    pub upload: Duration,
+    pub bindings: Duration,
+    pub pass: Duration,
+}
+
+/// Buffers held immutable by one deferred call in an encoded frame.
 #[derive(Debug)]
 struct DeferredBatch {
     viewport: wgpu::Buffer,
     instances: wgpu::Buffer,
     capacity: u64,
+    /// Bind groups retain their source textures. Retain only this call's
+    /// visible blocks so an evicted composite image is not kept alive here.
+    bindings: Vec<(CompositeKey, wgpu::BindGroup)>,
 }
 
 fn write_capture_uniform(
@@ -1946,13 +1967,20 @@ impl CompositeRenderer {
                 }],
             }),
             Some(wgpu::VertexBufferLayout {
-                array_stride: 16,
+                array_stride: 20,
                 step_mode: wgpu::VertexStepMode::Instance,
-                attributes: &[wgpu::VertexAttribute {
-                    format: wgpu::VertexFormat::Float32x4,
-                    offset: 0,
-                    shader_location: 1,
-                }],
+                attributes: &[
+                    wgpu::VertexAttribute {
+                        format: wgpu::VertexFormat::Float32x4,
+                        offset: 0,
+                        shader_location: 1,
+                    },
+                    wgpu::VertexAttribute {
+                        format: wgpu::VertexFormat::Float32,
+                        offset: 16,
+                        shader_location: 2,
+                    },
+                ],
             }),
         ];
         let deferred_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -2230,6 +2258,9 @@ impl CompositeRenderer {
             capacity: 1,
             deferred_batches: Vec::new(),
             deferred_batch_cursor: 0,
+            deferred_bindings_created: 0,
+            deferred_bindings_reused: 0,
+            deferred_cpu: DeferredCpuCosts::default(),
             sampler,
         }
     }
@@ -2243,6 +2274,15 @@ impl CompositeRenderer {
         })
     }
 
+    fn deferred_instance_buffer(device: &wgpu::Device, capacity: u64) -> wgpu::Buffer {
+        device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("map block deferred composite instances"),
+            size: capacity * 20,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        })
+    }
+
     fn deferred_batch(device: &wgpu::Device, capacity: u64) -> DeferredBatch {
         DeferredBatch {
             viewport: device.create_buffer(&wgpu::BufferDescriptor {
@@ -2251,19 +2291,28 @@ impl CompositeRenderer {
                 usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
             }),
-            instances: Self::instance_buffer(device, capacity),
+            instances: Self::deferred_instance_buffer(device, capacity),
             capacity,
+            bindings: Vec::new(),
         }
     }
 
     /// Start recording a fresh camera frame.
-    ///
-    /// The caller invokes this before its first [`Self::render_deferred`] call
-    /// for a command encoder.  Each subsequent deferred group receives a
-    /// distinct slot, so queue writes cannot replace a prior group's data
-    /// before that encoder is submitted.
     pub fn begin_frame(&mut self) {
         self.deferred_batch_cursor = 0;
+        self.deferred_bindings_created = 0;
+        self.deferred_bindings_reused = 0;
+        self.deferred_cpu = DeferredCpuCosts::default();
+    }
+
+    /// Bindings created and reused by deferred restoration in this frame.
+    pub const fn deferred_binding_stats(&self) -> (usize, usize) {
+        (self.deferred_bindings_created, self.deferred_bindings_reused)
+    }
+
+    /// Per-frame CPU cost of the deferred composite restore.
+    pub const fn deferred_cpu_costs(&self) -> DeferredCpuCosts {
+        self.deferred_cpu
     }
 
     fn next_deferred_batch(&mut self, device: &wgpu::Device, instances: u64) -> usize {
@@ -2375,6 +2424,35 @@ impl CompositeRenderer {
         depth_adjust: f32,
         blocks: &[CompositeQuad<'_>],
     ) {
+        self.render_deferred_with(device, queue, encoder, target, blocks, |_| depth_adjust);
+    }
+
+    /// Restore blocks captured from potentially different source eyes in one
+    /// deferred batch. The correction is serialized into each instance, so
+    /// callers avoid one command-encoding group per source depth base.
+    pub fn render_deferred_rebased(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        encoder: &mut wgpu::CommandEncoder,
+        target: crate::renderer::Target<'_>,
+        current_depth_base: i32,
+        blocks: &[CompositeQuad<'_>],
+    ) {
+        self.render_deferred_with(device, queue, encoder, target, blocks, |block| {
+            crate::depth::rebase_adjust(block.texture.depth_base(), current_depth_base)
+        });
+    }
+
+    fn render_deferred_with(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        encoder: &mut wgpu::CommandEncoder,
+        target: crate::renderer::Target<'_>,
+        blocks: &[CompositeQuad<'_>],
+        depth_adjust: impl Fn(&CompositeQuad<'_>) -> f32,
+    ) {
         let blocks: Vec<_> = blocks
             .iter()
             .filter(|block| block.texture.deferred_views().is_some())
@@ -2382,35 +2460,46 @@ impl CompositeRenderer {
         if blocks.is_empty() {
             return;
         }
+        let upload_started = Instant::now();
         let mut viewport = Vec::with_capacity(16);
-        for value in [target.width as f32, target.height as f32, depth_adjust, 0.0] {
+        for value in [target.width as f32, target.height as f32, 0.0, 0.0] {
             viewport.extend_from_slice(&value.to_le_bytes());
         }
-        // One camera frame can restore groups captured with several source
-        // depth bases.  Each group needs its own depth adjustment, and
-        // `Queue::write_buffer` applies every write made before a submit ahead
-        // of every encoder command in that submit.  Reusing `self.viewport` or
-        // `self.instances` here would consequently make each earlier group
-        // read the *last* group's rectangle and depth adjustment.  That looks
-        // exactly like old sprites slowly being rewritten as the camera pans.
-        //
-        // Keep the colour-only renderer's reusable buffers above; deferred
-        // groups take distinct per-frame slots so their binding state remains
-        // immutable until this encoder has been submitted.
+        // A source block's depth base differs from its neighbours'.  The old
+        // path split those bases into calls because this adjustment lived in a
+        // uniform, creating one queue write per group.  It now travels in the
+        // block's instance row, so one call can restore every ready block.
+        // The batch itself remains distinct per call: queue writes made before
+        // one submit are visible to all commands in it, which is the artifact
+        // this isolation was introduced to prevent.
         let batch_index = self.next_deferred_batch(device, blocks.len() as u64);
         let batch = &self.deferred_batches[batch_index];
         queue.write_buffer(&batch.viewport, 0, &viewport);
-        let mut instances = Vec::with_capacity(blocks.len() * 16);
+        let mut instances = Vec::with_capacity(blocks.len() * 20);
         for block in &blocks {
             for value in [block.rect.x, block.rect.y, block.rect.width, block.rect.height] {
                 instances.extend_from_slice(&value.to_le_bytes());
             }
+            instances.extend_from_slice(&depth_adjust(block).to_le_bytes());
         }
         queue.write_buffer(&batch.instances, 0, &instances);
-        let bind_groups: Vec<_> = blocks
-            .iter()
-            .map(|block| {
-                let (ids, position, normal, depth) = block.texture.deferred_views().expect("filtered above");
+        self.deferred_cpu.upload += upload_started.elapsed();
+        let bindings_started = Instant::now();
+        let batch = &mut self.deferred_batches[batch_index];
+        batch
+            .bindings
+            .retain(|(key, _)| blocks.iter().any(|block| block.texture.key() == *key));
+        let mut bindings_created = 0;
+        let mut bindings_reused = 0;
+        for block in &blocks {
+            if batch.bindings.iter().any(|(key, _)| *key == block.texture.key()) {
+                bindings_reused += 1;
+                continue;
+            }
+            bindings_created += 1;
+            let (ids, position, normal, depth) = block.texture.deferred_views().expect("filtered above");
+            batch.bindings.push((
+                block.texture.key(),
                 device.create_bind_group(&wgpu::BindGroupDescriptor {
                     label: Some("map block deferred composite"),
                     layout: &self.deferred_layout,
@@ -2440,9 +2529,11 @@ impl CompositeRenderer {
                             resource: wgpu::BindingResource::TextureView(depth),
                         },
                     ],
-                })
-            })
-            .collect();
+                }),
+            ));
+        }
+        let bindings_cost = bindings_started.elapsed();
+        let pass_started = Instant::now();
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("map block deferred composites"),
             color_attachments: &[
@@ -2498,10 +2589,20 @@ impl CompositeRenderer {
         pass.set_pipeline(&self.deferred_pipeline);
         pass.set_vertex_buffer(0, self.quad.slice(..));
         pass.set_vertex_buffer(1, batch.instances.slice(..));
-        for (index, bind_group) in bind_groups.iter().enumerate() {
+        for (index, block) in blocks.iter().enumerate() {
+            let (_, bind_group) = batch
+                .bindings
+                .iter()
+                .find(|(key, _)| *key == block.texture.key())
+                .expect("every deferred block has a cached binding");
             pass.set_bind_group(0, bind_group, &[]);
             pass.draw(0..4, index as u32..index as u32 + 1);
         }
+        drop(pass);
+        self.deferred_bindings_created += bindings_created;
+        self.deferred_bindings_reused += bindings_reused;
+        self.deferred_cpu.bindings += bindings_cost;
+        self.deferred_cpu.pass += pass_started.elapsed();
     }
 
     /// Capture colour and the three G-buffer planes into one cached texture.
@@ -3047,6 +3148,82 @@ mod tests {
             "a new submitted frame reuses its first deferred binding slot"
         );
 
+        let colors = read_attachment(&device, &queue, &restored);
+        let pixel = |x, y| {
+            let at = ((y * SIZE + x) * 4) as usize;
+            [colors[at], colors[at + 1], colors[at + 2], colors[at + 3]]
+        };
+        assert_eq!(pixel(BLOCK / 2, SIZE / 2), [213, 29, 17, u8::MAX]);
+        assert_eq!(pixel(BLOCK + BLOCK / 2, SIZE / 2), [17, 71, 213, u8::MAX]);
+
+        // The camera path uses one call even when its blocks were captured
+        // from different depth bases.  This is deliberately after the two-call
+        // check above: both the old artifact guard and the coalesced far-zoom
+        // path must remain valid.
+        let mut rebased = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+        composite.begin_frame();
+        composite.render_deferred_rebased(
+            &device,
+            &queue,
+            &mut rebased,
+            target,
+            0,
+            &[
+                CompositeQuad {
+                    texture: left,
+                    rect: Rect {
+                        x: 0.0,
+                        y: 0.0,
+                        width: BLOCK as f32,
+                        height: SIZE as f32,
+                    },
+                },
+                CompositeQuad {
+                    texture: right,
+                    rect: Rect {
+                        x: BLOCK as f32,
+                        y: 0.0,
+                        width: BLOCK as f32,
+                        height: SIZE as f32,
+                    },
+                },
+            ],
+        );
+        queue.submit([rebased.finish()]);
+        assert_eq!(
+            composite.deferred_batches.len(),
+            2,
+            "one rebased call reuses one submitted-frame slot"
+        );
+        assert_eq!(
+            composite.deferred_batches[0].bindings.len(),
+            2,
+            "each visible source has one reusable deferred binding"
+        );
+        let mut trimmed = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+        composite.begin_frame();
+        composite.render_deferred_rebased(
+            &device,
+            &queue,
+            &mut trimmed,
+            target,
+            0,
+            &[CompositeQuad {
+                texture: left,
+                rect: Rect {
+                    x: 0.0,
+                    y: 0.0,
+                    width: BLOCK as f32,
+                    height: SIZE as f32,
+                },
+            }],
+        );
+        queue.submit([trimmed.finish()]);
+        assert_eq!(
+            composite.deferred_batches[0].bindings.len(),
+            1,
+            "a block outside the next frame cannot retain an evictable texture"
+        );
         let colors = read_attachment(&device, &queue, &restored);
         let pixel = |x, y| {
             let at = ((y * SIZE + x) * 4) as usize;

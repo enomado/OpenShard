@@ -12,6 +12,7 @@ use crate::ground::GroundQuad;
 use crate::hue::HueRamp;
 use crate::mesh_face::{MeshFaceRow, MeshFaceVertex};
 use crate::sprite::SpriteQuad;
+use std::time::{Duration, Instant};
 
 /// What an untouched pixel is left as.
 ///
@@ -25,6 +26,15 @@ pub const CLEAR: wgpu::Color = wgpu::Color {
     b: 0.0,
     a: 0.0,
 };
+
+/// CPU work performed by the most recent ground render call.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct GroundCpuCosts {
+    pub uniforms: Duration,
+    pub serialize: Duration,
+    pub upload: Duration,
+    pub pass: Duration,
+}
 
 /// Bytes of the ground pass's uniform block: the target's size, the land
 /// sprite's, the height step, the scale, and the origin — eight floats, which is
@@ -212,6 +222,13 @@ pub struct GroundRenderer {
     /// CPU staging bytes for the instance upload. Reused between frames so a
     /// wide zoom does not allocate several megabytes for every redraw.
     instance_bytes: Vec<u8>,
+    /// Last immutable detail-ground list uploaded through `render_loaded`.
+    /// While the camera and composite ownership stay fixed, the list is
+    /// byte-for-byte identical, so serializing its instance rows again only
+    /// burns CPU. Ordinary `render` invalidates this because it shares the
+    /// destination buffer.
+    loaded_quads: Vec<GroundQuad>,
+    loaded_cache_valid: bool,
     /// The two atlas textures, kept rather than only viewed.
     ///
     /// A view is all a bind group needs, and holding the texture as well is what
@@ -221,6 +238,7 @@ pub struct GroundRenderer {
     /// recreates the pipeline behind it for two sprites' worth of pixels.
     land_texture: wgpu::Texture,
     texmap_texture: wgpu::Texture,
+    last_cpu: GroundCpuCosts,
 }
 
 impl GroundRenderer {
@@ -522,8 +540,11 @@ impl GroundRenderer {
             instances,
             capacity: INITIAL_QUADS,
             instance_bytes: Vec::new(),
+            loaded_quads: Vec::new(),
+            loaded_cache_valid: false,
             land_texture,
             texmap_texture,
+            last_cpu: GroundCpuCosts::default(),
         }
     }
 
@@ -574,6 +595,11 @@ impl GroundRenderer {
         (&self.instances, &self.instance_bytes)
     }
 
+    /// CPU time of the last [`Self::render`] or [`Self::render_loaded`] call.
+    pub const fn last_cpu_costs(&self) -> GroundCpuCosts {
+        self.last_cpu
+    }
+
     /// Draw `quads` into `target`, clearing it first.
     ///
     /// The quads carry viewport coordinates, which the shader turns into clip
@@ -586,6 +612,9 @@ impl GroundRenderer {
         target: Target<'_>,
         quads: &[GroundQuad],
     ) {
+        if !quads.is_empty() {
+            self.loaded_cache_valid = false;
+        }
         self.render_with_load(device, queue, encoder, target, quads, true);
     }
 
@@ -615,6 +644,8 @@ impl GroundRenderer {
         quads: &[GroundQuad],
         clear: bool,
     ) {
+        self.last_cpu = GroundCpuCosts::default();
+        let uniforms_started = Instant::now();
         let mut uniform_bytes = Vec::with_capacity(UNIFORM_BYTES as usize);
         let projection = target.projection;
         for value in [
@@ -630,23 +661,38 @@ impl GroundRenderer {
             uniform_bytes.extend_from_slice(&value.to_le_bytes());
         }
         queue.write_buffer(&self.uniforms, 0, &uniform_bytes);
+        self.last_cpu.uniforms = uniforms_started.elapsed();
 
-        if quads.len() as u64 > self.capacity {
+        let serialize_started = Instant::now();
+        let grew = quads.len() as u64 > self.capacity;
+        if grew {
             // Grow in powers of two rather than to the exact size: the camera
             // moves every frame and the count wobbles with it.
             self.capacity = (quads.len() as u64).next_power_of_two();
             self.instances = new_instance_buffer(device, self.capacity);
         }
-        self.instance_bytes.clear();
-        self.instance_bytes
-            .reserve(quads.len() * GroundQuad::STRIDE as usize);
-        for quad in quads {
-            quad.write(&mut self.instance_bytes);
+        let reuse_loaded = !clear && !grew && self.loaded_cache_valid && self.loaded_quads == quads;
+        if !reuse_loaded {
+            self.instance_bytes.clear();
+            self.instance_bytes
+                .reserve(quads.len() * GroundQuad::STRIDE as usize);
+            for quad in quads {
+                quad.write(&mut self.instance_bytes);
+            }
+            if !clear {
+                self.loaded_quads.clear();
+                self.loaded_quads.extend_from_slice(quads);
+                self.loaded_cache_valid = true;
+            }
         }
-        if !self.instance_bytes.is_empty() {
+        self.last_cpu.serialize = serialize_started.elapsed();
+        let upload_started = Instant::now();
+        if !reuse_loaded && !self.instance_bytes.is_empty() {
             queue.write_buffer(&self.instances, 0, &self.instance_bytes);
         }
+        self.last_cpu.upload = upload_started.elapsed();
 
+        let pass_started = Instant::now();
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("ground"),
             color_attachments: &[
@@ -737,6 +783,8 @@ impl GroundRenderer {
         pass.set_vertex_buffer(0, self.quad.slice(..));
         pass.set_vertex_buffer(1, self.instances.slice(..));
         pass.draw(0..4, 0..quads.len() as u32);
+        drop(pass);
+        self.last_cpu.pass = pass_started.elapsed();
     }
 }
 

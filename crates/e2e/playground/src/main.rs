@@ -66,11 +66,21 @@ use std::process::ExitCode;
 use std::time::Duration;
 
 use clap::Parser;
+use clap::ValueEnum;
 use tracing_subscriber::EnvFilter;
 
 /// A fresh trace from the last playground run. `target/` keeps the diagnostic
 /// out of source control while leaving it beside the command that produced it.
 const JANK_LOG: &str = "target/openshard-playground-jank.log";
+
+/// Reproducible presentation scenarios the playground can hold while writing
+/// its jank trace. Keeping this local makes the integration runner's command
+/// line independent of the standalone client's diagnostic CLI.
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum Scenario {
+    /// Zoom out from the default view, then hold still for LOD profiling.
+    ZoomSoak,
+}
 
 /// One process, both ends: a shard in a thread and a window logged in to it.
 ///
@@ -143,6 +153,10 @@ struct Cli {
     /// `fonts.mul`. See `openshard_client_app`'s own flag of the same name.
     #[arg(long, env = "OPENSHARD_TTF_FONT", value_name = "FILE")]
     ttf_font: Option<PathBuf>,
+
+    /// Run a deterministic presentation scenario after the window opens.
+    #[arg(long, value_enum)]
+    scenario: Option<Scenario>,
 }
 
 fn main() -> ExitCode {
@@ -227,6 +241,9 @@ fn main() -> ExitCode {
         cli.ttf_font,
         openshard_client_app::Opening {
             stall_on_update: cli.stall_app_ms.map(Duration::from_millis),
+            scenario: cli.scenario.map(|scenario| match scenario {
+                Scenario::ZoomSoak => openshard_client_app::Scenario::ZoomSoak,
+            }),
             ..Default::default()
         },
     );

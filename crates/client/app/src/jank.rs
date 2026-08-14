@@ -45,6 +45,24 @@ pub(crate) struct CpuPasses {
     pub static_sort: Duration,
     pub items: Duration,
     pub encode: Duration,
+    pub encode_ground: Duration,
+    pub encode_composites: Duration,
+    pub encode_ground_detail: Duration,
+    pub ground_detail_cpu_uniforms: Duration,
+    pub ground_detail_cpu_serialize: Duration,
+    pub ground_detail_cpu_upload: Duration,
+    pub ground_detail_cpu_pass: Duration,
+    pub encode_statics: Duration,
+    pub encode_items: Duration,
+    /// Ready immutable blocks restored through the deferred composite pass in
+    /// this frame. Paired with `encode_composites` to expose per-block command
+    /// recording overhead at far zoom.
+    pub composite_blocks: usize,
+    pub composite_bindings_created: usize,
+    pub composite_bindings_reused: usize,
+    pub composite_cpu_upload: Duration,
+    pub composite_cpu_bindings: Duration,
+    pub composite_cpu_pass: Duration,
 }
 
 /// Create a fresh file for jank records from this process.
@@ -99,6 +117,18 @@ pub fn record(frame: Frame, cpu: CpuPasses, atlas: AtlasWork, gpu_passes: &[Pass
         ("static_sort", ms(cpu.static_sort)),
         ("items", ms(cpu.items)),
         ("encode", ms(cpu.encode)),
+        ("encode_ground", ms(cpu.encode_ground)),
+        ("encode_composites", ms(cpu.encode_composites)),
+        ("encode_ground_detail", ms(cpu.encode_ground_detail)),
+        ("ground_detail_uniforms", ms(cpu.ground_detail_cpu_uniforms)),
+        ("ground_detail_serialize", ms(cpu.ground_detail_cpu_serialize)),
+        ("ground_detail_upload", ms(cpu.ground_detail_cpu_upload)),
+        ("ground_detail_pass", ms(cpu.ground_detail_cpu_pass)),
+        ("composite_upload", ms(cpu.composite_cpu_upload)),
+        ("composite_bindings", ms(cpu.composite_cpu_bindings)),
+        ("composite_pass", ms(cpu.composite_cpu_pass)),
+        ("encode_statics", ms(cpu.encode_statics)),
+        ("encode_items", ms(cpu.encode_items)),
     ];
     let atlas_overflowed = atlas.overflow.map(|overflow| overflow.atlas);
     let atlas_packed_graphics = atlas.overflow.map(|overflow| overflow.packed_graphics);
@@ -108,7 +138,7 @@ pub fn record(frame: Frame, cpu: CpuPasses, atlas: AtlasWork, gpu_passes: &[Pass
             let _ = writeln!(
                 log,
                 "jank frame budget_ms={:.3} interval_ms={:.3} build_ms={:.3} ui_ms={:.3} \
-                 scene_ms={:.3} wait_ms={:.3} gpu_ms={gpu_ms:?} repacked={} atlas_uploaded_bytes={} atlas_overflowed={atlas_overflowed:?} atlas_packed_graphics={atlas_packed_graphics:?} atlas_newly_requested_graphics={atlas_newly_requested_graphics:?} cpu_passes={cpu_passes:?} gpu_passes={passes:?}",
+                 scene_ms={:.3} wait_ms={:.3} gpu_ms={gpu_ms:?} repacked={} atlas_uploaded_bytes={} composite_blocks={} composite_bindings_created={} composite_bindings_reused={} atlas_overflowed={atlas_overflowed:?} atlas_packed_graphics={atlas_packed_graphics:?} atlas_newly_requested_graphics={atlas_newly_requested_graphics:?} cpu_passes={cpu_passes:?} gpu_passes={passes:?}",
                 ms(JANK_BUDGET),
                 ms(frame.interval),
                 ms(frame.build()),
@@ -117,6 +147,9 @@ pub fn record(frame: Frame, cpu: CpuPasses, atlas: AtlasWork, gpu_passes: &[Pass
                 ms(frame.wait),
                 frame.repacked,
                 atlas.uploaded_bytes,
+                cpu.composite_blocks,
+                cpu.composite_bindings_created,
+                cpu.composite_bindings_reused,
             );
             // Do not flush from the render thread.  A jank record is itself
             // diagnostic output; waiting for the filesystem here can turn one

@@ -6,7 +6,7 @@
 //! answer here to be recorded.
 
 use openshard_client_render::blit::{self, ViewportRect};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 
 use openshard_client_render::camera::Camera;
 use openshard_client_render::composite::{
@@ -21,6 +21,7 @@ use openshard_client_render::select::{self, Selection};
 use openshard_client_render::sprite::SpriteQuad;
 use openshard_client_render::{container, paperdoll, skills, solids, status, vendor};
 use openshard_protocol::containers::ContainedItem;
+use std::time::{Duration, Instant};
 
 use crate::frame_geometry::FrameGeometry;
 use crate::picking::{self, SelectedIdentity};
@@ -37,6 +38,23 @@ pub(crate) struct WorldPassAudit {
     pub(crate) ready_blocks: usize,
     pub(crate) live_ground_quads: usize,
     pub(crate) full_ground_quads: usize,
+    /// CPU command-recording costs within the world encoder. These are kept
+    /// beside the frame's aggregate `encode` time so a far-zoom trace can
+    /// distinguish bind/upload work from the later overlays and UI passes.
+    pub(crate) cpu_ground: Duration,
+    pub(crate) cpu_composites: Duration,
+    pub(crate) cpu_ground_detail: Duration,
+    pub(crate) ground_detail_cpu_uniforms: Duration,
+    pub(crate) ground_detail_cpu_serialize: Duration,
+    pub(crate) ground_detail_cpu_upload: Duration,
+    pub(crate) ground_detail_cpu_pass: Duration,
+    pub(crate) cpu_statics: Duration,
+    pub(crate) cpu_items: Duration,
+    pub(crate) composite_bindings_created: usize,
+    pub(crate) composite_bindings_reused: usize,
+    pub(crate) composite_cpu_upload: Duration,
+    pub(crate) composite_cpu_bindings: Duration,
+    pub(crate) composite_cpu_pass: Duration,
 }
 use crate::windows::{Drawn, WindowSubject};
 use crate::{crowd, graphics, profile, resources, shell, windows, world};
@@ -709,12 +727,26 @@ pub(crate) fn encode_world_passes(
         .collect();
     let cached_blocks: BTreeSet<_> = ready.iter().map(|(block, _, _)| *block).collect();
     let ground = geometry.detail_ground(&cached_blocks);
-    let audit = WorldPassAudit {
+    let mut audit = WorldPassAudit {
         requested_lod: composite_lod,
         composite_revision,
         ready_blocks: ready.len(),
         live_ground_quads: ground.len(),
         full_ground_quads: geometry.quads.len(),
+        cpu_ground: Duration::ZERO,
+        cpu_composites: Duration::ZERO,
+        cpu_ground_detail: Duration::ZERO,
+        ground_detail_cpu_uniforms: Duration::ZERO,
+        ground_detail_cpu_serialize: Duration::ZERO,
+        ground_detail_cpu_upload: Duration::ZERO,
+        ground_detail_cpu_pass: Duration::ZERO,
+        cpu_statics: Duration::ZERO,
+        cpu_items: Duration::ZERO,
+        composite_bindings_created: 0,
+        composite_bindings_reused: 0,
+        composite_cpu_upload: Duration::ZERO,
+        composite_cpu_bindings: Duration::ZERO,
+        composite_cpu_pass: Duration::ZERO,
     };
     if composite_lod == BlockLod::Lod0 && !ready.is_empty() {
         tracing::error!(?audit, "LOD0 world pass selected cached map blocks");
@@ -724,6 +756,7 @@ pub(crate) fn encode_world_passes(
     // first but defer the live slope/rim rows until after restore: their exact
     // current-frame depth must be able to beat a neighbouring cached flat tile
     // where the two diamonds overlap.
+    let ground_started = Instant::now();
     if ready.is_empty() {
         let timed = profile::begin(window.gpu.as_ref(), "ground", encoder);
         window
@@ -735,47 +768,60 @@ pub(crate) fn encode_world_passes(
             .renderer
             .render(&window.device, &window.queue, encoder, target, &[]);
     }
+    let cpu_ground = ground_started.elapsed();
     // Cached flat ground is restored before all live sprite passes. Map statics
     // deliberately remain live: their art can overhang an 8×8 ground block by
     // more than the bounded composite margin, while this shared depth buffer
     // still orders them against every cached ground pixel.
-    let mut composite_groups: BTreeMap<i32, Vec<CompositeQuad<'_>>> = BTreeMap::new();
-    for (_, rect, texture) in &ready {
-        composite_groups
-            .entry(texture.depth_base())
-            .or_default()
-            .push(CompositeQuad { texture, rect: *rect });
-    }
+    let composite_blocks: Vec<_> = ready
+        .iter()
+        .map(|(_, rect, texture)| CompositeQuad { texture, rect: *rect })
+        .collect();
     let (eye_x, eye_y) = camera.eye_tile();
     let current_depth_base = openshard_client_render::depth::base_for(eye_x, eye_y);
+    let composites_started = Instant::now();
     let timed = profile::begin(window.gpu.as_ref(), "map composites", encoder);
-    // `render_deferred` needs one binding slot per source depth base, but the
-    // slots are reusable only after this encoder's previous frame has been
-    // submitted. Reset the per-frame cursor once, before the group loop.
+    // `render_deferred` keeps the depth-base correction per block instance, so
+    // the full far-zoom set is one upload/call. Its own per-call batch remains
+    // immutable until this encoder is submitted, preserving the artifact fix
+    // for multiple deferred calls in one command buffer.
     window.composite_pass.begin_frame();
-    for (source_base, blocks) in composite_groups.iter() {
-        window.composite_pass.render_deferred(
-            &window.device,
-            &window.queue,
-            encoder,
-            target,
-            openshard_client_render::depth::rebase_adjust(*source_base, current_depth_base),
-            blocks,
-        );
-    }
+    window.composite_pass.render_deferred_rebased(
+        &window.device,
+        &window.queue,
+        encoder,
+        target,
+        current_depth_base,
+        &composite_blocks,
+    );
+    (audit.composite_bindings_created, audit.composite_bindings_reused) =
+        window.composite_pass.deferred_binding_stats();
+    let composite_cpu = window.composite_pass.deferred_cpu_costs();
+    audit.composite_cpu_upload = composite_cpu.upload;
+    audit.composite_cpu_bindings = composite_cpu.bindings;
+    audit.composite_cpu_pass = composite_cpu.pass;
     profile::end(window.gpu.as_ref(), encoder, timed);
+    let ground_detail_started = Instant::now();
     if !ready.is_empty() {
         let timed = profile::begin(window.gpu.as_ref(), "ground detail", encoder);
         window
             .renderer
             .render_loaded(&window.device, &window.queue, encoder, target, &ground);
+        let ground_detail_cpu = window.renderer.last_cpu_costs();
+        audit.ground_detail_cpu_uniforms = ground_detail_cpu.uniforms;
+        audit.ground_detail_cpu_serialize = ground_detail_cpu.serialize;
+        audit.ground_detail_cpu_upload = ground_detail_cpu.upload;
+        audit.ground_detail_cpu_pass = ground_detail_cpu.pass;
         profile::end(window.gpu.as_ref(), encoder, timed);
     }
+    audit.cpu_ground_detail = ground_detail_started.elapsed();
+    let cpu_composites = composites_started.elapsed();
     // Handed over every frame rather than on the key, because the key does
     // not have the window: `graphics.fringe` is the switch and the pass is where
     // it is read, and a state pushed once at start-up would leave F2 silent.
     window.statics.set_fringe(graphics.fringe);
     window.items_pass.set_fringe(graphics.fringe);
+    let statics_started = Instant::now();
     let timed = profile::begin(window.gpu.as_ref(), "statics", encoder);
     window.statics.render(
         &window.device,
@@ -787,6 +833,7 @@ pub(crate) fn encode_world_passes(
         Some(map_statics.drawn),
     );
     profile::end(window.gpu.as_ref(), encoder, timed);
+    let cpu_statics = statics_started.elapsed();
     // Composite entries are potentially eight RGBA-sized planes each.  Keep a
     // bounded LRU tail, but protect one block outside the current viewport so
     // a small pan cannot turn into an upload/pan-back loop.  This maintenance
@@ -797,6 +844,7 @@ pub(crate) fn encode_world_passes(
     // depth buffer preserves their historical interleaving, while keeping this
     // buffer free of map rows is what lets a cached map composite keep a stable
     // G-buffer identity without making a dynamic item point at a stale row.
+    let items_started = Instant::now();
     let timed = profile::begin(window.gpu.as_ref(), "items", encoder);
     window.items_pass.render_with_id_bits(
         &window.device,
@@ -809,6 +857,11 @@ pub(crate) fn encode_world_passes(
         openshard_client_render::gbuffer::IDS_DYNAMIC_ITEM,
     );
     profile::end(window.gpu.as_ref(), encoder, timed);
+    let cpu_items = items_started.elapsed();
+    audit.cpu_ground = cpu_ground;
+    audit.cpu_composites = cpu_composites;
+    audit.cpu_statics = cpu_statics;
+    audit.cpu_items = cpu_items;
     // Right after statics, into the same static's own pixels its
     // billboard sprite just drew — `docs/gbuffer.md` step 4c. Depth and
     // place only, never colour: this only gives a climbable static's
