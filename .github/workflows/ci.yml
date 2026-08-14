@@ -16,6 +16,20 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # `alsa-sys` is the one dependency in this tree whose build script looks a
+      # system library up through pkg-config, and `ubuntu-latest` does not ship
+      # ALSA's headers. Without this the client's audio crate panics in a build
+      # script and clippy never lints anything. Nothing else needs a package:
+      # the X11, Wayland and xkb crates here are the `-dl` kind, which dlopen at
+      # run time and build against no headers at all.
+      #
+      # It went unnoticed until now because `cargo fmt --all -- --check` below
+      # was failing first, so this step's job never reached clippy.
+      - name: Install the client's system libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
