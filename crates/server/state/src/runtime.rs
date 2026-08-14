@@ -14,6 +14,7 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
+use openshard_config::CombatEra;
 use openshard_entities::{EntityId, Registry};
 use openshard_events::EventBus;
 use openshard_gateway::ConnectionId;
@@ -73,7 +74,7 @@ pub const TICKS_PER_SECOND: u64 = 20;
 #[derive(Clone, Copy, Debug)]
 pub struct Gameplay {
     /// Which swing-speed formula combat uses (Sphere's `CombatEra`, 0–4).
-    pub combat_era: u8,
+    pub combat_era: CombatEra,
     /// The swing formula's numerator (Sphere's `SpeedScaleFactor`).
     pub speed_scale_factor: u64,
     /// Chance, in per-mille, for a landed weapon or ranged blow to be critical.
@@ -300,7 +301,7 @@ impl Default for Gameplay {
     /// to change and takes the rest from here.
     fn default() -> Self {
         Self {
-            combat_era: 1,
+            combat_era: CombatEra::from(1),
             speed_scale_factor: 15000,
             critical_chance: 50,
             critical_damage_percent: 150,

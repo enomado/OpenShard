@@ -1,6 +1,7 @@
 use super::*;
 use openshard_chat::MobileSpoke;
 use openshard_combat::{MobileDamaged, MobileDied, WRESTLING_SPEED, swing_ticks};
+use openshard_config::CombatEra;
 use openshard_events::Cursor;
 use openshard_magic::SpellCast;
 use openshard_movement::WALK_INTERVAL;
@@ -2002,7 +2003,7 @@ fn gameplay_config_reaches_the_systems() {
     // twenty-minute default's twenty-four thousand.
     let now = Instant::now();
     let gameplay = Gameplay {
-        combat_era: 2,
+        combat_era: CombatEra::from(2),
         speed_scale_factor: 40000,
         skill_cap: 700,
         decay_ticks: Gameplay::ticks(5),
@@ -3697,7 +3698,7 @@ fn era_two_reads_the_aos_weapon_numbers() {
     // The same katana, an AoS shard: speed 46 (not 58) and damage 10..=14.
     let now = Instant::now();
     let mut world = world();
-    world.state.gameplay.combat_era = 2;
+    world.state.gameplay.combat_era = CombatEra::from(2);
     let scale = world.state.gameplay.speed_scale_factor;
     let connection = enter(&mut world, now);
     let entity = world.state.players[&connection];
@@ -7013,7 +7014,7 @@ fn the_stat_bonus_is_gone_from_aos_on() {
     // (`AOS.DisableStatInfluences`), so the effective value is the base.
     let now = Instant::now();
     let mut world = World::new(START).with_gameplay(Gameplay {
-        combat_era: 2,
+        combat_era: CombatEra::from(2),
         ..Gameplay::default()
     });
     let player = enter(&mut world, now);

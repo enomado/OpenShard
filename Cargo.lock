@@ -3213,6 +3213,7 @@ dependencies = [
 name = "openshard-combat"
 version = "0.0.1"
 dependencies = [
+ "openshard-config",
  "openshard-entities",
  "openshard-gateway",
  "openshard-movement",
@@ -3443,6 +3444,7 @@ dependencies = [
 name = "openshard-skills"
 version = "0.0.1"
 dependencies = [
+ "openshard-config",
  "openshard-entities",
  "openshard-gateway",
  "openshard-items",
@@ -3455,6 +3457,7 @@ dependencies = [
 name = "openshard-state"
 version = "0.0.1"
 dependencies = [
+ "openshard-config",
  "openshard-entities",
  "openshard-events",
  "openshard-gateway",
@@ -3480,6 +3483,7 @@ dependencies = [
  "openshard-ai",
  "openshard-chat",
  "openshard-combat",
+ "openshard-config",
  "openshard-crafting",
  "openshard-entities",
  "openshard-events",

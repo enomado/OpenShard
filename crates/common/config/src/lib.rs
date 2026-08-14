@@ -92,7 +92,7 @@ pub struct GameplayConfig {
     /// than silently run as pre-AoS. Set `speed_scale_factor` to match the era
     /// (15000 pre-AoS, 40000 AoS, 80000 SE; ML ignores it).
     #[serde(default = "default_combat_era")]
-    pub combat_era: u8,
+    pub combat_era: CombatEra,
     /// Sphere's `SpeedScaleFactor`: the numerator of the swing formula. Larger is
     /// slower. The pre-AoS default is 15000; AoS uses 40000, SE 80000.
     #[serde(default = "default_speed_scale_factor")]
@@ -304,15 +304,39 @@ pub fn expansion_is_known(expansion: &str) -> bool {
     EXPANSIONS.contains(&name.as_str())
 }
 
+/// The combat-rule era selected by [`GameplayConfig`].
+///
+/// This remains a numeric value at the configuration boundary for compatibility
+/// with Sphere's `CombatEra` setting, while making the field's meaning explicit
+/// in Rust. Unknown values are retained so [`Config::validate`] can report the
+/// same actionable configuration error it did when this was a bare `u8`.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Default, Deserialize, Serialize)]
+#[serde(transparent)]
+pub struct CombatEra(u8);
+
+impl CombatEra {
+    /// Returns the numeric Sphere value used in the configuration file.
+    #[must_use]
+    pub const fn value(self) -> u8 {
+        self.0
+    }
+}
+
+impl From<u8> for CombatEra {
+    fn from(value: u8) -> Self {
+        Self(value)
+    }
+}
+
 /// Whether combat [`combat_era`](GameplayConfig::combat_era) is one the swing
 /// formula implements: Sphere custom (`0`), pre-AoS (`1`), AoS (`2`), SE (`3`) or
 /// ML (`4`).
-const fn combat_era_is_implemented(era: u8) -> bool {
-    matches!(era, 0..=4)
+const fn combat_era_is_implemented(era: CombatEra) -> bool {
+    matches!(era.0, 0..=4)
 }
 
-fn default_combat_era() -> u8 {
-    1
+fn default_combat_era() -> CombatEra {
+    CombatEra(1)
 }
 fn default_speed_scale_factor() -> u64 {
     15000
@@ -999,7 +1023,7 @@ impl Config {
         // the operator did not ask for; name it instead.
         if !combat_era_is_implemented(self.gameplay.combat_era) {
             return Err(ConfigError::UnknownCombatEra {
-                era: self.gameplay.combat_era,
+                era: self.gameplay.combat_era.value(),
             });
         }
         // The swing formula divides by this; zero would panic mid-tick.

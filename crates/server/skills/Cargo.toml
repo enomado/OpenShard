@@ -12,6 +12,7 @@ authors.workspace = true
 workspace = true
 
 [dependencies]
+openshard-config.workspace = true
 # `items` for the skills that reach into a pack — Stealing, and the bandage and
 # instrument slices to come. Acyclic today, and an invariant from here on: `items`
 # must never depend on `skills` or `combat`, or `skills → items → combat → skills`

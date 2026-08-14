@@ -1072,7 +1072,7 @@ pub fn swing_speed(state: &WorldState, mobile: EntityId) -> u64 {
     swing_ticks(
         dex,
         base,
-        state.gameplay.combat_era,
+        state.gameplay.combat_era.value(),
         state.gameplay.speed_scale_factor,
     )
 }
@@ -1178,7 +1178,7 @@ fn scaled_blow(state: &mut WorldState, attacker: EntityId, defender: EntityId) -
         } else {
             0.0
         };
-        if era >= 2 {
+        if era.value() >= 2 {
             // The AoS family (AoS, SE, ML) shares the AoS damage-bonus formula.
             let bonus = get_bonus(strength, 0.30, 100.0, 5.0)
                 + get_bonus(anatomy, 0.50, 100.0, 5.0)
@@ -1216,7 +1216,7 @@ fn scaled_blow(state: &mut WorldState, attacker: EntityId, defender: EntityId) -
     // halved. "Player" is a mobile with a client. Applies to every blow, skilled or
     // not, so it sits past the skill gate.
     let is_player = |entity| state.registry.has::<Client>(entity);
-    let final_damage = if era < 2 && (is_player(defender) || !is_player(attacker)) {
+    let final_damage = if era.value() < 2 && (is_player(defender) || !is_player(attacker)) {
         scaled / 2.0
     } else {
         scaled
@@ -1229,7 +1229,7 @@ fn scaled_blow(state: &mut WorldState, attacker: EntityId, defender: EntityId) -
     // only; from AoS armour speaks through resistances instead, which `damage`
     // already applies. A blow that armour swallows whole still lands for 1
     // (`if (!Core.AOS && damage < 1) damage = 1`).
-    if era < 2 {
+    if era.value() < 2 {
         Blow {
             amount: armor::absorb_physical(state, defender, blow).max(1),
             critical,

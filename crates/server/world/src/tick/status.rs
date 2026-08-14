@@ -20,6 +20,7 @@
 //! changed. It reads `state.ticks` and components, never a clock, so it replays.
 
 use super::*;
+use openshard_config::CombatEra;
 use openshard_state::components::{Riding, body_is_female};
 
 /// How often the derived numbers are recomputed, in ticks: twice a second. Fast
@@ -135,7 +136,7 @@ impl World {
             // Pre-AoS this field *is* the armour rating; from AoS the client
             // labels it physical resistance, which is the resistance component's
             // to answer (the AoS per-piece resist data is a separate port).
-            armor: if self.state.gameplay.combat_era >= 2 {
+            armor: if self.state.gameplay.combat_era >= CombatEra::from(2) {
                 self.state
                     .registry
                     .get::<Resistance>(entity)

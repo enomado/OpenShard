@@ -25,6 +25,7 @@
 //! see [`weapon_layer`].
 
 use crate::Skill;
+use openshard_config::CombatEra;
 use openshard_protocol::wire::{Graphic, Layer};
 
 /// The paperdoll layer a one-handed weapon sits on (UO layer 1).
@@ -130,16 +131,16 @@ pub struct WeaponData {
 /// Pick the era-appropriate damage value: the AoS family (eras 2 AoS, 3 SE, 4 ML)
 /// uses the `aos` numbers, the pre-AoS family (eras 0 custom, 1 pre-AoS) the `old`.
 #[must_use]
-pub const fn by_era(old: u16, aos: u16, era: u8) -> u16 {
-    if era >= 2 { aos } else { old }
+pub const fn by_era(old: u16, aos: u16, era: CombatEra) -> u16 {
+    if era.value() >= 2 { aos } else { old }
 }
 
 /// The swing-speed base a weapon lends under each era's formula: `ml_speed` for ML
 /// (era 4), `aos_speed` for AoS/SE (2, 3), `old_speed` for the pre-AoS family
 /// (0, 1).
 #[must_use]
-pub const fn swing_base(weapon: &WeaponData, era: u8) -> u16 {
-    match era {
+pub const fn swing_base(weapon: &WeaponData, era: CombatEra) -> u16 {
+    match era.value() {
         4 => weapon.ml_speed,
         2 | 3 => weapon.aos_speed,
         _ => weapon.old_speed,
@@ -308,21 +309,21 @@ mod tests {
 
     #[test]
     fn by_era_splits_the_pre_aos_and_aos_families() {
-        assert_eq!(by_era(35, 30, 0), 35); // custom → pre-AoS numbers
-        assert_eq!(by_era(35, 30, 1), 35); // pre-AoS
-        assert_eq!(by_era(35, 30, 2), 30); // AoS
-        assert_eq!(by_era(35, 30, 3), 30); // SE → AoS family
-        assert_eq!(by_era(35, 30, 4), 30); // ML → AoS family
+        assert_eq!(by_era(35, 30, CombatEra::from(0)), 35); // custom → pre-AoS numbers
+        assert_eq!(by_era(35, 30, CombatEra::from(1)), 35); // pre-AoS
+        assert_eq!(by_era(35, 30, CombatEra::from(2)), 30); // AoS
+        assert_eq!(by_era(35, 30, CombatEra::from(3)), 30); // SE → AoS family
+        assert_eq!(by_era(35, 30, CombatEra::from(4)), 30); // ML → AoS family
     }
 
     #[test]
     fn swing_base_picks_the_eras_speed_column() {
         let sword = weapon_data(Graphic(0x0F61)).unwrap(); // old 35, aos 30, ml 350
-        assert_eq!(swing_base(sword, 0), 35);
-        assert_eq!(swing_base(sword, 1), 35);
-        assert_eq!(swing_base(sword, 2), 30);
-        assert_eq!(swing_base(sword, 3), 30);
-        assert_eq!(swing_base(sword, 4), 350);
+        assert_eq!(swing_base(sword, CombatEra::from(0)), 35);
+        assert_eq!(swing_base(sword, CombatEra::from(1)), 35);
+        assert_eq!(swing_base(sword, CombatEra::from(2)), 30);
+        assert_eq!(swing_base(sword, CombatEra::from(3)), 30);
+        assert_eq!(swing_base(sword, CombatEra::from(4)), 350);
     }
 
     #[test]

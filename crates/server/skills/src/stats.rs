@@ -18,6 +18,7 @@
 //! other stat set to "down" must be willing to give up a point. That last is what
 //! makes the classic 225 a budget rather than a wall.
 
+use openshard_config::CombatEra;
 use openshard_entities::EntityId;
 use openshard_state::components::{LastStatGain, StatLock, StatLocks, Stats};
 use openshard_state::skill::Skill;
@@ -43,7 +44,7 @@ pub(crate) fn try_stat_gain(state: &mut WorldState, entity: EntityId, skill: Ski
         .copied()
         .unwrap_or_default();
 
-    if state.gameplay.combat_era >= 4 {
+    if state.gameplay.combat_era >= CombatEra::from(4) {
         // ML: one flat chance, then the skill's own primary/secondary stat.
         if state.rng.below(1000) >= state.gameplay.stat_gain_chance {
             return;
