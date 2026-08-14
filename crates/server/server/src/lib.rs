@@ -79,6 +79,7 @@ pub mod boot;
 pub mod shard;
 pub mod stop;
 
+mod content;
 mod dispatch;
 mod scripting;
 mod session;

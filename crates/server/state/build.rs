@@ -8,8 +8,8 @@
 //! `match` arms keyed by body, and a hundred lines of bare tile ids. They are
 //! 557 lines of JSON now.
 //!
-//! Two shapes come out of here, and which one a table gets is not a style
-//! choice:
+//! Three shapes come out of here, and which one a table gets is not a style
+//! choice — it is whatever shape the caller already read:
 //!
 //! - **A `const` slice**, for the tables that are searched. `body_type` and
 //!   `mount_item_for` binary-search theirs on the tick path; `SKILLS` is indexed
@@ -18,6 +18,12 @@
 //!   `creature_base_sound`. The compiler turns a dense integer `match` into a
 //!   jump, and a search over a slice could not be `const fn` at all — so the
 //!   generated code keeps the shape the hand-written code had.
+//! - **A constructor returning owned values**, for `quest::shipped`. Alone among
+//!   these, its destination is not a table that is read where it lies:
+//!   `QuestDefs::set` takes ownership of a `Vec<QuestDef>` and replaces
+//!   everything before it, so a `const` here would be a second spelling of three
+//!   types, cloned once at the only call site. The build-time checks are the
+//!   part that carries over, and they are the part that mattered.
 //!
 //! **Invariants are this script's job, not the data's.** It sorts what is
 //! binary-searched, because a table sorted by hand decays the first time
@@ -385,6 +391,289 @@ fn harvest_tiles(text: &str) -> String {
     out
 }
 
+/// The doc over the generated `shipped`.
+const QUESTS_DOC: &str = "\
+/// The quests this shard ships, built fresh from `data/quests.json`.
+///
+/// **This is the third shape out of `build.rs`, and the reason is the
+/// destination type.** The other tables here are `const` because their callers
+/// read `&'static [_]` and nothing is allocated at startup. [`QuestDefs::set`]
+/// takes a `Vec<QuestDef>` and owns the strings in it, because a definition is
+/// replaced wholesale rather than searched — so a `const` mirror would be a
+/// second copy of three types and an extra clone at the one call site, and buy
+/// back nothing. What survives from the rule is where the errors are caught: a
+/// misspelt objective kind, a graphic that is not a `u16`, a count of zero and a
+/// quest defined twice are all build failures, named with the file.
+///
+/// The order is by key, not the file's. Nothing reads a definition except
+/// [`QuestDefs::get`], so the order cannot change an answer — and sorting here
+/// means a row appended to the JSON does not move every row after it in a diff
+/// of the generated source.
+";
+
+/// One quest in `data/quests.json`.
+///
+/// Mirrors `QuestDef` field for field. The five text fields a player is shown
+/// are required — a quest that forgets its `refuse` line answers a refusal with
+/// silence, and that is a content bug worth a build failure rather than an empty
+/// string. Everything ServUO defaults is `#[serde(default)]` and left out of the
+/// data.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Quest {
+    key: String,
+    title: String,
+    description: String,
+    refuse: String,
+    uncomplete: String,
+    complete: String,
+    /// Said when a timed objective runs out. Blank for the quests that have no
+    /// clock, which is all of them so far.
+    #[serde(default)]
+    failed: String,
+    objectives: Vec<Objective>,
+    #[serde(default)]
+    rewards: Vec<Reward>,
+    /// ServUO's default: a quest asks for everything on its list.
+    #[serde(default = "every_objective")]
+    all_objectives: bool,
+    #[serde(default)]
+    done_once: bool,
+    #[serde(default)]
+    restart_delay_secs: u32,
+}
+
+/// `all_objectives`' default. `bool`'s own is `false`, which is the opposite of
+/// ServUO's rule, so the field cannot take it.
+const fn every_objective() -> bool {
+    true
+}
+
+/// `quest::ObjectiveDef`.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Objective {
+    kind: ObjectiveKind,
+    count: u16,
+    name: String,
+    /// How long the player has, in seconds. `0` is untimed.
+    #[serde(default)]
+    seconds: u32,
+}
+
+/// `quest::ObjectiveKind`, externally tagged so the variant name is spelled in
+/// the data and checked by serde. A misspelt `slya` fails the build naming the
+/// file, which is the whole point of the data living here.
+#[derive(Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+enum ObjectiveKind {
+    Slay {
+        body: String,
+    },
+    Obtain {
+        graphic: String,
+    },
+    Deliver {
+        graphic: String,
+        to: String,
+    },
+    Escort {
+        /// The destination region, as `Regions` names it — or **empty**, which
+        /// is not an omission: it means "wherever this traveller asked for",
+        /// chosen when the quest is accepted (ServUO's `PickRandomDestination`).
+        /// One definition covers every escortable traveller that way.
+        region: String,
+    },
+}
+
+impl ObjectiveKind {
+    /// The Rust expression for this kind. `Graphic` is fully qualified: the
+    /// generated file is `include!`d and must not depend on what the host module
+    /// happens to import.
+    fn expr(&self) -> String {
+        match self {
+            Self::Slay { body } => {
+                let _ = id(body);
+                format!("ObjectiveKind::Slay {{ body: openshard_protocol::wire::Graphic({body}) }}")
+            }
+            Self::Obtain { graphic } => {
+                let _ = id(graphic);
+                format!("ObjectiveKind::Obtain {{ graphic: openshard_protocol::wire::Graphic({graphic}) }}")
+            }
+            Self::Deliver { graphic, to } => {
+                let _ = id(graphic);
+                assert!(
+                    !to.is_empty(),
+                    "a deliver objective with no destination can never be finished"
+                );
+                format!(
+                    "ObjectiveKind::Deliver {{ graphic: openshard_protocol::wire::Graphic({graphic}), to: {} }}",
+                    owned(to)
+                )
+            }
+            Self::Escort { region } => {
+                format!("ObjectiveKind::Escort {{ region: {} }}", owned(region))
+            }
+        }
+    }
+}
+
+/// `quest::RewardDef`.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Reward {
+    kind: RewardKind,
+    name: String,
+}
+
+/// `quest::RewardKind`.
+#[derive(Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+enum RewardKind {
+    Gold(u32),
+    Item {
+        graphic: String,
+        #[serde(default = "no_hue")]
+        hue: String,
+        amount: u16,
+        #[serde(default)]
+        stackable: bool,
+    },
+}
+
+/// An item reward's default hue: none.
+fn no_hue() -> String {
+    "0x0000".to_owned()
+}
+
+/// The expression for an owned string field. Empty is spelled `String::new()`
+/// rather than `"".to_owned()` — the same thing, but the generated file is
+/// linted like any other source and clippy is right about which one to write.
+fn owned(text: &str) -> String {
+    if text.is_empty() {
+        "String::new()".to_owned()
+    } else {
+        format!("{text:?}.to_owned()")
+    }
+}
+
+impl RewardKind {
+    /// The Rust expression for this reward.
+    fn expr(&self) -> String {
+        match self {
+            Self::Gold(amount) => format!("RewardKind::Gold({amount})"),
+            Self::Item {
+                graphic,
+                hue,
+                amount,
+                stackable,
+            } => {
+                let _ = (id(graphic), id(hue));
+                assert!(*amount >= 1, "an item reward of none is not a reward");
+                format!(
+                    "RewardKind::Item {{ graphic: openshard_protocol::wire::Graphic({graphic}), \
+                     hue: openshard_protocol::wire::Hue({hue}), amount: {amount}, stackable: {stackable} }}"
+                )
+            }
+        }
+    }
+}
+
+/// `data/quests.json` into the `shipped` constructor.
+fn quests(text: &str) -> String {
+    let mut quests: Vec<Quest> = serde_json::from_str(text).expect("quests.json");
+
+    // Sorted here rather than in the data, and checked for the duplicate
+    // `QuestDefs::set` resolves by keeping whichever came last — a rule that is
+    // right for a pack redefining a quest and wrong for one file defining it
+    // twice, where the loser is invisible.
+    quests.sort_by(|a, b| a.key.cmp(&b.key));
+    for pair in quests.windows(2) {
+        assert_ne!(
+            pair[0].key, pair[1].key,
+            "quests.json defines {:?} twice",
+            pair[0].key
+        );
+    }
+
+    let mut out = String::from("// @generated by build.rs from data/quests.json.\n\n");
+    out.push_str(QUESTS_DOC);
+    out.push_str("#[must_use]\npub fn shipped() -> Vec<QuestDef> {\n    vec![\n");
+    for quest in &quests {
+        assert!(
+            !quest.key.is_empty(),
+            "a quest with no key cannot be offered, bound to a giver, or saved"
+        );
+        // The engine's own rule, moved to the build: the bridge from the script
+        // pack drops an objectiveless quest at load, because one shows as a quest
+        // that can be taken and never finished.
+        assert!(
+            !quest.objectives.is_empty(),
+            "quest {:?} asks for nothing, so it could be taken and never finished",
+            quest.key
+        );
+
+        writeln!(out, "        QuestDef {{").unwrap();
+        for (field, text) in [
+            ("key", &quest.key),
+            ("title", &quest.title),
+            ("description", &quest.description),
+            ("refuse", &quest.refuse),
+            ("uncomplete", &quest.uncomplete),
+            ("complete", &quest.complete),
+            ("failed", &quest.failed),
+        ] {
+            writeln!(out, "            {field}: {},", owned(text)).unwrap();
+        }
+
+        out.push_str("            objectives: vec![\n");
+        for objective in &quest.objectives {
+            // `count: 0` is complete on sight, which reads in the data as a typo
+            // and in the game as a quest that pays for nothing.
+            assert!(
+                objective.count >= 1,
+                "objective {:?} of quest {:?} asks for none",
+                objective.name,
+                quest.key
+            );
+            writeln!(
+                out,
+                "                ObjectiveDef {{ kind: {}, count: {}, name: {}, seconds: {} }},",
+                objective.kind.expr(),
+                objective.count,
+                owned(&objective.name),
+                objective.seconds
+            )
+            .unwrap();
+        }
+        out.push_str("            ],\n");
+
+        out.push_str("            rewards: vec![\n");
+        for reward in &quest.rewards {
+            writeln!(
+                out,
+                "                RewardDef {{ kind: {}, name: {} }},",
+                reward.kind.expr(),
+                owned(&reward.name)
+            )
+            .unwrap();
+        }
+        out.push_str("            ],\n");
+
+        writeln!(out, "            all_objectives: {},", quest.all_objectives).unwrap();
+        writeln!(out, "            done_once: {},", quest.done_once).unwrap();
+        writeln!(
+            out,
+            "            restart_delay_secs: {},",
+            quest.restart_delay_secs
+        )
+        .unwrap();
+        out.push_str("        },\n");
+    }
+    out.push_str("    ]\n}\n");
+    out
+}
+
 fn main() {
     let out_dir = std::env::var("OUT_DIR").expect("cargo sets OUT_DIR");
     let out_dir = Path::new(&out_dir);
@@ -424,6 +713,7 @@ fn main() {
         ("mounts", mounts),
         ("skills", skills),
         ("harvest_tiles", harvest_tiles),
+        ("quests", quests),
     ] {
         let path = Path::new("data").join(format!("{name}.json"));
         let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));

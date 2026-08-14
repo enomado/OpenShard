@@ -48,6 +48,23 @@ time, which is what makes this convenient, but against a real database a second
 seeded start lays everything a second time. The `.admin` menu's clear verbs are
 how that is undone.
 
+### `OPENSHARD_PACK` — the migration off the script pack
+
+Content is moving out of the pack and into this repository as `data/*.json` (see
+[`architecture.md`](architecture.md) § Scripting). Each dataset that moves is
+checked against the pack it came from by one test, which compares the world
+`Command`s both sources produce. The pack is a separate repository and not a
+dependency, so the test skips unless `OPENSHARD_PACK` names its directory —
+the same bargain the client-file tests make with `OPENSHARD_CLIENT`, and the
+reason `cargo test --workspace` stays green on a checkout that has neither.
+
+```sh
+OPENSHARD_PACK=/path/to/OpenShard-Community-Pack cargo test -p openshard-server content
+```
+
+Run it before every one of those PRs. When the last dataset has moved, the test
+and the pack go together.
+
 Running both ends at once — a shard and our own client logged in to it, in one
 process, with no port bound and no socket opened:
 

@@ -465,17 +465,34 @@ debugging tractable. Randomness inside a tick comes only from the world's seeded
 `Rng`, and every timer is a tick count, never a wall clock — a world constructed
 twice rolls and expires identically.
 
-## Scripting (spike done)
+## Scripting (spike done, being retired)
 
-Gameplay *content* is not hardcoded. NPCs, items, quests, regions, commands,
-skills, crafting and spells are TypeScript, hot-reloadable without a restart.
+**Content is moving into the tree, and the rest of this section is the record of
+an answer being replaced.** Settled on
+[#7](https://github.com/youhide/OpenShard/issues/7) and
+[#17](https://github.com/youhide/OpenShard/issues/17): this project has no
+scripting language. Gameplay *data* is `data/*.json` compiled by a `build.rs` —
+what § "A big table is data" already required of the craft recipes and the skill
+table — and gameplay *logic* is systems in the domain crates, as
+`fn(&mut WorldState)`. Skills, craft recipes and quests are in the tree today;
+regions, spawns, decoration, vendor stock and the pack's 414 lines of logic
+follow, and `crates/server/scripting` is deleted last. Two costs were accepted in
+the open when it was decided: writing content requires Rust, and hot reload of
+logic goes away.
+
+The reason the pack was 98.6% data is the reason it went: a spawn table and a
+decoration table are the same kind of thing as a recipe table, and one of the two
+was in a second repository behind a V8 for no principled reason. What follows is
+why that V8 was chosen and what the spike proved — kept, because the decision
+above is what overturned it.
 
 The line has moved once already, and it is worth naming where: a system whose
 *window the client draws* — the quest log, the vendor gump, the spellbook — has
 to be the core's, because the client reaches it through packets a script cannot
 answer, and because its state has to survive a restart the script's memory does
-not. So `crates/server/quests` owns the quest model and the gump, and the pack owns the
-quests. That is the same "default in core, customise in the pack" split as
+not. So `crates/server/quests` owns the quest model and the gump, and the quests
+themselves are content — `crates/server/state/data/quests.json` today, the pack
+before it. That is the same "default in core, customise in the pack" split as
 `magic::spells` and `Pack.loot`, and the rule of thumb it produced is: **if a
 binding must outlive a reboot, it is a saved component, not a map in a script.**
 

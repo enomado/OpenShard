@@ -139,6 +139,14 @@ machine running the shard. Behind NAT it must be your public address.
 
 ## The Community Pack
 
+> **Being retired.** Content is moving into this repository as `data/*.json`
+> compiled at build time, and the scripting layer will go with it — settled on
+> [#7](https://github.com/youhide/OpenShard/issues/7) and
+> [#17](https://github.com/youhide/OpenShard/issues/17), with the costs stated
+> there. Quests already come from the tree. Spawns, decoration, regions and
+> vendors still come from the pack, so a shard that wants Britain furnished
+> still points `scripting.main` at it — for now.
+
 A shard's gameplay **data and logic** live in a script pack, not in the engine:
 which creatures spawn where, what the townsfolk say and sell, how a spell the
 core does not run resolves. The reference pack is the

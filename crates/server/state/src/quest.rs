@@ -6,15 +6,16 @@
 //! that saves it — so they live below all three, the way [`Region`](crate::Region)
 //! lives below the guards that read it.
 //!
-//! # Definitions come from the pack; progress belongs to the player
+//! # Definitions are content; progress belongs to the player
 //!
-//! A [`QuestDef`] is content: a title, some objectives, some rewards. It arrives
-//! from the script pack at load time and is replaced wholesale on a reload, so it
-//! is never persisted — the pack is the source of truth for what a quest *is*,
-//! every boot. A [`QuestState`] is the opposite: it is what one character has
-//! done, it is saved with them, and it must survive the pack being edited.
+//! A [`QuestDef`] is content: a title, some objectives, some rewards. The shard's
+//! own are [`shipped`] — `data/quests.json`, compiled in — and whoever registers
+//! last replaces the lot, so a definition is never persisted: the content is the
+//! source of truth for what a quest *is*, every boot. A [`QuestState`] is the
+//! opposite: it is what one character has done, it is saved with them, and it
+//! must survive the definitions being edited.
 //!
-//! That is why a quest is keyed by the pack's **string**, never by its index.
+//! That is why a quest is keyed by its **string**, never by its index.
 //! Indices are how a saved "you have killed 3 of 5 rats" silently becomes progress
 //! on a different quest the day someone reorders the list.
 //!
@@ -53,8 +54,8 @@ pub enum ObjectiveKind {
         /// What to carry.
         graphic: Graphic,
         /// Who to take it to, by name. A name and not a serial: the destination is
-        /// written by the pack before anything has been spawned, and a name still
-        /// means the same thing after a restart.
+        /// written before anything has been spawned, and a name still means the
+        /// same thing after a restart.
         to: String,
     },
     /// Walk someone to a named region. ServUO's `EscortObjective`.
@@ -112,7 +113,7 @@ pub struct RewardDef {
     pub name: String,
 }
 
-/// A quest, as the pack defines it.
+/// A quest, as the content defines it.
 ///
 /// The text fields are ServUO's, and each is shown at exactly one moment:
 /// `description` when the quest is offered and in the log, `refuse` when it is
@@ -120,7 +121,7 @@ pub struct RewardDef {
 /// `complete` at turn-in, `failed` when a timer runs out.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct QuestDef {
-    /// The pack's id for it, and the key a player's progress is saved under.
+    /// Its id, and the key a player's progress is saved under.
     pub key: String,
     /// The quest's name, in the log and the offer.
     pub title: String,
@@ -170,9 +171,10 @@ impl Default for QuestDef {
 
 /// Every quest this shard knows, by key.
 ///
-/// Replaced wholesale by the pack — there is no "add one" — because a hot reload
-/// re-runs the pack's registration from the top, and merging would leave a quest
-/// the pack has deleted still on offer.
+/// Replaced wholesale by whoever registers — there is no "add one". The tree's
+/// own [`shipped`] quests go in at boot, and a script pack that still registers
+/// its own replaces them on the tick after; merging instead would leave a quest
+/// the newer source has deleted still on offer.
 #[derive(Clone, Default, Debug)]
 pub struct QuestDefs {
     defs: Vec<QuestDef>,
@@ -194,10 +196,10 @@ impl QuestDefs {
         self.defs = defs;
     }
 
-    /// The definition for a key, if the pack still defines it.
+    /// The definition for a key, if it is still defined.
     ///
     /// `None` is an ordinary answer, not a fault: a saved quest whose definition
-    /// the pack has since removed reads as `None`, and every caller treats that as
+    /// has since been removed reads as `None`, and every caller treats that as
     /// "this quest no longer exists" rather than failing.
     #[must_use]
     pub fn get(&self, key: &str) -> Option<&QuestDef> {
@@ -216,6 +218,8 @@ impl QuestDefs {
         self.defs.len()
     }
 }
+
+include!(concat!(env!("OUT_DIR"), "/quests.rs"));
 
 #[cfg(test)]
 mod tests {
@@ -236,7 +240,7 @@ mod tests {
         defs.set(vec![quest("silk_gather", "Silk for the Spellwright")]);
         assert!(
             defs.get("rat_cull").is_none(),
-            "a quest the pack no longer defines must stop being offered"
+            "a quest no longer defined must stop being offered"
         );
         assert_eq!(defs.len(), 1);
     }
@@ -252,5 +256,44 @@ mod tests {
     fn an_unknown_key_is_an_answer_not_a_fault() {
         let defs = QuestDefs::default();
         assert!(defs.get("no_such_quest").is_none());
+    }
+
+    #[test]
+    fn every_shipped_quest_is_reachable_by_its_own_key() {
+        let shipped = shipped();
+        assert!(!shipped.is_empty(), "the shard ships no quests at all");
+
+        let keys: Vec<String> = shipped.iter().map(|quest| quest.key.clone()).collect();
+        let mut defs = QuestDefs::default();
+        defs.set(shipped);
+
+        // A key that does not come back is one `set` overwrote — two rows of
+        // `data/quests.json` sharing a key, which `build.rs` is supposed to have
+        // refused. The one a player could take would be whichever came last, and
+        // nothing would say so.
+        assert_eq!(defs.len(), keys.len(), "two shipped quests share a key");
+        for key in keys {
+            assert!(
+                defs.get(&key).is_some(),
+                "shipped quest {key:?} cannot be looked up"
+            );
+        }
+    }
+
+    #[test]
+    fn the_shipped_escort_quest_names_no_region() {
+        // Not an oversight to be tidied up: one definition covers every
+        // escortable traveller precisely because it does *not* name a
+        // destination — the engine picks one when the quest is accepted. Filling
+        // this in would send all sixty-odd of them to the same town.
+        let escort = shipped().into_iter().find(|quest| quest.key == "escort");
+        let escort = escort.expect("the shard ships the escort quest");
+        assert_eq!(
+            escort.objectives[0].kind,
+            ObjectiveKind::Escort {
+                region: String::new()
+            },
+            "the escort objective must leave its destination to the engine"
+        );
     }
 }
