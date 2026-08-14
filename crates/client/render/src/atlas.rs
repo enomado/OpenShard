@@ -222,7 +222,23 @@ pub struct Region {
 /// Holds its pixels rather than a GPU handle: this crate does not decide when a
 /// texture is created, and a test wants to read the pixels without a device.
 pub struct LandAtlas {
-    slots: BTreeMap<Graphic, u32>,
+    /// Where each graphic sits, indexed by the graphic itself.
+    ///
+    /// **Dense, and that is a frame-rate decision rather than a style one.**
+    /// [`Self::region`] is asked once per visible land tile — 26,732 of them at
+    /// the widest zoom — and a `BTreeMap` answers each of those from a node the
+    /// cache has long since evicted, in a loop that is already missing on the
+    /// map itself. One indexed load costs a miss at worst and none at all for
+    /// the handful of graphics a street repeats. `Graphic` is a `u16`, so the
+    /// table is `u16::MAX + 1` entries — 1.3 MB beside the 16 MB of pixels this
+    /// same atlas already holds.
+    ///
+    /// The [`Region`] is stored rather than the slot, because deriving it costs
+    /// four divisions that do not change once a graphic is packed.
+    regions: Box<[Option<Region>]>,
+    /// How many slots are spoken for — the next free one, and the count
+    /// `regions` cannot give without a scan.
+    packed: u32,
     /// Every graphic ever offered to this atlas, whether or not it packed.
     ///
     /// Not the same set as `slots`, and the difference is the point: three
@@ -239,7 +255,7 @@ pub struct LandAtlas {
 impl fmt::Debug for LandAtlas {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("LandAtlas")
-            .field("graphics", &self.slots.len())
+            .field("graphics", &self.packed)
             .field("side", &ATLAS_SIDE)
             .finish()
     }
@@ -272,7 +288,8 @@ impl LandAtlas {
     fn empty() -> Self {
         let side = ATLAS_SIDE as usize;
         Self {
-            slots: BTreeMap::new(),
+            regions: vec![None; GRAPHIC_SLOTS].into_boxed_slice(),
+            packed: 0,
             asked: BTreeSet::new(),
             pixels: vec![0u8; side * side * 4],
             dirty: Dirty::default(),
@@ -368,9 +385,9 @@ impl LandAtlas {
     /// slot and leave the older region pointing at pixels nothing samples.
     fn insert(&mut self, images: impl IntoIterator<Item = (Graphic, Image)>) -> Result<(), AtlasError> {
         let images: BTreeMap<Graphic, Image> = images.into_iter().collect();
-        if self.slots.len() + images.len() > CAPACITY {
+        if self.packed as usize + images.len() > CAPACITY {
             return Err(AtlasError::Full {
-                wanted: self.slots.len() + images.len(),
+                wanted: self.packed as usize + images.len(),
                 capacity: CAPACITY,
             });
         }
@@ -387,10 +404,10 @@ impl LandAtlas {
                 (LAND_TILE_SIZE, LAND_TILE_SIZE),
                 "a land sprite is always {LAND_TILE_SIZE} square",
             );
-            if self.slots.contains_key(&graphic) {
+            if self.regions[graphic.0 as usize].is_some() {
                 continue;
             }
-            let slot = self.slots.len() as u32;
+            let slot = self.packed;
             let (origin_x, origin_y) = slot_origin(slot);
             self.dirty.mark(origin_y, u32::from(LAND_TILE_SIZE));
 
@@ -413,7 +430,8 @@ impl LandAtlas {
                     self.pixels[at + 3] = u8::MAX;
                 }
             }
-            self.slots.insert(graphic, slot);
+            self.regions[graphic.0 as usize] = Some(region_of_slot(slot));
+            self.packed += 1;
         }
 
         Ok(())
@@ -431,33 +449,50 @@ impl LandAtlas {
 
     /// How many graphics landed in it.
     pub fn len(&self) -> usize {
-        self.slots.len()
+        self.packed as usize
     }
 
     /// Whether nothing did.
     pub fn is_empty(&self) -> bool {
-        self.slots.is_empty()
+        self.packed == 0
     }
 
     /// Where a graphic sits, or `None` if the client ships no art for it.
+    ///
+    /// One indexed load, deliberately — see [`Self::regions`].
     pub fn region(&self, graphic: Graphic) -> Option<Region> {
-        let slot = *self.slots.get(&graphic)?;
-        let (x, y) = slot_origin(slot);
-        let side = ATLAS_SIDE as f32;
-        let tile = LAND_TILE_SIZE as f32;
-        Some(Region {
-            u: x as f32 / side,
-            v: y as f32 / side,
-            du: tile / side,
-            dv: tile / side,
-        })
+        self.regions[graphic.0 as usize]
     }
 }
+
+/// One entry per [`Graphic`], which is a `u16`.
+///
+/// The whole index rather than the land range, so no caller has to know where
+/// that range ends: the table is a rounding error beside an atlas's pixels, and
+/// a bound nobody can be wrong about is worth more than the bytes.
+const GRAPHIC_SLOTS: usize = u16::MAX as usize + 1;
 
 /// The top-left pixel of a slot. Row-major, which is why slot 0 is the origin.
 fn slot_origin(slot: u32) -> (u32, u32) {
     let tile = LAND_TILE_SIZE as u32;
     ((slot % SLOTS_PER_ROW) * tile, (slot / SLOTS_PER_ROW) * tile)
+}
+
+/// The normalised rectangle a land slot occupies.
+///
+/// Computed once, when the graphic is packed, rather than on every frame that
+/// draws the tile: a slot never moves, so these four divisions have exactly one
+/// answer per graphic for the life of the atlas.
+fn region_of_slot(slot: u32) -> Region {
+    let (x, y) = slot_origin(slot);
+    let side = ATLAS_SIDE as f32;
+    let tile = LAND_TILE_SIZE as f32;
+    Region {
+        u: x as f32 / side,
+        v: y as f32 / side,
+        du: tile / side,
+        dv: tile / side,
+    }
 }
 
 /// The texture-map atlas's grid is this many pixels on a side.
@@ -481,7 +516,14 @@ pub const TEXMAP_CELLS: usize = (TEXMAP_CELLS_PER_ROW * TEXMAP_CELLS_PER_ROW) as
 /// same question. Two graphics sharing a texture id therefore hold two copies of
 /// it, which costs a cell each and keeps the lookup one map deep.
 pub struct TexmapAtlas {
-    regions: BTreeMap<Graphic, Region>,
+    /// Where each graphic's texture sits, indexed by the graphic.
+    ///
+    /// Dense for the same reason [`LandAtlas::regions`] is, and asked in the
+    /// same loop: a ground quad reads both on every visible tile.
+    regions: Box<[Option<Region>]>,
+    /// How many of `regions` are filled — the count a scan would otherwise
+    /// have to find.
+    packed: u32,
     /// Every land graphic ever offered, whether or not it had a texture.
     ///
     /// The ordinary case is that it did not — the client ships 4,116 textures
@@ -499,7 +541,7 @@ pub struct TexmapAtlas {
 impl fmt::Debug for TexmapAtlas {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("TexmapAtlas")
-            .field("graphics", &self.regions.len())
+            .field("graphics", &self.packed)
             .field("side", &ATLAS_SIDE)
             .finish()
     }
@@ -534,7 +576,8 @@ impl TexmapAtlas {
     fn empty() -> Self {
         let side = ATLAS_SIDE as usize;
         Self {
-            regions: BTreeMap::new(),
+            regions: vec![None; GRAPHIC_SLOTS].into_boxed_slice(),
+            packed: 0,
             asked: BTreeSet::new(),
             grid: CellGrid::new(),
             pixels: vec![0u8; side * side * 4],
@@ -625,9 +668,9 @@ impl TexmapAtlas {
 
         let side = ATLAS_SIDE as usize;
 
-        let wanted = self.regions.len() + order.len();
+        let wanted = self.packed as usize + order.len();
         for (graphic, image) in order {
-            if self.regions.contains_key(&graphic) {
+            if self.regions[graphic.0 as usize].is_some() {
                 continue;
             }
             // Square, and a whole number of cells: both are the format's, and
@@ -673,15 +716,13 @@ impl TexmapAtlas {
             // its own and nothing bleeds along the two far edges of every tile.
             let atlas = ATLAS_SIDE as f32;
             let half = 0.5 / atlas;
-            self.regions.insert(
-                graphic,
-                Region {
-                    u: origin_x as f32 / atlas + half,
-                    v: origin_y as f32 / atlas + half,
-                    du: f32::from(image.width()) / atlas - 2.0 * half,
-                    dv: f32::from(image.height()) / atlas - 2.0 * half,
-                },
-            );
+            self.regions[graphic.0 as usize] = Some(Region {
+                u: origin_x as f32 / atlas + half,
+                v: origin_y as f32 / atlas + half,
+                du: f32::from(image.width()) / atlas - 2.0 * half,
+                dv: f32::from(image.height()) / atlas - 2.0 * half,
+            });
+            self.packed += 1;
         }
 
         Ok(())
@@ -700,12 +741,12 @@ impl TexmapAtlas {
 
     /// How many graphics landed in it.
     pub fn len(&self) -> usize {
-        self.regions.len()
+        self.packed as usize
     }
 
     /// Whether nothing did.
     pub fn is_empty(&self) -> bool {
-        self.regions.is_empty()
+        self.packed == 0
     }
 
     /// Where to sample a graphic's texture, or `None` if it has none.
@@ -717,8 +758,9 @@ impl TexmapAtlas {
     /// `None` is the common answer and means "draw this tile from its art",
     /// which is what the client does with a tile whose texture is missing — see
     /// `ground.wgsl`.
+    /// One indexed load, deliberately — see [`Self::regions`].
     pub fn region(&self, graphic: Graphic) -> Option<Region> {
-        self.regions.get(&graphic).copied()
+        self.regions[graphic.0 as usize]
     }
 }
 

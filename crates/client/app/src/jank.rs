@@ -44,6 +44,18 @@ pub(crate) struct CpuPasses {
     pub static_walk: Duration,
     pub static_sort: Duration,
     pub items: Duration,
+    /// Copying map-static geometry in or out of the static-geometry cache.
+    pub static_cache_copy: Duration,
+    /// `sprite::split_corners` over the map statics and the server items.
+    pub split_corners: Duration,
+    /// The selection, outline and crowd collectors after the frame is
+    /// assembled.
+    pub overlays: Duration,
+    /// How much world this frame is made of. A phase timing cannot be read
+    /// without them — see [`crate::frame_geometry::GeometryCosts`].
+    pub ground_quads: usize,
+    pub static_rows: usize,
+    pub item_rows: usize,
     pub encode: Duration,
     pub encode_ground: Duration,
     pub encode_composites: Duration,
@@ -117,6 +129,9 @@ pub fn record(frame: Frame, cpu: CpuPasses, atlas: AtlasWork, gpu_passes: &[Pass
         ("static_walk", ms(cpu.static_walk)),
         ("static_sort", ms(cpu.static_sort)),
         ("items", ms(cpu.items)),
+        ("static_cache_copy", ms(cpu.static_cache_copy)),
+        ("split_corners", ms(cpu.split_corners)),
+        ("overlays", ms(cpu.overlays)),
         ("encode", ms(cpu.encode)),
         ("encode_ground", ms(cpu.encode_ground)),
         ("encode_composites", ms(cpu.encode_composites)),
@@ -139,7 +154,7 @@ pub fn record(frame: Frame, cpu: CpuPasses, atlas: AtlasWork, gpu_passes: &[Pass
             let _ = writeln!(
                 log,
                 "jank frame budget_ms={:.3} interval_ms={:.3} build_ms={:.3} ui_ms={:.3} \
-                 scene_ms={:.3} wait_ms={:.3} gpu_ms={gpu_ms:?} repacked={} atlas_uploaded_bytes={} composite_blocks={} composite_bindings_created={} composite_bindings_reused={} static_animated={} atlas_overflowed={atlas_overflowed:?} atlas_packed_graphics={atlas_packed_graphics:?} atlas_newly_requested_graphics={atlas_newly_requested_graphics:?} cpu_passes={cpu_passes:?} gpu_passes={passes:?}",
+                 scene_ms={:.3} wait_ms={:.3} gpu_ms={gpu_ms:?} repacked={} atlas_uploaded_bytes={} ground_quads={} static_rows={} item_rows={} composite_blocks={} composite_bindings_created={} composite_bindings_reused={} static_animated={} atlas_overflowed={atlas_overflowed:?} atlas_packed_graphics={atlas_packed_graphics:?} atlas_newly_requested_graphics={atlas_newly_requested_graphics:?} cpu_passes={cpu_passes:?} gpu_passes={passes:?}",
                 ms(JANK_BUDGET),
                 ms(frame.interval),
                 ms(frame.build()),
@@ -148,6 +163,9 @@ pub fn record(frame: Frame, cpu: CpuPasses, atlas: AtlasWork, gpu_passes: &[Pass
                 ms(frame.wait),
                 frame.repacked,
                 atlas.uploaded_bytes,
+                cpu.ground_quads,
+                cpu.static_rows,
+                cpu.item_rows,
                 cpu.composite_blocks,
                 cpu.composite_bindings_created,
                 cpu.composite_bindings_reused,
@@ -171,6 +189,9 @@ pub fn record(frame: Frame, cpu: CpuPasses, atlas: AtlasWork, gpu_passes: &[Pass
         gpu_ms = ?gpu_ms,
         repacked = frame.repacked,
         atlas_uploaded_bytes = atlas.uploaded_bytes,
+        ground_quads = cpu.ground_quads,
+        static_rows = cpu.static_rows,
+        item_rows = cpu.item_rows,
         atlas_overflowed = ?atlas_overflowed,
         atlas_packed_graphics = ?atlas_packed_graphics,
         atlas_newly_requested_graphics = ?atlas_newly_requested_graphics,

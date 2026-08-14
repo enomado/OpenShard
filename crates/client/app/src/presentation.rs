@@ -2069,6 +2069,7 @@ impl App {
         );
         let geometry_cost = geometry_started.elapsed();
         let assembly_costs = geometry.assembly_costs;
+        let geometry_costs = geometry.geometry_costs;
         // `geometry` is kept whole rather than destructured here: it travels
         // to `encode_world_passes` and, on the F12 path below, to the dump —
         // both read it as the one value `assemble_geometry` built, not as a
@@ -2610,6 +2611,12 @@ impl App {
                     static_walk: assembly_costs.static_walk,
                     static_sort: assembly_costs.static_sort,
                     items: assembly_costs.items,
+                    static_cache_copy: geometry_costs.static_cache_copy,
+                    split_corners: geometry_costs.split,
+                    overlays: geometry_costs.overlays,
+                    ground_quads: geometry_costs.ground_quads,
+                    static_rows: geometry_costs.static_rows,
+                    item_rows: geometry_costs.item_rows,
                     encode: encode_cost,
                     encode_ground: world_pass_audit.cpu_ground,
                     encode_composites: world_pass_audit.cpu_composites,

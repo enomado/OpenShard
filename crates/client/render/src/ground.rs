@@ -8,7 +8,7 @@ use std::collections::BTreeSet;
 
 use openshard_protocol::wire::Graphic;
 use openshard_protocol::world::Point;
-use openshard_uofiles::map::Map;
+use openshard_uofiles::map::{LandCell, Map};
 
 use crate::atlas::{LandAtlas, Region, TexmapAtlas};
 use crate::camera::{Camera, TileBounds};
@@ -188,10 +188,17 @@ pub fn collect_in(
     let Some((xs, ys)) = bounds.clamp_to(map.width(), map.height()) else {
         return Vec::new();
     };
-    let mut quads = Vec::new();
-    let mut diagonal: Vec<(depth::Order, GroundQuad)> = Vec::new();
     let (min_x, max_x) = (i32::from(*xs.start()), i32::from(*xs.end()));
     let (min_y, max_y) = (i32::from(*ys.start()), i32::from(*ys.end()));
+    // The whole rectangle, in the order the map is stored, before the walk
+    // below reads it in the order the screen wants — see [`LandWindow`].
+    let land = LandWindow::gather(map, min_x, min_y, max_x, max_y);
+    // Sized from the rectangle rather than grown: the count is known exactly
+    // (minus whatever is off-map or cut away), and a far-zoom frame would
+    // otherwise reallocate a list of tens of thousands of quads fifteen times
+    // on its way up.
+    let mut quads = Vec::with_capacity(((max_x - min_x + 1) * (max_y - min_y + 1)).max(0) as usize);
+    let mut diagonal: Vec<(depth::Order, GroundQuad)> = Vec::new();
 
     // `Order`'s primary key is `x + y`, so walking the rectangle by diagonals
     // already gives the global depth order. The old whole-frame stable sort did
@@ -204,14 +211,14 @@ pub fn collect_in(
         let last_y = max_y.min(tile - min_x);
         for y in first_y..=last_y {
             let x = tile - y;
-            let (x, y) = (x as u16, y as u16);
-            let Some(cell) = map.land(x, y) else {
+            let Some(cell) = land.at(x, y) else {
                 continue;
             };
             if !cutaway.shows_land(cell.z) {
                 continue;
             }
-            let corners = corner_heights(map, x, y, cell.z);
+            let corners = land.corners(x, y, cell.z);
+            let (x, y) = (x as u16, y as u16);
             let at = camera.to_screen(Point::new(x, y, 0));
             let Some(region) = atlas.region(Graphic(cell.tile.0)) else {
                 continue;
@@ -247,6 +254,92 @@ pub fn collect_in(
         quads.extend(diagonal.drain(..).map(|(_, quad)| quad));
     }
     quads
+}
+
+/// The land of one tile rectangle, copied out of the map row-major.
+///
+/// **A copy, and it is what the ground pass costs.** [`Map`] stores its cells in
+/// 8×8 blocks laid out column-major (see `Map::cell_index`), so two tiles that
+/// are neighbours on screen can be hundreds of kilobytes apart in memory — and
+/// the walk below is by *anti-diagonal*, which steps `(x + 1, y - 1)` and so
+/// leaves its block on almost every tile. Each of those is a cache miss, and a
+/// tile takes four of them: its own cell and the three neighbours its corner
+/// heights read.
+///
+/// Read once in the order the map is laid out and the whole visible rectangle
+/// is a few thousand sequential lines instead of a hundred thousand scattered
+/// ones, into a buffer small enough to stay in L2 for the walk that follows —
+/// 26,732 tiles at the widest zoom is about 160 KB here.
+///
+/// It holds no policy: [`Self::at`] answers exactly what [`Map::land`] would and
+/// [`Self::corners`] exactly what [`Map::land_corners`] would, off-map edges
+/// included. Nothing about the picture changes.
+struct LandWindow {
+    /// The north-west tile of the rectangle held.
+    min_x: i32,
+    min_y: i32,
+    /// Its extent in tiles. One column and one row wider than the tiles drawn
+    /// from it, because a tile's corner heights are its east and south
+    /// neighbours' — clamped where that fringe would leave the map.
+    width: usize,
+    height: usize,
+    /// Row-major over that extent. `None` is a tile the map has no cell for,
+    /// which is off its edge.
+    cells: Vec<Option<LandCell>>,
+}
+
+impl LandWindow {
+    /// Copy the inclusive rectangle `(min_x, min_y)..=(max_x, max_y)`, plus the
+    /// one east column and south row the corner heights read.
+    ///
+    /// The gather is row-major on purpose: within one 8×8 block a row of tiles
+    /// is contiguous, and eight consecutive rows revisit the same handful of
+    /// blocks, so the whole read stays in L1 as it sweeps.
+    fn gather(map: &Map, min_x: i32, min_y: i32, max_x: i32, max_y: i32) -> Self {
+        let width = (max_x - min_x + 2).max(0) as usize;
+        let height = (max_y - min_y + 2).max(0) as usize;
+        let mut cells = Vec::with_capacity(width * height);
+        for y in 0..height {
+            let map_y = min_y + y as i32;
+            for x in 0..width {
+                let map_x = min_x + x as i32;
+                // `u16::try_from` rather than a cast: the bounds may be
+                // negative (the camera does not know where the map ends) and a
+                // wrapping cast would fetch a tile from the far side of it.
+                let cell = match (u16::try_from(map_x), u16::try_from(map_y)) {
+                    (Ok(map_x), Ok(map_y)) => map.land(map_x, map_y),
+                    _ => None,
+                };
+                cells.push(cell);
+            }
+        }
+        Self {
+            min_x,
+            min_y,
+            width,
+            height,
+            cells,
+        }
+    }
+
+    /// The cell at a map tile, or `None` off the map or outside the window.
+    fn at(&self, x: i32, y: i32) -> Option<LandCell> {
+        let (column, row) = (x - self.min_x, y - self.min_y);
+        if column < 0 || row < 0 || column as usize >= self.width || row as usize >= self.height {
+            return None;
+        }
+        self.cells[row as usize * self.width + column as usize]
+    }
+
+    /// [`corner_heights`] out of the window instead of the map.
+    ///
+    /// The fallback to `own` is [`Map::land_corners`]'s own, for its own
+    /// reason: a neighbour off the map has no height to average, so the tile
+    /// stands level along that edge rather than falling to zero.
+    fn corners(&self, x: i32, y: i32, own: i8) -> [f32; 4] {
+        let at = |x: i32, y: i32| self.at(x, y).map_or(own, |cell| cell.z);
+        [own, at(x + 1, y), at(x, y + 1), at(x + 1, y + 1)].map(f32::from)
+    }
 }
 
 /// The heights of a tile's four corners, in [`GroundQuad::corners`] order.
@@ -691,5 +784,41 @@ mod tests {
             ],
             "the two corners past the edge stand in; the one south of it does not"
         );
+    }
+
+    /// [`LandWindow`] is a copy made for speed, so the only thing that makes it
+    /// safe is that it answers what the map answers — everywhere, including the
+    /// places where "what the map answers" is a fallback rather than a cell.
+    ///
+    /// The rectangle deliberately starts off the map's north-west corner and
+    /// ends past its south-east one: negative coordinates and a fringe with no
+    /// cell behind it are exactly where a window built out of casts and
+    /// unchecked indices would quietly answer with somebody else's tile.
+    #[test]
+    fn the_land_window_answers_what_the_map_answers() {
+        let map = hillside();
+        let (min_x, min_y, max_x, max_y) = (-3, -2, 66, 65);
+        let window = LandWindow::gather(&map, min_x, min_y, max_x, max_y);
+
+        let mut cells = 0;
+        for y in min_y..=max_y {
+            for x in min_x..=max_x {
+                let expected = match (u16::try_from(x), u16::try_from(y)) {
+                    (Ok(x), Ok(y)) => map.land(x, y),
+                    _ => None,
+                };
+                assert_eq!(window.at(x, y), expected, "the cell at ({x}, {y})");
+                let Some(cell) = expected else {
+                    continue;
+                };
+                cells += 1;
+                assert_eq!(
+                    window.corners(x, y, cell.z),
+                    corner_heights(&map, x as u16, y as u16, cell.z),
+                    "the corners at ({x}, {y})",
+                );
+            }
+        }
+        assert_eq!(cells, 64 * 64, "the fixture's every tile was covered");
     }
 }

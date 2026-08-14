@@ -751,7 +751,7 @@ pub(crate) fn encode_world_passes(
     if composite_lod == BlockLod::Lod0 && !ready.is_empty() {
         tracing::error!(?audit, "LOD0 world pass selected cached map blocks");
     }
-    let map_statics = geometry.detail_map_statics(&cached_blocks);
+    let (map_static_rows, map_statics_drawn) = geometry.detail_map_statics(&cached_blocks);
     // The ordinary all-live path clears and draws at once. With a cache, clear
     // first but defer the live slope/rim rows until after restore: their exact
     // current-frame depth must be able to beat a neighbouring cached flat tile
@@ -828,9 +828,9 @@ pub(crate) fn encode_world_passes(
         &window.queue,
         encoder,
         target,
-        &map_statics.rows,
+        map_static_rows,
         &geometry.mesh.boxes,
-        Some(map_statics.drawn),
+        Some(map_statics_drawn),
     );
     profile::end(window.gpu.as_ref(), encoder, timed);
     let cpu_statics = statics_started.elapsed();

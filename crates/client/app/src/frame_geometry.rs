@@ -8,12 +8,13 @@
 
 use openshard_client_render::camera::Camera;
 use openshard_client_render::cutaway::Cutaway;
+use std::borrow::Cow;
 use std::collections::BTreeSet;
 
 use openshard_client_render::composite::MapBlock;
 use openshard_client_render::frame::{self, Impostor};
 use openshard_client_render::mobiles::Mobile;
-use openshard_client_render::sprite::{InstanceRows, SpriteQuad, split_corners};
+use openshard_client_render::sprite::{SpriteQuad, split_corners};
 use openshard_client_render::{ground, items, light, mobiles, statics};
 
 use crate::crowd::Who;
@@ -39,12 +40,45 @@ fn items_fingerprint(items: &[openshard_client_render::items::GroundItem]) -> u6
     hash
 }
 
+/// What [`assemble_geometry`] spends *outside* `frame::assemble`, and how much
+/// world the frame is made of.
+///
+/// `frame::AssemblyCosts` accounts for the map walks; these are the steps this
+/// module adds around them, plus the two counts that say whether a millisecond
+/// here is a lot of work or a slow loop. Without the counts a phase timing
+/// cannot be read: three milliseconds over forty thousand quads and three
+/// milliseconds over four hundred are different defects.
+///
+/// They are sequential sub-phases of the one `geometry` timer the jank record
+/// already carries and must not be added to it a second time.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct GeometryCosts {
+    /// Copying the map-static geometry into or out of
+    /// [`world::StaticGeometryCache`]. Paid on every frame, whichever way the
+    /// cache went: a hit copies out, a miss copies in.
+    pub(crate) static_cache_copy: std::time::Duration,
+    /// [`split_corners`] over the map statics and the server items.
+    pub(crate) split: std::time::Duration,
+    /// The selection, outline and crowd collectors that run after the frame is
+    /// assembled — `statics::selected`, both `items::outlined` calls, both
+    /// `mobiles::outlined` calls and `mobiles::collect`.
+    pub(crate) overlays: std::time::Duration,
+    /// Ground quads the frame assembled, cached blocks not yet removed.
+    pub(crate) ground_quads: usize,
+    /// Map-static instance rows, after `split_corners` appended its shadows.
+    pub(crate) static_rows: usize,
+    /// Server-item instance rows, the same way.
+    pub(crate) item_rows: usize,
+}
+
 /// Everything `frame::assemble` and its neighbours collected for one frame —
 /// see [`assemble_geometry`]'s own doc.
 pub(crate) struct FrameGeometry {
     /// The map-walk portion of this frame's CPU cost. It travels with the
     /// geometry solely so the app can put it into a jank record.
     pub(crate) assembly_costs: frame::AssemblyCosts,
+    /// The same, for the steps this module adds around that walk.
+    pub(crate) geometry_costs: GeometryCosts,
     /// The flames, the grid they are occluded by, the ambient, and the two
     /// per-fragment knobs the lighting pass reads — `frame::assemble`'s own.
     pub(crate) lighting: light::Lighting,
@@ -90,8 +124,19 @@ pub(crate) struct FrameGeometry {
 impl FrameGeometry {
     /// The source map still assembled these quads for picking and for a cache
     /// miss; this is only the final draw list.
-    pub(crate) fn detail_ground(&self, cached: &BTreeSet<MapBlock>) -> Vec<ground::GroundQuad> {
-        self.quads
+    ///
+    /// Borrowed whenever no block is cached, which is every LOD0 frame and
+    /// every far-zoom frame whose composites are still pending: the filter
+    /// below then keeps every quad, so building a second list is tens of
+    /// thousands of copies per frame that answer identically to `self.quads`.
+    /// The owned arm is the cached-block case, where the list really is
+    /// shorter than the one assembled.
+    pub(crate) fn detail_ground(&self, cached: &BTreeSet<MapBlock>) -> Cow<'_, [ground::GroundQuad]> {
+        if cached.is_empty() {
+            return Cow::Borrowed(&self.quads);
+        }
+        let kept: Vec<ground::GroundQuad> = self
+            .quads
             .iter()
             .copied()
             .filter(|quad| {
@@ -112,18 +157,22 @@ impl FrameGeometry {
                     || quad.place.y % openshard_uofiles::map::BLOCK_SIZE as u16
                         == openshard_uofiles::map::BLOCK_SIZE as u16 - 1
             })
-            .collect()
+            .collect();
+        Cow::Owned(kept)
     }
 
     /// Map statics stay live even when their ground block is cached. A roof's
     /// sprite may rise beyond the fixed capture footprint of its 8×8 base
     /// block; keeping all such rows in this one current-frame owner preserves
     /// their depth order with every neighbouring cached ground tile.
-    pub(crate) fn detail_map_statics(&self, _cached: &BTreeSet<MapBlock>) -> InstanceRows {
-        InstanceRows {
-            rows: self.map_static_instances.rows.clone(),
-            drawn: self.map_static_instances.drawn,
-        }
+    ///
+    /// Borrowed, and the `cached` parameter is what says why it can be: no
+    /// block ever removes a static row, so the answer *is*
+    /// `map_static_instances` and copying it would be one whole instance list
+    /// per frame — the far-zoom case is tens of thousands of rows — handed to
+    /// a pass that only reads it.
+    pub(crate) fn detail_map_statics(&self, _cached: &BTreeSet<MapBlock>) -> (&[SpriteQuad], u32) {
+        (&self.map_static_instances.rows, self.map_static_instances.drawn)
     }
 }
 
@@ -324,6 +373,11 @@ pub(crate) fn assemble_geometry(
         mut map_statics,
         items: mut item_geometry,
     } = assembled;
+    let mut costs = GeometryCosts {
+        ground_quads: quads.len(),
+        ..GeometryCosts::default()
+    };
+    let cache_copy_started = std::time::Instant::now();
     if let Some(cached) = reusable_map_statics {
         map_statics = cached;
     } else if graphics.drawing.statics && world.presentation.cutaway_fades.is_empty() {
@@ -340,8 +394,10 @@ pub(crate) fn assemble_geometry(
     } else {
         world.presentation.static_geometry_cache = None;
     }
+    costs.static_cache_copy = cache_copy_started.elapsed();
     // The opaque lists stay split, but the private cutaway target has one
     // depth/G-buffer and therefore needs both producers in the same call.
+    let split_started = std::time::Instant::now();
     let item_instances = split_corners(std::mem::take(&mut item_geometry.quads));
     map_statics.absorb_cutaway(item_geometry);
     let statics::StaticGeometry {
@@ -358,6 +414,15 @@ pub(crate) fn assemble_geometry(
         boxes,
     };
 
+    // A corner static's two faces get their own id past this point — see
+    // `docs/gbuffer.md` step 4 and `sprite::split_corners`'s own doc.
+    let map_static_instances = split_corners(map_static_quads);
+    let cutaway_instances = split_corners(cutaway_quads);
+    costs.split = split_started.elapsed();
+    costs.static_rows = map_static_instances.rows.len();
+    costs.item_rows = item_instances.rows.len();
+
+    let overlays_started = std::time::Instant::now();
     // What a click is holding, placed exactly as the picture placed it —
     // `statics::selected` is `statics::collect`'s own arithmetic — so the
     // mask lands on the wall's pixels rather than beside them. Empty on
@@ -395,10 +460,6 @@ pub(crate) fn assemble_geometry(
         cutaway,
         held_item,
     );
-    // A corner static's two faces get their own id past this point — see
-    // `docs/gbuffer.md` step 4 and `sprite::split_corners`'s own doc.
-    let map_static_instances = split_corners(map_static_quads);
-    let cutaway_instances = split_corners(cutaway_quads);
     // The same two effects for a creature, off the same style switch and
     // the same one-pick-a-frame rule: `lit_mobile` and `lit_item` are never
     // both `Some` (see where they are asked), so exactly one of the four
@@ -431,8 +492,10 @@ pub(crate) fn assemble_geometry(
         &resources.equip_conv,
         mobile_hued,
     );
+    costs.overlays = overlays_started.elapsed();
     FrameGeometry {
         assembly_costs,
+        geometry_costs: costs,
         lighting,
         quads,
         map_static_instances,
