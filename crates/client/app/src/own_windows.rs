@@ -160,6 +160,9 @@ impl App {
         else {
             return false;
         };
+        let openshard_protocol::items::WorldItemPayload::Stack(amount) = item.payload else {
+            return false;
+        };
         // A ground sprite has no gump-local grab point. Once it becomes a
         // cursor icon, anchor its visual centre to the pointer; that same
         // offset is used if it is released into a container.
@@ -176,7 +179,7 @@ impl App {
                 item: ContainedItem {
                     serial,
                     graphic: item.graphic,
-                    amount: item.amount.0,
+                    amount,
                     // A ground item has no gump position. It becomes relevant only
                     // after a drop, which supplies a real one.
                     at: GumpPoint::new(0, 0),
@@ -545,12 +548,12 @@ impl App {
                         .as_ref()
                         .map(|view| {
                             if let Some(sale) = view.vendor_sells.get(&vendor) {
-                                sale.lines.get(row).map_or(0, |line| line.amount)
+                                sale.lines.get(row).map_or(0, |line| line.amount.0)
                             } else {
                                 view.contents
                                     .get(&view.vendor_buys[&vendor].container)
                                     .and_then(|items| items.get(row))
-                                    .map_or(0, |item| item.amount)
+                                    .map_or(0, |item| item.amount.0)
                             }
                         })
                         .unwrap_or(0);
@@ -712,7 +715,7 @@ impl App {
                             item: ContainedItem {
                                 serial: item.serial,
                                 graphic: item.graphic,
-                                amount: 1,
+                                amount: openshard_protocol::items::ItemAmount(1),
                                 at: GumpPoint::new(0, 0),
                                 grid: Default::default(),
                                 hue: item.hue,

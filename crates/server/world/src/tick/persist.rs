@@ -357,7 +357,13 @@ impl World {
     ) -> Option<ItemRecord> {
         let serial = registry.serial_of(item)?;
         let graphic = registry.get::<Drawn>(item)?;
-        let amount = registry.get::<Amount>(item).map_or(1, |a| a.0);
+        let amount = if graphic.id == openshard_state::components::CORPSE_GRAPHIC {
+            registry
+                .get::<openshard_state::components::CorpseBody>(item)
+                .map_or(1, |body| body.0.0)
+        } else {
+            registry.get::<Amount>(item).map_or(1, |amount| amount.0)
+        };
         let container_gump = registry.get::<Container>(item).map(|c| c.gump.0);
         Some(ItemRecord {
             serial,
@@ -1046,7 +1052,12 @@ impl World {
         );
         self.state.registry.insert(entity, Position(position));
         self.state.registry.insert(entity, facet);
-        if record.amount > 1 {
+        if record.graphic == openshard_state::components::CORPSE_GRAPHIC.0 {
+            self.state.registry.insert(
+                entity,
+                openshard_state::components::CorpseBody(Graphic(record.amount)),
+            );
+        } else if record.amount > 1 {
             self.state.registry.insert(entity, Amount(record.amount));
         }
         // Gold has always been currency, including a pile of one.  Older
@@ -1142,7 +1153,12 @@ impl World {
                     hue: Hue(record.hue),
                 },
             );
-            if record.amount > 1 {
+            if record.graphic == openshard_state::components::CORPSE_GRAPHIC.0 {
+                self.state.registry.insert(
+                    entity,
+                    openshard_state::components::CorpseBody(Graphic(record.amount)),
+                );
+            } else if record.amount > 1 {
                 self.state.registry.insert(entity, Amount(record.amount));
             }
             // See `place_ground_item`: a historical lone gold coin still

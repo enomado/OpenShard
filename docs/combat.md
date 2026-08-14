@@ -178,7 +178,7 @@ facing the same way. So:
 - Client: `view::Item::direction: Option<Facing>` carried through unchanged.
 
 **D11. A corpse is drawn out of `anim.mul`, and item `0x2006`'s own art is never
-shown.** The body is the item's `amount` (the server already puts it there), the
+shown.** The body is the item's `WorldItemPayload::CorpseBody`, the
 group is the death group for that body's `BodyKind` — Human `21`, Animal `8`,
 Monster `2`, all `Die1` — the direction is D10's, and the frame is **the
 animation played once and then held on its last frame**: `Item.ProcessAnimation`

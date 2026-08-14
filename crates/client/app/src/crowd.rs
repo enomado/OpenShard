@@ -303,10 +303,19 @@ struct Tracked {
     war: bool,
     /// Whether this is an item corpse rather than a living mobile.
     ///
-    /// Corpses borrow the mobile renderer because `0x2006`'s amount is a body
+    /// Corpses borrow the mobile renderer because `0x2006`'s payload is a body
     /// id, not a stack count. Unlike a live body they hold the final frame of
     /// their death group forever.
     corpse: bool,
+    /// Whether a newly-created corpse is still playing the death that made it.
+    ///
+    /// Combat sends the death animation immediately before the world tick
+    /// replaces a creature with its corpse item.  The two packets normally
+    /// reach one presentation batch, so drawing the corpse's final frame right
+    /// away erases the animation before a frame can show it.  This flag keeps
+    /// the copied action alive under the corpse item's serial, then turns it
+    /// into the ordinary held corpse pose when the action finishes.
+    settles_as_corpse: bool,
     /// Which animation group is playing.
     group: AnimationGroup,
     /// The step it is in the middle of.
@@ -495,8 +504,16 @@ impl Crowd {
             };
             if action_done {
                 tracked.action = None;
-                let standing = tracked.standing_group();
-                tracked.change_to(standing);
+                if tracked.settles_as_corpse {
+                    tracked.settles_as_corpse = false;
+                    tracked.corpse = true;
+                    // The action was already the body's Die1 group.  Leaving
+                    // that group in place makes `frame_for` hold its last
+                    // frame from now on.
+                } else {
+                    let standing = tracked.standing_group();
+                    tracked.change_to(standing);
+                }
             }
             // Only the part of the span the body was actually covering ground
             // in — see [`Tracked::mid_stride`]. Not a whole-span test against
@@ -552,6 +569,7 @@ impl Crowd {
             body,
             war,
             corpse: false,
+            settles_as_corpse: false,
             // A body first heard of is standing: it may well be mid-stride, but
             // the only thing that could say so is a previous packet and there
             // is none. In the stance the packet stated, which for a body that
@@ -733,6 +751,7 @@ impl Crowd {
             body,
             war,
             corpse: false,
+            settles_as_corpse: false,
             group: match war {
                 true => kind.standing_at_war().unwrap_or(kind.standing()),
                 false => kind.standing(),
@@ -835,7 +854,7 @@ impl Crowd {
 
     /// Project an item corpse through the mobile renderer.
     ///
-    /// The server sends a corpse as item `0x2006`; its amount is the dead
+    /// The server sends a corpse as item `0x2006`; its payload is the dead
     /// body's graphic. Static art has no picture for that protocol marker, so
     /// the corpse instead holds the last frame of that body's `Die1` group.
     /// Direction is not yet carried by `WorldItem`, hence the stable southeast
@@ -843,24 +862,76 @@ impl Crowd {
     pub fn corpse(&mut self, who: Who, at: Point, body: Graphic, hue: Hue) -> Mobile {
         let facing = Facing::walking(Direction::SouthEast);
         let group = BodyKind::of(body).dying();
-        let tracked = self.tracked.entry(who).or_insert(Tracked {
-            at,
-            facing: facing.direction,
-            body,
-            war: false,
-            corpse: true,
-            group,
-            step: None,
-            stepped_at: None,
-            drawn: Gaze::on(at),
-            clock: AnimationClock::default(),
-            action: None,
+        // Move a just-started death action to the corpse item's identity.  The
+        // live mobile was removed from `WorldView` in the same tick, so keeping
+        // it under its old serial would make `retain` discard it before it drew.
+        // Body and tile make a sufficiently exact hand-off: a death action is
+        // a one-shot Die1 group, and the corpse is laid exactly where it fell.
+        let dying = self.tracked.iter().find_map(|(serial, tracked)| {
+            (*serial != who
+                && !tracked.corpse
+                && tracked.at == at
+                && tracked.body == body
+                && tracked.group == group
+                && tracked.action.is_some())
+            .then_some(*tracked)
         });
+        let tracked = self.tracked.entry(who).or_insert_with(|| {
+            dying.map_or(
+                Tracked {
+                    at,
+                    facing: facing.direction,
+                    body,
+                    war: false,
+                    corpse: true,
+                    settles_as_corpse: false,
+                    group,
+                    step: None,
+                    stepped_at: None,
+                    drawn: Gaze::on(at),
+                    clock: AnimationClock::default(),
+                    action: None,
+                },
+                |dying| Tracked {
+                    at,
+                    body,
+                    war: false,
+                    corpse: false,
+                    settles_as_corpse: true,
+                    group,
+                    step: None,
+                    stepped_at: None,
+                    drawn: Gaze::on(at),
+                    // The death action owns the cadence; the ordinary clock is
+                    // not consulted until it has become a held corpse.
+                    clock: dying.clock,
+                    facing: dying.facing,
+                    action: dying.action,
+                },
+            )
+        });
+        // A corpse stays in this state across ordinary redraw-triggering world
+        // updates.  In particular, do not replace an in-flight death with the
+        // final pose just because its item was mentioned again.
+        if tracked.settles_as_corpse {
+            return Mobile {
+                at,
+                body,
+                group: tracked.group,
+                facing: tracked.facing,
+                frame: AnimationFrameIndex(0),
+                from: None,
+                hue,
+                drawn: tracked.drawn,
+                equipment: Vec::new().into(),
+            };
+        }
         tracked.at = at;
         tracked.facing = facing.direction;
         tracked.body = body;
         tracked.war = false;
         tracked.corpse = true;
+        tracked.settles_as_corpse = false;
         tracked.step = None;
         tracked.stepped_at = None;
         tracked.drawn = Gaze::on(at);
@@ -2698,6 +2769,49 @@ mod tests {
             crowd.frame_for(serial(0x4000_0001), AnimationFrameCount(4)),
             3,
             "the final frame is the corpse pose"
+        );
+    }
+
+    #[test]
+    fn a_corpse_finishes_the_mobs_death_animation_before_holding_its_pose() {
+        let mut crowd = Crowd::default();
+        let at = Point::new(10, 10, 0);
+        let skeleton = Graphic(0x0038);
+        let mob = serial(1);
+        let corpse = serial(0x4000_0001);
+        crowd.see(
+            mob,
+            at,
+            skeleton,
+            Facing::walking(Direction::SouthEast),
+            Hue::NONE,
+            false,
+        );
+        crowd.play_new(NewAnimation {
+            serial: mob.expect("a real mobile serial"),
+            animation_type: 3,
+            action: 0,
+            delay: 80,
+        });
+
+        let falling = crowd.corpse(corpse, at, skeleton, Hue::NONE);
+        assert_eq!(falling.group, BodyKind::Monster.dying());
+        assert_eq!(
+            crowd.frame_for(corpse, AnimationFrameCount(4)),
+            0,
+            "the corpse starts at the first death frame rather than appearing already prone"
+        );
+        crowd.advance(Duration::from_millis(80));
+        assert_eq!(
+            crowd.frame_for(corpse, AnimationFrameCount(4)),
+            1,
+            "it advances through the death frames"
+        );
+        crowd.advance(Duration::from_millis(240));
+        assert_eq!(
+            crowd.frame_for(corpse, AnimationFrameCount(4)),
+            3,
+            "once finished it remains at the final corpse pose"
         );
     }
 

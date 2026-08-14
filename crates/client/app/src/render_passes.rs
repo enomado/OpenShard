@@ -441,15 +441,20 @@ pub(crate) fn draw_gump_windows(
                 gumps: files,
                 items: &resources.art,
             };
-            if let Err(error) = resources
-                .gump_atlas
-                .add(art_files, [gump_art::GumpArt::Item(drag.item.graphic)])
-            {
+            if let Err(error) = resources.gump_atlas.add(
+                art_files,
+                [gump_art::GumpArt::Item(
+                    openshard_client_render::items::displayed_graphic(drag.item.graphic, drag.item.amount),
+                )],
+            ) {
                 eprintln!("packing dragged item art: {error}");
             }
             pictures.push(
                 gump_art::Picture::plain(
-                    gump_art::GumpArt::Item(drag.item.graphic),
+                    gump_art::GumpArt::Item(openshard_client_render::items::displayed_graphic(
+                        drag.item.graphic,
+                        drag.item.amount,
+                    )),
                     gump_art::GumpPixel::new(cursor.x - drag.grab.x, cursor.y - drag.grab.y),
                 )
                 .hued(drag.item.hue),

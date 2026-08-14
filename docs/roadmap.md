@@ -887,7 +887,7 @@ Roughly in dependency order, each script-first:
   - [x] **Creature corpses and loot.** A slain creature no longer vanishes: the
     tick's `reap` (reading `MobileDied` — combat emits the death, the world
     disposes of the body) lays a corpse where it fell — item `0x2006` with
-    `Amount = body` (the protocol special case that draws the right corpse), a
+    `CorpseBody = body` (the protocol special case that draws the right corpse), a
     container on gump `0x0009` holding the creature's worn gear and a core gold
     drop scaled from its toughness. It decays after seven minutes and takes its
     loot down with it (`items::decay` now cascades into a container's contents, so

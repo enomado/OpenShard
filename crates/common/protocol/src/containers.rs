@@ -18,6 +18,7 @@ use crate::codec::{PacketReader, PacketWriter};
 use crate::error::DecodeError;
 use crate::feature::Feature;
 use crate::gump::GumpPoint;
+use crate::items::ItemAmount;
 use crate::packet::{DecodePacket, EncodePacket, PacketLength, frame_body};
 use crate::serial::{RawSerial, Serial};
 use crate::version::ClientVersion;
@@ -142,7 +143,7 @@ pub struct ContainedItem {
     /// Its graphic.
     pub graphic: Graphic,
     /// Its stack size.
-    pub amount: u16,
+    pub amount: ItemAmount,
     /// Where its icon sits inside the container's gump art.
     ///
     /// The pair N4 left on the allowlist for N5 to name: it is a gump
@@ -163,7 +164,7 @@ impl ContainedItem {
         writer.u32(self.serial.raw());
         writer.u16(self.graphic.0);
         writer.u8(0); // graphic offset, always zero
-        writer.u16(self.amount);
+        writer.u16(self.amount.0);
         writer.u16(self.at.x as u16);
         writer.u16(self.at.y as u16);
         if grid {
@@ -194,7 +195,7 @@ impl ContainedItem {
         })?;
         let graphic = Graphic(reader.u16()?);
         reader.u8()?; // graphic offset, always zero
-        let amount = reader.u16()?;
+        let amount = ItemAmount(reader.u16()?);
         let at = GumpPoint::new(i32::from(reader.u16()?), i32::from(reader.u16()?));
         let slot = if grid { GridSlot(reader.u8()?) } else { GridSlot(0) };
         let raw_container = reader.u32()?;
@@ -552,7 +553,7 @@ mod tests {
         let item = ContainedItem {
             serial: Serial::new(0x4000_0002).unwrap(),
             graphic: Graphic(0x0EED),
-            amount: 3,
+            amount: ItemAmount(3),
             at: GumpPoint::new(44, 65),
             grid: GridSlot(7),
             hue: Hue::NONE,
@@ -576,7 +577,7 @@ mod tests {
         let item = ContainedItem {
             serial: Serial::new(0x4000_0002).unwrap(),
             graphic: Graphic(0x0EED),
-            amount: 3,
+            amount: ItemAmount(3),
             at: GumpPoint::new(44, 65),
             grid: GridSlot(7),
             hue: Hue::NONE,
@@ -593,7 +594,7 @@ mod tests {
             ContainedItem {
                 serial: Serial::new(0x4000_0002).unwrap(),
                 graphic: Graphic(0x0EED),
-                amount: 1,
+                amount: ItemAmount(1),
                 at: GumpPoint::new(10, 10),
                 grid: GridSlot(0),
                 hue: Hue::NONE,
@@ -601,7 +602,7 @@ mod tests {
             ContainedItem {
                 serial: Serial::new(0x4000_0003).unwrap(),
                 graphic: Graphic(0x0F0E),
-                amount: 5,
+                amount: ItemAmount(5),
                 at: GumpPoint::new(20, 20),
                 grid: GridSlot(1),
                 hue: Hue(0x21),
@@ -626,7 +627,7 @@ mod tests {
         ContainedItem {
             serial: Serial::new(0x4000_0002).unwrap(),
             graphic: Graphic(0x0EED),
-            amount: 3,
+            amount: ItemAmount(3),
             at: GumpPoint::new(44, 65),
             grid: GridSlot(7),
             hue: Hue(0x21),

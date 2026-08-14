@@ -10,6 +10,7 @@
 
 use crate::codec::{PacketReader, PacketWriter};
 use crate::error::DecodeError;
+use crate::items::ItemAmount;
 use crate::packet::{DecodePacket, EncodePacket, PacketLength};
 use crate::serial::{RawSerial, Serial};
 use crate::version::ClientVersion;
@@ -106,7 +107,7 @@ pub struct Purchase {
     /// quantity, and the check that matters — is there that much on the
     /// shelf — exists today in `openshard_npc::vendor::buy`, which takes
     /// `have.min(purchase.amount)`.
-    pub amount: u16,
+    pub amount: ItemAmount,
 }
 
 /// `0x3B` decoded — the client's answer to the buy gump.
@@ -139,7 +140,7 @@ impl DecodePacket for BuyReply {
                 while reader.remaining() >= 7 {
                     let _layer = reader.u8()?;
                     let serial = RawSerial(reader.u32()?);
-                    let amount = reader.u16()?;
+                    let amount = ItemAmount(reader.u16()?);
                     purchases.push(Purchase { serial, amount });
                 }
             }
@@ -160,7 +161,7 @@ pub struct SellLine {
     pub hue: Hue,
     /// How many the player carries. A quantity, on N10's allowlist for
     /// [`Purchase::amount`]'s reason.
-    pub amount: u16,
+    pub amount: ItemAmount,
     /// What the vendor pays per unit. A quantity, on N10's allowlist for
     /// [`BuyLine::price`]'s reason.
     pub price: u16,
@@ -188,7 +189,7 @@ impl EncodePacket for SellList {
             out.u32(line.serial.raw());
             out.u16(line.graphic.0);
             out.u16(line.hue.0);
-            out.u16(line.amount);
+            out.u16(line.amount.0);
             out.u16(line.price);
             let name = line.name.as_bytes();
             let take = name.len().min(u16::MAX as usize);
@@ -223,7 +224,7 @@ impl DecodePacket for SellList {
             })?;
             let graphic = Graphic(reader.u16()?);
             let hue = Hue(reader.u16()?);
-            let amount = reader.u16()?;
+            let amount = ItemAmount(reader.u16()?);
             let price = reader.u16()?;
             let length = usize::from(reader.u16()?);
             let name = String::from_utf8_lossy(reader.bytes(length)?).into_owned();
@@ -247,7 +248,7 @@ pub struct Sale {
     pub serial: RawSerial,
     /// How many units the client let go. A quantity, on N10's allowlist for
     /// [`Purchase::amount`]'s reason.
-    pub amount: u16,
+    pub amount: ItemAmount,
 }
 
 /// `0x9F` decoded — the client's answer to the sell gump.
@@ -268,7 +269,7 @@ impl DecodePacket for SellReply {
         let mut sales = Vec::with_capacity(usize::from(count.min(64)));
         for _ in 0..count {
             let serial = RawSerial(reader.u32()?);
-            let amount = reader.u16()?;
+            let amount = ItemAmount(reader.u16()?);
             sales.push(Sale { serial, amount });
         }
         Ok(Self { vendor, sales })
@@ -331,7 +332,7 @@ mod tests {
             reply.purchases,
             vec![Purchase {
                 serial: RawSerial(0x4000_0020),
-                amount: 5
+                amount: ItemAmount(5)
             }]
         );
     }
@@ -355,7 +356,7 @@ mod tests {
                     serial: Serial::new(0x4000_0033).unwrap(),
                     graphic: Graphic(0x0F7A),
                     hue: Hue::NONE,
-                    amount: 20,
+                    amount: ItemAmount(20),
                     price: 2,
                     name: "black pearl".to_owned(),
                 }],
@@ -378,7 +379,7 @@ mod tests {
             reply.sales,
             vec![Sale {
                 serial: RawSerial(0x4000_0033),
-                amount: 10
+                amount: ItemAmount(10)
             }]
         );
     }

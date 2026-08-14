@@ -637,7 +637,7 @@ pub fn contained_record(state: &WorldState, entity: EntityId) -> Option<Containe
     Some(ContainedItem {
         serial,
         graphic: id,
-        amount,
+        amount: openshard_protocol::items::ItemAmount(amount),
         at: position,
         grid,
         hue,

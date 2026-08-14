@@ -380,7 +380,7 @@ pub fn buy(state: &mut WorldState, connection: ConnectionId, vendor_serial: RawS
             continue;
         }
         let have = state.registry.get::<Amount>(item).map_or(0, |a| a.0);
-        let take = have.min(purchase.amount);
+        let take = have.min(purchase.amount.0);
         if take == 0 {
             continue;
         }
@@ -472,7 +472,7 @@ pub fn offer_sell_list(state: &mut WorldState, connection: ConnectionId, actor: 
                 serial,
                 graphic: id,
                 hue,
-                amount,
+                amount: openshard_protocol::items::ItemAmount(amount),
                 price,
                 name,
             })
@@ -528,7 +528,7 @@ pub fn sell(state: &mut WorldState, connection: ConnectionId, vendor_serial: Raw
         let Some(&(_, price)) = catalogue.iter().find(|(g, _)| *g == id) else {
             continue;
         };
-        let taken = items::remove_from_stack(state, backpack, item, sale.amount);
+        let taken = items::remove_from_stack(state, backpack, item, sale.amount.0);
         earned = earned.saturating_add(u32::from(sell_price(price)) * u32::from(taken));
     }
     if earned == 0 {

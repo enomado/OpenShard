@@ -89,23 +89,13 @@ const ALLOWLIST: &[(&str, &str, &str)] = &[
     ("mobile.rs", "stat_cap", "MobileStatus: same"),
     ("mobile.rs", "followers", "MobileStatus: same"),
     ("mobile.rs", "followers_max", "MobileStatus: same"),
-    // -- stack sizes and gold: N4 amendments 8/9, N5 amendment 1 -----------
-    (
-        "containers.rs",
-        "amount",
-        "ContainedItem: a stack size, the MobileStatus quantity argument",
-    ),
-    ("items.rs", "amount", "WorldItem: the same stack size, outbound"),
-    ("items.rs", "amount", "PickUpItem: the same stack size, inbound"),
+    // -- gold: N5 amendment 1 ----------------------------------------------
     (
         "vendor.rs",
         "price",
         "BuyLine: gold, the MobileStatus::gold argument",
     ),
-    ("vendor.rs", "amount", "Purchase: a stack size"),
-    ("vendor.rs", "amount", "SellLine: same"),
     ("vendor.rs", "price", "SellLine: gold, same as BuyLine::price"),
-    ("vendor.rs", "amount", "Sale: same stack size"),
     // -- login's own quantities, and a type that is not a packet struct -----
     // N6 amendments 7/8
     // `percent_full` was on this list and is not any more: 100 is a ceiling

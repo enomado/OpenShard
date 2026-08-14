@@ -36,9 +36,9 @@ use openshard_protocol::world::{
 use openshard_protocol::{access::AccessLevel, feature::Feature, version::ClientVersion};
 
 use crate::components::{
-    Access, Amount, Body, Client, Combat, Contained, CraftedBy, Drawn, Equipped, Ghost, Heading, HearsGhosts,
-    Hidden, Hitpoints, InRegion, Meditating, Movement, Name, Position, Quality, Staff, Stealthing,
-    TradeWindow, body_opens_doors,
+    Access, Amount, Body, Client, Combat, Contained, CorpseBody, CraftedBy, Drawn, Equipped, Ghost, Heading,
+    HearsGhosts, Hidden, Hitpoints, InRegion, Meditating, Movement, Name, Position, Quality, Staff,
+    Stealthing, TradeWindow, body_opens_doors,
 };
 use crate::connection::Connection;
 use crate::dialogue::Dialogue;
@@ -1766,11 +1766,17 @@ impl WorldState {
         let Drawn { id, hue } = *self.registry.get::<Drawn>(entity)?;
         let Position(position) = *self.registry.get::<Position>(entity)?;
         // No `Amount` means a single. The encoder treats 1 and absent the same.
-        let amount = self.registry.get::<Amount>(entity).map_or(1, |a| a.0);
+        let payload = if id == crate::components::CORPSE_GRAPHIC {
+            let CorpseBody(body) = *self.registry.get::<CorpseBody>(entity)?;
+            openshard_protocol::items::WorldItemPayload::CorpseBody(body)
+        } else {
+            let amount = self.registry.get::<Amount>(entity).map_or(1, |a| a.0);
+            openshard_protocol::items::WorldItemPayload::Stack(openshard_protocol::items::ItemAmount(amount))
+        };
         Some(WorldItem {
             serial,
             graphic: id,
-            amount,
+            payload,
             position,
             hue,
         })

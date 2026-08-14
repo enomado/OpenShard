@@ -14,6 +14,7 @@ use openshard_client_render::control::Follow;
 use openshard_client_render::items::GroundItem;
 use openshard_client_render::mobiles;
 use openshard_movement::Terrain;
+use openshard_protocol::items::{CORPSE_GRAPHIC, WorldItemPayload};
 use openshard_protocol::localized;
 use openshard_protocol::server_packet::ServerPacket;
 use openshard_protocol::speech::LocalizedMessage;
@@ -24,11 +25,6 @@ use openshard_uofiles::cliloc::{Cliloc, ClilocNumber};
 use crate::app::App;
 use crate::world::{MotionRenderState, advance_presentation_to, cluttered};
 use crate::{clutter, crowd, link};
-
-/// The protocol's corpse marker. Its `WorldItem.amount` is a body graphic, not
-/// a stack size, and so it must be rendered from `anim.mul` rather than
-/// `art.mul`.
-const CORPSE_GRAPHIC: openshard_protocol::wire::Graphic = openshard_protocol::wire::Graphic(0x2006);
 
 /// Fold one locally predicted step into the presentation that ages it.
 ///
@@ -513,24 +509,25 @@ impl App {
             if Some(*serial) == lifted_ground {
                 continue;
             }
-            if item.graphic == CORPSE_GRAPHIC {
-                self.world.presentation.corpses.push((
-                    Some(*serial),
-                    self.world.presentation.crowd.corpse(
+            match item.payload {
+                WorldItemPayload::CorpseBody(body) => {
+                    self.world.presentation.corpses.push((
                         Some(*serial),
-                        item.position,
-                        openshard_protocol::wire::Graphic(item.amount.0),
-                        item.hue,
-                    ),
-                ));
-                continue;
+                        self.world
+                            .presentation
+                            .crowd
+                            .corpse(Some(*serial), item.position, body, item.hue),
+                    ));
+                }
+                WorldItemPayload::Stack(amount) => {
+                    self.world.presentation.items.push(GroundItem {
+                        at: item.position,
+                        graphic: openshard_client_render::items::displayed_graphic(item.graphic, amount),
+                        hue: item.hue,
+                    });
+                    self.world.presentation.item_serials.push(*serial);
+                }
             }
-            self.world.presentation.items.push(GroundItem {
-                at: item.position,
-                graphic: item.graphic,
-                hue: item.hue,
-            });
-            self.world.presentation.item_serials.push(*serial);
         }
         // The authoritative lift deliberately does not echo a removal back to
         // its owner. While a ground drop is pending, replace that suppressed
@@ -543,7 +540,10 @@ impl App {
         {
             self.world.presentation.items.push(GroundItem {
                 at,
-                graphic: drag.item.graphic,
+                graphic: openshard_client_render::items::displayed_graphic(
+                    drag.item.graphic,
+                    drag.item.amount,
+                ),
                 hue: drag.item.hue,
             });
             self.world.presentation.item_serials.push(drag.item.serial);

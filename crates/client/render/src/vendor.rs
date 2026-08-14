@@ -202,7 +202,7 @@ pub fn sell(
             name: line.name.clone(),
             price: u32::from(line.price),
             amount: amounts.get(i).copied().unwrap_or(0),
-            quantity: format!("{}/{}", amounts.get(i).copied().unwrap_or(0), line.amount),
+            quantity: format!("{}/{}", amounts.get(i).copied().unwrap_or(0), line.amount.0),
             graphic: Some(line.graphic),
             hue: line.hue,
         }),

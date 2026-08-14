@@ -30,6 +30,7 @@ use openshard_protocol::direction::Facing;
 use openshard_protocol::feedback::{Animation, NewAnimation};
 use openshard_protocol::gump::GumpId;
 use openshard_protocol::gump::GumpPoint;
+use openshard_protocol::items::ItemAmount;
 use openshard_protocol::serial::Serial;
 use openshard_protocol::target::TargetResponse;
 use openshard_protocol::version::ClientVersion;
@@ -391,7 +392,7 @@ impl Link {
     }
 
     /// Put an item from an open container onto the cursor.
-    pub fn pick_up_item(&self, item: Serial, amount: u16) {
+    pub fn pick_up_item(&self, item: Serial, amount: ItemAmount) {
         self.send(Command::Outgoing(Outgoing::PickUp { item, amount }));
     }
 
@@ -1079,7 +1080,7 @@ mod tests {
         let item = ContainedItem {
             serial: Serial::new(0x4000_0002).unwrap(),
             graphic: Graphic(0x0EED),
-            amount: 1,
+            amount: openshard_protocol::items::ItemAmount(1),
             at: GumpPoint { x: 20, y: 30 },
             grid: GridSlot(0),
             hue: Hue::NONE,

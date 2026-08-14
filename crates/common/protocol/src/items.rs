@@ -17,6 +17,41 @@ use crate::version::ClientVersion;
 use crate::wire::{Graphic, Hue, Layer, RawLayer};
 use crate::world::Point;
 
+/// How many units an item stack contains.
+///
+/// This is distinct from other `u16` quantities on the wire: a stack size can
+/// be sent in a world-item packet, requested by a drag, or listed by a vendor,
+/// but it is never a graphic id, a price, or a body id.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Default)]
+pub struct ItemAmount(pub u16);
+
+/// The value carried after a `WorldItem` graphic.
+///
+/// For ordinary items this is a stack size. UO reserves graphic `0x2006` as a
+/// corpse marker; for that one graphic the same wire word is the dead mobile's
+/// body graphic, which tells the client which death animation to draw.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum WorldItemPayload {
+    Stack(ItemAmount),
+    CorpseBody(Graphic),
+}
+
+impl WorldItemPayload {
+    const fn wire_value(self) -> u16 {
+        match self {
+            Self::Stack(amount) => amount.0,
+            Self::CorpseBody(body) => body.0,
+        }
+    }
+
+    const fn follows_graphic(self) -> bool {
+        match self {
+            Self::Stack(amount) => amount.0 > 1,
+            Self::CorpseBody(_) => true,
+        }
+    }
+}
+
 /// The serial a `0x08` drop carries when the item is going onto the ground
 /// rather than into a container or onto a mobile.
 ///
@@ -25,6 +60,10 @@ use crate::world::Point;
 /// that too — but a `0` container is a confused client, and `0xFFFFFFFF` is the
 /// floor. See `docs/protocol_newtypes.md` N3 amendment 4.
 pub const DROP_TO_GROUND: RawSerial = RawSerial(0xFFFF_FFFF);
+
+/// The item graphic that makes a `WorldItem` carry a corpse body instead of a
+/// stack amount.
+pub const CORPSE_GRAPHIC: Graphic = Graphic(0x2006);
 
 /// `0x1A` — draw an item on the ground the client has not seen. Variable length.
 ///
@@ -52,8 +91,8 @@ pub struct WorldItem {
     pub serial: Serial,
     /// Its graphic (tiledata id).
     pub graphic: Graphic,
-    /// How many are in the stack. 0 or 1 is a single item and sends no amount.
-    pub amount: u16,
+    /// Stack size, or the dead body's graphic for [`CORPSE_GRAPHIC`].
+    pub payload: WorldItemPayload,
     /// Where it lies.
     pub position: Point,
     /// Its hue, or [`Hue::NONE`] for none.
@@ -67,21 +106,21 @@ impl EncodePacket for WorldItem {
     fn encode_body(&self, out: &mut PacketWriter, _version: ClientVersion) {
         // A stack amount is only sent when there is more than one; the client
         // reads a lone item as a stack of one on its own.
-        let stacked = self.amount > 1;
+        let payload_follows = self.payload.follows_graphic();
         let hued = self.hue != Hue::NONE;
 
         // The amount bit rides on top of the serial. Masking it off in the
         // other branch is belt and braces: `Serial` cannot be built above the
         // item pool, so the bit is already clear.
-        let serial = if stacked {
+        let serial = if payload_follows {
             self.serial.raw() | 0x8000_0000
         } else {
             self.serial.raw() & 0x7FFF_FFFF
         };
         out.u32(serial);
         out.u16(self.graphic.0);
-        if stacked {
-            out.u16(self.amount);
+        if payload_follows {
+            out.u16(self.payload.wire_value());
         }
 
         // x keeps its low 15 bits; its top bit would mean a direction/light byte
@@ -116,7 +155,12 @@ impl DecodePacket for WorldItem {
             value: raw_serial,
         })?;
         let graphic = Graphic(reader.u16()?);
-        let amount = if stacked { reader.u16()? } else { 1 };
+        let value = if stacked { reader.u16()? } else { 1 };
+        let payload = if graphic == CORPSE_GRAPHIC {
+            WorldItemPayload::CorpseBody(Graphic(value))
+        } else {
+            WorldItemPayload::Stack(ItemAmount(value))
+        };
 
         let raw_x = reader.u16()?;
         if raw_x & 0x8000 != 0 {
@@ -142,7 +186,7 @@ impl DecodePacket for WorldItem {
         Ok(Self {
             serial,
             graphic,
-            amount,
+            payload,
             position: Point::new(raw_x, y, z),
             hue,
         })
@@ -159,7 +203,7 @@ pub struct PickUpItem {
     /// The item's serial.
     pub serial: RawSerial,
     /// How many to lift, for a stack.
-    pub amount: u16,
+    pub amount: ItemAmount,
 }
 
 impl DecodePacket for PickUpItem {
@@ -168,7 +212,7 @@ impl DecodePacket for PickUpItem {
     fn decode_body(reader: &mut PacketReader<'_>, _version: ClientVersion) -> Result<Self, DecodeError> {
         Ok(Self {
             serial: RawSerial(reader.u32()?),
-            amount: reader.u16()?,
+            amount: ItemAmount(reader.u16()?),
         })
     }
 }
@@ -497,7 +541,7 @@ mod tests {
             &WorldItem {
                 serial: item(),
                 graphic: Graphic(0x0EED), // a gold coin graphic
-                amount: 1,
+                payload: WorldItemPayload::Stack(ItemAmount(1)),
                 position: Point::new(1000, 2000, 5),
                 hue: Hue::NONE,
             },
@@ -523,7 +567,7 @@ mod tests {
             &WorldItem {
                 serial: Serial::new(0x4000_00AB).unwrap(),
                 graphic: Graphic(0x0EED),
-                amount: 500,
+                payload: WorldItemPayload::Stack(ItemAmount(500)),
                 position: Point::new(1000, 2000, 5),
                 hue: Hue(0x0021),
             },
@@ -547,6 +591,26 @@ mod tests {
     }
 
     #[test]
+    fn a_corpse_carries_its_body_in_the_stack_word() {
+        let corpse = WorldItem {
+            serial: item(),
+            graphic: CORPSE_GRAPHIC,
+            payload: WorldItemPayload::CorpseBody(Graphic(0x0190)),
+            position: Point::new(1000, 2000, 5),
+            hue: Hue::NONE,
+        };
+
+        let packet = encode_packet(&corpse, version());
+        assert_ne!(
+            u32::from_be_bytes(packet[3..7].try_into().unwrap()) & 0x8000_0000,
+            0
+        );
+        assert_eq!(&packet[9..11], &0x0190u16.to_be_bytes());
+        let mut reader = PacketReader::new(&packet[3..]);
+        assert_eq!(WorldItem::decode_body(&mut reader, version()).unwrap(), corpse);
+    }
+
+    #[test]
     fn a_high_z_survives_as_a_signed_byte() {
         // Underground and underwater are negative z; the client reads the byte
         // as signed, so -5 has to go out as 0xFB, not clamp to 0.
@@ -554,7 +618,7 @@ mod tests {
             &WorldItem {
                 serial: item(),
                 graphic: Graphic(0x0001),
-                amount: 1,
+                payload: WorldItemPayload::Stack(ItemAmount(1)),
                 position: Point::new(0, 0, -5),
                 hue: Hue::NONE,
             },
@@ -568,7 +632,7 @@ mod tests {
         let bytes = [0x07, 0x40, 0x00, 0x00, 0x2A, 0x00, 0x05];
         let pickup: PickUpItem = decode_packet(&bytes, version()).unwrap();
         assert_eq!(pickup.serial, RawSerial(0x4000_002A));
-        assert_eq!(pickup.amount, 5);
+        assert_eq!(pickup.amount, ItemAmount(5));
     }
 
     #[test]

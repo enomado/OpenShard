@@ -277,7 +277,7 @@ impl BodyKind {
     /// Like standing and walking, these are three distinct enumerations: group
     /// 2 is `Die1` for a monster, but group 8 is the animal equivalent and 21
     /// is the human one. A corpse is drawn from this group rather than from the
-    /// `0x2006` item's static art, whose amount names the body it was.
+    /// `0x2006` item's static art, whose payload names the body it was.
     pub const fn dying(self) -> AnimationGroup {
         match self {
             Self::Monster => AnimationGroup(2),

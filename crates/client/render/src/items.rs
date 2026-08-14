@@ -20,6 +20,7 @@
 
 use std::collections::BTreeSet;
 
+use openshard_protocol::items::ItemAmount;
 use openshard_protocol::wire::{Graphic, Hue};
 use openshard_protocol::world::Point;
 use openshard_uofiles::tiledata::TileData;
@@ -50,6 +51,22 @@ pub struct GroundItem {
     pub graphic: Graphic,
     /// Its hue, or [`Hue::NONE`] for none.
     pub hue: Hue,
+}
+
+/// The art used for a counted coin stack.
+///
+/// The wire keeps the currency's base graphic (`0x0EED` for gold) and its
+/// amount separate. Like the classic client, choose the two-coin art for a
+/// small stack and the pile art once it holds more than five. This belongs at
+/// the client boundary: the server retains the base graphic, so identical
+/// coins stack regardless of how they are drawn.
+#[must_use]
+pub const fn displayed_graphic(graphic: Graphic, amount: ItemAmount) -> Graphic {
+    match graphic.0 {
+        0x0EEA | 0x0EED | 0x0EF0 if amount.0 > 5 => Graphic(graphic.0 + 2),
+        0x0EEA | 0x0EED | 0x0EF0 if amount.0 > 1 => Graphic(graphic.0 + 1),
+        _ => graphic,
+    }
 }
 
 /// A position in the frame's ground-item list.
@@ -431,6 +448,23 @@ mod tests {
     use openshard_uofiles::image::Image;
 
     use super::*;
+
+    #[test]
+    fn coin_stacks_use_the_classic_size_bands() {
+        let gold = Graphic(0x0EED);
+        assert_eq!(displayed_graphic(gold, ItemAmount(1)), gold);
+        assert_eq!(displayed_graphic(gold, ItemAmount(2)), Graphic(0x0EEE));
+        assert_eq!(displayed_graphic(gold, ItemAmount(5)), Graphic(0x0EEE));
+        assert_eq!(displayed_graphic(gold, ItemAmount(6)), Graphic(0x0EEF));
+    }
+
+    #[test]
+    fn a_non_coin_keeps_its_base_art() {
+        assert_eq!(
+            displayed_graphic(Graphic(0x0F0E), ItemAmount(100)),
+            Graphic(0x0F0E)
+        );
+    }
     // Where a sprite of this size lands, which the assertions below are stated
     // against: the tests place a cursor over a picture they have placed
     // themselves, and this is the one arithmetic that says where that is.

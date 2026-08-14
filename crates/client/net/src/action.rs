@@ -7,6 +7,7 @@
 
 use openshard_protocol::gump::GumpPoint;
 use openshard_protocol::gump::{RawButtonId, RawGumpId, RawGumpKey, RawSwitchId};
+use openshard_protocol::items::ItemAmount;
 use openshard_protocol::serial::Serial;
 use openshard_protocol::skill::SkillLock;
 use openshard_protocol::target::TargetResponse;
@@ -34,7 +35,7 @@ pub enum Outgoing {
     Target(TargetResponse),
     PickUp {
         item: Serial,
-        amount: u16,
+        amount: ItemAmount,
     },
     DropInto {
         item: Serial,

@@ -19,7 +19,7 @@
 //!   reference client does: icons in a bag overlap, and re-sorting them here
 //!   would put a different one on top than the server's own client shows.
 
-use crate::items::HIGHLIGHT_HUE;
+use crate::items::{HIGHLIGHT_HUE, displayed_graphic};
 use openshard_protocol::containers::ContainedItem;
 use openshard_protocol::serial::Serial;
 use openshard_protocol::wire::Graphic;
@@ -66,7 +66,11 @@ impl ActionButton {
 pub fn art_of(gump: Graphic, contents: &[ContainedItem]) -> Vec<GumpArt> {
     let mut wanted = Vec::with_capacity(contents.len() + 1);
     wanted.push(GumpArt::Gump(gump));
-    wanted.extend(contents.iter().map(|item| GumpArt::Item(item.graphic)));
+    wanted.extend(
+        contents
+            .iter()
+            .map(|item| GumpArt::Item(displayed_graphic(item.graphic, item.amount))),
+    );
     wanted
 }
 
@@ -122,7 +126,7 @@ pub fn window_highlighted(
     pictures.push(Picture::plain(GumpArt::Gump(gump), at));
     for item in contents {
         let picture = Picture::plain(
-            GumpArt::Item(item.graphic),
+            GumpArt::Item(displayed_graphic(item.graphic, item.amount)),
             at.offset(GumpPixel::new(item.at.x, item.at.y)),
         )
         .hued(if highlighted == Some(item.serial) {
@@ -201,7 +205,7 @@ mod tests {
         ContainedItem {
             serial: Serial::new(serial).unwrap(),
             graphic,
-            amount: 1,
+            amount: openshard_protocol::items::ItemAmount(1),
             at: GumpPoint::new(x, y),
             grid: GridSlot(0),
             hue: Hue::NONE,
@@ -240,6 +244,21 @@ mod tests {
         assert_eq!(pictures[0].at, GumpPixel::new(300, 200));
         assert_eq!(pictures[1].graphic, GumpArt::Item(CANDLE));
         assert_eq!(pictures[1].at, GumpPixel::new(320, 230));
+    }
+
+    #[test]
+    fn a_gold_pile_asks_for_its_pile_art() {
+        let mut gold = item(0x4000_0002, COIN, 20, 30);
+        gold.amount = openshard_protocol::items::ItemAmount(6);
+
+        assert_eq!(
+            art_of(BAG, &[gold]),
+            vec![GumpArt::Gump(BAG), GumpArt::Item(Graphic(0x0EEF))]
+        );
+        assert_eq!(
+            window(BAG, &[gold], GumpPixel::new(300, 200))[1].graphic,
+            GumpArt::Item(Graphic(0x0EEF)),
+        );
     }
 
     /// The shard's order is painter's order: two icons on the same spot, and the

@@ -18,8 +18,8 @@ use openshard_protocol::world::{Aggression, RangedRange};
 use openshard_skills::SkillUsed;
 use openshard_state::components::Riding;
 use openshard_state::components::{
-    Amount, Contained, Container, CriminalUntil, Decays, Drawn, Equipped, MurderDecay, Murders, Skills,
-    Stackable,
+    Amount, Contained, Container, CorpseBody, CriminalUntil, Decays, Drawn, Equipped, MurderDecay, Murders,
+    Skills, Stackable,
 };
 use openshard_state::components::{Banker, SwingSpeed, WrestlingCombo, WrestlingOpener, WrestlingStride};
 use openshard_state::sectors::distance;
@@ -2742,9 +2742,13 @@ fn a_dead_player_leaves_a_corpse_but_keeps_its_backpack() {
         .expect("a player corpse was laid");
     let corpse_serial = world.registry().serial_of(corpse).unwrap();
     assert_eq!(
-        world.registry().get::<Amount>(corpse).unwrap().0,
-        0x0190,
+        world.registry().get::<CorpseBody>(corpse).unwrap().0,
+        Graphic(0x0190),
         "a human corpse draws right"
+    );
+    assert!(
+        !world.registry().has::<Amount>(corpse),
+        "the corpse body is not an item stack"
     );
 
     // The robe fell into the corpse.
@@ -3374,7 +3378,7 @@ fn a_creature_dies_with_its_own_voice() {
 #[test]
 fn a_slain_creature_leaves_a_corpse_with_loot() {
     // Death is no longer a vanishing: a slain creature leaves a corpse at the
-    // spot — item 0x2006 with amount = its body — a container holding a little
+    // spot — item 0x2006 whose payload is its body — a container holding a little
     // gold, the core's default loot until the pack owns real tables.
     const CORPSE: u16 = 0x2006;
     const GOLD: u16 = 0x0EED;
@@ -3409,9 +3413,13 @@ fn a_slain_creature_leaves_a_corpse_with_loot() {
         "the corpse is a container to be looted"
     );
     assert_eq!(
-        world.registry().get::<Amount>(corpse).unwrap().0,
-        0x0190,
-        "amount = the body (a human male corpse draws right)"
+        world.registry().get::<CorpseBody>(corpse).unwrap().0,
+        Graphic(0x0190),
+        "the corpse body is a human male"
+    );
+    assert!(
+        !world.registry().has::<Amount>(corpse),
+        "the corpse body is not an item stack"
     );
     let corpse_serial = world.registry().serial_of(corpse).unwrap();
     let gold = world
@@ -13210,7 +13218,7 @@ fn a_shop_sells_goods_and_buys_them_back() {
         vendor: RawSerial(vendor_serial.raw()),
         purchases: vec![openshard_protocol::vendor::Purchase {
             serial: RawSerial(stock_serial.raw()),
-            amount: 3,
+            amount: openshard_protocol::items::ItemAmount(3),
         }],
     });
     world.tick(now);
@@ -13248,7 +13256,7 @@ fn a_shop_sells_goods_and_buys_them_back() {
         vendor: RawSerial(vendor_serial.raw()),
         sales: vec![openshard_protocol::vendor::Sale {
             serial: RawSerial(pearls),
-            amount: 2,
+            amount: openshard_protocol::items::ItemAmount(2),
         }],
     });
     world.tick(now);
@@ -13273,7 +13281,7 @@ fn a_shop_sells_goods_and_buys_them_back() {
         vendor: RawSerial(vendor_serial.raw()),
         purchases: vec![openshard_protocol::vendor::Purchase {
             serial: RawSerial(stock_serial.raw()),
-            amount: 47,
+            amount: openshard_protocol::items::ItemAmount(47),
         }],
     });
     world.tick(now);

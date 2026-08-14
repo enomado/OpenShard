@@ -26,6 +26,7 @@ use openshard_protocol::skill::SkillLock;
 use openshard_protocol::wire::{Graphic, Hue, Layer, SoundId};
 
 use crate::skill::Skill;
+pub use openshard_protocol::items::CORPSE_GRAPHIC;
 pub use openshard_protocol::world::{Aggression, DamageType, PoisonLevel, RangedRange};
 use openshard_protocol::world::{Facet, Point, Sight};
 use openshard_protocol::{
@@ -87,6 +88,15 @@ pub struct Drawn {
 /// every one of them is a column of ones. An item with no `Amount` is a single.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct Amount(pub u16);
+
+/// The mobile graphic a corpse marker (`0x2006`) represents.
+///
+/// UO puts this value in the same `0x1A` wire word as a stack size, but it is
+/// not a quantity: the client uses it to choose the deceased body's animation.
+/// Keeping it separate from [`Amount`] prevents corpse body ids from entering
+/// stack, weight, and tooltip rules.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct CorpseBody(pub Graphic);
 
 /// Marks an item as a container: something other items can be put inside.
 ///
@@ -1412,11 +1422,6 @@ pub struct Moongate {
 /// How tall a gate stands, for the reach test on a double-click. ServUO's
 /// `Moongate.OnDoubleClick` wants range 1.
 pub const MOONGATE_REACH: u32 = 1;
-
-/// The corpse item graphic. A protocol special case: for item `0x2006` the
-/// client reads the `Amount` field as the dead body id, so a corpse draws as the
-/// creature it was. A corpse is a container (the loot window) that decays.
-pub const CORPSE_GRAPHIC: Graphic = Graphic(0x2006);
 
 /// The gump the client opens for a corpse — the loot window, not a chest.
 pub const CORPSE_GUMP: Graphic = Graphic(0x0009);

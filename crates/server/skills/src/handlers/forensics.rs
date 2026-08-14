@@ -8,8 +8,8 @@
 //! moment it happened; nothing here reconstructs anything.
 
 use openshard_entities::EntityId;
-use openshard_protocol::wire::{ClilocId, Graphic};
-use openshard_state::components::{Amount, BodyType, Corpse, body_type};
+use openshard_protocol::wire::ClilocId;
+use openshard_state::components::{BodyType, Corpse, CorpseBody, body_type};
 use openshard_state::{Skill, WorldState};
 
 use crate::check::roll_skill_band;
@@ -132,6 +132,6 @@ fn read_the_living(state: &mut WorldState, actor: EntityId, value: u16) {
 fn corpse_was_human(state: &WorldState, corpse: EntityId) -> bool {
     state
         .registry
-        .get::<Amount>(corpse)
-        .is_some_and(|body| body_type(Graphic(body.0)) == BodyType::Human)
+        .get::<CorpseBody>(corpse)
+        .is_some_and(|body| body_type(body.0) == BodyType::Human)
 }

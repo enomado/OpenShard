@@ -199,7 +199,7 @@ fn bag(client: &Client, out: &Path) {
     let item = |serial: u32, graphic: u16, x: i32, y: i32| ContainedItem {
         serial: Serial::new(serial).unwrap(),
         graphic: Graphic(graphic),
-        amount: 1,
+        amount: openshard_protocol::items::ItemAmount(1),
         at: GumpPoint::new(x, y),
         grid: GridSlot(0),
         hue: Hue::NONE,

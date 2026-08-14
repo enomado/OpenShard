@@ -673,7 +673,7 @@ fn a_vendor_takes_the_bank_when_the_pack_is_short() {
         vendor: RawSerial(vendor.raw()),
         purchases: vec![openshard_protocol::vendor::Purchase {
             serial: RawSerial(stock.raw()),
-            amount: 10, // 10 × 4 gold
+            amount: openshard_protocol::items::ItemAmount(10), // 10 × 4 gold
         }],
     });
     world.tick(now);
@@ -711,7 +711,7 @@ fn with_bank_payment_off_a_banked_fortune_buys_nothing() {
         vendor: RawSerial(vendor.raw()),
         purchases: vec![openshard_protocol::vendor::Purchase {
             serial: RawSerial(stock.raw()),
-            amount: 10,
+            amount: openshard_protocol::items::ItemAmount(10),
         }],
     });
     world.tick(now);

@@ -30,6 +30,7 @@ use openshard_protocol::containers::ContainedItem;
 use openshard_protocol::direction::Facing;
 use openshard_protocol::gump::layout::{Element, parse};
 use openshard_protocol::gump::{GumpId, GumpKey, GumpPoint};
+use openshard_protocol::items::WorldItemPayload;
 use openshard_protocol::mobile::{Equipment, Notoriety, PaperdollFlags, StatusFlags, Vitals};
 use openshard_protocol::serial::Serial;
 use openshard_protocol::server_packet::ServerPacket;
@@ -279,16 +280,13 @@ impl From<&UnicodeMessage> for Heard {
 /// a codec reads in sequence — but here, sitting beside the already-typed
 /// `graphic`/`position`/`hue`, an untyped count is the one field a reader
 /// cannot place at a glance.
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
-pub struct StackAmount(pub u16);
-
 /// An item on the ground, as `0x1A` last described it.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Item {
     /// Its graphic.
     pub graphic: Graphic,
-    /// How many are in the stack.
-    pub amount: StackAmount,
+    /// Stack size, or the dead body's graphic for a corpse marker.
+    pub payload: WorldItemPayload,
     /// Where it lies.
     pub position: Point,
     /// Its hue, or [`Hue::NONE`] for none.
@@ -941,7 +939,7 @@ impl WorldView {
             ServerPacket::WorldItem(item) => {
                 let fresh = Item {
                     graphic: item.graphic,
-                    amount: StackAmount(item.amount),
+                    payload: item.payload,
                     position: item.position,
                     hue: item.hue,
                 };
@@ -1193,7 +1191,7 @@ mod tests {
     use openshard_protocol::combat::WarMode;
     use openshard_protocol::containers::{AddToContainer, ContainerContents};
     use openshard_protocol::direction::Direction;
-    use openshard_protocol::items::WorldItem;
+    use openshard_protocol::items::{ItemAmount, WorldItem, WorldItemPayload};
     use openshard_protocol::mobile::{MobileIncoming, MobileMove, MobileStatus, Remove};
     use openshard_protocol::skill::SkillLock;
     use openshard_protocol::world::{DeathStatus, PlayerUpdate};
@@ -1668,12 +1666,15 @@ mod tests {
         let item = WorldItem {
             serial: Serial::new(0x4000_00AB).unwrap(),
             graphic: Graphic(0x0EED),
-            amount: 500,
+            payload: WorldItemPayload::Stack(ItemAmount(500)),
             position: Point::new(1000, 2000, 5),
             hue: Hue(0x0021),
         };
         assert!(view.apply(&ServerPacket::WorldItem(item)));
-        assert_eq!(view.items.get(&item.serial).unwrap().amount, StackAmount(500));
+        assert_eq!(
+            view.items.get(&item.serial).unwrap().payload,
+            WorldItemPayload::Stack(ItemAmount(500))
+        );
     }
 
     #[test]
@@ -1686,7 +1687,7 @@ mod tests {
         assert!(view.apply(&ServerPacket::WorldItem(WorldItem {
             serial: candle().serial,
             graphic: candle().graphic,
-            amount: candle().amount,
+            payload: WorldItemPayload::Stack(candle().amount),
             position: Point::new(1000, 2000, 5),
             hue: candle().hue,
         })));
@@ -1702,7 +1703,7 @@ mod tests {
         let item = WorldItem {
             serial: Serial::new(0x4000_00AB).unwrap(),
             graphic: Graphic(0x0EED),
-            amount: 1,
+            payload: WorldItemPayload::Stack(ItemAmount(1)),
             position: Point::new(1000, 2000, 5),
             hue: Hue::NONE,
         };
@@ -1976,7 +1977,7 @@ mod tests {
         ContainedItem {
             serial: Serial::new(0x4000_0101).unwrap(),
             graphic: Graphic(0x0A28),
-            amount: 1,
+            amount: ItemAmount(1),
             at: GumpPoint::new(44, 65),
             grid: openshard_protocol::containers::GridSlot(0),
             hue: Hue::NONE,
@@ -2052,7 +2053,7 @@ mod tests {
             container: chest(),
         })));
         let grown = ContainedItem {
-            amount: 7,
+            amount: ItemAmount(7),
             ..candle()
         };
         assert!(view.apply(&ServerPacket::AddToContainer(AddToContainer {
@@ -2075,7 +2076,7 @@ mod tests {
         let item = WorldItem {
             serial: candle().serial,
             graphic: candle().graphic,
-            amount: candle().amount,
+            payload: WorldItemPayload::Stack(candle().amount),
             position: Point::new(1000, 2000, 5),
             hue: candle().hue,
         };
@@ -2097,7 +2098,7 @@ mod tests {
             item: ContainedItem {
                 serial: shirt().serial,
                 graphic: shirt().graphic,
-                amount: 1,
+                amount: ItemAmount(1),
                 at: GumpPoint::new(20, 30),
                 grid: Default::default(),
                 hue: shirt().hue,

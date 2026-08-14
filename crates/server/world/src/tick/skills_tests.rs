@@ -19,7 +19,7 @@ use openshard_protocol::world::Aggression;
 use openshard_skills::DEFAULT_SKILL_DELAY_TICKS;
 use openshard_state::Skill;
 use openshard_state::components::{
-    Amount, Contained, Corpse, Drawn, Equipped, HearsGhosts, Hidden, Hitpoints, Mana, Meditating, Name,
+    Contained, Corpse, CorpseBody, Drawn, Equipped, HearsGhosts, Hidden, Hitpoints, Mana, Meditating, Name,
     POISON_POTION_GRAPHIC, PoisonCharges, Poisoned, Stealthing,
 };
 
@@ -378,8 +378,13 @@ fn a_corpses_story_comes_back_after_a_restart() {
         Some("Lord British")
     );
     assert!(
-        reborn.state.registry.get::<Amount>(corpse).is_some(),
+        reborn.state.registry.get::<CorpseBody>(corpse).is_some(),
         "and still draws as the body it was"
+    );
+    assert_eq!(
+        reborn.state.world_item(corpse).unwrap().payload,
+        openshard_protocol::items::WorldItemPayload::CorpseBody(Graphic(0x0190)),
+        "the restored corpse still carries a body, not a stack amount"
     );
 }
 

@@ -58,7 +58,10 @@ mod tests {
         assert_eq!(reply.vendor.validate(), Some(vendor));
         assert_eq!(reply.purchases.len(), 1);
         assert_eq!(reply.purchases[0].serial.validate(), Some(item));
-        assert_eq!(reply.purchases[0].amount, 3);
+        assert_eq!(
+            reply.purchases[0].amount,
+            openshard_protocol::items::ItemAmount(3)
+        );
 
         let ClientPacket::Sell(reply) = ClientPacket::decode(&sell(vendor, &[(item, 2)]), version).unwrap()
         else {
@@ -67,6 +70,6 @@ mod tests {
         assert_eq!(reply.vendor.validate(), Some(vendor));
         assert_eq!(reply.sales.len(), 1);
         assert_eq!(reply.sales[0].serial.validate(), Some(item));
-        assert_eq!(reply.sales[0].amount, 2);
+        assert_eq!(reply.sales[0].amount, openshard_protocol::items::ItemAmount(2));
     }
 }

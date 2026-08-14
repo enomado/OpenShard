@@ -72,7 +72,7 @@ pub(crate) fn dispatch_world_packet(packet: ClientPacket, id: ConnectionId) -> O
         ClientPacket::PickUpItem(pickup) => Some(Command::PickUpItem {
             connection: id,
             serial: pickup.serial,
-            amount: pickup.amount,
+            amount: pickup.amount.0,
         }),
         ClientPacket::DropItem(drop) => Some(Command::DropItem {
             connection: id,

@@ -471,9 +471,11 @@ impl World {
                 hue,
             },
         );
-        // Amount = body: the client draws item 0x2006 as this creature's corpse.
+        // The wire puts this body id in `0x1A`'s stack word, but it is not a stack size.
         if let Some(body) = body {
-            self.state.registry.insert(entity, Amount(body.id.0));
+            self.state
+                .registry
+                .insert(entity, openshard_state::components::CorpseBody(body.id));
         }
         self.state.registry.insert(entity, Position(at));
         self.state.registry.insert(entity, facet);

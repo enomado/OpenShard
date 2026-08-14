@@ -573,7 +573,8 @@ pub struct ItemRecord {
     pub graphic: u16,
     /// The item hue.
     pub hue: u16,
-    /// The stack amount; `1` for a single item.
+    /// The stack amount; `1` for a single item. For a corpse marker, its body
+    /// graphic instead — the historical on-disk representation of `CorpseBody`.
     pub amount: u16,
     /// Whether it stacks — a pile of gold merges with another, a sword does not.
     /// Saved so a restored pile still stacks; without it a lone gold coin would

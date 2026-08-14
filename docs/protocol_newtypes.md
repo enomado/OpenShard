@@ -164,10 +164,7 @@ and the two are kept in step by hand.
 | `gump::GumpPoint::{x, y}` | the same argument in gump-space pixels, signed for the layout language's negative offsets — [N8 amendment 1](#amendments-forced-by-n8-the-sweep) |
 | `mobile::Vitals::{current, max}` | components of one bar — [N2 amendment 2](#amendments-forced-by-n2-mobilers) |
 | `mobile::MobileStatus::{strength, dexterity, intelligence, gold, armor, weight, max_weight, stat_cap, followers, followers_max}` | the status bar's quantities — [N2 amendment 3](#amendments-forced-by-n2-mobilers) |
-| `containers::ContainedItem::amount` | a stack size: a quantity, by the `MobileStatus` argument — [N4 amendment 8](#amendments-forced-by-n4-containersrs) |
-| `items::WorldItem::amount`, `items::PickUpItem::amount` | the same quantity, outbound and in — [N4 amendment 9](#amendments-forced-by-n4-itemsrs) |
 | `vendor::BuyLine::price`, `vendor::SellLine::price` | gold: the `MobileStatus::gold` argument — [N5 amendment 1](#amendments-forced-by-n5-vendorrs) |
-| `vendor::{Purchase, Sale, SellLine}::amount` | the same stack size, inbound and out — [N5 amendment 1](#amendments-forced-by-n5-vendorrs) |
 | `login::ShardEntry::{percent_full, timezone}` | quantities, by the `MobileStatus` argument — [N6 amendment 8](#amendments-forced-by-n6-loginrs-seedrs-versionrs) |
 | `version::ClientVersion::{major, minor, revision, patch}` | components of one version, and not a packet struct — [N6 amendment 7](#amendments-forced-by-n6-loginrs-seedrs-versionrs) |
 | `feedback::Animation::{action, repeat_count, delay}` | a body-specific animation index whose domain (`openshard_state::Action`) lives above `protocol`, plus quantities — [N7 amendment 1](#amendments-forced-by-n7-feedbackrs-skillrs-combatrs-propertiesrs-spellbookrs-encodedrs-castingrs) |
@@ -633,9 +630,9 @@ all but a flag riding on one.
    whose behaviour it changes; `npc`'s `SHOP_GUMP` was already named and is now
    a `Graphic`.
 8. **Bare-integer field count in `containers.rs`: 9 before, 3 after** (N10), the
-   three being amendment 6's `x`/`y` and the stack `amount`, which is a
-   quantity by N2 amendment 3's argument — added to, split and compared, with
-   its rules in `items` far above `protocol`.
+   three being amendment 6's `x`/`y` and the stack `amount`, which is now
+   [`items::ItemAmount`](../crates/common/protocol/src/items.rs) across item,
+   container, and vendor packets.
 
 ## Amendments forced by N4 (`items.rs`)
 
@@ -698,12 +695,9 @@ rather than two.
    `Serial` cannot be built above the item pool — and it stayed, with a comment
    saying so. Removing it would make the encoder depend on `Serial`'s invariant
    at a distance for no byte saved.
-9. **Bare-integer field count in `items.rs`: 16 before, 3 after** (N10). The
-   three are `WorldItem::amount`, `PickUpItem::amount` and `Point`'s components
-   inside `position`, all already allowlisted quantities;
-   `PickUpItem::amount` joins the list explicitly because it is the first
-   *client-supplied* one, and its check — is there that much in the stack —
-   exists today in `items::pick_up`.
+9. **`WorldItem` has a tagged payload.** Its post-graphic word is a stack size
+   for ordinary items and a body graphic for the corpse marker, so it is
+   `WorldItemPayload`, not an `ItemAmount`.
 
 ### Backlog from this stage
 
@@ -737,16 +731,14 @@ replies are `RawSerial`. Its content is the *quantities*, which are the first
 fields in the sweep to go on N10's allowlist because of what they are rather
 than where their type would live.
 
-1. **A price and an amount are quantities, and they stay bare.** `BuyLine::
+1. **A price is a quantity and stays bare; stack amounts use `ItemAmount`.** `BuyLine::
    price`, `SellLine::{amount, price}`, `Purchase::amount` and `Sale::amount`
    are N2 amendment 3's case exactly: multiplied into a total, compared against
    what a purse holds, split off a stack — and their rules (what a vendor
    charges, what half price is, how much is on the shelf) live in
-   `openshard_npc` and `openshard_items`, far above `protocol`. `Purchase::
-   amount` is client-supplied and still bare, on `PickUpItem::amount`'s
-   precedent (N4 items amendment 9): the check that matters is "is there that
-   much", it exists in `vendor::buy` as `have.min(purchase.amount)`, and a
-   newtype would not be it.
+   `openshard_npc` and `openshard_items`, far above `protocol`. Purchase and
+   sale amounts are item-stack quantities and share `ItemAmount` with the
+   corresponding item packets.
 2. **A decoder that reads a byte and drops it is not the N2/N3 finding.**
    `BuyReply::decode_body` branches on `0x02` and keeps nothing. The two earlier
    findings (`StatLockRequest`, `0xAD`) *stored* a folded value, so the client's

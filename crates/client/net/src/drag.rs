@@ -2,7 +2,7 @@
 
 use openshard_protocol::feature::Feature;
 use openshard_protocol::gump::GumpPoint;
-use openshard_protocol::items::{DROP_TO_GROUND, DropItem, EquipItemRequest, PickUpItem};
+use openshard_protocol::items::{DROP_TO_GROUND, DropItem, EquipItemRequest, ItemAmount, PickUpItem};
 use openshard_protocol::packet::{DecodePacket, PacketLength, frame_body};
 use openshard_protocol::serial::Serial;
 use openshard_protocol::version::ClientVersion;
@@ -10,10 +10,10 @@ use openshard_protocol::world::Point;
 
 /// Ask the shard to put `item` on the cursor.
 #[must_use]
-pub fn pick_up(item: Serial, amount: u16) -> Vec<u8> {
+pub fn pick_up(item: Serial, amount: ItemAmount) -> Vec<u8> {
     frame_body(PickUpItem::ID, PacketLength::Fixed(7), |out| {
         out.u32(item.raw());
-        out.u16(amount);
+        out.u16(amount.0);
     })
 }
 
@@ -79,12 +79,13 @@ mod tests {
         let item = Serial::new(0x4000_002A).unwrap();
         let bag = Serial::new(0x4000_002B).unwrap();
 
-        let ClientPacket::PickUpItem(pickup) = ClientPacket::decode(&pick_up(item, 7), version).unwrap()
+        let ClientPacket::PickUpItem(pickup) =
+            ClientPacket::decode(&pick_up(item, ItemAmount(7)), version).unwrap()
         else {
             panic!("lift was not a 0x07");
         };
         assert_eq!(pickup.serial.validate(), Some(item));
-        assert_eq!(pickup.amount, 7);
+        assert_eq!(pickup.amount, ItemAmount(7));
 
         let ClientPacket::DropItem(drop) =
             ClientPacket::decode(&drop_into(item, bag, GumpPoint::new(42, 73), version), version).unwrap()
