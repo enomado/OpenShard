@@ -80,6 +80,13 @@ const JANK_LOG: &str = "target/openshard-playground-jank.log";
 enum Scenario {
     /// Zoom out from the default view, then hold still for LOD profiling.
     ZoomSoak,
+    /// Zoom out and then pan across map blocks, without desktop input.
+    ///
+    /// The moving companion to `ZoomSoak`, and the one a frame-rate claim
+    /// needs: a standing camera lets every geometry cache in the client hit,
+    /// so it measures the frame a player sees only while they are not
+    /// playing.
+    LodSweep,
 }
 
 /// One process, both ends: a shard in a thread and a window logged in to it.
@@ -243,6 +250,7 @@ fn main() -> ExitCode {
             stall_on_update: cli.stall_app_ms.map(Duration::from_millis),
             scenario: cli.scenario.map(|scenario| match scenario {
                 Scenario::ZoomSoak => openshard_client_app::Scenario::ZoomSoak,
+                Scenario::LodSweep => openshard_client_app::Scenario::LodSweep,
             }),
             ..Default::default()
         },

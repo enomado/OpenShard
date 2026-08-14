@@ -1405,7 +1405,16 @@ pub struct DirtyStaticAtlasPage {
 /// one-page baseline for tests and embeddings that do not need paging.
 pub struct StaticAtlasPages {
     pages: Vec<StaticAtlas>,
-    page_of: BTreeMap<Graphic, StaticAtlasPage>,
+    /// Which page holds each graphic, indexed by the graphic.
+    ///
+    /// Dense for the same reason [`LandAtlas::regions`] is, and it earns it
+    /// harder: a map static is asked this question four times over on the frame
+    /// it is drawn — [`Self::sprite`], [`Self::prism`], [`Self::footprint`] and
+    /// [`Self::opaque_at`] each resolve the page for themselves — and a
+    /// far-zoom frame draws seven thousand of them.
+    page_of: Box<[Option<StaticAtlasPage>]>,
+    /// How many of `page_of` are filled.
+    packed: u32,
     /// Requests belong to the family rather than to one page: absent art must
     /// not be re-read after a later page is allocated.
     asked: BTreeSet<Graphic>,
@@ -1418,7 +1427,7 @@ impl fmt::Debug for StaticAtlasPages {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("StaticAtlasPages")
             .field("pages", &self.pages.len())
-            .field("graphics", &self.page_of.len())
+            .field("graphics", &self.packed)
             .field("page_limit", &self.page_limit)
             .finish()
     }
@@ -1494,7 +1503,8 @@ impl StaticAtlasPages {
         first.table = table.clone();
         Ok(Self {
             pages: vec![first],
-            page_of: BTreeMap::new(),
+            page_of: vec![None; GRAPHIC_SLOTS].into_boxed_slice(),
+            packed: 0,
             asked: BTreeSet::new(),
             table,
             page_limit,
@@ -1539,7 +1549,7 @@ impl StaticAtlasPages {
         // preflight and the subsequent page insertion cannot disagree.
         let mut pending: Vec<(Graphic, Image)> = images
             .into_iter()
-            .filter(|(graphic, _)| !self.page_of.contains_key(graphic))
+            .filter(|(graphic, _)| self.page_of[graphic.0 as usize].is_none())
             .collect();
         pending.sort_by_key(|(_, image)| std::cmp::Reverse(image.height()));
 
@@ -1567,7 +1577,8 @@ impl StaticAtlasPages {
             self.pages[page_index].pack_more(packed.iter().cloned())?;
             let page = StaticAtlasPage(page_index as u8);
             for (graphic, _) in packed {
-                self.page_of.insert(graphic, page);
+                self.page_of[graphic.0 as usize] = Some(page);
+                self.packed += 1;
                 self.revision += 1;
             }
         }
@@ -1587,12 +1598,12 @@ impl StaticAtlasPages {
 
     /// Total packed graphics across all pages.
     pub fn len(&self) -> usize {
-        self.page_of.len()
+        self.packed as usize
     }
 
     /// Whether no graphic has been packed.
     pub fn is_empty(&self) -> bool {
-        self.page_of.is_empty()
+        self.packed == 0
     }
 
     /// The per-page atlas a renderer will turn into one texture and bind group.
@@ -1602,7 +1613,7 @@ impl StaticAtlasPages {
 
     /// The page and sprite data for a graphic, or `None` when it has no art.
     pub fn sprite(&self, graphic: Graphic) -> Option<PagedSprite> {
-        let page = *self.page_of.get(&graphic)?;
+        let page = self.page_of[graphic.0 as usize]?;
         Some(PagedSprite {
             page,
             sprite: self.page(page)?.sprite(graphic)?,
@@ -1649,33 +1660,29 @@ impl StaticAtlasPages {
 
     /// The CPU picking question, delegated to the page holding the graphic.
     pub fn opaque_at(&self, graphic: Graphic, x: u16, y: u16) -> bool {
-        self.page_of
-            .get(&graphic)
-            .and_then(|page| self.page(*page))
+        self.page_of[graphic.0 as usize]
+            .and_then(|page| self.page(page))
             .is_some_and(|page| page.opaque_at(graphic, x, y))
     }
 
     /// The measured hole, if the graphic's page supplied one.
     pub fn hole(&self, graphic: Graphic) -> Option<crate::facing::Hole> {
-        self.page_of
-            .get(&graphic)
-            .and_then(|page| self.page(*page))
+        self.page_of[graphic.0 as usize]
+            .and_then(|page| self.page(page))
             .and_then(|page| page.hole(graphic))
     }
 
     /// The measured prism, if the graphic's page supplied one.
     pub fn prism(&self, graphic: Graphic) -> Option<crate::facing::Prism> {
-        self.page_of
-            .get(&graphic)
-            .and_then(|page| self.page(*page))
+        self.page_of[graphic.0 as usize]
+            .and_then(|page| self.page(page))
             .and_then(|page| page.prism(graphic))
     }
 
     /// The measured horizontal footprint, if the graphic's page supplied one.
     pub fn footprint(&self, graphic: Graphic) -> Option<crate::facing::Footprint> {
-        self.page_of
-            .get(&graphic)
-            .and_then(|page| self.page(*page))
+        self.page_of[graphic.0 as usize]
+            .and_then(|page| self.page(page))
             .and_then(|page| page.footprint(graphic))
     }
 }
