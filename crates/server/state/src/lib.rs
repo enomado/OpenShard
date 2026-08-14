@@ -68,7 +68,7 @@ pub use dialogue::{Dialogue, SpeechEntry, SpeechTable};
 pub use obstruct::{DOOR_HEIGHT, LiveTerrain, Obstacle, Obstructions};
 pub use openshard_protocol::world::{DamageType, RangedRange};
 pub use quest::{ObjectiveDef, ObjectiveKind, QuestDef, QuestDefs, RewardDef, RewardKind};
-pub use region::{Region, RegionFlags, RegionRect, Regions};
+pub use region::{Region, RegionFlags, RegionId, RegionRect, Regions};
 pub use rng::Rng;
 pub use runtime::{
     Action, CastStyle, CraftGumpContext, CraftGumpPage, FacetState, Gameplay, HeldItem, Origin, Outbound,

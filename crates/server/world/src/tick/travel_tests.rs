@@ -22,7 +22,7 @@ use openshard_state::components::{
     Contained, CriminalUntil, Decays, InRegion, Mana, Moongate, Movement, Position, RECALL_RUNE_GRAPHIC,
     RuneMark, SPELLBOOK_GRAPHIC, Spellbook,
 };
-use openshard_state::{Region, RegionFlags, RegionRect};
+use openshard_state::{Region, RegionFlags, RegionId, RegionRect};
 
 /// Ilshenar's shape, which is nothing like Britannia's — the whole reason the
 /// client has to be told.
@@ -283,7 +283,7 @@ fn the_same_region_id_on_two_facets_is_still_a_crossing() {
     let mut world = world();
     add_empty_facet(&mut world, Facet(1));
     let named = |name: &str| Region {
-        id: 0,
+        id: RegionId(0),
         name: name.to_owned(),
         priority: 50,
         rects: vec![RegionRect::new(START.0 - 20, START.1 - 20, 40, 40)],
@@ -306,7 +306,7 @@ fn the_same_region_id_on_two_facets_is_still_a_crossing() {
         world.state.registry.get::<InRegion>(traveller),
         Some(&InRegion {
             facet: Facet(0),
-            region: Some(0)
+            region: Some(RegionId(0))
         }),
         "it is in Britain, region zero of facet zero"
     );
@@ -329,7 +329,7 @@ fn the_same_region_id_on_two_facets_is_still_a_crossing() {
         world.state.registry.get::<InRegion>(traveller),
         Some(&InRegion {
             facet: Facet(1),
-            region: Some(0)
+            region: Some(RegionId(0))
         }),
         "and the memory now names the facet it is on"
     );
@@ -578,7 +578,7 @@ fn a_no_recall_region_bars_arriving_and_marking_but_not_leaving() {
     world.queue(Command::RegisterRegions {
         facet: Facet(0),
         regions: vec![Region {
-            id: 0,
+            id: RegionId(0),
             name: "Wrong".to_owned(),
             priority: 50,
             rects: vec![RegionRect::new(inside.x - 1, inside.y - 1, 3, 3)],

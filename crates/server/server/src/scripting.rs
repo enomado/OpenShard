@@ -617,7 +617,7 @@ fn into_world(command: ScriptCommand) -> Option<Command> {
                 .map(|region| openshard_world::Region {
                     // The world numbers them on registration, by position; this
                     // side has no id to give.
-                    id: 0,
+                    id: openshard_world::RegionId(0),
                     name: region.name,
                     priority: region.priority,
                     rects: region

@@ -9,7 +9,7 @@
 use super::tests::{START, enter, enter_as, enter_gm, packets_for, teleport, world};
 use super::*;
 use openshard_state::components::{CriminalUntil, Guard, Hitpoints, Murders, Staff};
-use openshard_state::{Region, RegionFlags, RegionRect};
+use openshard_state::{Region, RegionFlags, RegionId, RegionRect};
 
 /// Britain's music track, as the client numbers them.
 const BRITAIN_MUSIC: u16 = 11;
@@ -20,7 +20,7 @@ const DUNGEON_LIGHT: u8 = 26;
 /// the case is about.
 fn town(name: &str, flags: RegionFlags) -> Region {
     Region {
-        id: 0,
+        id: RegionId(0),
         name: name.to_owned(),
         priority: 50,
         // A generous box around START, so a step in any direction stays inside.
@@ -58,7 +58,7 @@ fn walking_into_a_town_is_one_crossing_and_standing_still_is_none() {
     register(
         &mut world,
         vec![Region {
-            id: 0,
+            id: RegionId(0),
             name: "Britain".to_owned(),
             priority: 50,
             rects: vec![RegionRect::new(inside.x, inside.y, 4, 4)],
@@ -80,7 +80,7 @@ fn walking_into_a_town_is_one_crossing_and_standing_still_is_none() {
     assert_eq!(entered.len(), 1, "one crossing for one boundary");
     assert_eq!(entered[0].name, "Britain");
     assert_eq!(entered[0].from, None, "it came out of unnamed land");
-    assert_eq!(entered[0].to, Some(0));
+    assert_eq!(entered[0].to, Some(RegionId(0)));
 
     // Standing still inside is not a crossing, however long it lasts.
     for _ in 0..5 {
@@ -107,7 +107,7 @@ fn leaving_a_town_reports_the_region_it_left() {
 
     let left: Vec<_> = world.state.bus.read(&mut crossings).cloned().collect();
     assert_eq!(left.len(), 1);
-    assert_eq!(left[0].from, Some(0), "it names the region left");
+    assert_eq!(left[0].from, Some(RegionId(0)), "it names the region left");
     assert_eq!(left[0].to, None, "and lands nowhere named");
     assert!(left[0].name.is_empty());
 }
@@ -167,7 +167,7 @@ fn a_dungeon_is_dark_at_noon_and_night_sight_beats_both() {
     register(
         &mut world,
         vec![Region {
-            id: 0,
+            id: RegionId(0),
             name: "Covetous".to_owned(),
             priority: 50,
             rects: vec![RegionRect::new(START.0 - 20, START.1 - 20, 40, 40)],
@@ -486,7 +486,7 @@ fn a_no_teleport_region_refuses_both_ways() {
     register(
         &mut world,
         vec![Region {
-            id: 0,
+            id: RegionId(0),
             name: "The Jail".to_owned(),
             priority: 50,
             rects: vec![RegionRect::new(barred.x - 2, barred.y - 2, 8, 8)],
@@ -524,7 +524,7 @@ fn staff_teleport_where_players_may_not() {
     register(
         &mut world,
         vec![Region {
-            id: 0,
+            id: RegionId(0),
             name: "The Jail".to_owned(),
             priority: 50,
             rects: vec![RegionRect::new(barred.x - 2, barred.y - 2, 8, 8)],
@@ -564,7 +564,7 @@ fn regions_and_the_clock_survive_a_restart() {
                 },
             ),
             Region {
-                id: 0,
+                id: RegionId(0),
                 name: "Covetous".to_owned(),
                 priority: 60,
                 rects: vec![RegionRect::new(100, 100, 20, 20).with_z(-128, -20)],

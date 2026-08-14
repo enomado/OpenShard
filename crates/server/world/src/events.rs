@@ -268,9 +268,9 @@ pub struct RegionChanged {
     /// The facet the crossing happened on.
     pub facet: Facet,
     /// The region left, if they were in one.
-    pub from: Option<u16>,
+    pub from: Option<openshard_state::RegionId>,
     /// The region entered, if they are in one now.
-    pub to: Option<u16>,
+    pub to: Option<openshard_state::RegionId>,
     /// The entered region's name, so a reader needs no lookup. Empty when the
     /// crossing was out into unnamed land.
     pub name: String,

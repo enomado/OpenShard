@@ -17,8 +17,8 @@ use openshard_entities::EntityId;
 use openshard_protocol::serial::Serial;
 use openshard_protocol::server_packet::ServerPacket;
 use openshard_protocol::world::{Facet, MusicId, PlayMusic};
-use openshard_state::Region;
 use openshard_state::components::{Client, InRegion, Position};
+use openshard_state::{Region, RegionId};
 use tracing::{info, warn};
 
 use super::World;
@@ -30,8 +30,8 @@ struct Crossing {
     entity: EntityId,
     serial: Serial,
     facet: Facet,
-    from: Option<u16>,
-    to: Option<u16>,
+    from: Option<RegionId>,
+    to: Option<RegionId>,
     name: String,
     music: Option<u16>,
 }
@@ -97,7 +97,7 @@ impl World {
                     .map(move |region| openshard_persistence::RegionRecord {
                         // `.0` at the record seam: a saved facet is a SQL column.
                         facet: facet.0,
-                        id: region.id,
+                        id: region.id.0,
                         name: region.name.clone(),
                         priority: region.priority,
                         rects: region
@@ -130,7 +130,7 @@ impl World {
                 .entry(Facet(record.facet))
                 .or_default()
                 .push(openshard_state::Region {
-                    id: record.id,
+                    id: RegionId(record.id),
                     name: record.name,
                     priority: record.priority,
                     rects: record

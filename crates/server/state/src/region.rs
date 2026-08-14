@@ -27,6 +27,13 @@ use openshard_protocol::world::Point;
 
 use crate::sectors::SECTOR_SIZE;
 
+/// A region's facet-local index.
+///
+/// This is distinct from the many other `u16` values in world state: it only
+/// addresses a [`Regions`] collection for one facet.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Debug)]
+pub struct RegionId(pub u16);
+
 /// One box of a region, in tiles, with the height band it applies to.
 ///
 /// A region is a *set* of these — a town is rarely one rectangle, and a dungeon
@@ -108,7 +115,7 @@ pub struct RegionFlags {
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Region {
     /// Its index in the facet's list, which is also its wire and save id.
-    pub id: u16,
+    pub id: RegionId,
     /// What it is called — "Britain", "Covetous".
     pub name: String,
     /// Which region wins where two overlap: the higher number. A nested area is
@@ -145,7 +152,7 @@ pub struct Regions {
     regions: Vec<Region>,
     /// Candidate region ids per bucket, indexed `bucket_x * down + bucket_y`.
     /// Column-major, matching [`Sectors`](crate::Sectors).
-    grid: Vec<Vec<u16>>,
+    grid: Vec<Vec<RegionId>>,
     /// Buckets across.
     across: u32,
     /// Buckets down.
@@ -190,7 +197,7 @@ impl Regions {
     pub fn set(&mut self, regions: Vec<Region>) {
         self.regions = regions;
         for (index, region) in self.regions.iter_mut().enumerate() {
-            region.id = u16::try_from(index).unwrap_or(u16::MAX);
+            region.id = RegionId(u16::try_from(index).unwrap_or(u16::MAX));
         }
         self.reindex();
     }
@@ -210,7 +217,7 @@ impl Regions {
         let bucket = &self.grid[self.bucket_of(point.x, point.y)];
         let mut best: Option<&Region> = None;
         for &id in bucket {
-            let region = &self.regions[id as usize];
+            let region = &self.regions[usize::from(id.0)];
             if !region.contains(point) {
                 continue;
             }
@@ -225,8 +232,8 @@ impl Regions {
 
     /// A region by id, for turning a remembered id back into a name.
     #[must_use]
-    pub fn get(&self, id: u16) -> Option<&Region> {
-        self.regions.get(id as usize)
+    pub fn get(&self, id: RegionId) -> Option<&Region> {
+        self.regions.get(usize::from(id.0))
     }
 
     /// Every region, in id order — the save sweep's view.
@@ -253,7 +260,7 @@ impl Regions {
             bucket.clear();
         }
         for index in 0..self.regions.len() {
-            let id = u16::try_from(index).unwrap_or(u16::MAX);
+            let id = RegionId(u16::try_from(index).unwrap_or(u16::MAX));
             // Collected first: `bucket_of` borrows self immutably.
             let mut buckets = Vec::new();
             for rect in &self.regions[index].rects {
@@ -296,7 +303,7 @@ mod tests {
 
     fn region(id: u16, name: &str, priority: u8, rects: Vec<RegionRect>) -> Region {
         Region {
-            id,
+            id: RegionId(id),
             name: name.to_owned(),
             priority,
             rects,
@@ -394,7 +401,10 @@ mod tests {
             vec![RegionRect::new(100, 100, 50, 50).with_z(-128, -20)],
         )]);
 
-        assert_eq!(regions.at(Point::new(120, 120, -40)).map(|r| r.id), Some(0));
+        assert_eq!(
+            regions.at(Point::new(120, 120, -40)).map(|r| r.id),
+            Some(RegionId(0))
+        );
         assert!(regions.at(Point::new(120, 120, 0)).is_none());
     }
 
@@ -406,8 +416,8 @@ mod tests {
             region(77, "Second", 1, vec![RegionRect::new(20, 20, 10, 10)]),
         ]);
 
-        assert_eq!(regions.get(0).map(|r| r.name.as_str()), Some("First"));
-        assert_eq!(regions.get(1).map(|r| r.name.as_str()), Some("Second"));
+        assert_eq!(regions.get(RegionId(0)).map(|r| r.name.as_str()), Some("First"));
+        assert_eq!(regions.get(RegionId(1)).map(|r| r.name.as_str()), Some("Second"));
         assert_eq!(at(&regions, 25, 25), Some("Second"));
     }
 

@@ -1872,7 +1872,7 @@ pub struct InRegion {
     /// somebody who had not moved: no `RegionChanged`, no music, no guards.
     pub facet: Facet,
     /// The region's id on that facet, or `None` out in the wilds.
-    pub region: Option<u16>,
+    pub region: Option<crate::RegionId>,
 }
 
 /// A town guard, summoned to execute someone and gone soon after.

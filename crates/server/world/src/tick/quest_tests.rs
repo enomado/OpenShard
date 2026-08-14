@@ -1080,9 +1080,9 @@ fn last_gump_lines(world: &mut World, connection: ConnectionId) -> Vec<String> {
 /// Two named regions on the default facet: the one the travellers stand in, and
 /// somewhere for them to want to go.
 fn register_towns(world: &mut World, now: Instant) {
-    use openshard_state::{Region, RegionFlags, RegionRect};
+    use openshard_state::{Region, RegionFlags, RegionId, RegionRect};
     let here = Region {
-        id: 0,
+        id: RegionId(0),
         name: "Britain".to_owned(),
         priority: 50,
         rects: vec![RegionRect::new(START.0 - 20, START.1 - 20, 40, 40)],
@@ -1091,7 +1091,7 @@ fn register_towns(world: &mut World, now: Instant) {
         light: None,
     };
     let away = Region {
-        id: 0,
+        id: RegionId(0),
         name: "Minoc".to_owned(),
         priority: 50,
         rects: vec![RegionRect::new(START.0 + 200, START.1 + 200, 40, 40)],

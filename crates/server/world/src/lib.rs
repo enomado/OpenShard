@@ -62,7 +62,7 @@ pub use openshard_state::{
 pub use openshard_state::{CastStyle, Gameplay, StatLock, TooltipMode};
 pub use openshard_state::{Dialogue, SpeechEntry, SpeechTable};
 pub use openshard_state::{ObjectiveDef, ObjectiveKind, QuestDef, RewardDef, RewardKind};
-pub use openshard_state::{Region, RegionFlags, RegionRect};
+pub use openshard_state::{Region, RegionFlags, RegionId, RegionRect};
 pub use openshard_state::{SECTOR_SIZE, Sectors, VIEW_RANGE, distance, in_range, sectors};
 pub use terrain::{MAX_STEP_UP, MapTerrain, PLAYER_HEIGHT};
 pub use tick::{
