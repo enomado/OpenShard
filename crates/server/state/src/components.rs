@@ -770,6 +770,35 @@ pub mod effect {
     pub const PARALYZE: u8 = 13;
 }
 
+/// The kind of a timed magical buff that changes behaviour rather than stats.
+///
+/// Its raw value is stable in saved effect records, but live code must not mix
+/// it with a stat-modifier or any unrelated `u8`.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct BehaviourBuffKind(u8);
+
+impl BehaviourBuffKind {
+    pub const NIGHT_SIGHT: Self = Self(effect::NIGHT_SIGHT);
+    pub const PROTECTION: Self = Self(effect::PROTECTION);
+    pub const REACTIVE_ARMOR: Self = Self(effect::REACTIVE_ARMOR);
+    pub const MAGIC_REFLECT: Self = Self(effect::MAGIC_REFLECT);
+
+    #[must_use]
+    pub const fn as_u8(self) -> u8 {
+        self.0
+    }
+
+    #[must_use]
+    pub const fn from_u8(value: u8) -> Option<Self> {
+        match value {
+            effect::NIGHT_SIGHT | effect::PROTECTION | effect::REACTIVE_ARMOR | effect::MAGIC_REFLECT => {
+                Some(Self(value))
+            }
+            _ => None,
+        }
+    }
+}
+
 /// Which stats a stat-modifying effect shifts, and by how much.
 ///
 /// The `kind` names *which* stats (Strength touches str, Bless all three); the
@@ -836,8 +865,8 @@ pub struct StatMods {
 /// Reflect). Tick counts, like every timed effect, so it replays.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct BehaviourBuff {
-    /// Which buff — an [`effect`] kind (`NIGHT_SIGHT`..`MAGIC_REFLECT`).
-    pub kind: u8,
+    /// Which behaviour the buff changes.
+    pub kind: BehaviourBuffKind,
     /// The magnitude the buff's decision point reads (chance, reflect percent),
     /// or `0` for a bare marker.
     pub amount: i16,

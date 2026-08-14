@@ -688,7 +688,7 @@ impl World {
         if let Some(buffs) = registry.get::<BehaviourBuffs>(entity) {
             for b in &buffs.active {
                 effects.push(EffectRecord {
-                    kind: b.kind,
+                    kind: b.kind.as_u8(),
                     amount: b.amount,
                     remaining: b.expires_at.saturating_sub(now).min(u64::from(u16::MAX)) as u16,
                 });
@@ -749,14 +749,11 @@ impl World {
                     offset: record.amount,
                     expires_at: now + u64::from(record.remaining),
                 });
-            } else if matches!(
-                record.kind,
-                effect::NIGHT_SIGHT | effect::PROTECTION | effect::REACTIVE_ARMOR | effect::MAGIC_REFLECT
-            ) {
+            } else if let Some(kind) = openshard_state::BehaviourBuffKind::from_u8(record.kind) {
                 // A behaviour buff nothing is folded into — just restore the
                 // ledger entry with its time remaining out from `now`.
                 buffs.active.push(BehaviourBuff {
-                    kind: record.kind,
+                    kind,
                     amount: record.amount,
                     expires_at: now + u64::from(record.remaining),
                 });

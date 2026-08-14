@@ -111,10 +111,9 @@ pub enum SpellEffect {
     /// hands back a fraction of the target's hit points. A no-op on the living.
     Resurrect,
     /// A timed behaviour buff — the non-stat magical family
-    /// ([`BehaviourBuffs`](openshard_state::BehaviourBuffs)). The `u8` is the
-    /// effect kind (`NIGHT_SIGHT`..`MAGIC_REFLECT`); its magnitude and duration
+    /// ([`BehaviourBuffs`](openshard_state::BehaviourBuffs)). Its kind, magnitude and duration
     /// scale from the caster's Magery when it lands.
-    BehaviourBuff(u8),
+    BehaviourBuff(openshard_state::BehaviourBuffKind),
     /// A persistent field — a row of ground tiles laid at the aimed spot that pulse
     /// harm (Fire, Poison) or bar the way (Energy, Stone) until their tick comes.
     Field(FieldKind),
@@ -217,14 +216,14 @@ pub static MAGERY: [SpellInfo; 64] = [
         1,
         &[SULFUROUS_ASH, SPIDERS_SILK],
         Mobile,
-        BehaviourBuff(effect::NIGHT_SIGHT),
+        BehaviourBuff(openshard_state::BehaviourBuffKind::NIGHT_SIGHT),
     ),
     spell(
         "Reactive Armor",
         1,
         &[GARLIC, SPIDERS_SILK, SULFUROUS_ASH],
         SelfCast,
-        BehaviourBuff(effect::REACTIVE_ARMOR),
+        BehaviourBuff(openshard_state::BehaviourBuffKind::REACTIVE_ARMOR),
     ),
     spell(
         "Weaken",
@@ -269,7 +268,7 @@ pub static MAGERY: [SpellInfo; 64] = [
         2,
         &[GARLIC, GINSENG, SULFUROUS_ASH, SPIDERS_SILK],
         SelfCast,
-        BehaviourBuff(effect::PROTECTION),
+        BehaviourBuff(openshard_state::BehaviourBuffKind::PROTECTION),
     ),
     spell(
         "Strength",
@@ -389,7 +388,7 @@ pub static MAGERY: [SpellInfo; 64] = [
         5,
         &[GARLIC, MANDRAKE_ROOT, SPIDERS_SILK],
         SelfCast,
-        BehaviourBuff(effect::MAGIC_REFLECT),
+        BehaviourBuff(openshard_state::BehaviourBuffKind::MAGIC_REFLECT),
     ),
     spell(
         "Mind Blast",

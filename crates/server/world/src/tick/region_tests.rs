@@ -192,7 +192,7 @@ fn a_dungeon_is_dark_at_noon_and_night_sight_beats_both() {
     magic::apply_behaviour_buff(
         &mut world.state,
         serial,
-        openshard_state::effect::NIGHT_SIGHT,
+        openshard_state::BehaviourBuffKind::NIGHT_SIGHT,
         0,
         expires,
     );

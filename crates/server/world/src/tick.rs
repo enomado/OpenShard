@@ -639,7 +639,7 @@ impl World {
         // Lift the behaviour buffs whose time is up. Night Sight restores the
         // ambient light on its way out; the rest just stop being read.
         for (entity, kind) in magic::expire_behaviour_buffs(&mut self.state, now) {
-            if kind == openshard_state::effect::NIGHT_SIGHT {
+            if kind == openshard_state::BehaviourBuffKind::NIGHT_SIGHT {
                 if let Some(serial) = self.state.registry.serial_of(entity) {
                     self.send_light(serial, LIGHT_DAY);
                 }

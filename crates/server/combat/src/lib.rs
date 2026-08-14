@@ -26,7 +26,7 @@ use openshard_state::components::{
     BehaviourBuffs, Body, Client, Combat, CriminalUntil, DamageType, Equipped, Frozen, Ghost, Guard,
     Hitpoints, MeleeDamage, MurderDecay, Murders, PoisonCharges, Poisoned, Position, RangedAttack,
     Resistance, Skills, Stamina, Stats, Steps, SwingSpeed, body_is_female, body_opens_doors,
-    creature_base_sound, effect,
+    creature_base_sound,
 };
 use openshard_state::sectors::in_range;
 use openshard_state::weapon::{LAYER_ONE_HANDED, LAYER_TWO_HANDED};
@@ -438,7 +438,11 @@ pub fn damage(
             if let Some(pct) = state
                 .registry
                 .get::<BehaviourBuffs>(entity)
-                .and_then(|b| b.active.iter().find(|x| x.kind == effect::REACTIVE_ARMOR))
+                .and_then(|b| {
+                    b.active
+                        .iter()
+                        .find(|x| x.kind == openshard_state::BehaviourBuffKind::REACTIVE_ARMOR)
+                })
                 .map(|x| x.amount)
             {
                 let reflected = (u32::from(amount) * pct.max(0) as u32 / 100) as u16;

@@ -95,9 +95,11 @@ impl World {
                 // Protection holds concentration: roll the caster's chance (the
                 // seeded tick generator, so it replays) and, on a pass, the blow
                 // does not break the cast.
-                if let Some(chance) =
-                    magic::behaviour_buff(&self.state, entity, openshard_state::effect::PROTECTION)
-                {
+                if let Some(chance) = magic::behaviour_buff(
+                    &self.state,
+                    entity,
+                    openshard_state::BehaviourBuffKind::PROTECTION,
+                ) {
                     if self.state.rng.below(100) < chance.max(0) as u32 {
                         self.notify_self(entity, "Your protection holds your concentration.");
                         continue;
@@ -235,7 +237,7 @@ impl World {
                 if magic::consume_behaviour_buff(
                     &mut self.state,
                     target,
-                    openshard_state::effect::MAGIC_REFLECT,
+                    openshard_state::BehaviourBuffKind::MAGIC_REFLECT,
                 ) {
                     if let Some(caster_serial) = by {
                         target_serial = Some(caster_serial);
@@ -361,7 +363,7 @@ impl World {
                     // is always daylight until a day/night cycle exists, so this is
                     // presently a no-op the moment one lands — it is sent correctly
                     // regardless.)
-                    if kind == openshard_state::effect::NIGHT_SIGHT {
+                    if kind == openshard_state::BehaviourBuffKind::NIGHT_SIGHT {
                         self.send_light(who, LIGHT_NIGHTSIGHT);
                     }
                 }
@@ -437,11 +439,11 @@ impl World {
             SpellEffect::Paralyze => (0x0204, Visual::OnTarget(0x376A)),
             // The non-stat buffs, ServUO's per-spell sound and sparkle.
             SpellEffect::BehaviourBuff(kind) => {
-                use openshard_state::effect;
+                use openshard_state::BehaviourBuffKind;
                 match kind {
-                    effect::PROTECTION => (0x01ED, Visual::OnTarget(0x375A)),
-                    effect::REACTIVE_ARMOR => (0x01F2, Visual::OnTarget(0x376A)),
-                    effect::NIGHT_SIGHT => (0x01E3, Visual::OnTarget(0x376A)),
+                    BehaviourBuffKind::PROTECTION => (0x01ED, Visual::OnTarget(0x375A)),
+                    BehaviourBuffKind::REACTIVE_ARMOR => (0x01F2, Visual::OnTarget(0x376A)),
+                    BehaviourBuffKind::NIGHT_SIGHT => (0x01E3, Visual::OnTarget(0x376A)),
                     _ => (0x01E9, Visual::OnTarget(0x375A)), // Magic Reflection
                 }
             }
@@ -547,8 +549,8 @@ impl World {
     /// a Reactive Armor reflect percent — and is unused for the bare markers. All
     /// scale from the caster's Magery (in tenths, grandmaster `1000`), ServUO's
     /// classic pre-AoS shape approximated.
-    fn behaviour_buff_terms(&self, caster: EntityId, kind: u8) -> (i16, u64) {
-        use openshard_state::effect;
+    fn behaviour_buff_terms(&self, caster: EntityId, kind: openshard_state::BehaviourBuffKind) -> (i16, u64) {
+        use openshard_state::BehaviourBuffKind;
         let magery = i32::from(
             self.state
                 .registry
@@ -557,14 +559,14 @@ impl World {
         );
         let (amount, seconds): (i16, u64) = match kind {
             // Night Sight: a marker; 15–25 minutes, Magery-scaled.
-            effect::NIGHT_SIGHT => (0, (900 + (magery * 6 / 10) as u64).clamp(900, 1500)),
+            BehaviourBuffKind::NIGHT_SIGHT => (0, (900 + (magery * 6 / 10) as u64).clamp(900, 1500)),
             // Protection: the chance a blow does not break a cast, capped 75%.
-            effect::PROTECTION => (
+            BehaviourBuffKind::PROTECTION => (
                 (magery * 75 / 1000).clamp(0, 75) as i16,
                 (magery / 5).clamp(15, 240) as u64,
             ),
             // Reactive Armor: the percent of a melee blow bounced back, capped 50%.
-            effect::REACTIVE_ARMOR => (
+            BehaviourBuffKind::REACTIVE_ARMOR => (
                 (magery * 50 / 1000).clamp(5, 50) as i16,
                 (magery / 5).clamp(15, 240) as u64,
             ),

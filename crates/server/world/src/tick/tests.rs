@@ -5334,7 +5334,6 @@ fn a_stat_buff_survives_a_relogin() {
 fn reactive_armor_reflects_a_share_of_a_blow_to_the_attacker() {
     // A melee physical blow on a mobile wearing Reactive Armor bounces a share
     // back at the swinger — read at the one damage door, off the buff's percent.
-    use openshard_state::effect;
     let now = Instant::now();
     let mut world = world();
     let victim = spawn_mobile_at(&mut world, Point::new(START.0, START.1, 0), 100, now);
@@ -5345,7 +5344,7 @@ fn reactive_armor_reflects_a_share_of_a_blow_to_the_attacker() {
     magic::apply_behaviour_buff(
         &mut world.state,
         victim,
-        effect::REACTIVE_ARMOR,
+        openshard_state::BehaviourBuffKind::REACTIVE_ARMOR,
         50, // half
         until,
     );
@@ -5384,7 +5383,6 @@ fn reactive_armor_reflects_a_share_of_a_blow_to_the_attacker() {
 fn reactive_armor_does_not_ping_pong() {
     // Both sides armored: the reflected blow is unattributed, so it cannot reflect
     // a second time — no infinite bounce.
-    use openshard_state::effect;
     let now = Instant::now();
     let mut world = world();
     let victim = spawn_mobile_at(&mut world, Point::new(START.0, START.1, 0), 100, now);
@@ -5392,8 +5390,20 @@ fn reactive_armor_does_not_ping_pong() {
     let victim_entity = entity(&world, victim);
     let attacker_entity = entity(&world, attacker);
     let at = world.state.ticks + 1000;
-    magic::apply_behaviour_buff(&mut world.state, victim, effect::REACTIVE_ARMOR, 50, at);
-    magic::apply_behaviour_buff(&mut world.state, attacker, effect::REACTIVE_ARMOR, 50, at);
+    magic::apply_behaviour_buff(
+        &mut world.state,
+        victim,
+        openshard_state::BehaviourBuffKind::REACTIVE_ARMOR,
+        50,
+        at,
+    );
+    magic::apply_behaviour_buff(
+        &mut world.state,
+        attacker,
+        openshard_state::BehaviourBuffKind::REACTIVE_ARMOR,
+        50,
+        at,
+    );
 
     combat::damage(
         &mut world.state,
@@ -5425,7 +5435,6 @@ fn protection_holds_a_cast_against_a_blow() {
     // chance, a hit mid-cast leaves the Casting standing where it would otherwise
     // fizzle (compare `a_blow_disturbs_a_cast_when_the_shard_says_so`).
     use openshard_state::components::Casting;
-    use openshard_state::effect;
     let now = Instant::now();
     let mut world = world(); // spell_disturb on by default
     let (connection, entity) = ready_caster(&mut world, BLACK_PEARL, now);
@@ -5434,7 +5443,7 @@ fn protection_holds_a_cast_against_a_blow() {
     magic::apply_behaviour_buff(
         &mut world.state,
         serial,
-        effect::PROTECTION,
+        openshard_state::BehaviourBuffKind::PROTECTION,
         100, // certain
         until,
     );
@@ -5462,14 +5471,19 @@ fn protection_holds_a_cast_against_a_blow() {
 fn magic_reflection_bounces_a_spell_back_at_the_caster() {
     // An offensive spell aimed at a mobile carrying Magic Reflection lands on the
     // caster instead, and the buff is spent doing it.
-    use openshard_state::effect;
     let now = Instant::now();
     let mut world = sphere_world();
     let (connection, caster) = ready_caster(&mut world, BLACK_PEARL, now);
     let target = spawn_mobile_at(&mut world, Point::new(START.0 + 1, START.1, 0), 50, now);
     let target_entity = entity(&world, target);
     let until = world.state.ticks + 1000;
-    magic::apply_behaviour_buff(&mut world.state, target, effect::MAGIC_REFLECT, 0, until);
+    magic::apply_behaviour_buff(
+        &mut world.state,
+        target,
+        openshard_state::BehaviourBuffKind::MAGIC_REFLECT,
+        0,
+        until,
+    );
     let caster_before = world.registry().get::<Hitpoints>(caster).unwrap().current;
 
     world.queue(Command::RequestCast {
@@ -5499,7 +5513,12 @@ fn magic_reflection_bounces_a_spell_back_at_the_caster() {
         "the reflecting target was untouched"
     );
     assert!(
-        magic::behaviour_buff(&world.state, target_entity, effect::MAGIC_REFLECT).is_none(),
+        magic::behaviour_buff(
+            &world.state,
+            target_entity,
+            openshard_state::BehaviourBuffKind::MAGIC_REFLECT
+        )
+        .is_none(),
         "and the reflect was spent"
     );
 }
@@ -5551,7 +5570,6 @@ fn night_sight_lights_the_targets_screen() {
 #[test]
 fn a_behaviour_buff_expires_on_its_tick_and_a_recast_refreshes() {
     use openshard_state::components::BehaviourBuffs;
-    use openshard_state::effect;
     let now = Instant::now();
     let mut world = world();
     let connection = enter(&mut world, now);
@@ -5559,8 +5577,20 @@ fn a_behaviour_buff_expires_on_its_tick_and_a_recast_refreshes() {
     let serial = serial_of(&world, connection);
 
     let at = world.state.ticks;
-    magic::apply_behaviour_buff(&mut world.state, serial, effect::REACTIVE_ARMOR, 30, at + 50);
-    magic::apply_behaviour_buff(&mut world.state, serial, effect::REACTIVE_ARMOR, 40, at + 100);
+    magic::apply_behaviour_buff(
+        &mut world.state,
+        serial,
+        openshard_state::BehaviourBuffKind::REACTIVE_ARMOR,
+        30,
+        at + 50,
+    );
+    magic::apply_behaviour_buff(
+        &mut world.state,
+        serial,
+        openshard_state::BehaviourBuffKind::REACTIVE_ARMOR,
+        40,
+        at + 100,
+    );
     assert_eq!(
         world
             .registry()
@@ -5572,7 +5602,11 @@ fn a_behaviour_buff_expires_on_its_tick_and_a_recast_refreshes() {
         "a recast refreshes rather than stacking a second entry"
     );
     assert_eq!(
-        magic::behaviour_buff(&world.state, entity, effect::REACTIVE_ARMOR),
+        magic::behaviour_buff(
+            &world.state,
+            entity,
+            openshard_state::BehaviourBuffKind::REACTIVE_ARMOR
+        ),
         Some(40),
         "and it is the fresh magnitude and timer"
     );
@@ -5592,13 +5626,18 @@ fn a_behaviour_buff_expires_on_its_tick_and_a_recast_refreshes() {
 fn a_behaviour_buff_survives_a_relogin() {
     // The non-stat buffs ride the same effects list a poison or a Bless does: saved
     // with the character, restored on relog, still counting down.
-    use openshard_state::effect;
     let now = Instant::now();
     let mut world = world();
     let conn = enter(&mut world, now);
     let serial = serial_of(&world, conn);
     let at = world.state.ticks;
-    magic::apply_behaviour_buff(&mut world.state, serial, effect::REACTIVE_ARMOR, 40, at + 500);
+    magic::apply_behaviour_buff(
+        &mut world.state,
+        serial,
+        openshard_state::BehaviourBuffKind::REACTIVE_ARMOR,
+        40,
+        at + 500,
+    );
 
     world.take_snapshot();
     let snapshot = world.drain_saves().next_back().expect("a snapshot");
@@ -5612,7 +5651,7 @@ fn a_behaviour_buff_survives_a_relogin() {
         record
             .effects
             .iter()
-            .any(|e| e.kind == effect::REACTIVE_ARMOR && e.amount == 40),
+            .any(|e| e.kind == openshard_state::BehaviourBuffKind::REACTIVE_ARMOR.as_u8() && e.amount == 40),
         "the buff went to disk"
     );
 
@@ -5634,7 +5673,11 @@ fn a_behaviour_buff_survives_a_relogin() {
 
     let player = world.state.players[&conn];
     assert_eq!(
-        magic::behaviour_buff(&world.state, player, effect::REACTIVE_ARMOR),
+        magic::behaviour_buff(
+            &world.state,
+            player,
+            openshard_state::BehaviourBuffKind::REACTIVE_ARMOR
+        ),
         Some(40),
         "and came back on relog"
     );

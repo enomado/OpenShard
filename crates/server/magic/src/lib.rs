@@ -17,8 +17,8 @@ use openshard_protocol::serial::Serial;
 use openshard_protocol::wire::Graphic;
 use openshard_skills::SkillBand;
 use openshard_state::components::{
-    BehaviourBuff, BehaviourBuffs, Frozen, Hitpoints, Mana, Meditating, Stamina, StatMod, StatMods, Stats,
-    stat_shift,
+    BehaviourBuff, BehaviourBuffKind, BehaviourBuffs, Frozen, Hitpoints, Mana, Meditating, Stamina, StatMod,
+    StatMods, Stats, stat_shift,
 };
 use openshard_state::{Skill, TICKS_PER_SECOND, WorldState};
 
@@ -374,7 +374,13 @@ pub fn expire_buffs(state: &mut WorldState, now: u64) -> Vec<EntityId> {
 /// behaviour, not a stat: nothing folds into a number, so a recast of the same
 /// `kind` just replaces its entry (refresh, never stack), and there is nothing to
 /// back out — expiry only stops the buff being read.
-pub fn apply_behaviour_buff(state: &mut WorldState, serial: Serial, kind: u8, amount: i16, expires_at: u64) {
+pub fn apply_behaviour_buff(
+    state: &mut WorldState,
+    serial: Serial,
+    kind: BehaviourBuffKind,
+    amount: i16,
+    expires_at: u64,
+) {
     let Some(entity) = state.registry.entity_of(serial) else {
         return;
     };
@@ -396,7 +402,7 @@ pub fn apply_behaviour_buff(state: &mut WorldState, serial: Serial, kind: u8, am
 /// each so the caller can react — Night Sight, say, must re-send the ambient light
 /// when it lifts. Runs on the tick counter, so it replays.
 #[must_use]
-pub fn expire_behaviour_buffs(state: &mut WorldState, now: u64) -> Vec<(EntityId, u8)> {
+pub fn expire_behaviour_buffs(state: &mut WorldState, now: u64) -> Vec<(EntityId, BehaviourBuffKind)> {
     let ready: Vec<EntityId> = state
         .registry
         .query::<BehaviourBuffs>()
@@ -424,7 +430,7 @@ pub fn expire_behaviour_buffs(state: &mut WorldState, now: u64) -> Vec<(EntityId
 
 /// Take one behaviour buff off a mobile before its time — Magic Reflection is
 /// spent the moment it bounces a spell. Returns whether the buff was there.
-pub fn consume_behaviour_buff(state: &mut WorldState, entity: EntityId, kind: u8) -> bool {
+pub fn consume_behaviour_buff(state: &mut WorldState, entity: EntityId, kind: BehaviourBuffKind) -> bool {
     let Some(mut buffs) = state.registry.get::<BehaviourBuffs>(entity).cloned() else {
         return false;
     };
@@ -444,7 +450,7 @@ pub fn consume_behaviour_buff(state: &mut WorldState, entity: EntityId, kind: u8
 /// Read the magnitude of an active behaviour buff, if the mobile carries it — the
 /// Reactive Armor reflect percent, the Protection chance. `None` when absent.
 #[must_use]
-pub fn behaviour_buff(state: &WorldState, entity: EntityId, kind: u8) -> Option<i16> {
+pub fn behaviour_buff(state: &WorldState, entity: EntityId, kind: BehaviourBuffKind) -> Option<i16> {
     state
         .registry
         .get::<BehaviourBuffs>(entity)?

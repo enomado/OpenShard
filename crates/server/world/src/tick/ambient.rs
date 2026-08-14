@@ -107,7 +107,13 @@ impl World {
     ///    rather than in a rule here.
     /// 3. **The hour**, at this mobile's longitude.
     fn light_for(&self, entity: EntityId) -> Light {
-        if magic::behaviour_buff(&self.state, entity, openshard_state::effect::NIGHT_SIGHT).is_some() {
+        if magic::behaviour_buff(
+            &self.state,
+            entity,
+            openshard_state::BehaviourBuffKind::NIGHT_SIGHT,
+        )
+        .is_some()
+        {
             return LIGHT_NIGHTSIGHT;
         }
         if let Some(light) = self.state.region_of(entity).and_then(|region| region.light) {
