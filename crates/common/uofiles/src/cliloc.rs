@@ -337,9 +337,29 @@ mod tests {
 
     #[test]
     fn a_compressed_empty_table_loads() {
-        let mut bytes = vec![0u8; 4 + 1024];
+        // Four header bytes, the 256-entry frequency table, and **one more**:
+        // `decompress_bwt` drops the final byte on purpose, mirroring a reader
+        // that fills all but the last of a `file_len - 4` buffer. So the
+        // smallest file carrying a whole frequency table is 4 + 1024 + 1, and at
+        // 4 + 1024 the table is a byte short and the stream is rejected.
+        let mut bytes = vec![0u8; 4 + 1024 + 1];
         bytes[3] = 0x8E;
         let table = Cliloc::parse(&decompress_bwt(&bytes).expect("a valid compressed stream"));
-        assert_eq!(table.count(), 0);
+        assert_eq!(
+            table.count(),
+            0,
+            "an all-zero frequency table decodes to no records"
+        );
+    }
+
+    #[test]
+    fn a_compressed_stream_too_short_for_its_frequency_table_is_rejected() {
+        // One byte less than the test above, which is the case that made that
+        // one fail: a truncated table must be `None` rather than decode as an
+        // empty localization file, because a client whose Cliloc silently reads
+        // as empty shows every string as a number.
+        let mut bytes = vec![0u8; 4 + 1024];
+        bytes[3] = 0x8E;
+        assert!(decompress_bwt(&bytes).is_none());
     }
 }
