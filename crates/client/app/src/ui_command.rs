@@ -21,6 +21,7 @@ use openshard_client_render::{items, mobiles};
 use openshard_movement::{Heading, Lean};
 use openshard_protocol::direction::{Direction, Facing};
 use openshard_protocol::target::{TargetKind, TargetResponse};
+use openshard_protocol::wire::Layer;
 use openshard_protocol::world::Point;
 use winit::window::CursorIcon;
 
@@ -47,6 +48,38 @@ impl App {
         };
         if let Some(link) = self.world.shard.link() {
             link.paperdoll(serial);
+        }
+    }
+
+    /// Open this character's backpack without relying on the paperdoll being
+    /// visible or open.
+    pub(crate) fn open_own_inventory(&self) {
+        let Some(backpack) = self.world.authoritative.view.as_ref().and_then(|view| {
+            view.player
+                .equipment
+                .iter()
+                .find(|item| item.layer == Layer::BACKPACK)
+                .map(|item| item.serial)
+        }) else {
+            return;
+        };
+        if let Some(link) = self.world.shard.link() {
+            link.use_object(backpack);
+        }
+    }
+
+    /// Hold Tab to enter war mode and release it to return to peace mode.
+    ///
+    /// This is ClassicUO's default Tab behaviour. The remembered key state
+    /// makes operating-system repeat events harmless and lets focus/UI loss
+    /// release a stance whose physical key-up would otherwise never arrive.
+    pub(crate) fn set_war_mode_held(&mut self, held: bool) {
+        if self.input.war_mode_held == held {
+            return;
+        }
+        self.input.war_mode_held = held;
+        if let Some(link) = self.world.shard.link() {
+            link.war_mode(held);
         }
     }
 

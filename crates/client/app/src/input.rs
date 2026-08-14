@@ -26,6 +26,10 @@ pub struct Input {
     /// — into a move order that plans a route with `find_path`. See
     /// `steer.rs`'s module docs.
     pub ctrl_held: bool,
+    /// Whether Tab is currently held for war mode. It must be remembered here
+    /// rather than inferred from key-repeat events, which do not describe a
+    /// second press and must not produce a second request.
+    pub war_mode_held: bool,
     /// When the last left click landed, or `None` when the one before it
     /// already made a pair.
     ///

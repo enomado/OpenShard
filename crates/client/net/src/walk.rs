@@ -104,6 +104,13 @@ pub enum Moved {
         /// Which way it really faces.
         facing: Facing,
     },
+    /// The shard changed only the direction of a body that remained on its
+    /// confirmed tile.  Combat uses this to face an opponent before a swing;
+    /// it is not a relocation and must not discard steps already in flight.
+    Turned {
+        /// The server-confirmed pose after the turn.
+        confirmed: Predicted,
+    },
 }
 
 /// A `0x22` answered a step this client is not waiting for.
@@ -256,6 +263,10 @@ pub struct Walk {
     counter: StepCounter,
     /// Where the last step asked to be.
     predicted: Predicted,
+    /// The last pose the shard explicitly confirmed.  This stays behind
+    /// `predicted` while steps are in flight, so a combat turn can be told from
+    /// a genuine `0x20` relocation.
+    confirmed: Predicted,
     /// Steps sent and not yet answered, oldest first.
     pending: VecDeque<Pending>,
     /// How many answers are still owed for steps a correction has already
@@ -288,6 +299,7 @@ impl Walk {
         Self {
             counter: StepCounter::new(),
             predicted: Predicted { position, facing },
+            confirmed: Predicted { position, facing },
             pending: VecDeque::new(),
             draining: 0,
             out_of_step: false,
@@ -453,6 +465,14 @@ impl Walk {
             // A `0x21` is the answer to one of the steps in flight; a `0x20` or a
             // second `0x1B` is the answer to none of them.
             ServerPacket::WalkReject(reject) => Ok(self.snap(reject.position, reject.facing, 1)),
+            ServerPacket::PlayerUpdate(update)
+                if !self.out_of_step && update.position == self.confirmed.position =>
+            {
+                self.confirmed.facing = update.facing;
+                Ok(Moved::Turned {
+                    confirmed: self.confirmed,
+                })
+            }
             ServerPacket::PlayerUpdate(update) => Ok(self.snap(update.position, update.facing, 0)),
             // A second `0x1B` restarts the session; the body it describes is
             // where this character now is, whatever was in flight.
@@ -485,6 +505,10 @@ impl Walk {
             }));
         }
         self.pending.pop_front();
+        self.confirmed = Predicted {
+            position: pending.position,
+            facing: pending.facing,
+        };
         Ok(Moved::Stepped {
             position: pending.position,
             facing: pending.facing,
@@ -500,6 +524,7 @@ impl Walk {
     /// still coming back and are counted into [`Walk::draining`].
     fn snap(&mut self, position: Point, facing: Facing, answered: usize) -> Moved {
         self.predicted = Predicted { position, facing };
+        self.confirmed = self.predicted;
         self.draining += self.pending.len().saturating_sub(answered);
         self.pending.clear();
         self.counter.reset();
@@ -723,6 +748,45 @@ mod tests {
             0
         );
         assert_eq!(walk.predicted().position, Point::new(2000, 2001, -5));
+    }
+
+    #[test]
+    fn a_combat_turn_does_not_discard_steps_in_flight() {
+        let mut walk = walk();
+        walk.step(Facing::walking(Direction::North), |_, _| None).unwrap();
+        let turn = PlayerUpdate {
+            serial: Serial::new(0x0000_002A).unwrap(),
+            body: Graphic(0x0190),
+            hue: Hue::NONE,
+            flags: openshard_protocol::mobile::StatusFlags::NONE,
+            // The server sends 0x20 for a combat turn, but the character has
+            // not been moved from the last confirmed tile.
+            position: Point::new(100, 100, 0),
+            facing: Facing::walking(Direction::East),
+        };
+
+        assert_eq!(
+            walk.on_packet(&ServerPacket::PlayerUpdate(turn)),
+            Ok(Moved::Turned {
+                confirmed: Predicted {
+                    position: Point::new(100, 100, 0),
+                    facing: Facing::walking(Direction::East),
+                },
+            })
+        );
+        assert_eq!(walk.in_flight(), InFlightSteps::new(1));
+        assert_eq!(
+            walk.on_packet(&ServerPacket::WalkAck(WalkAck {
+                sequence: StepSequence(0),
+                notoriety: Notoriety::Innocent,
+            })),
+            Ok(Moved::Stepped {
+                position: Point::new(100, 99, 0),
+                facing: Facing::walking(Direction::North),
+                notoriety: Notoriety::Innocent,
+            }),
+            "the acknowledgement still belongs to the step sent before the swing"
+        );
     }
 
     #[test]

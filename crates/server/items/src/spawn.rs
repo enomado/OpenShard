@@ -77,7 +77,11 @@ pub fn spawn_item(
     if amount > 1 {
         state.registry.insert(entity, Amount(amount));
     }
-    if stackable {
+    // Gold is stackable even as a single coin.  Callers commonly spawn one
+    // item at a time (notably the staff `.add` command), and making its
+    // stackability depend on the requested amount leaves otherwise identical
+    // coins unable to merge.
+    if stackable || graphic == GOLD_GRAPHIC {
         state.registry.insert(entity, Stackable);
     }
     mark_decay(state, entity);

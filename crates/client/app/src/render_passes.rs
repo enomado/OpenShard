@@ -552,6 +552,41 @@ pub(crate) fn draw_gump_windows(
                     labels.extend(vendor.lines.iter().map(|line| line.label()));
                 }
                 (WindowSubject::Container(serial), Drawn::Container(_)) => {
+                    let backpack = world.authoritative.view.as_ref().and_then(|view| {
+                        view.player
+                            .equipment
+                            .iter()
+                            .find(|item| item.layer == openshard_protocol::wire::Layer::BACKPACK)
+                            .map(|item| item.serial)
+                    });
+                    if backpack != Some(*serial) {
+                        if let (Some(view), Some(open), Some(gump)) = (
+                            world.authoritative.view.as_ref(),
+                            windows
+                                .own_windows
+                                .iter()
+                                .find(|window| window.subject == *subject),
+                            world
+                                .authoritative
+                                .view
+                                .as_ref()
+                                .and_then(|view| view.containers.get(serial)),
+                        ) {
+                            if !view.vendor_buys.contains_key(serial) {
+                                if let Some(button) =
+                                    container::take_all_button(&resources.gump_atlas, *gump, open.at)
+                                {
+                                    labels.push(openshard_client_render::text::GumpLabel {
+                                        at: button.label_at(),
+                                        text: container::TAKE_ALL_LABEL,
+                                        font: openshard_protocol::speech::Font(1),
+                                        hue: openshard_protocol::wire::Hue::LABEL,
+                                        clip: None,
+                                    });
+                                }
+                            }
+                        }
+                    }
                     if let Some(item) = windows.hovered_container_item.and_then(|hovered| {
                         world
                             .authoritative

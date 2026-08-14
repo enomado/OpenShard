@@ -926,8 +926,9 @@ fn spawn_plain_item_at(world: &mut World, point: Point, now: Instant) -> Serial 
         .state
         .registry
         .query::<Drawn>()
-        .find(|(_, g)| g.id == POTION_GRAPHIC)
-        .and_then(|(e, _)| world.state.registry.serial_of(e))
+        .filter(|(_, g)| g.id == POTION_GRAPHIC)
+        .filter_map(|(e, _)| world.state.registry.serial_of(e))
+        .max()
         .expect("the item spawned")
 }
 
@@ -1346,28 +1347,9 @@ fn dropping_into_something_that_is_not_a_container_bounces() {
     let mut world = world();
     let player = enter(&mut world, now);
     let here = Point::new(START.0, START.1, 0);
-    // Two plain items: one to hold, one to (wrongly) drop onto.
-    spawn_item_at(&mut world, here, now);
-    let target = loose_item_serial(&world);
-    world.queue(Command::SpawnItem {
-        graphic: openshard_protocol::wire::Graphic(GOLD),
-        hue: openshard_protocol::wire::Hue(0),
-        amount: 1,
-        stackable: false,
-        position: here,
-        facet: Facet(0),
-    });
-    world.tick(now);
-    // The held one is whichever loose item is not the target — not the worn
-    // backpack, which is also an item with a graphic now.
-    let held_serial = world
-        .state
-        .registry
-        .query::<Drawn>()
-        .filter(|(e, _)| !world.state.registry.has::<Equipped>(*e))
-        .filter_map(|(e, _)| world.state.registry.serial_of(e))
-        .find(|s| *s != target)
-        .unwrap();
+    // Plain items, rather than coins: gold is a valid stack target now.
+    let target = spawn_plain_item_at(&mut world, here, now);
+    let held_serial = spawn_plain_item_at(&mut world, here, now);
     let held_item = entity(&world, held_serial);
 
     world.queue(Command::PickUpItem {
@@ -1909,6 +1891,62 @@ fn dropping_a_stack_onto_an_identical_one_merges_them() {
 }
 
 #[test]
+fn a_single_spawned_gold_coin_stacks_with_a_pile() {
+    // A single coin used to inherit `stackable: false` from the generic spawn
+    // path, so `.add 0xeed` produced gold that could never join a pile.
+    let now = Instant::now();
+    let mut world = world();
+    let player = enter(&mut world, now);
+    let here = Point::new(START.0, START.1, 0);
+    let pile = spawn_gold(&mut world, here, 100, now);
+    spawn_item_at(&mut world, here, now);
+    let coin = world
+        .state
+        .registry
+        .query::<Drawn>()
+        .find(|(item, drawn)| {
+            drawn.id == Graphic(GOLD)
+                && !world.state.registry.has::<Amount>(*item)
+                && world.state.registry.has::<Position>(*item)
+        })
+        .and_then(|(item, _)| world.state.registry.serial_of(item))
+        .expect("the spawned single coin");
+    let pile_item = entity(&world, pile);
+    let coin_item = entity(&world, coin);
+
+    assert!(
+        world.state.registry.has::<Stackable>(coin_item),
+        "a one-coin gold spawn is still stackable"
+    );
+    world.queue(Command::PickUpItem {
+        connection: player,
+        serial: RawSerial(coin.raw()),
+        amount: 1,
+    });
+    world.tick(now);
+    world.queue(Command::DropItem {
+        connection: player,
+        serial: RawSerial(coin.raw()),
+        destination: DropDestination::Item {
+            item: pile,
+            at: GumpPoint::new(0, 0),
+        },
+    });
+    world.tick(now);
+
+    assert_eq!(
+        world
+            .state
+            .registry
+            .get::<Amount>(pile_item)
+            .map(|amount| amount.0),
+        Some(101),
+        "the coin joined the gold pile"
+    );
+    assert!(!world.state.registry.contains(coin_item));
+}
+
+#[test]
 fn merging_past_the_stack_cap_keeps_the_remainder() {
     // The bug this exists to not have again: two 50,000 piles merged into one
     // clamped 65,535 and the difference was simply gone. Sphere's `CItem::Stack`
@@ -2009,10 +2047,17 @@ fn a_non_stackable_item_does_not_merge() {
     let mut world = world();
     let player = enter(&mut world, now);
     let here = Point::new(START.0, START.1, 0);
-    // Two plain (non-stackable) items.
-    spawn_item_at(&mut world, here, now);
-    let target = loose_item_serial(&world);
-    let (held, held_item) = take_loose_item(&mut world, player, now);
+    // Two plain (non-stackable) items. Gold is deliberately not used here:
+    // even a single coin is currency and must stack.
+    let target = spawn_plain_item_at(&mut world, here, now);
+    let held = spawn_plain_item_at(&mut world, here, now);
+    let held_item = entity(&world, held);
+    world.queue(Command::PickUpItem {
+        connection: player,
+        serial: RawSerial(held.raw()),
+        amount: 1,
+    });
+    world.tick(now);
     let _ = packets_for(&mut world, player);
 
     world.queue(Command::DropItem {

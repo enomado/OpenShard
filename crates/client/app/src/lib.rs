@@ -952,6 +952,7 @@ pub fn run<D: Dial + Send + 'static>(
         input: input::Input {
             aiming: false,
             ctrl_held: false,
+            war_mode_held: false,
             // No click has landed, so the next one cannot be the second of a
             // pair.
             last_click: None,

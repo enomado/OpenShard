@@ -3,10 +3,13 @@ use super::*;
 /// Whether two items are one pile waiting to happen: both stackable, same
 /// graphic and hue, and not the same entity.
 pub fn can_stack(state: &WorldState, a: EntityId, b: EntityId) -> bool {
+    let same_drawn = state.registry.get::<Drawn>(a) == state.registry.get::<Drawn>(b);
     a != b
-        && state.registry.has::<Stackable>(a)
-        && state.registry.has::<Stackable>(b)
-        && state.registry.get::<Drawn>(a) == state.registry.get::<Drawn>(b)
+        && same_drawn
+        && (state.registry.has::<Stackable>(a) && state.registry.has::<Stackable>(b)
+            // Older saves can contain one-coin gold items made before gold was
+            // marked stackable at creation.  Keep those coins usable too.
+            || state.registry.get::<Drawn>(a).is_some_and(|drawn| drawn.id == GOLD_GRAPHIC))
 }
 
 /// Merge a held stack onto another stack, on the ground or inside a container.
@@ -91,6 +94,15 @@ pub const MAX_STACK: u16 = 60_000;
 /// and despawning the source, which quietly destroyed the difference. Dropping
 /// 50,000 gold onto 50,000 left one pile of 65,535 and 34,465 gone.
 fn merge_amounts(state: &mut WorldState, held: EntityId, target: EntityId) -> u16 {
+    // Normalise an old one-coin gold item as soon as it participates in a
+    // merge, so its corrected state is retained by the next save.
+    if state
+        .registry
+        .get::<Drawn>(target)
+        .is_some_and(|drawn| drawn.id == GOLD_GRAPHIC)
+    {
+        state.registry.insert(target, Stackable);
+    }
     let held_amount = amount_of(state, held);
     let room = MAX_STACK.saturating_sub(amount_of(state, target));
     let moved = held_amount.min(room);

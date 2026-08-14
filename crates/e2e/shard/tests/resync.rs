@@ -110,7 +110,7 @@ async fn a_lost_client_asks_where_it_is_and_the_shard_tells_it() {
             {
                 Moved::Stepped { .. } => return true,
                 Moved::Snapped { .. } => return false,
-                Moved::Idle => {}
+                Moved::Turned { .. } | Moved::Idle => {}
             }
         }
         false

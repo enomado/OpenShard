@@ -92,7 +92,7 @@ async fn a_client_walks_and_the_shard_agrees_on_where_it_ended_up() {
                     refused_at = Some(position);
                     return;
                 }
-                Moved::Idle => {
+                Moved::Turned { .. } | Moved::Idle => {
                     view.apply(&packet);
                 }
             }

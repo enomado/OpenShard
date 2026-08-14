@@ -11,14 +11,17 @@
 
 use std::time::Instant;
 
-use openshard_client_render::gump::{self as gump_art, GumpPixel};
 use openshard_client_render::vendor::Hit as VendorHit;
+use openshard_client_render::{
+    container,
+    gump::{self as gump_art, GumpPixel},
+};
 use openshard_protocol::containers::ContainedItem;
 use openshard_protocol::gump::GumpId;
 use openshard_protocol::gump::GumpPoint;
 use openshard_protocol::mobile::Equipment;
 use openshard_protocol::serial::Serial;
-use openshard_protocol::wire::Graphic;
+use openshard_protocol::wire::{Graphic, Layer};
 
 use crate::app::App;
 use crate::windows::{Drawn, WindowSubject};
@@ -29,6 +32,75 @@ mod skills;
 mod sync;
 
 impl App {
+    /// The visible loot action under the pointer, if it is not covered by a
+    /// higher window. The player's own backpack and vendor catalogues never
+    /// offer it: neither is loot to sweep into the backpack.
+    fn take_all_button_under_pointer(&self) -> Option<Serial> {
+        let view = self.world.authoritative.view.as_ref()?;
+        let backpack = view
+            .player
+            .equipment
+            .iter()
+            .find(|item| item.layer == Layer::BACKPACK)
+            .map(|item| item.serial);
+        for open in self.windows.own_windows.iter().rev() {
+            if let WindowSubject::Container(serial) = open.subject {
+                if Some(serial) != backpack && !view.vendor_buys.contains_key(&serial) {
+                    if let Some(gump) = view.containers.get(&serial) {
+                        if container::take_all_button(&self.resources.gump_atlas, *gump, open.at)
+                            .is_some_and(|button| button.contains(self.input.pointer_gump))
+                        {
+                            return Some(serial);
+                        }
+                    }
+                }
+            }
+            // A real window above the action owns this press; do not let a
+            // control on a covered chest answer through its pixels.
+            if self.window_under_pointer() == Some(open.subject) {
+                return None;
+            }
+        }
+        None
+    }
+
+    /// Move every currently listed item from `container` into the player's
+    /// backpack. Each lift/drop pair stays on the ordinary, server-authoritative
+    /// drag path, preserving reach, ownership and weight checks.
+    fn take_all_from_container(&mut self, container: Serial) {
+        let Some(view) = self.world.authoritative.view.as_ref() else {
+            return;
+        };
+        let Some(backpack) = view
+            .player
+            .equipment
+            .iter()
+            .find(|item| item.layer == Layer::BACKPACK)
+            .map(|item| item.serial)
+        else {
+            return;
+        };
+        if container == backpack || view.vendor_buys.contains_key(&container) {
+            return;
+        }
+        let items = view.contents.get(&container).cloned().unwrap_or_default();
+        let Some(link) = self.world.shard.link() else {
+            return;
+        };
+        for (index, item) in items.into_iter().enumerate() {
+            // Keep the dropped icons apart. The backpack remains authoritative
+            // about their final grid slots and any stack merge.
+            let column = (index % 6) as i32;
+            let row = (index / 6) as i32;
+            link.pick_up_item(item.serial, item.amount);
+            link.drop_into(
+                item.serial,
+                backpack,
+                GumpPoint::new(20 + column * 18, 20 + row * 18),
+            );
+        }
+    }
+
     /// Scroll the catalogue under the pointer by one row per wheel gesture.
     ///
     /// Vendor packets can contain an entire restock, so their window has a
@@ -447,6 +519,11 @@ impl App {
     /// drags it, which is how a gump is moved when it has no title bar to move
     /// it by. See `gump::Dialogs::press`.
     pub(crate) fn press_on_own_window(&mut self) -> bool {
+        if let Some(container) = self.take_all_button_under_pointer() {
+            self.take_all_from_container(container);
+            self.windows.dragging = None;
+            return true;
+        }
         let Some(subject) = self.window_under_pointer() else {
             // A press that missed every window gives the keyboard back: a field
             // stays focused only while the player is still in the dialog.

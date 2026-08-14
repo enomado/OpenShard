@@ -117,7 +117,7 @@ async fn a_stop_leaves_the_world_on_disk_before_it_returns() {
                     return position;
                 }
                 Moved::Snapped { .. } => panic!("the one step was refused; nothing moved"),
-                Moved::Idle => {
+                Moved::Turned { .. } | Moved::Idle => {
                     view.apply(&packet);
                 }
             }

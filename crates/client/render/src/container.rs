@@ -26,6 +26,37 @@ use openshard_protocol::wire::Graphic;
 
 use crate::gump::{GumpArt, GumpAtlas, GumpPixel, Picture};
 
+/// The compact client-side control shown beneath a loot container.
+///
+/// A container's gump is supplied by the shard and has no spare layout field
+/// for client actions. Keeping this control just below that art makes it
+/// available for every chest and corpse without guessing at free pixels inside
+/// the many different container backgrounds.
+pub const TAKE_ALL_LABEL: &str = "[ Take all ]";
+
+/// A rectangular client-side container action.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct ActionButton {
+    /// Top-left corner in gump pixels.
+    pub at: GumpPixel,
+    /// Width and height of the clickable plate.
+    pub size: (i32, i32),
+}
+
+impl ActionButton {
+    /// Whether this button owns `cursor`.
+    pub fn contains(self, cursor: GumpPixel) -> bool {
+        let x = cursor.x - self.at.x;
+        let y = cursor.y - self.at.y;
+        (0..self.size.0).contains(&x) && (0..self.size.1).contains(&y)
+    }
+
+    /// Where its caption starts.
+    pub const fn label_at(self) -> GumpPixel {
+        self.at.offset(GumpPixel::new(3, 2))
+    }
+}
+
 /// Every picture a container window needs packed before it can be laid out.
 ///
 /// Asked for before [`window`] rather than derived inside it for the reason
@@ -49,6 +80,18 @@ pub fn art_of(gump: Graphic, contents: &[ContainedItem]) -> Vec<GumpArt> {
 pub fn size(atlas: &GumpAtlas, gump: Graphic) -> Option<(i32, i32)> {
     let sprite = atlas.sprite(GumpArt::Gump(gump))?;
     Some((i32::from(sprite.width), i32::from(sprite.height)))
+}
+
+/// The client-owned "Take all" plate immediately below a container.
+///
+/// Its position depends on the actual gump art, so it is absent until that art
+/// has been packed just like the container window itself.
+pub fn take_all_button(atlas: &GumpAtlas, gump: Graphic, at: GumpPixel) -> Option<ActionButton> {
+    let (_, height) = size(atlas, gump)?;
+    Some(ActionButton {
+        at: at.offset(GumpPixel::new(0, height + 4)),
+        size: (72, 18),
+    })
 }
 
 /// Lay a container out at `at`: the background, then everything in it.
@@ -175,6 +218,15 @@ mod tests {
             None,
             "art nobody packed has no size"
         );
+    }
+
+    #[test]
+    fn take_all_button_sits_below_the_container_and_owns_its_plate() {
+        let button = take_all_button(&atlas(), BAG, GumpPixel::new(300, 200)).expect("the bag is packed");
+        assert_eq!(button.at, GumpPixel::new(300, 304));
+        assert!(button.contains(GumpPixel::new(371, 321)));
+        assert!(!button.contains(GumpPixel::new(372, 321)));
+        assert!(!button.contains(GumpPixel::new(371, 322)));
     }
 
     /// Item coordinates are measured from the background's top left, so moving

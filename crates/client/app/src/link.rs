@@ -95,14 +95,20 @@ pub enum Movement {
     Relocation {
         confirmed: openshard_client_net::walk::Predicted,
     },
+    /// The server turned the character in place.  Unlike a relocation, this
+    /// preserves steps already accepted locally and their visual transitions.
+    Turn {
+        confirmed: openshard_client_net::walk::Predicted,
+    },
 }
 
 impl Movement {
     pub const fn confirmed(self) -> openshard_client_net::walk::Predicted {
         match self {
-            Self::Ack { confirmed, .. } | Self::Reject { confirmed, .. } | Self::Relocation { confirmed } => {
-                confirmed
-            }
+            Self::Ack { confirmed, .. }
+            | Self::Reject { confirmed, .. }
+            | Self::Relocation { confirmed }
+            | Self::Turn { confirmed } => confirmed,
         }
     }
 }
@@ -764,6 +770,7 @@ pub(crate) fn fold(
                 _ => unreachable!("only a relocation packet can snap Walk"),
             })
         }
+        Moved::Turned { confirmed } => Some(Movement::Turn { confirmed }),
         Moved::Idle => None,
     };
     Ok(Folded { movement })

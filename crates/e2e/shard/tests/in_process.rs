@@ -73,7 +73,7 @@ async fn a_client_enters_the_world_with_no_socket_anywhere() {
                 // inside the pace budget, so a `0x21` would mean the two ends
                 // disagree about a walk nothing has stressed yet.
                 Moved::Snapped { position, .. } => panic!("the first step was refused, back to {position:?}"),
-                Moved::Idle => {
+                Moved::Turned { .. } | Moved::Idle => {
                     view.apply(&packet);
                 }
             }

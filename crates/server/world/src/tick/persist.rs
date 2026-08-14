@@ -1049,7 +1049,10 @@ impl World {
         if record.amount > 1 {
             self.state.registry.insert(entity, Amount(record.amount));
         }
-        if record.stackable {
+        // Gold has always been currency, including a pile of one.  Older
+        // records may have saved a lone coin without the flag, so repair it as
+        // it is restored rather than preserving a permanently unstackable coin.
+        if record.stackable || record.graphic == openshard_items::GOLD_GRAPHIC.0 {
             self.state.registry.insert(entity, Stackable);
         }
         if let Some(gump) = record.container_gump {
@@ -1142,7 +1145,9 @@ impl World {
             if record.amount > 1 {
                 self.state.registry.insert(entity, Amount(record.amount));
             }
-            if record.stackable {
+            // See `place_ground_item`: a historical lone gold coin still
+            // restores as stackable.
+            if record.stackable || record.graphic == openshard_items::GOLD_GRAPHIC.0 {
                 self.state.registry.insert(entity, Stackable);
             }
             if let Some(gump) = record.container_gump {

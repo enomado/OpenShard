@@ -50,7 +50,9 @@ pub fn give_to_backpack(
     let Some(backpack) = backpack_of(state, mobile) else {
         return false;
     };
-    if stackable {
+    // Coins are currency rather than discrete loot: a one-coin reward still
+    // belongs on the existing pile even when its source omitted the flag.
+    if stackable || graphic == GOLD_GRAPHIC {
         crate::give(state, backpack, graphic, hue, u32::from(amount));
     } else {
         crate::place_one(state, backpack, graphic, hue, amount);

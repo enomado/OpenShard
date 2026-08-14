@@ -454,6 +454,14 @@ impl PlayerMotion {
                 self.network.transitions.clear();
                 self.game.snap(confirmed.position);
             }
+            link::Movement::Turn { confirmed } => {
+                // A combat turn is emitted independently of the walk
+                // handshake.  Preserve an in-flight walk, but show the new
+                // direction immediately when standing still.
+                if self.network.pending.is_empty() {
+                    self.network.predicted = confirmed;
+                }
+            }
         }
         self.debug_assert_valid();
     }

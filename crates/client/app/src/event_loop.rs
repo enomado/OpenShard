@@ -90,6 +90,7 @@ impl ApplicationHandler<()> for App {
             if matches!(event, WindowEvent::KeyboardInput { .. }) {
                 self.steer.clear();
                 self.input.aiming = false;
+                self.set_war_mode_held(false);
             }
             if let Some(window) = self.window.as_ref() {
                 window.window.request_redraw();
@@ -183,6 +184,14 @@ impl ApplicationHandler<()> for App {
                     }
                     return;
                 }
+                // ClassicUO's default Tab action is held: it enters war mode
+                // on the first press and returns to peace mode on release.
+                // Handle both states before the pressed-only hotkeys below so
+                // an operating-system repeat cannot act as another press.
+                if code == KeyCode::Tab {
+                    self.set_war_mode_held(event.state == ElementState::Pressed);
+                    return;
+                }
                 // An arrow is *held*, not pressed: while it is down a step is
                 // due every step's length, and that clock is ours rather than
                 // the operating system's repeat rate. See `keys.rs`.
@@ -271,6 +280,7 @@ impl ApplicationHandler<()> for App {
                     KeyCode::Enter | KeyCode::NumpadEnter => {
                         self.chat.focused = true;
                         self.steer.clear();
+                        self.set_war_mode_held(false);
                         true
                     }
                     KeyCode::Home => {
@@ -283,6 +293,13 @@ impl ApplicationHandler<()> for App {
                     // ordinary double click.
                     KeyCode::KeyP => {
                         self.open_own_paperdoll();
+                        true
+                    }
+                    // The backpack button on the paperdoll is not the only
+                    // route to inventory: it can be covered or closed.  Use
+                    // the worn backpack directly, exactly as that button does.
+                    KeyCode::KeyI => {
+                        self.open_own_inventory();
                         true
                     }
                     // Page up and down lift the eye rather than the body,
@@ -451,6 +468,7 @@ impl ApplicationHandler<()> for App {
                 } else {
                     self.steer.clear();
                     self.input.aiming = false;
+                    self.set_war_mode_held(false);
                 }
             }
             // Entirely covered by another window: the compositor will not show
