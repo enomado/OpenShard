@@ -649,16 +649,13 @@ impl ApplicationHandler<()> for App {
                 // Right over a window closes it — the reference client's own
                 // gesture — and does not steer: a press that never reached the
                 // world cannot be a heading into it.
+                // The two gestures are `||`-ed rather than chained because they
+                // want the same redraw; the short-circuit keeps the order, so
+                // `close_window_under_pointer` still only runs when the target
+                // cursor did not already take the press.
                 if button == winit::event::MouseButton::Right
                     && state == ElementState::Pressed
-                    && self.cancel_target_cursor()
-                {
-                    if let Some(window) = self.window.as_ref() {
-                        window.window.request_redraw();
-                    }
-                } else if button == winit::event::MouseButton::Right
-                    && state == ElementState::Pressed
-                    && self.close_window_under_pointer()
+                    && (self.cancel_target_cursor() || self.close_window_under_pointer())
                 {
                     if let Some(window) = self.window.as_ref() {
                         window.window.request_redraw();

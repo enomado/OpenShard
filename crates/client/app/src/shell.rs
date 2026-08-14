@@ -487,7 +487,7 @@ impl Shell {
                 )),
                 ..Default::default()
             },
-            |ui| draw_world_overlays(ui.ctx(), &hud, camera, free),
+            |ui| draw_world_overlays(ui.ctx(), hud, camera, free),
         );
         debug_assert_eq!(
             world_overlay.pixels_per_point,
@@ -565,6 +565,10 @@ impl Shell {
         }
     }
 
+    // egui's own paint call, and these are egui's own nine arguments: the
+    // renderer, the context, the device pair, the encoder and target, and the
+    // output to draw. Nothing here is ours to group.
+    #[allow(clippy::too_many_arguments)]
     fn paint_output(
         renderer: &mut egui_wgpu::Renderer,
         context: &egui::Context,

@@ -119,10 +119,10 @@ impl Window {
                 return Some(Hit::Remove(*row));
             }
         }
-        return self.action_at(cursor).map(|action| match action {
+        self.action_at(cursor).map(|action| match action {
             Action::Confirm => Hit::Confirm,
             Action::Clear => Hit::Clear,
-        });
+        })
     }
 
     /// The action plate at a cursor position, if any.  This is separate from
@@ -158,6 +158,10 @@ struct Row {
     hue: Hue,
 }
 
+// `sell` below takes seven of these eight, and for the same reason as
+// `paperdoll::window`: they are the frame's inputs — the catalogue, what the
+// pointer is doing, and where to draw — not one value arriving in parts.
+#[allow(clippy::too_many_arguments)]
 pub fn buy(
     vendor: Serial,
     lines: &[BuyLine],
@@ -173,7 +177,7 @@ pub fn buy(
         false,
         lines.iter().enumerate().map(|(i, line)| Row {
             name: line.name.clone(),
-            price: u32::from(line.price),
+            price: line.price,
             amount: amounts.get(i).copied().unwrap_or(0),
             quantity: format!("x{}", amounts.get(i).copied().unwrap_or(0)),
             graphic: items.get(i).map(|item| item.graphic),
@@ -200,6 +204,8 @@ pub fn sell(
         true,
         lines.iter().enumerate().map(|(i, line)| Row {
             name: line.name.clone(),
+            // A real widening: `SellLine::price` is a `u16` where `BuyLine`'s is
+            // already a `u32`.
             price: u32::from(line.price),
             amount: amounts.get(i).copied().unwrap_or(0),
             quantity: format!("{}/{}", amounts.get(i).copied().unwrap_or(0), line.amount.0),

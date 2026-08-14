@@ -70,10 +70,6 @@ impl LeafCount {
     fn new(value: usize) -> Self {
         Self(u8::try_from(value).expect("a leaf count fits in u8"))
     }
-
-    fn get(self) -> u8 {
-        self.0
-    }
 }
 
 impl From<LeafCount> for usize {
@@ -482,7 +478,7 @@ mod tests {
         let bvh = Bvh::of(&solids);
         for leaf in bvh.nodes().iter().filter_map(|node| node.leaf) {
             assert!(
-                leaf.count.get() >= 1 && usize::from(leaf.count) <= LEAF_PRIMITIVES,
+                usize::from(leaf.count) >= 1 && usize::from(leaf.count) <= LEAF_PRIMITIVES,
                 "a leaf of {} primitives",
                 leaf.count
             );
@@ -628,7 +624,7 @@ mod tests {
             let bvh = Bvh::of(&row(count as i32));
             for leaf in bvh.nodes().iter().filter_map(|node| node.leaf) {
                 assert!(
-                    leaf.count.get() >= 2,
+                    usize::from(leaf.count) >= 2,
                     "a leaf of {} over {count} primitives",
                     leaf.count
                 );

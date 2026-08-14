@@ -24,9 +24,9 @@ impl Audio {
     pub(crate) fn open(client_dir: &Path, effects_volume: f32, music_volume: f32) -> Self {
         #[cfg(not(target_arch = "wasm32"))]
         {
-            return Self {
+            Self {
                 native: NativeAudio::open(client_dir, effects_volume, music_volume),
-            };
+            }
         }
         #[cfg(target_arch = "wasm32")]
         {

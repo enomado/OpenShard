@@ -155,7 +155,7 @@ impl SpriteQuad {
         // Zero in the sideband means the historical opaque spelling. Keeping
         // it for 255 also preserves the ordinary hue word for CPU readers
         // and for every producer that is not in the late layer.
-        self.hue = (self.hue & 0xff00_ffff) | (u32::from(opacity != u8::MAX) * u32::from(opacity) << 16);
+        self.hue = (self.hue & 0xff00_ffff) | ((u32::from(opacity != u8::MAX) * u32::from(opacity)) << 16);
         self
     }
 

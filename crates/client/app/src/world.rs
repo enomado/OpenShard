@@ -216,6 +216,10 @@ pub struct StaticGeometryCache {
 }
 
 impl StaticGeometryCache {
+    // The eight fields the cache is keyed on. They *would* read better as a
+    // `Key` struct — `new` and `matches` take the identical list — but that is
+    // a change to every caller and belongs to whoever next works on this cache.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         camera: Camera,
         cutaway: Cutaway,
@@ -238,6 +242,7 @@ impl StaticGeometryCache {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn matches(
         &self,
         camera: Camera,

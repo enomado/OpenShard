@@ -76,6 +76,9 @@ use crate::{crowd, graphics, profile, resources, shell, windows, world};
 /// and both are named in the signature rather than reached through
 /// `&mut self`. Does nothing when there is no gump file or no pass to draw
 /// through — an offline run with neither.
+// Named individually on purpose — see the doc above: reaching them through
+// `&mut self` is what this function exists to avoid.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn draw_gump_windows(
     resources: &mut resources::Resources,
     world: &world::WorldState,

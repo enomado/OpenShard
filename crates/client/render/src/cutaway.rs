@@ -69,12 +69,17 @@ pub const TRANSLUCENT_ALPHA: f32 = 0.4;
 /// The reference client's `CalculateAlpha` step, in its byte-alpha domain.
 pub const ALPHA_STEP: u8 = 25;
 /// [`TRANSLUCENT_ALPHA`] in that same domain, rounded to the nearest byte.
-pub const TRANSLUCENT_ALPHA_U8: u8 = (TRANSLUCENT_ALPHA * 255.0).round() as u8;
+///
+/// `+ 0.5` and a truncating cast rather than `f32::round`, which is not `const`
+/// below 1.90 — the workspace is pinned at 1.88 while `deno_core` is in the tree.
+/// Both alphas are positive, which is the case where the two agree exactly.
+pub const TRANSLUCENT_ALPHA_U8: u8 = (TRANSLUCENT_ALPHA * 255.0 + 0.5) as u8;
 
 /// Opacity of a foliage canopy while the player's body is underneath it.
 pub const FOLIAGE_ALPHA: f32 = 0.4;
-/// [`FOLIAGE_ALPHA`] in the byte-alpha domain used by sprite instances.
-pub const FOLIAGE_ALPHA_U8: u8 = (FOLIAGE_ALPHA * 255.0).round() as u8;
+/// [`FOLIAGE_ALPHA`] in the byte-alpha domain used by sprite instances. Rounded
+/// the same way, and for the same reason, as [`TRANSLUCENT_ALPHA_U8`].
+pub const FOLIAGE_ALPHA_U8: u8 = (FOLIAGE_ALPHA * 255.0 + 0.5) as u8;
 
 /// The stable world identity of an object whose opacity is changing.
 ///

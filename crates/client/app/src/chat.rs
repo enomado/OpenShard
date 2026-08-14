@@ -93,25 +93,6 @@ impl Chat {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::Chat;
-
-    #[test]
-    fn submitting_speech_returns_the_keyboard_to_the_game() {
-        let mut chat = Chat {
-            typed: "buy".to_owned(),
-            cursor: 3,
-            focused: true,
-        };
-
-        assert_eq!(chat.take().as_deref(), Some("buy"));
-        assert!(chat.typed.is_empty());
-        assert_eq!(chat.cursor, 0);
-        assert!(!chat.focused, "hotkeys must work after a spoken line");
-    }
-}
-
 /// The speech line and the journal above it, over the finished picture and
 /// under egui's — the same corner `shell::speech_line`'s `egui::Panel::bottom`
 /// used to claim before this moved to the client's own rendering. Always
@@ -336,4 +317,23 @@ pub(crate) fn draw_chat_and_speech(
         text_quads,
     );
     profile::end(window.gpu.as_ref(), encoder, timed);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Chat;
+
+    #[test]
+    fn submitting_speech_returns_the_keyboard_to_the_game() {
+        let mut chat = Chat {
+            typed: "buy".to_owned(),
+            cursor: 3,
+            focused: true,
+        };
+
+        assert_eq!(chat.take().as_deref(), Some("buy"));
+        assert!(chat.typed.is_empty());
+        assert_eq!(chat.cursor, 0);
+        assert!(!chat.focused, "hotkeys must work after a spoken line");
+    }
 }

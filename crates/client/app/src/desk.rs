@@ -370,18 +370,18 @@ impl Audio {
     pub fn clamped(self) -> Self {
         let defaults = Self::default();
         Self {
-            effects: self
-                .effects
-                .is_finite()
-                .then_some(self.effects)
-                .unwrap_or(defaults.effects)
-                .clamp(0.0, 1.0),
-            music: self
-                .music
-                .is_finite()
-                .then_some(self.music)
-                .unwrap_or(defaults.music)
-                .clamp(0.0, 1.0),
+            effects: if self.effects.is_finite() {
+                self.effects
+            } else {
+                defaults.effects
+            }
+            .clamp(0.0, 1.0),
+            music: if self.music.is_finite() {
+                self.music
+            } else {
+                defaults.music
+            }
+            .clamp(0.0, 1.0),
         }
     }
 }

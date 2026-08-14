@@ -678,10 +678,9 @@ fn audit_visible_ground_centres(window: &crate::window::Screen, map: &Map, camer
         }
         if openshard_client_render::gbuffer::ids_kind(id)
             == Some(openshard_client_render::place::Kind::Nothing)
+            && missing.len() < 12
         {
-            if missing.len() < 12 {
-                missing.push((*x, *y));
-            }
+            missing.push((*x, *y));
         }
         if id & openshard_client_render::gbuffer::IDS_COMPOSITE_MAP != 0
             && openshard_client_render::gbuffer::ids_kind(id)
@@ -1789,8 +1788,8 @@ impl App {
         // representation until an idle producer has completed its composite.
         // The completed image enters `Screen::composites` through this queue;
         // Work 4 owns drawing that ready texture in the depth-aware world pass.
-        let map_width = self.resources.map.width() as u32;
-        let map_height = self.resources.map.height() as u32;
+        let map_width = self.resources.map.width();
+        let map_height = self.resources.map.height();
         let map_tiles = openshard_client_render::camera::TileBounds {
             min_x: 0,
             max_x: map_width.saturating_sub(1) as i32,
@@ -1833,7 +1832,7 @@ impl App {
         let (repacked, atlas_work) = ready_atlases(
             &mut self.resources,
             &mut self.graphics,
-            &mut self.world,
+            &self.world,
             &mut self.repacks,
             window,
             want,

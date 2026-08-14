@@ -232,7 +232,7 @@ impl App {
         // socket thread's `link::fold`.  In particular, combat retaliation is
         // a turn in place: without this fallback the view records its new
         // facing but `PlayerMotion` keeps projecting the old one to the crowd.
-        let movement = movement.or_else(|| match packet {
+        let movement = movement.or(match packet {
             ServerPacket::PlayerUpdate(update) => Some(link::Movement::Relocation {
                 confirmed: openshard_client_net::walk::Predicted {
                     position: update.position,
