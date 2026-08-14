@@ -52,7 +52,7 @@ impl App {
             | paperdoll::DollButton::Backpack => self.scroll_paired(subject, button),
             _ => false,
         };
-        let Some(link) = self.world.link.as_ref() else {
+        let Some(link) = self.world.shard.link() else {
             return;
         };
         let mut opened_skills = false;

@@ -199,6 +199,8 @@ Other Rust work on the same client, worth reading before reinventing a wheel:
 - [AngryLawyer/uo-rust-libs](https://github.com/AngryLawyer/uo-rust-libs) —
   Rust libraries for the client's data files (`.mul` / `.uop` art, map,
   tiledata); the same ground `crates/server/world` covers.
+- [hulryung-uo/anima-client](https://github.com/hulryung-uo/anima-client) —
+  an Ultima Online client project.
 
 ## Licence
 

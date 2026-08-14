@@ -70,6 +70,63 @@ impl MapBlock {
     }
 }
 
+/// One cacheable terrain owner: all 64 tiles form the same level surface.
+///
+/// This is deliberately stronger than "every tile is flat". A block where
+/// neighbouring flat tiles have different heights still has overlapping
+/// diamonds and must remain in the direct LOD0 ground pass. The common height
+/// is the canonical vertical origin for both the offscreen producer and the
+/// later restore rectangle.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FlatGroundBlock {
+    block: MapBlock,
+    elevation: i8,
+}
+
+impl FlatGroundBlock {
+    /// Inspect the authoritative map and return the block only when one cached
+    /// texture can own all of its ground pixels without a live overlap.
+    pub fn inspect(map: &openshard_uofiles::map::Map, block: MapBlock) -> Option<Self> {
+        let (first_x, first_y) = block.first_tile();
+        let mut elevation = None;
+        for y in u32::from(first_y)..u32::from(first_y) + BLOCK_SIZE {
+            for x in u32::from(first_x)..u32::from(first_x) + BLOCK_SIZE {
+                let (x, y) = (x as u16, y as u16);
+                let land = map.land(x, y)?;
+                let corners = crate::ground::corner_heights(map, x, y, land.z);
+                if !corners.iter().all(|height| *height == corners[0]) {
+                    return None;
+                }
+                // Heights come from the signed map grid. Keeping the native
+                // unit is less lossy than caching an already-projected offset.
+                let z = corners[0] as i8;
+                if corners[0] != f32::from(z) || elevation.is_some_and(|was| was != z) {
+                    return None;
+                }
+                elevation = Some(z);
+            }
+        }
+        Some(Self {
+            block,
+            elevation: elevation?,
+        })
+    }
+
+    const fn at(block: MapBlock, elevation: i8) -> Self {
+        Self { block, elevation }
+    }
+
+    /// The map block this surface owns.
+    pub const fn block(self) -> MapBlock {
+        self.block
+    }
+
+    /// The common height of every point on the surface.
+    pub const fn elevation(self) -> i8 {
+        self.elevation
+    }
+}
+
 /// The fixed, viewport-independent contract for producing one composite.
 ///
 /// A producer receives only this value and immutable map inputs.  In
@@ -82,13 +139,13 @@ impl MapBlock {
 pub struct CompositeProducerJob {
     key: CompositeKey,
     camera: Camera,
-    ground_z: i8,
+    ground: FlatGroundBlock,
 }
 
 impl CompositeProducerJob {
     /// Define the canonical producer for one dispatched cache identity.
     pub fn new(key: CompositeKey) -> Self {
-        Self::at_ground_z(key, 0)
+        Self::for_flat_ground(key, FlatGroundBlock::at(key.block, 0))
     }
 
     /// Define the canonical producer for a wholly flat block at `ground_z`.
@@ -97,7 +154,13 @@ impl CompositeProducerJob {
     /// level.  Its local camera must use that same elevation or the fixed
     /// 352-pixel source crops the top (or bottom) of every diamond before it
     /// reaches the cache.
-    pub fn at_ground_z(key: CompositeKey, ground_z: i8) -> Self {
+    pub fn for_flat_ground(key: CompositeKey, ground: FlatGroundBlock) -> Self {
+        assert_eq!(
+            key.block,
+            ground.block(),
+            "a composite key and its ground owner must name the same map block"
+        );
+        let ground_z = ground.elevation();
         let (x, y) = key.block.first_tile();
         // The ground diamond for 8×8 tiles has its vertical centre 22 pixels
         // above the centre of tile `(x + 4, y + 4)`.  Looking there centres
@@ -112,11 +175,7 @@ impl CompositeProducerJob {
             x: centre.x,
             y: centre.y - TILE_HEIGHT / 2,
         });
-        Self {
-            key,
-            camera,
-            ground_z,
-        }
+        Self { key, camera, ground }
     }
 
     /// The immutable cache identity this producer is allowed to complete.
@@ -127,6 +186,11 @@ impl CompositeProducerJob {
     /// Fixed, local 1:1 camera used for the offscreen map-only draw.
     pub const fn camera(self) -> Camera {
         self.camera
+    }
+
+    /// The one immutable terrain owner this job is permitted to publish.
+    pub const fn ground(self) -> FlatGroundBlock {
+        self.ground
     }
 
     /// Fixed source attachment dimensions. LOD1 retains this exact grid.
@@ -145,7 +209,11 @@ impl CompositeProducerJob {
     /// The ground block footprint in this job's own source attachment.
     pub fn rect_in(self, camera: Camera) -> Rect {
         let (x, y) = self.key.block.first_tile();
-        let top = camera.to_screen(openshard_protocol::world::Point::new(x, y, self.ground_z()));
+        let top = camera.to_screen(openshard_protocol::world::Point::new(
+            x,
+            y,
+            self.ground.elevation(),
+        ));
         let side = COMPOSITE_SOURCE_SIDE as f32;
         Rect {
             x: top.x as f32 - side / 2.0,
@@ -153,10 +221,6 @@ impl CompositeProducerJob {
             width: side,
             height: side,
         }
-    }
-
-    fn ground_z(self) -> i8 {
-        self.ground_z
     }
 
     /// The ground block footprint in this job's own source attachment.
@@ -311,6 +375,28 @@ pub struct CompositeKey {
     pub tier: CompositeTier,
     /// Immutable source revision used to produce its pixels.
     pub revision: ImmutableRevision,
+}
+
+/// Why a block was deliberately held at direct LOD0 for this session.
+///
+/// This is a cache safety decision, not an error-recovery queue: recording it
+/// alongside the owning source proof makes a field dump actionable without
+/// asking someone to reconstruct the camera frame that exposed it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CompositeQuarantineReason {
+    /// The map inspection found slopes or mixed elevations in this block.
+    NonFlatGround,
+    /// The full LOD0 oracle found a missing immutable-map pixel after restore.
+    OracleMissingGroundCoverage,
+}
+
+/// The compact immutable owner record retained for a quarantined block.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CompositeQuarantine {
+    pub block: MapBlock,
+    pub key: CompositeKey,
+    pub ground: Option<FlatGroundBlock>,
+    pub reason: CompositeQuarantineReason,
 }
 
 /// Dimensions of one already-rasterised composite image.
@@ -478,9 +564,8 @@ impl CompositePixels {
 #[derive(Debug)]
 pub struct CompositeTexture {
     key: CompositeKey,
-    /// The common elevation of the wholly flat ground block this texture owns.
-    /// It is part of the producer/view transform, not of the atlas revision.
-    ground_z: i8,
+    /// The source contract carried through producer and restore unchanged.
+    ground: FlatGroundBlock,
     /// CPU pixels are retained for worker-produced entries.  GPU captures do
     /// not read the image back merely to upload it again, so they have no CPU
     /// copy here.
@@ -552,7 +637,7 @@ impl CompositeTexture {
             .map(|planes| DeferredTextures::new(device, queue, size, planes));
         Self {
             key,
-            ground_z: 0,
+            ground: FlatGroundBlock::at(key.block, 0),
             size,
             depth_base: pixels.deferred().map_or(0, DeferredPixels::depth_base),
             pixels: Some(pixels),
@@ -572,8 +657,13 @@ impl CompositeTexture {
         key: CompositeKey,
         size: CompositeSize,
         depth_base: i32,
-        ground_z: i8,
+        ground: FlatGroundBlock,
     ) -> Self {
+        assert_eq!(
+            key.block,
+            ground.block(),
+            "a captured texture must retain the producer's own ground block"
+        );
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("captured map block composite"),
             size: wgpu::Extent3d {
@@ -593,7 +683,7 @@ impl CompositeTexture {
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
         Self {
             key,
-            ground_z,
+            ground,
             pixels: None,
             size,
             depth_base,
@@ -609,14 +699,14 @@ impl CompositeTexture {
         self.key
     }
 
-    /// Where this plateau lies in map height units.
-    pub const fn ground_z(&self) -> i8 {
-        self.ground_z
+    /// The immutable ground owner captured into this texture.
+    pub const fn ground(&self) -> FlatGroundBlock {
+        self.ground
     }
 
     /// The exact current-frame destination rectangle for this cached plateau.
     pub fn rect_in(&self, camera: Camera) -> crate::geometry::Rect {
-        CompositeProducerJob::at_ground_z(self.key, self.ground_z).rect_in(camera)
+        CompositeProducerJob::for_flat_ground(self.key, self.ground).rect_in(camera)
     }
 
     /// Camera depth base used when this entry's stored depths were written.
@@ -884,7 +974,8 @@ pub struct CompositeCache {
     /// Blocks the full-frame oracle has proved unsafe to restore. They stay at
     /// LOD0 for the rest of the session: a correct fallback is preferable to
     /// repeatedly rebuilding a known-bad cache image every frame.
-    rejected: BTreeSet<MapBlock>,
+    rejected: BTreeMap<MapBlock, CompositeQuarantine>,
+    latest_quarantine: Option<CompositeQuarantine>,
     limits: CompositeCacheLimits,
     use_clock: Cell<u64>,
 }
@@ -900,7 +991,8 @@ impl CompositeCache {
     pub fn with_limits(limits: CompositeCacheLimits) -> Self {
         Self {
             entries: BTreeMap::new(),
-            rejected: BTreeSet::new(),
+            rejected: BTreeMap::new(),
+            latest_quarantine: None,
             limits,
             use_clock: Cell::new(0),
         }
@@ -923,7 +1015,7 @@ impl CompositeCache {
 
     /// A ready composite for the exact immutable revision.
     pub fn get(&self, key: CompositeKey) -> Option<&CompositeTexture> {
-        if self.rejected.contains(&key.block) {
+        if self.rejected.contains_key(&key.block) {
             return None;
         }
         let entry = self.entries.get(&key)?;
@@ -992,7 +1084,7 @@ impl CompositeCache {
         device: &wgpu::Device,
         key: CompositeKey,
         source: CaptureSource<'_>,
-        ground_z: i8,
+        ground: FlatGroundBlock,
     ) -> &CompositeTexture {
         let divisor = key.tier.source_pixels_per_texel();
         let size = CompositeSize::new(
@@ -1000,7 +1092,7 @@ impl CompositeCache {
             source.rect.height.div_ceil(divisor),
         )
         .expect("a non-empty capture rectangle has a non-empty tier");
-        let composite = CompositeTexture::capture(device, key, size, source.depth_base, ground_z);
+        let composite = CompositeTexture::capture(device, key, size, source.depth_base, ground);
         self.entries.insert(key, composite);
         self.get(key).expect("the captured entry was just inserted")
     }
@@ -1019,15 +1111,43 @@ impl CompositeCache {
     /// hole after its queue comes round again. Map terrain is immutable for the
     /// lifetime of this cache, so the direct path remains the authoritative
     /// safe representation until the underlying producer is fixed.
-    pub fn reject_block(&mut self, block: MapBlock) -> usize {
-        self.rejected.insert(block);
-        self.invalidate_block(block)
+    pub fn quarantine(&mut self, quarantine: CompositeQuarantine) -> usize {
+        self.latest_quarantine = Some(quarantine);
+        self.rejected.insert(quarantine.block, quarantine);
+        self.invalidate_block(quarantine.block)
+    }
+
+    /// Permanently fall back to LOD0 and retain the source owner that proved
+    /// unsafe. The optional ground proof distinguishes a map-inspection
+    /// decision from an oracle failure after a producer/restore attempt.
+    pub fn reject_block(
+        &mut self,
+        key: CompositeKey,
+        ground: Option<FlatGroundBlock>,
+        reason: CompositeQuarantineReason,
+    ) -> usize {
+        self.quarantine(CompositeQuarantine {
+            block: key.block,
+            key,
+            ground,
+            reason,
+        })
     }
 
     /// A rejected block acts as ready to the scheduler so it does not consume
     /// an atlas/preparation slot every frame only to be discarded again.
     pub fn is_rejected(&self, block: MapBlock) -> bool {
-        self.rejected.contains(&block)
+        self.rejected.contains_key(&block)
+    }
+
+    /// Number of blocks permanently using the safe direct path.
+    pub fn quarantined_len(&self) -> usize {
+        self.rejected.len()
+    }
+
+    /// The most recent safety decision, including its block/key/owner proof.
+    pub const fn latest_quarantine(&self) -> Option<CompositeQuarantine> {
+        self.latest_quarantine
     }
 
     /// Forget every cached resolution and revision of one changed map block.
@@ -1150,6 +1270,17 @@ pub struct CompositeWork {
     pub priority: CompositePriority,
 }
 
+/// A producer request whose map-derived ownership proof has been accepted.
+///
+/// `ground` is deliberately carried with the work instead of rediscovering
+/// eligibility at render time.  It freezes the block and shared elevation that
+/// define both the producer camera and the later restore transform.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PreparedCompositeWork {
+    pub work: CompositeWork,
+    pub ground: FlatGroundBlock,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 struct QueueOrder {
     priority: CompositePriority,
@@ -1168,7 +1299,7 @@ pub struct CompositeWorkQueue {
     max_pending: usize,
     builds_per_frame: usize,
     pending: BTreeMap<CompositeKey, QueueOrder>,
-    prepared: BTreeSet<CompositeKey>,
+    prepared: BTreeMap<CompositeKey, FlatGroundBlock>,
     in_flight: BTreeSet<CompositeKey>,
     previous_visible: Option<MapBlockBounds>,
 }
@@ -1186,7 +1317,7 @@ impl CompositeWorkQueue {
             max_pending,
             builds_per_frame,
             pending: BTreeMap::new(),
-            prepared: BTreeSet::new(),
+            prepared: BTreeMap::new(),
             in_flight: BTreeSet::new(),
             previous_visible: None,
         })
@@ -1207,12 +1338,33 @@ impl CompositeWorkQueue {
         self.prepared.len()
     }
 
-    /// Record that the exact pending job's immutable inputs are ready.
+    /// Record the exact pending job's immutable source proof and atlas inputs.
     ///
     /// A stale/cancelled key cannot be made ready again: it has to be refreshed
     /// and selected as a new pending request first.
-    pub fn mark_prepared(&mut self, key: CompositeKey) -> bool {
-        self.pending.contains_key(&key) && self.prepared.insert(key)
+    pub fn mark_prepared(&mut self, key: CompositeKey, ground: FlatGroundBlock) -> bool {
+        assert_eq!(
+            key.block,
+            ground.block(),
+            "a composite job may only carry the source proof for its own block"
+        );
+        if !self.pending.contains_key(&key) {
+            return false;
+        }
+        match self.prepared.entry(key) {
+            std::collections::btree_map::Entry::Vacant(entry) => {
+                entry.insert(ground);
+                true
+            }
+            std::collections::btree_map::Entry::Occupied(entry) => {
+                debug_assert_eq!(
+                    *entry.get(),
+                    ground,
+                    "a pending composite key cannot change source transform"
+                );
+                false
+            }
+        }
     }
 
     /// The next bounded set of requests whose immutable inputs should be
@@ -1227,7 +1379,7 @@ impl CompositeWorkQueue {
             .pending
             .values()
             .copied()
-            .filter(|order| !self.prepared.contains(&order.key))
+            .filter(|order| !self.prepared.contains_key(&order.key))
             .collect();
         ordered.sort();
         ordered
@@ -1278,7 +1430,7 @@ impl CompositeWorkQueue {
                 // a never-preparable entry resident forever.
                 && !ready(*key)
         });
-        self.prepared.retain(|key| self.pending.contains_key(key));
+        self.prepared.retain(|key, _| self.pending.contains_key(key));
         for block in visible.blocks() {
             self.request(
                 block,
@@ -1359,23 +1511,29 @@ impl CompositeWorkQueue {
     /// gate structural: an atlas-page-limit or other preparation failure cannot
     /// move the job into `in_flight`, so the visible renderer has only its LOD0
     /// fallback for that block.
-    pub fn take_marked_prepared_for_frame(&mut self) -> Vec<CompositeWork> {
+    pub fn take_marked_prepared_for_frame(&mut self) -> Vec<PreparedCompositeWork> {
         let mut ordered: Vec<_> = self
             .pending
             .values()
             .copied()
-            .filter(|order| self.prepared.contains(&order.key))
+            .filter(|order| self.prepared.contains_key(&order.key))
             .collect();
         ordered.sort();
         ordered.truncate(self.builds_per_frame);
         let mut work = Vec::with_capacity(ordered.len());
         for order in ordered {
             self.pending.remove(&order.key);
-            self.prepared.remove(&order.key);
+            let ground = self
+                .prepared
+                .remove(&order.key)
+                .expect("selected prepared job retains its source proof");
             self.in_flight.insert(order.key);
-            work.push(CompositeWork {
-                key: order.key,
-                priority: order.priority,
+            work.push(PreparedCompositeWork {
+                work: CompositeWork {
+                    key: order.key,
+                    priority: order.priority,
+                },
+                ground,
             });
         }
         work
@@ -1463,7 +1621,7 @@ impl CompositeWorkQueue {
         let pending_before = self.pending.len();
         let flight_before = self.in_flight.len();
         self.pending.retain(|key, _| !stale(key));
-        self.prepared.retain(|key| !stale(key));
+        self.prepared.retain(|key, _| !stale(key));
         self.in_flight.retain(|key| !stale(key));
         pending_before - self.pending.len() + flight_before - self.in_flight.len()
     }
@@ -1503,7 +1661,7 @@ impl CompositeWorkQueue {
         cache: &'a mut CompositeCache,
         key: CompositeKey,
         source: CaptureSource<'_>,
-        ground_z: i8,
+        ground: FlatGroundBlock,
     ) -> Option<&'a CompositeTexture> {
         if !self.in_flight.remove(&key) {
             return None;
@@ -1511,7 +1669,7 @@ impl CompositeWorkQueue {
         if cache.is_rejected(key.block) {
             return None;
         }
-        let captured = cache.capture(device, key, source, ground_z);
+        let captured = cache.capture(device, key, source, ground);
         renderer.capture_planes(device, queue, encoder, source, captured);
         renderer.capture_depth(device, queue, encoder, source, captured);
         Some(captured)
@@ -3049,7 +3207,7 @@ mod tests {
                 &mut cache,
                 key,
                 source,
-                0,
+                CompositeProducerJob::new(key).ground(),
             )
             .is_some()
         );
@@ -3283,7 +3441,7 @@ mod tests {
                             height: SIZE,
                         },
                     },
-                    0,
+                    CompositeProducerJob::new(second_key).ground(),
                 )
                 .is_some()
         );
@@ -3456,7 +3614,7 @@ mod tests {
                         height: SOURCE,
                     },
                 },
-                0,
+                CompositeProducerJob::new(key).ground(),
             )
             .is_some()
         );
@@ -3548,7 +3706,7 @@ mod tests {
             tier: CompositeTier::Lod1,
             revision: ImmutableRevision(41),
         };
-        let elevated = CompositeProducerJob::at_ground_z(key, 20);
+        let elevated = CompositeProducerJob::for_flat_ground(key, FlatGroundBlock::at(key.block, 20));
         assert_eq!(elevated.source_rect().x, 0.0);
         assert_eq!(elevated.source_rect().y, 0.0);
         assert_eq!(elevated.source_rect().width, COMPOSITE_SOURCE_SIDE as f32);
@@ -3560,6 +3718,93 @@ mod tests {
             elevated.rect_in(camera).y,
             level.rect_in(camera).y - 20.0 * crate::camera::Z_STEP as f32
         );
+    }
+
+    #[test]
+    fn flat_ground_block_accepts_only_one_common_surface_height() {
+        use openshard_uofiles::map::{LandCell, LandTile, Map};
+
+        let mut map = Map::from_blocks(2, 2, |_, _| LandCell {
+            tile: LandTile(7),
+            z: 20,
+        });
+        let block = MapBlock { x: 0, y: 0 };
+        let plateau = FlatGroundBlock::inspect(&map, block).expect("one level 8x8 plateau");
+        assert_eq!(plateau.block(), block);
+        assert_eq!(plateau.elevation(), 20);
+
+        // One altered source height makes the generated corner field sloped.
+        // The cache must reject the whole block rather than trying to keep the
+        // other 63 tiles in a different ownership domain.
+        map.set_land(
+            4,
+            4,
+            LandCell {
+                tile: LandTile(7),
+                z: 21,
+            },
+        );
+        assert_eq!(FlatGroundBlock::inspect(&map, block), None);
+    }
+
+    #[test]
+    fn prepared_work_preserves_the_verified_plateau_for_producer_and_restore() {
+        use openshard_uofiles::map::{LandCell, LandTile, Map};
+
+        let map = Map::from_blocks(2, 2, |_, _| LandCell {
+            tile: LandTile(7),
+            z: 20,
+        });
+        let key = CompositeKey {
+            block: MapBlock { x: 1, y: 1 },
+            tier: CompositeTier::Lod1,
+            revision: ImmutableRevision(9),
+        };
+        let plateau = FlatGroundBlock::inspect(&map, key.block).expect("the map supplies one plateau proof");
+        let mut queue = CompositeWorkQueue::new(1, 1).expect("one bounded prepared job");
+        let bounds = MapBlockBounds {
+            min_x: 1,
+            max_x: 1,
+            min_y: 1,
+            max_y: 1,
+        };
+        queue.refresh(bounds, bounds, BlockLod::Lod1, key.revision, |_| false);
+        assert!(queue.mark_prepared(key, plateau));
+
+        let prepared = queue
+            .take_marked_prepared_for_frame()
+            .pop()
+            .expect("prepared work must retain its source proof");
+        assert_eq!(prepared.work.key, key);
+        assert_eq!(prepared.ground, plateau);
+        let job = CompositeProducerJob::for_flat_ground(prepared.work.key, prepared.ground);
+        assert_eq!(job.ground(), plateau);
+        assert_eq!(job.source_rect(), job.rect_in(job.camera()));
+        let level = CompositeProducerJob::new(key);
+        let camera = Camera::new(openshard_protocol::world::Point::new(100, 100, 0), 640, 480);
+        assert_eq!(
+            job.rect_in(camera).y,
+            level.rect_in(camera).y - 20.0 * crate::camera::Z_STEP as f32
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "source proof for its own block")]
+    fn prepared_work_rejects_a_source_proof_for_another_block() {
+        let key = CompositeKey {
+            block: MapBlock { x: 0, y: 0 },
+            tier: CompositeTier::Lod1,
+            revision: ImmutableRevision::default(),
+        };
+        let bounds = MapBlockBounds {
+            min_x: 0,
+            max_x: 0,
+            min_y: 0,
+            max_y: 0,
+        };
+        let mut queue = CompositeWorkQueue::new(1, 1).expect("one bounded prepared job");
+        queue.refresh(bounds, bounds, BlockLod::Lod1, key.revision, |_| false);
+        queue.mark_prepared(key, FlatGroundBlock::at(MapBlock { x: 1, y: 0 }, 0));
     }
 
     #[test]
@@ -3692,11 +3937,18 @@ mod tests {
         let candidates = queue.preparation_candidates();
         assert_eq!(candidates.len(), 1);
         assert_eq!(candidates[0].priority, CompositePriority::Visible);
-        assert!(queue.mark_prepared(candidates[0].key));
+        let ground = CompositeProducerJob::new(candidates[0].key).ground();
+        assert!(queue.mark_prepared(candidates[0].key, ground));
         let next = queue.preparation_candidates();
         assert_eq!(next.len(), 1);
         assert_ne!(next[0].key, candidates[0].key);
-        assert_eq!(queue.take_marked_prepared_for_frame(), candidates);
+        assert_eq!(
+            queue.take_marked_prepared_for_frame(),
+            vec![PreparedCompositeWork {
+                work: candidates[0],
+                ground,
+            }]
+        );
         assert_eq!(queue.pending_len(), 1);
         assert_eq!(queue.in_flight_len(), 1);
     }
@@ -3717,7 +3969,9 @@ mod tests {
             let visible = blocks(x, x, 1, 1);
             queue.refresh(visible, map, BlockLod::Lod2, revision, |key| ready.contains(&key));
             for candidate in queue.preparation_candidates() {
-                assert!(queue.mark_prepared(candidate.key));
+                assert!(
+                    queue.mark_prepared(candidate.key, CompositeProducerJob::new(candidate.key).ground())
+                );
             }
             let frame = queue.take_marked_prepared_for_frame();
             assert!(
@@ -3726,8 +3980,8 @@ mod tests {
             );
             for work in frame {
                 produced += 1;
-                ready.insert(work.key);
-                queue.finished(work.key);
+                ready.insert(work.work.key);
+                queue.finished(work.work.key);
             }
             assert!(queue.pending_len() <= 128);
         }
@@ -3924,5 +4178,28 @@ mod tests {
         assert!(bounds.expanded_by(1).contains(MapBlock { x: 9, y: 19 }));
         assert!(bounds.expanded_by(1).contains(MapBlock { x: 12, y: 22 }));
         assert!(!bounds.expanded_by(1).contains(MapBlock { x: 8, y: 20 }));
+    }
+
+    #[test]
+    fn quarantine_retains_the_latest_owner_and_reason() {
+        let mut cache = CompositeCache::default();
+        let key = CompositeKey {
+            block: MapBlock { x: 3, y: 7 },
+            tier: CompositeTier::Lod1,
+            revision: ImmutableRevision(12),
+        };
+        cache.reject_block(key, None, CompositeQuarantineReason::NonFlatGround);
+
+        assert!(cache.is_rejected(key.block));
+        assert_eq!(cache.quarantined_len(), 1);
+        assert_eq!(
+            cache.latest_quarantine(),
+            Some(CompositeQuarantine {
+                block: key.block,
+                key,
+                ground: None,
+                reason: CompositeQuarantineReason::NonFlatGround,
+            })
+        );
     }
 }

@@ -9,18 +9,225 @@
 //! whatever that fold last laid out — see [`windows::Windows::drawn_windows`]
 //! for why the picture a click is tested against is the *last frame's*.
 
+use std::time::Instant;
+
 use openshard_client_render::gump::{self as gump_art, GumpPixel};
+use openshard_protocol::containers::ContainedItem;
 use openshard_protocol::gump::GumpId;
+use openshard_protocol::gump::GumpPoint;
 
 use crate::app::App;
 use crate::windows::{Drawn, WindowSubject};
-use crate::{gump, link};
+use crate::{DOUBLE_CLICK, gump, link};
 
 mod paperdoll;
 mod skills;
 mod sync;
 
 impl App {
+    /// Remember a world item's press so a following pointer move can lift it.
+    /// A plain click remains available to the normal selection/double-click
+    /// use path in the event loop.
+    pub(crate) fn press_world_item(&mut self) -> bool {
+        let Some(serial) = self.picking.on_item else {
+            return false;
+        };
+        let Some(item) = self
+            .world
+            .authoritative
+            .view
+            .as_ref()
+            .and_then(|view| view.items.get(&serial))
+        else {
+            return false;
+        };
+        // A ground sprite has no gump-local grab point. Once it becomes a
+        // cursor icon, anchor its visual centre to the pointer; that same
+        // offset is used if it is released into a container.
+        let grab = self
+            .resources
+            .art
+            .static_art(item.graphic)
+            .ok()
+            .flatten()
+            .map(|art| GumpPixel::new(i32::from(art.width()) / 2, i32::from(art.height()) / 2))
+            .unwrap_or_default();
+        self.windows.item_drag = Some(crate::windows::ItemDragTransaction::Pressed(
+            crate::windows::ItemPress {
+                item: ContainedItem {
+                    serial,
+                    graphic: item.graphic,
+                    amount: item.amount.0,
+                    // A ground item has no gump position. It becomes relevant only
+                    // after a drop, which supplies a real one.
+                    at: GumpPoint::new(0, 0),
+                    grid: Default::default(),
+                    hue: item.hue,
+                },
+                origin: crate::windows::DragOrigin::Ground,
+                at: self.input.pointer_gump,
+                grab,
+            },
+        ));
+        true
+    }
+
+    /// The container icon the pointer is directly over in the last drawn frame.
+    pub(crate) fn container_item_under_pointer(&self) -> Option<ContainedItem> {
+        let WindowSubject::Container(container) = self.window_under_pointer()? else {
+            return None;
+        };
+        // Stock icons are visual entries in a vendor window, not ordinary
+        // container items: lifting one would send `0x07`, whereas buying it
+        // must send `0x3B`.  The shop controls own those clicks.
+        if self
+            .world
+            .authoritative
+            .view
+            .as_ref()?
+            .vendor_buys
+            .contains_key(&container)
+        {
+            return None;
+        }
+        let Drawn::Container(pictures) = self.drawn(WindowSubject::Container(container))? else {
+            return None;
+        };
+        let index = gump_art::pick(pictures, self.input.pointer_gump, &self.resources.gump_atlas)?;
+        let item_index = index.position().checked_sub(1)?;
+        let contents = self.world.authoritative.view.as_ref()?.contents.get(&container)?;
+        let held = self
+            .windows
+            .item_drag
+            .and_then(crate::windows::ItemDragTransaction::drag)
+            .map(|drag| drag.item.serial);
+        contents
+            .iter()
+            // The lifter's own client removes this optimistically. The shard
+            // does not echo a `Remove` back to that same connection.
+            .filter(|item| Some(item.serial) != held)
+            .nth(item_index)
+            .copied()
+    }
+
+    /// Refresh the one-frame-later hover tint from the same pictures hit tests use.
+    pub(crate) fn hover_container_item(&mut self) -> bool {
+        let hovered = self.container_item_under_pointer().map(|item| item.serial);
+        if self.windows.hovered_container_item == hovered {
+            return false;
+        }
+        self.windows.hovered_container_item = hovered;
+        true
+    }
+
+    /// Turn a genuine pointer move into a lift. A press without this movement
+    /// remains a click and can therefore use the item on a double-click.
+    pub(crate) fn drag_container_item(&mut self) -> bool {
+        let Some(crate::windows::ItemDragTransaction::Pressed(press)) = self.windows.item_drag else {
+            return false;
+        };
+        const DRAG_SLOP: i32 = 3;
+        if (self.input.pointer_gump.x - press.at.x).abs() <= DRAG_SLOP
+            && (self.input.pointer_gump.y - press.at.y).abs() <= DRAG_SLOP
+        {
+            return false;
+        }
+        let Some(link) = self.world.shard.link() else {
+            return false;
+        };
+        link.pick_up_item(press.item.serial, press.item.amount);
+        self.windows.item_drag = Some(crate::windows::ItemDragTransaction::Held(
+            crate::windows::ItemDrag {
+                item: press.item,
+                origin: press.origin,
+                grab: press.grab,
+            },
+        ));
+        self.reproject_item_drag();
+        self.windows.hovered_container_item = None;
+        self.windows.dragging = None;
+        true
+    }
+
+    /// Commit a held item to an open bag or a picked world tile. Its local
+    /// transaction stays in `Dropped` until the server confirms or rejects it.
+    pub(crate) fn release_container_item(&mut self) -> bool {
+        let Some(transaction) = self.windows.item_drag else {
+            return false;
+        };
+        let Some(drag) = transaction.drag() else {
+            return false;
+        };
+        if transaction.pending_drop().is_some() {
+            return true;
+        }
+        let target = match self.window_under_pointer() {
+            Some(WindowSubject::Container(serial)) => serial,
+            _ => {
+                // Outside a gump the protocol's x/y/z are world coordinates,
+                // not gump pixels. `pick_tile` already answers against the
+                // frame the player released over.
+                if let (Some(link), Some(tile)) =
+                    (self.world.shard.link(), self.pick_tile(*self.control.camera()))
+                {
+                    link.drop_on_ground(
+                        drag.item.serial,
+                        openshard_protocol::world::Point::new(tile.at.x, tile.at.y, tile.stand_z.0),
+                    );
+                    self.windows.item_drag = Some(crate::windows::ItemDragTransaction::Dropped {
+                        drag,
+                        destination: crate::windows::PendingDrop::Ground(
+                            openshard_protocol::world::Point::new(tile.at.x, tile.at.y, tile.stand_z.0),
+                        ),
+                    });
+                    self.reproject_item_drag();
+                }
+                return true;
+            }
+        };
+        let Some(at) = self
+            .windows
+            .own_windows
+            .iter()
+            .find(|window| window.subject == WindowSubject::Container(target))
+            .map(|window| {
+                GumpPoint::new(
+                    self.input.pointer_gump.x - window.at.x - drag.grab.x,
+                    self.input.pointer_gump.y - window.at.y - drag.grab.y,
+                )
+            })
+        else {
+            return true;
+        };
+        if let Some(link) = self.world.shard.link() {
+            // This gesture targets the open container, never an icon drawn in
+            // it.  Otherwise a floor item released above a nested bag silently
+            // enters that bag and its coordinates are interpreted in the wrong
+            // gump. Stack merging is a separate destination gesture.
+            link.drop_into(drag.item.serial, target, at);
+            self.windows.item_drag = Some(crate::windows::ItemDragTransaction::Dropped {
+                drag,
+                destination: crate::windows::PendingDrop::Container {
+                    container: target,
+                    at,
+                },
+            });
+            self.reproject_item_drag();
+        }
+        true
+    }
+
+    /// Finish a click that never became a drag. The double-click decision was
+    /// made on press, before this window can be raised or relaid out again.
+    pub(crate) fn release_container_press(&mut self) -> bool {
+        matches!(
+            self.windows.item_drag,
+            Some(crate::windows::ItemDragTransaction::Pressed(_))
+        ) && {
+            self.windows.item_drag = None;
+            true
+        }
+    }
     /// Which window the cursor is over, topmost first, or `None`.
     ///
     /// Against **every picture the window drew**, and each against its own
@@ -109,6 +316,44 @@ impl App {
             return false;
         };
         self.raise_window(subject);
+        if let WindowSubject::Container(container) = subject {
+            if let Some(item) = self.container_item_under_pointer() {
+                let window = self
+                    .windows
+                    .own_windows
+                    .iter()
+                    .find(|window| window.subject == WindowSubject::Container(container));
+                if let Some(window) = window {
+                    let icon = window.at.offset(GumpPixel::new(item.at.x, item.at.y));
+                    let now = Instant::now();
+                    let paired = self.windows.last_container_click.is_some_and(|(then, serial)| {
+                        serial == item.serial && now.duration_since(then) <= DOUBLE_CLICK
+                    });
+                    self.windows.last_container_click = (!paired).then_some((now, item.serial));
+                    if paired {
+                        if let Some(link) = self.world.shard.link() {
+                            link.use_object(item.serial);
+                        }
+                        self.windows.item_drag = None;
+                        self.windows.dragging = None;
+                        return true;
+                    }
+                    self.windows.item_drag = Some(crate::windows::ItemDragTransaction::Pressed(
+                        crate::windows::ItemPress {
+                            item,
+                            origin: crate::windows::DragOrigin::Container(container),
+                            at: self.input.pointer_gump,
+                            grab: GumpPixel::new(
+                                self.input.pointer_gump.x - icon.x,
+                                self.input.pointer_gump.y - icon.y,
+                            ),
+                        },
+                    ));
+                    self.windows.dragging = None;
+                    return true;
+                }
+            }
+        }
         if let WindowSubject::Dialog(gump_id) = subject {
             // Both halves of the question are last frame's: the window the
             // pointer is over and the layout it was drawn as. Laying the dialog
@@ -383,7 +628,7 @@ impl App {
     /// silently: the map viewer has nobody to talk to, and a chat box that
     /// swallowed what was typed would read as a broken connection.
     pub(crate) fn say(&mut self, line: String) {
-        match self.world.link.as_ref() {
+        match self.world.shard.link() {
             Some(link) => link.say(line),
             None => tracing::info!(%line, "nothing said: no shard is connected"),
         }
@@ -397,7 +642,7 @@ impl App {
     /// [`windows::Windows::locally_closed`].
     pub(crate) fn answer_gump(&mut self, reply: link::GumpReply) {
         let gump_id = openshard_protocol::gump::GumpId(reply.gump_id.0);
-        if let Some(link) = self.world.link.as_ref() {
+        if let Some(link) = self.world.shard.link() {
             link.answer_gump(reply);
             // The reply itself leaves on the wire, but nothing about it tells
             // the shard thread's own `WorldView` — which every future

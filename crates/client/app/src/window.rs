@@ -20,7 +20,8 @@ use openshard_client_render::atlas::{
 use openshard_client_render::blit::{self, Blit};
 use openshard_client_render::camera::{Camera, TileBounds};
 use openshard_client_render::composite::{
-    COMPOSITE_SOURCE_SIDE, CompositeCache, CompositeProducerJob, CompositeRenderer, MapBlock,
+    COMPOSITE_SOURCE_SIDE, CompositeCache, CompositeKey, CompositeQuarantineReason, CompositeRenderer,
+    FlatGroundBlock,
 };
 use openshard_client_render::gbuffer::Gbuffer;
 use openshard_client_render::gump::GumpRenderer;
@@ -282,14 +283,23 @@ pub(crate) fn wanted_in(
 pub(crate) fn prepare_composite_job(
     resources: &mut resources::Resources,
     window: &mut Screen,
-    job: CompositeProducerJob,
-) -> bool {
+    key: CompositeKey,
+) -> Option<FlatGroundBlock> {
     let map_width = resources.map.width() as i32;
     let map_height = resources.map.height() as i32;
     if map_width <= 0 || map_height <= 0 {
-        return false;
+        return None;
     }
-    let (first_x, first_y) = job.key().block.first_tile();
+    let Some(ground) = FlatGroundBlock::inspect(&resources.map, key.block) else {
+        // This is a stable property of the immutable map, so treat it as a
+        // completed LOD0 answer rather than retrying this producer request on
+        // every camera frame.
+        window
+            .composites
+            .reject_block(key, None, CompositeQuarantineReason::NonFlatGround);
+        return None;
+    };
+    let (first_x, first_y) = key.block.first_tile();
     let owner = TileBounds {
         min_x: i32::from(first_x),
         max_x: i32::from(first_x) + openshard_uofiles::map::BLOCK_SIZE as i32 - 1,
@@ -297,7 +307,7 @@ pub(crate) fn prepare_composite_job(
         max_y: i32::from(first_y) + openshard_uofiles::map::BLOCK_SIZE as i32 - 1,
     };
     let Some((owner_x, owner_y)) = owner.clamp_to(map_width as u32, map_height as u32) else {
-        return false;
+        return None;
     };
     let owner = TileBounds {
         min_x: i32::from(*owner_x.start()),
@@ -305,18 +315,6 @@ pub(crate) fn prepare_composite_job(
         min_y: i32::from(*owner_y.start()),
         max_y: i32::from(*owner_y.end()),
     };
-    // The producer has to own a whole depth-comparable ground region, not a
-    // subset of it. A slope can overlap a neighbouring flat diamond inside
-    // the same 8×8 block; caching only the flat tile and later redrawing that
-    // slope makes two passes compete for pixels that the direct LOD0 pass
-    // resolves as one ordered surface. Keep such a block entirely live.
-    if flat_block_elevation(&resources.map, job.key().block).is_none() {
-        // This is a stable property of the immutable map, so treat it as a
-        // completed LOD0 answer rather than retrying this producer request on
-        // every camera frame.
-        window.composites.reject_block(job.key().block);
-        return false;
-    }
     // Map statics (animated or otherwise) stay in the live pass, so background
     // LOD work cannot grow or mutate the static atlas and cannot bake a roof
     // outside its 8×8 source.
@@ -333,7 +331,7 @@ pub(crate) fn prepare_composite_job(
         )
         .is_err()
     {
-        return false;
+        return None;
     }
     window.atlases.upload(
         &window.device,
@@ -343,27 +341,7 @@ pub(crate) fn prepare_composite_job(
         &mut window.items_pass,
         &window.mobile_pass,
     );
-    true
-}
-
-/// A composite owner must be a single flat plateau, not merely 64 individually
-/// flat tiles. Its one elevation is the local camera's vertical origin.
-pub(crate) fn flat_block_elevation(map: &Map, block: MapBlock) -> Option<i8> {
-    let (first_x, first_y) = block.first_tile();
-    let base = map.land(first_x, first_y)?.z;
-    for y in first_y..first_y + openshard_uofiles::map::BLOCK_SIZE as u16 {
-        for x in first_x..first_x + openshard_uofiles::map::BLOCK_SIZE as u16 {
-            let land = map.land(x, y)?;
-            if land.z != base {
-                return None;
-            }
-            let corners = ground::corner_heights(map, x, y, land.z);
-            if !corners.iter().all(|height| *height == corners[0]) {
-                return None;
-            }
-        }
-    }
-    Some(base)
+    Some(ground)
 }
 
 /// Grows or, on eviction, wholly rebuilds `window`'s atlases so this frame's

@@ -56,8 +56,12 @@ use crate::stats::try_stat_gain;
 /// headroom left has a sliver of a chance rather than a certainty of nothing.
 const MIN_GAIN_CHANCE: u32 = 10;
 
-/// Below this a skill gains in leaps rather than tenths — ServUO's
-/// `skill.Base <= 10.0`, the "first few points come quickly" rule. In tenths.
+/// A successful skill gain is a small random step, in tenths. Keeping the
+/// range narrow makes progress legible while stopping each hit from advancing
+/// by the same visible 0.1.
+const MIN_GAIN_STEP: u16 = 1;
+const MAX_GAIN_STEP: u16 = 3;
+/// Below this, every skill use gains experience. In tenths.
 const EASY_GAIN_BELOW: u16 = 100;
 
 /// 100.0, in tenths — the number the stat bonus fades against.
@@ -174,9 +178,8 @@ fn check(state: &mut WorldState, entity: EntityId, skill: Skill, chance: u32) ->
     }
     let success = state.rng.below(1000) <= chance;
     let gain = gain_chance(state, entity, skill, chance, success);
-    // A skill under 10.0 always takes something from the attempt — the first few
-    // points come for the asking, which is what stops a new character grinding a
-    // hundred failures for their first tenth.
+    // A skill under 10.0 always takes something from the attempt — the first
+    // few points come for the asking, which keeps a new character moving.
     let base = state.registry.get::<Skills>(entity).map_or(0, |s| s.get(skill));
     if base < EASY_GAIN_BELOW || state.rng.below(1000) <= gain {
         gain_skill(state, entity, skill);
@@ -242,11 +245,10 @@ fn gain_skill(state: &mut WorldState, entity: EntityId, skill: Skill) {
         // gain either — ServUO reads the same lock for both.
         return;
     }
-    let to_gain = if base < EASY_GAIN_BELOW {
-        u16::try_from(state.rng.below(4) + 1).unwrap_or(1)
-    } else {
-        1
-    };
+    let to_gain = u16::try_from(
+        state.rng.below(u32::from(MAX_GAIN_STEP - MIN_GAIN_STEP + 1)) + u32::from(MIN_GAIN_STEP),
+    )
+    .unwrap_or(MIN_GAIN_STEP);
 
     let player = state.registry.has::<Client>(entity);
     let mut skills = skills;

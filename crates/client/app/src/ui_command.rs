@@ -20,7 +20,9 @@ use openshard_client_render::cutaway::Cutaway;
 use openshard_client_render::{items, mobiles};
 use openshard_movement::{Heading, Lean};
 use openshard_protocol::direction::{Direction, Facing};
+use openshard_protocol::target::{TargetKind, TargetResponse};
 use openshard_protocol::world::Point;
+use winit::window::CursorIcon;
 
 use crate::app::App;
 use crate::net_command::project_motion;
@@ -28,6 +30,92 @@ use crate::world::{advance_presentation_to, cluttered, cluttered_with_doors_open
 use crate::{DEAD_ZONE, TURN_ZONE, steer};
 
 impl App {
+    /// Ask for this character's paperdoll without relying on a world pick.
+    ///
+    /// A closed doll must always have a way back: the body can be covered by a
+    /// roof, another mobile or an open shop, none of which should make the
+    /// paperdoll request unreachable.
+    pub(crate) fn open_own_paperdoll(&self) {
+        let Some(serial) = self
+            .world
+            .authoritative
+            .view
+            .as_ref()
+            .map(|view| view.player.serial)
+        else {
+            return;
+        };
+        if let Some(link) = self.world.shard.link() {
+            link.paperdoll(serial);
+        }
+    }
+
+    /// The server's `0x6C` is a modal target operation. A crosshair is the
+    /// platform cursor closest to Ultima's targeting reticle and, unlike a
+    /// decorative in-world sprite, remains visible over windows as well.
+    pub(crate) fn sync_target_cursor(&self) {
+        let targeting = self
+            .world
+            .authoritative
+            .view
+            .as_ref()
+            .is_some_and(|view| view.target.is_some());
+        if let Some(window) = self.window.as_ref() {
+            window.window.set_cursor(if targeting {
+                CursorIcon::Crosshair
+            } else {
+                CursorIcon::Default
+            });
+        }
+    }
+
+    /// Answer the target cursor currently raised by the shard, if the click is
+    /// a legal target for its kind. This runs before ordinary selection, combat
+    /// and double-click use: a tool's second click belongs to that tool.
+    pub(crate) fn target_under_cursor(&mut self, camera: Camera) -> bool {
+        let Some(cursor) = self
+            .world
+            .authoritative
+            .view
+            .as_ref()
+            .and_then(|view| view.target)
+        else {
+            return false;
+        };
+        if !self.world_owns_pointer() {
+            return false;
+        }
+        let object = match (self.picking.on_mobile, self.picking.on_item) {
+            (Some(Some(mobile)), _) => Some(mobile),
+            (_, Some(item)) => Some(item),
+            _ => None,
+        };
+        if cursor.kind == TargetKind::Object && object.is_none() {
+            return false;
+        }
+        let Some(location) = self
+            .pick_tile(camera)
+            .map(|tile| Point::new(tile.at.x, tile.at.y, tile.stand_z.0))
+        else {
+            return false;
+        };
+        if let Some(link) = self.world.shard.link() {
+            link.target(TargetResponse {
+                cursor_id: cursor.cursor_id,
+                object,
+                location,
+                graphic: None,
+                cancelled: false,
+            });
+        }
+        // There is no server packet saying a successful target was consumed.
+        // This is client-side UI state, just like a gump reply disappearing.
+        if let Some(view) = self.world.authoritative.view.as_mut() {
+            view.target = None;
+        }
+        self.sync_target_cursor();
+        true
+    }
     /// Take a step, answering whether anything on screen changed.
     ///
     /// Movement is clamped to the map rather than wrapped: walking off the north
@@ -44,7 +132,7 @@ impl App {
         // handshake — a client that stepped locally and corrected later would
         // be predicting, and the prediction lives in `Walk` where it can be
         // rolled back.
-        if let Some(link) = self.world.link.as_ref() {
+        if let Some(link) = self.world.shard.link() {
             link.step(facing);
             if let Some(trace) = self.movement_trace.as_mut() {
                 trace.record_detail(
@@ -54,6 +142,14 @@ impl App {
                     self.control.camera(),
                 );
             }
+            return false;
+        }
+        // And a body whose shard is *gone* stands where the last packet left
+        // it. Only the viewer walks itself: below is the map viewer's own
+        // movement, and running it after a disconnect would put the character
+        // somewhere nobody ever said it was — which is what made a dropped
+        // connection read as a working game. See `world::Shard`.
+        if !self.world.shard.is_viewer() {
             return false;
         }
 
@@ -292,8 +388,10 @@ impl App {
         // using the barrel *behind* the shopkeeper is the one answer that is
         // certainly wrong. What a mobile's double-click asks for is the
         // paperdoll — the same `0x06` an item gets, answered differently by the
-        // shard (`DoubleClick::interpret`), which is why nothing here says
-        // "paperdoll" on the way out.
+        // shard (`DoubleClick::interpret`). Ctrl turns that same gesture into
+        // the protocol's explicit paperdoll request; this is how a player can
+        // inspect a vendor without replacing its normal double-click-to-trade
+        // behaviour.
         let drawn = self.drawn_now(&window.atlases.mobiles);
         let on_mobile = mobiles::pick_iter(
             drawn.iter().map(|(_, mobile)| mobile),
@@ -307,8 +405,18 @@ impl App {
             // A body with no serial is one this client is drawing without the
             // shard having named it — the offline viewer's placeholder — and
             // there is nothing to ask about.
-            if let (Some(serial), Some(link)) = (drawn[index.position()].0, self.world.link.as_ref()) {
-                link.use_object(serial);
+            if let (Some(serial), Some(link)) = (drawn[index.position()].0, self.world.shard.link()) {
+                let own = self
+                    .world
+                    .authoritative
+                    .view
+                    .as_ref()
+                    .is_some_and(|view| view.player.serial == serial);
+                if own || self.input.ctrl_held {
+                    link.paperdoll(serial);
+                } else {
+                    link.use_object(serial);
+                }
             }
             return;
         }
@@ -324,7 +432,7 @@ impl App {
             return;
         };
         let serial = self.world.presentation.item_serials[index.position()];
-        match self.world.link.as_ref() {
+        match self.world.shard.link() {
             Some(link) => link.use_object(serial),
             None => tracing::info!(serial = serial.raw(), "nothing used: no shard is connected"),
         }
@@ -373,7 +481,7 @@ impl App {
         if mobile == view.player.serial {
             return;
         }
-        match self.world.link.as_ref() {
+        match self.world.shard.link() {
             // The same war-mode click that chose this target gives it up. The
             // server remains the authority and confirms the cleared target with
             // `0xAA`, so the marker cannot get ahead of the actual combat state.

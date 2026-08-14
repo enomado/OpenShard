@@ -1063,7 +1063,7 @@ fn real_map_block_producer_keeps_every_owned_map_tile_after_restore() {
         &mut cache,
         key,
         source,
-        0,
+        job.ground(),
     )
     .expect("the dispatched producer capture completes");
     let texture = cache.get(key).expect("the capture inserted its exact key");

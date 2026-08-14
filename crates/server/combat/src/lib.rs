@@ -14,9 +14,8 @@
 
 use openshard_entities::EntityId;
 use openshard_gateway::ConnectionId;
-use openshard_movement::{Terrain, direction_toward};
+use openshard_movement::Terrain;
 use openshard_protocol::combat::{AttackTarget, WarMode};
-use openshard_protocol::direction::Facing;
 use openshard_protocol::feedback::{EffectKind, GraphicalEffect};
 use openshard_protocol::mobile::Notoriety;
 use openshard_protocol::serial::Serial;
@@ -24,8 +23,8 @@ use openshard_protocol::server_packet::ServerPacket;
 use openshard_protocol::wire::{Graphic, SoundId};
 use openshard_protocol::world::{Point, PoisonLevel};
 use openshard_state::components::{
-    BehaviourBuffs, Body, Client, Combat, CriminalUntil, DamageType, Equipped, Frozen, Ghost, Guard, Heading,
-    Hitpoints, MeleeDamage, Movement, MurderDecay, Murders, PoisonCharges, Poisoned, Position, RangedAttack,
+    BehaviourBuffs, Body, Client, Combat, CriminalUntil, DamageType, Equipped, Frozen, Ghost, Guard,
+    Hitpoints, MeleeDamage, MurderDecay, Murders, PoisonCharges, Poisoned, Position, RangedAttack,
     Resistance, Skills, Stamina, Stats, Steps, SwingSpeed, body_is_female, body_opens_doors,
     creature_base_sound, effect,
 };
@@ -553,7 +552,10 @@ pub fn retaliate_players(state: &mut WorldState, blows: &[MobileDamaged]) {
         let Some(attacker) = blow.by else {
             continue;
         };
-        if attacker == blow.serial || state.registry.entity_of(attacker).is_none() {
+        let Some(attacker_entity) = state.registry.entity_of(attacker) else {
+            continue;
+        };
+        if attacker == blow.serial {
             continue;
         }
         let victim = blow.entity;
@@ -576,6 +578,10 @@ pub fn retaliate_players(state: &mut WorldState, blows: &[MobileDamaged]) {
             combat.target = Some(attacker);
             combat.next_swing = next_swing;
         }
+        // A defensive target selection is visible immediately.  Waiting for the
+        // first swing leaves a war-mode player staring at their previous target
+        // for a full swing delay despite already aiming back at the attacker.
+        state.face_toward(victim, attacker_entity);
         state.send_packet(
             connection,
             &ServerPacket::AttackTarget(AttackTarget {
@@ -660,9 +666,12 @@ pub fn volleys(state: &mut WorldState) {
         // hit roll trains the shooter's Archery the same as a melee swing trains
         // its weapon. Damage precedence matches melee via `scaled_blow`.
         if check_hit(state, attacker, target) {
-            let amount = scaled_blow(state, attacker, target);
+            let blow = scaled_blow(state, attacker, target);
             if let Some(hit) = state.registry.serial_of(target) {
-                damage(state, hit, amount, kind, by);
+                damage(state, hit, blow.amount, kind, by);
+                if blow.critical {
+                    state.system_message(attacker, "Critical hit!");
+                }
             }
         }
     }
@@ -694,12 +703,20 @@ pub fn swings(state: &mut WorldState) {
         ) else {
             continue;
         };
-        if state.facet_of(attacker) != state.facet_of(target)
+        let facet = state.facet_of(attacker);
+        if state.facet_of(target) != facet
             || !in_range(attacker_pos, target_pos, MELEE_RANGE)
+            // Adjacent tiles can still be separated by a closed door or wall.
+            // Melee follows the same live-terrain sight rule as a volley and an
+            // interaction: range alone must not allow a blow through an obstacle.
+            || !state.facet_state(facet).live_terrain().sight_clear(attacker_pos, target_pos)
         {
             continue;
         }
-        face_target(state, attacker, attacker_pos, target_pos);
+        // Use WorldState's common turn path instead of only broadcasting a
+        // `0x77`: the owner of this mobile ignores that packet, and needs the
+        // accompanying `0x20` to show a combat turn after turning manually.
+        state.face_point(attacker, target_pos);
         // The attacker's serial rides along so a lethal blow can be blamed —
         // `damage` is the one place murder is tallied, melee or spell alike.
         let by = state.registry.serial_of(attacker);
@@ -728,7 +745,10 @@ pub fn swings(state: &mut WorldState) {
         // human's fist — from the attacker, who is still here even when the blow
         // just killed the target.
         let sound = attack_sound(state, attacker, MELEE_HIT_SOUND);
-        damage(state, target_serial, blow, DamageType::Physical, by);
+        damage(state, target_serial, blow.amount, DamageType::Physical, by);
+        if blow.critical {
+            state.system_message(attacker, "Critical hit!");
+        }
         state.play_sound(attacker, sound);
         // A coated blade spends a dose into whatever it just cut.
         deliver_weapon_poison(state, attacker, target_serial, now);
@@ -740,32 +760,6 @@ pub fn swings(state: &mut WorldState) {
             clear_target(state, attacker);
         }
     }
-}
-
-/// Turn an attacker toward the target immediately before a visible strike.
-///
-/// Facing does not restrict UO's melee reach — a player may select any adjacent
-/// opponent — but the picture must agree with a melee blow. Updating both the
-/// rendered heading and a walker's remembered heading keeps the next AI step
-/// from treating this free combat turn as a stale turn it still owes.
-fn face_target(state: &mut WorldState, attacker: EntityId, from: Point, to: Point) {
-    let Some(direction) = direction_toward(from, to) else {
-        return;
-    };
-    let facing = Facing::walking(direction);
-    if state
-        .registry
-        .get::<Heading>(attacker)
-        .is_some_and(|heading| heading.0 == facing)
-    {
-        return;
-    }
-    if let Some(Movement(mut walker)) = state.registry.get::<Movement>(attacker).copied() {
-        walker.facing = facing;
-        state.registry.insert(attacker, Movement(walker));
-    }
-    state.registry.insert(attacker, Heading(facing));
-    state.broadcast_move(attacker);
 }
 
 /// Whether a target counts as dead: its entity already gone (reaped), or still
@@ -1157,7 +1151,15 @@ fn get_bonus(value: f64, scalar: f64, threshold: f64, offset: f64) -> f64 {
 /// as before; a trained fighter scales it. Era 1 uses the pre-AoS coefficients
 /// (Tactics its own ±50% about parity, then Str and Anatomy summed), era 2 the AoS
 /// bonuses. At least 1, so a heavily-nerfed blow still stings.
-fn scaled_blow(state: &mut WorldState, attacker: EntityId, defender: EntityId) -> u16 {
+struct Blow {
+    amount: u16,
+    critical: bool,
+}
+
+/// The fully mitigated weapon blow, plus whether the shard-specific critical
+/// rule amplified it.  The caller owns feedback because only a player client
+/// can receive a journal message.
+fn scaled_blow(state: &mut WorldState, attacker: EntityId, defender: EntityId) -> Blow {
     let base = f64::from(melee_blow(state, attacker));
     let era = state.gameplay.combat_era;
     // Skill scaling — a trained fighter only; a creature/untrained mobile deals raw.
@@ -1195,6 +1197,16 @@ fn scaled_blow(state: &mut WorldState, attacker: EntityId, defender: EntityId) -
     } else {
         base
     };
+    // Criticals are a shard-specific rule, deliberately applied before every
+    // defence below: armour, resistances and the pre-AoS PvP split still matter.
+    // The roll is made only after a hit has landed, and consumes the world's
+    // seeded RNG, so combat remains replayable.
+    let critical = state.rng.below(1000) < u32::from(state.gameplay.critical_chance);
+    let scaled = if critical {
+        scaled * f64::from(state.gameplay.critical_damage_percent) / 100.0
+    } else {
+        scaled
+    };
     // ServUO's pre-AoS `ComputeDamage`: outside AoS, full damage lands only when a
     // player strikes a non-player — every other pairing (a monster's blow, PvP) is
     // halved. "Player" is a mobile with a client. Applies to every blow, skilled or
@@ -1214,8 +1226,14 @@ fn scaled_blow(state: &mut WorldState, attacker: EntityId, defender: EntityId) -
     // already applies. A blow that armour swallows whole still lands for 1
     // (`if (!Core.AOS && damage < 1) damage = 1`).
     if era < 2 {
-        armor::absorb_physical(state, defender, blow).max(1)
+        Blow {
+            amount: armor::absorb_physical(state, defender, blow).max(1),
+            critical,
+        }
     } else {
-        blow
+        Blow {
+            amount: blow,
+            critical,
+        }
     }
 }

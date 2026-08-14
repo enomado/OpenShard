@@ -470,7 +470,10 @@ pub fn retaliate(state: &mut WorldState, blows: &[MobileDamaged]) {
             .get::<Combat>(victim)
             .and_then(|c| c.target)
             .is_some();
-        if engaged || state.registry.entity_of(by).is_none() {
+        let Some(attacker) = state.registry.entity_of(by) else {
+            continue;
+        };
+        if engaged {
             continue;
         }
         let warmode = brain.aggression != Aggression::Passive;
@@ -483,6 +486,10 @@ pub fn retaliate(state: &mut WorldState, blows: &[MobileDamaged]) {
                 next_swing,
             },
         );
+        // Retaliation is a visible decision, not just a target stored for a
+        // later swing.  Turn now so the creature acknowledges its attacker
+        // during the swing delay (and passive fauna faces the threat it flees).
+        state.face_toward(victim, attacker);
     }
 }
 

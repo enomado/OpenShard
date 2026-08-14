@@ -24,9 +24,9 @@ use std::time::{Duration, Instant};
 
 use openshard_client_render::atlas::{AnimAtlas, AnimationKey, StaticAtlasPage};
 use openshard_client_render::blit::{self, Blit, ViewportRect};
-use openshard_client_render::camera::{Camera, TileBounds, ViewPixel};
+use openshard_client_render::camera::{Camera, ViewPixel};
 use openshard_client_render::composite::{
-    CaptureSource, CompositeProducerJob, CompositeTexture, CompositeWork, CompositeWorkQueue,
+    CompositeKey, CompositeProducerJob, CompositeQuarantineReason, CompositeTexture, CompositeTier,
     ImmutableRevision, MapBlock, MapBlockBounds,
 };
 use openshard_client_render::cutaway::Cutaway;
@@ -54,128 +54,11 @@ use crate::graphics::HighlightTarget;
 use crate::picking::SelectedIdentity;
 use crate::profile;
 use crate::render_passes::{WorldPassAudit, draw_gump_windows, encode_world_passes};
-use crate::window::{flat_block_elevation, prepare_composite_job, ready_atlases};
+use crate::window::{prepare_composite_job, ready_atlases};
 use crate::windows::{Drawn, WindowSubject};
 use crate::world::{DAMAGE_NUMBER_HOLD, DAMAGE_NUMBER_RISE, PlayerMotion, advance_presentation_to};
 
-/// Build the ground-owned portion of one immutable map block without touching
-/// the camera frame.
-///
-/// The producer camera, targets and source rectangle all come from `work`.
-/// Only flat land is safe to cache in a fixed 8×8 footprint: a roof can rise
-/// farther than its block's bounded capture margin and must keep its one live
-/// map-static owner. Server items, mobiles, cutaway rows and every UI plane
-/// likewise remain outside this command buffer. The cache entry is accepted
-/// only after the colour, G-buffer and depth copier passes have all been
-/// recorded from those private attachments.
-fn produce_composite_block(
-    resources: &crate::resources::Resources,
-    window: &mut crate::window::Screen,
-    composite_work: &mut CompositeWorkQueue,
-    work: CompositeWork,
-) {
-    let Some(ground_z) = flat_block_elevation(&resources.map, work.key.block) else {
-        // The same immutable eligibility gate should already have kept this
-        // work pending, but never let a stale prepared job publish a partial
-        // source if the map contract changes underneath it.
-        window.composites.reject_block(work.key.block);
-        composite_work.finished(work.key);
-        return;
-    };
-    let job = CompositeProducerJob::at_ground_z(work.key, ground_z);
-    let camera = job.camera();
-    let (first_x, first_y) = job.key().block.first_tile();
-    let owner = TileBounds {
-        min_x: i32::from(first_x),
-        max_x: i32::from(first_x) + openshard_uofiles::map::BLOCK_SIZE as i32 - 1,
-        min_y: i32::from(first_y),
-        max_y: i32::from(first_y) + openshard_uofiles::map::BLOCK_SIZE as i32 - 1,
-    };
-    let ground: Vec<_> = ground::collect_in(
-        &resources.map,
-        &camera,
-        owner,
-        &window.atlases.land,
-        &window.atlases.texmaps,
-        &Cutaway::OPEN,
-    )
-    .into_iter()
-    // A sloped land quad's visible raster depends on the adjoining height
-    // field. Keep it in the current LOD0 ground layer, where every neighbour
-    // participates in the same depth ordering, rather than baking one 8x8
-    // owner in isolation. Flat map tiles and map statics remain immutable
-    // producer input.
-    .filter(|quad| quad.is_flat())
-    .collect();
-
-    let mut encoder = window
-        .device
-        .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("map block composite producer"),
-        });
-    // This buffer is submitted ahead of the camera frame, but its timestamp
-    // query is resolved by that frame's encoder after the ordered submission.
-    // It therefore appears as an independent GPU pass without a CPU wait.
-    let timed = profile::begin(window.gpu.as_ref(), "map composite producer", &mut encoder);
-    window.composite_producer.clear(&mut encoder);
-    let world = window
-        .composite_producer
-        .world
-        .create_view(&wgpu::TextureViewDescriptor::default());
-    let depth = window
-        .composite_producer
-        .depth
-        .create_view(&wgpu::TextureViewDescriptor::default());
-    let gbuffer = window.composite_producer.gbuffer.views();
-    let target = Target {
-        view: &world,
-        depth: &depth,
-        gbuffer: &gbuffer,
-        width: job.source_size().width,
-        height: job.source_size().height,
-        projection: camera.projection(),
-    };
-    window
-        .composite_ground
-        .render(&window.device, &window.queue, &mut encoder, target, &ground);
-    let (eye_x, eye_y) = camera.eye_tile();
-    let source = CaptureSource {
-        color: &window.composite_producer.world,
-        ids: window.composite_producer.gbuffer.ids(),
-        position: window.composite_producer.gbuffer.position(),
-        normal: window.composite_producer.gbuffer.normal(),
-        depth: &depth,
-        depth_base: openshard_client_render::depth::base_for(eye_x, eye_y),
-        rect: ViewportRect {
-            x: 0,
-            y: 0,
-            width: job.source_size().width,
-            height: job.source_size().height,
-        },
-    };
-    let captured = composite_work.finish_capture(
-        &window.device,
-        &window.queue,
-        &mut encoder,
-        &mut window.composite_pass,
-        &mut window.composites,
-        work.key,
-        source,
-        ground_z,
-    );
-    profile::end(window.gpu.as_ref(), &mut encoder, timed);
-    window.queue.submit([encoder.finish()]);
-    if let Some(captured) = captured {
-        audit_captured_composite_ids(
-            &window.device,
-            &window.queue,
-            &resources.map,
-            captured,
-            &window.composite_producer.world,
-            window.composite_producer.gbuffer.ids(),
-        );
-    }
-}
+mod composite_producer;
 
 /// Read one texture into packed rows for an opt-in producer/cache audit.
 fn audit_texture_bytes(
@@ -315,7 +198,7 @@ fn audit_captured_composite_ids(
             }
         }
     }
-    let job = CompositeProducerJob::at_ground_z(captured.key(), captured.ground_z());
+    let job = CompositeProducerJob::for_flat_ground(captured.key(), captured.ground());
     let divisor = captured.key().tier.source_pixels_per_texel();
     let mut missing_owner_centres = Vec::new();
     let (first_x, first_y) = captured.key().block.first_tile();
@@ -1187,7 +1070,20 @@ fn audit_lod_map_equivalence(
     }
     let rejected: Vec<_> = rejected_blocks.iter().copied().collect();
     for block in &rejected {
-        window.composites.reject_block(*block);
+        // This is the exact cache identity that the world pass was allowed to
+        // restore. Keeping its ground proof turns a field report into a
+        // reproducible producer owner, rather than merely a screen position.
+        let key = CompositeKey {
+            block: *block,
+            tier: CompositeTier::from_lod(pass.requested_lod).unwrap_or(CompositeTier::Lod1),
+            revision: pass.composite_revision,
+        };
+        let ground = window.composites.get(key).map(|texture| texture.ground());
+        window.composites.reject_block(
+            key,
+            ground,
+            CompositeQuarantineReason::OracleMissingGroundCoverage,
+        );
     }
     if !rejected.is_empty() {
         tracing::error!(
@@ -1195,11 +1091,18 @@ fn audit_lod_map_equivalence(
             "LOD oracle quarantined cache blocks with missing ground coverage"
         );
     }
+    let quarantine_count = window.composites.quarantined_len();
+    let latest_quarantine = window.composites.latest_quarantine();
+    let lod_state = lod_diagnostic_state(pass, quarantine_count);
     if color_mismatches == 0 && lit_mismatches == 0 && identity_mismatches == 0 && position_mismatches == 0 {
         tracing::info!(compared, "LOD map equivalence oracle matches full LOD0 scene");
         format!(
-            "status=match\nsize={width}x{height}\nworld_pass_requested_lod={:?}\nworld_pass_ready_blocks={}\nworld_pass_live_ground_quads={}\nworld_pass_full_ground_quads={}\ncompared={compared}\ncolor_mismatches=0\nlit_mismatches=0\nidentity_mismatches=0\nposition_mismatches=0\nrejected_blocks={rejected:#?}\n",
-            pass.requested_lod, pass.ready_blocks, pass.live_ground_quads, pass.full_ground_quads,
+            "status=match\nlod_state={lod_state}\nsize={width}x{height}\nworld_pass_requested_lod={:?}\nworld_pass_composite_revision={:?}\nworld_pass_ready_blocks={}\nworld_pass_live_ground_quads={}\nworld_pass_full_ground_quads={}\ncompared={compared}\ncolor_mismatches=0\nlit_mismatches=0\nidentity_mismatches=0\nposition_mismatches=0\nquarantine_count={quarantine_count}\nlatest_quarantine={latest_quarantine:#?}\nrejected_blocks={rejected:#?}\n",
+            pass.requested_lod,
+            pass.composite_revision,
+            pass.ready_blocks,
+            pass.live_ground_quads,
+            pass.full_ground_quads,
         )
     } else {
         tracing::error!(
@@ -1214,9 +1117,28 @@ fn audit_lod_map_equivalence(
             "rendered immutable map differs from full LOD0 scene"
         );
         format!(
-            "status=mismatch\nsize={width}x{height}\nworld_pass_requested_lod={:?}\nworld_pass_ready_blocks={}\nworld_pass_live_ground_quads={}\nworld_pass_full_ground_quads={}\ncompared={compared}\ncolor_mismatches={color_mismatches}\nlit_mismatches={lit_mismatches}\nidentity_mismatches={identity_mismatches}\nposition_mismatches={position_mismatches}\nrejected_blocks={rejected:#?}\ncolor_examples={color_examples:#?}\nlit_examples={lit_examples:#?}\nposition_examples={position_examples:#?}\n",
-            pass.requested_lod, pass.ready_blocks, pass.live_ground_quads, pass.full_ground_quads,
+            "status=mismatch\nlod_state={lod_state}\nsize={width}x{height}\nworld_pass_requested_lod={:?}\nworld_pass_composite_revision={:?}\nworld_pass_ready_blocks={}\nworld_pass_live_ground_quads={}\nworld_pass_full_ground_quads={}\ncompared={compared}\ncolor_mismatches={color_mismatches}\nlit_mismatches={lit_mismatches}\nidentity_mismatches={identity_mismatches}\nposition_mismatches={position_mismatches}\nquarantine_count={quarantine_count}\nlatest_quarantine={latest_quarantine:#?}\nrejected_blocks={rejected:#?}\ncolor_examples={color_examples:#?}\nlit_examples={lit_examples:#?}\nposition_examples={position_examples:#?}\n",
+            pass.requested_lod,
+            pass.composite_revision,
+            pass.ready_blocks,
+            pass.live_ground_quads,
+            pass.full_ground_quads,
         )
+    }
+}
+
+/// The effective LOD condition of the exact world pass captured by F12.
+///
+/// It deliberately names safe direct rendering separately from a compositor
+/// mismatch: a cache miss or quarantine is expected to retain LOD0 ground,
+/// whereas `status=mismatch` above is evidence that the produced scene differs.
+fn lod_diagnostic_state(pass: WorldPassAudit, quarantined: usize) -> &'static str {
+    match pass.requested_lod {
+        BlockLod::Lod0 => "lod-disabled",
+        _ if quarantined > 0 && pass.ready_blocks == 0 => "quarantine-safe-lod0",
+        _ if pass.ready_blocks == 0 => "lod-not-ready-safe-lod0",
+        _ if pass.live_ground_quads < pass.full_ground_quads => "cached-with-lod0-fallback",
+        _ => "cached",
     }
 }
 
@@ -1899,10 +1821,6 @@ impl App {
                     composites.is_some_and(|cache| cache.is_rejected(key.block) || cache.get(key).is_some())
                 });
         }
-        // The producer owns its own command buffer below. Keep this empty so
-        // `encode_world_passes` cannot revive the retired camera-frame capture
-        // path.
-        let composite_jobs = Vec::new();
         let mut drawn = self.drawn_mobiles();
         // Likewise: the cut the solids view is drawn under reads the player, and
         // the pass that uses it runs inside the window's borrow.
@@ -1967,15 +1885,13 @@ impl App {
         // camera-frame capture path.
         if cutaway == Cutaway::OPEN {
             for work in self.composite_work.preparation_candidates() {
-                let prepared =
-                    prepare_composite_job(&mut self.resources, window, CompositeProducerJob::new(work.key));
-                if prepared {
-                    self.composite_work.mark_prepared(work.key);
+                if let Some(ground) = prepare_composite_job(&mut self.resources, window, work.key) {
+                    self.composite_work.mark_prepared(work.key, ground);
                 }
             }
             let producer_jobs = self.composite_work.take_marked_prepared_for_frame();
             for work in producer_jobs {
-                produce_composite_block(&self.resources, window, &mut self.composite_work, work);
+                composite_producer::produce(&self.resources, window, &mut self.composite_work, work);
             }
         }
         // Three time-varying halves of a mobile, filled in per frame rather
@@ -2012,7 +1928,7 @@ impl App {
                 if let Some(mut anchor) = mobiles::head_anchor(mobile, &camera, &window.atlases.mobiles) {
                     let progress = number.elapsed.as_secs_f32() / DAMAGE_NUMBER_HOLD.as_secs_f32();
                     anchor.y -= (DAMAGE_NUMBER_RISE as f32 * progress) as i32;
-                    overhead.push((anchor, number.amount.to_string(), Font::DEFAULT, Hue(0x0022)));
+                    overhead.push((anchor, number.amount.to_string(), Font::DEFAULT, number.hue));
                 }
             }
         }
@@ -2285,8 +2201,6 @@ impl App {
             composite_lod,
             composite_revision,
             composite_visible,
-            &composite_jobs,
-            &mut self.composite_work,
         );
         // The shard's dialogs, in the client's own art, over the finished
         // picture and under egui's.
@@ -2311,6 +2225,7 @@ impl App {
             &mut self.resources,
             &self.world,
             &mut self.windows,
+            self.input.pointer_gump,
             self.shell.as_ref(),
             window,
             &mut encoder,
@@ -2773,5 +2688,32 @@ mod tests {
         assert_eq!(visible_composite_lod(BlockLod::Lod0), BlockLod::Lod0);
         assert_eq!(visible_composite_lod(BlockLod::Lod1), BlockLod::Lod1);
         assert_eq!(visible_composite_lod(BlockLod::Lod2), BlockLod::Lod1);
+    }
+
+    #[test]
+    fn dump_state_names_safe_lod0_fallbacks_separately_from_disabled_lod() {
+        let pass = |requested_lod, ready_blocks, live_ground_quads| WorldPassAudit {
+            requested_lod,
+            composite_revision: ImmutableRevision(4),
+            ready_blocks,
+            live_ground_quads,
+            full_ground_quads: 12,
+        };
+        assert_eq!(
+            lod_diagnostic_state(pass(BlockLod::Lod0, 0, 12), 0),
+            "lod-disabled"
+        );
+        assert_eq!(
+            lod_diagnostic_state(pass(BlockLod::Lod1, 0, 12), 0),
+            "lod-not-ready-safe-lod0"
+        );
+        assert_eq!(
+            lod_diagnostic_state(pass(BlockLod::Lod1, 0, 12), 1),
+            "quarantine-safe-lod0"
+        );
+        assert_eq!(
+            lod_diagnostic_state(pass(BlockLod::Lod1, 1, 4), 0),
+            "cached-with-lod0-fallback"
+        );
     }
 }

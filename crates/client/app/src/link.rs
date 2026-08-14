@@ -29,8 +29,11 @@ use openshard_client_net::walk::{Moved, Walk};
 use openshard_protocol::direction::Facing;
 use openshard_protocol::feedback::{Animation, NewAnimation};
 use openshard_protocol::gump::GumpId;
+use openshard_protocol::gump::GumpPoint;
 use openshard_protocol::serial::Serial;
+use openshard_protocol::target::TargetResponse;
 use openshard_protocol::version::ClientVersion;
+use openshard_protocol::world::Point;
 use openshard_protocol::world::ResyncRequest;
 use openshard_protocol::world::StepSequence;
 use openshard_uofiles::map::Map;
@@ -370,6 +373,41 @@ impl Link {
         self.send(Command::Outgoing(Outgoing::Use(serial)));
     }
 
+    /// Ask the shard to open this mobile's paperdoll, rather than using it.
+    pub fn paperdoll(&self, serial: Serial) {
+        self.send(Command::Outgoing(Outgoing::Paperdoll(serial)));
+    }
+
+    /// Answer a target cursor the shard raised after using a tool or skill.
+    pub fn target(&self, response: TargetResponse) {
+        self.send(Command::Outgoing(Outgoing::Target(response)));
+    }
+
+    /// Put an item from an open container onto the cursor.
+    pub fn pick_up_item(&self, item: Serial, amount: u16) {
+        self.send(Command::Outgoing(Outgoing::PickUp { item, amount }));
+    }
+
+    /// Drop the cursor item into a container at a gump-local position.
+    pub fn drop_into(&self, item: Serial, container: Serial, at: GumpPoint) {
+        self.send(Command::Outgoing(Outgoing::DropInto { item, container, at }));
+    }
+
+    /// Drop the cursor item at a world position.
+    pub fn drop_on_ground(&self, item: Serial, at: Point) {
+        self.send(Command::Outgoing(Outgoing::DropOnGround { item, at }));
+    }
+
+    /// Buy the selected quantities from an NPC vendor.
+    pub fn buy(&self, vendor: Serial, purchases: Vec<(Serial, u16)>) {
+        self.send(Command::Outgoing(Outgoing::Buy { vendor, purchases }));
+    }
+
+    /// Sell the selected quantities to an NPC vendor.
+    pub fn sell(&self, vendor: Serial, sales: Vec<(Serial, u16)>) {
+        self.send(Command::Outgoing(Outgoing::Sell { vendor, sales }));
+    }
+
     /// Ask for a stance. See [`Outgoing::WarMode`].
     pub fn war_mode(&self, war: bool) {
         self.send(Command::Outgoing(Outgoing::WarMode(war)));
@@ -641,7 +679,7 @@ async fn play<D: Dial, F: Fn(Update) + Send>(
                             }
                         }
                     }
-                    Command::Outgoing(action) => action.encode(player_serial),
+                    Command::Outgoing(action) => action.encode(player_serial, version),
                 };
                 if let Err(error) = socket.send(&bytes).await {
                     return error.to_string();

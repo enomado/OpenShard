@@ -84,7 +84,31 @@ impl Chat {
     pub(crate) fn take(&mut self) -> Option<String> {
         let line = std::mem::take(&mut self.typed);
         self.cursor = 0;
+        // Submitting a line gives the keyboard back to the game.  Leaving this
+        // true made every following hotkey look like more chat input: after
+        // asking a vendor to buy, `P` was typed into the empty line instead of
+        // reopening the character paperdoll.
+        self.focused = false;
         (!line.trim().is_empty()).then_some(line)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Chat;
+
+    #[test]
+    fn submitting_speech_returns_the_keyboard_to_the_game() {
+        let mut chat = Chat {
+            typed: "buy".to_owned(),
+            cursor: 3,
+            focused: true,
+        };
+
+        assert_eq!(chat.take().as_deref(), Some("buy"));
+        assert!(chat.typed.is_empty());
+        assert_eq!(chat.cursor, 0);
+        assert!(!chat.focused, "hotkeys must work after a spoken line");
     }
 }
 

@@ -5,10 +5,14 @@
 //! point for ordinary outgoing traffic, while walking remains separate because
 //! its sequence and prediction state are owned by [`crate::walk::Walk`].
 
+use openshard_protocol::gump::GumpPoint;
 use openshard_protocol::gump::{RawButtonId, RawGumpId, RawGumpKey, RawSwitchId};
 use openshard_protocol::serial::Serial;
 use openshard_protocol::skill::SkillLock;
+use openshard_protocol::target::TargetResponse;
+use openshard_protocol::version::ClientVersion;
 use openshard_protocol::wire::RawSkillId;
+use openshard_protocol::world::Point;
 
 /// A reply to a shard-owned gump.
 #[derive(Clone, Debug)]
@@ -26,6 +30,29 @@ pub enum Outgoing {
     Say(String),
     AnswerGump(GumpReply),
     Use(Serial),
+    Paperdoll(Serial),
+    Target(TargetResponse),
+    PickUp {
+        item: Serial,
+        amount: u16,
+    },
+    DropInto {
+        item: Serial,
+        container: Serial,
+        at: GumpPoint,
+    },
+    DropOnGround {
+        item: Serial,
+        at: Point,
+    },
+    Buy {
+        vendor: Serial,
+        purchases: Vec<(Serial, u16)>,
+    },
+    Sell {
+        vendor: Serial,
+        sales: Vec<(Serial, u16)>,
+    },
     WarMode(bool),
     Attack(Serial),
     StopAttacking,
@@ -35,7 +62,10 @@ pub enum Outgoing {
     QuestLog,
     GuildMenu,
     Virtue(Serial),
-    SkillLock { skill: RawSkillId, lock: SkillLock },
+    SkillLock {
+        skill: RawSkillId,
+        lock: SkillLock,
+    },
     UseSkill(RawSkillId),
 }
 
@@ -43,7 +73,7 @@ impl Outgoing {
     /// Encode this action for `player`, whose identity only the established
     /// session knows. Quest, guild, and virtue requests use it on the wire.
     #[must_use]
-    pub fn encode(self, player: Serial) -> Vec<u8> {
+    pub fn encode(self, player: Serial, version: ClientVersion) -> Vec<u8> {
         match self {
             Self::Say(text) => crate::talk::say(&text),
             Self::AnswerGump(reply) => crate::talk::answer_gump(
@@ -54,6 +84,13 @@ impl Outgoing {
                 reply.text_entries,
             ),
             Self::Use(serial) => crate::interact::use_object(serial),
+            Self::Paperdoll(serial) => crate::interact::paperdoll(serial),
+            Self::Target(response) => crate::target::answer(response),
+            Self::PickUp { item, amount } => crate::drag::pick_up(item, amount),
+            Self::DropInto { item, container, at } => crate::drag::drop_into(item, container, at, version),
+            Self::DropOnGround { item, at } => crate::drag::drop_on_ground(item, at, version),
+            Self::Buy { vendor, purchases } => crate::vendor::buy(vendor, &purchases),
+            Self::Sell { vendor, sales } => crate::vendor::sell(vendor, &sales),
             Self::WarMode(war) => crate::doll::war_mode(war),
             Self::Attack(mobile) => crate::combat::attack(mobile),
             Self::StopAttacking => crate::combat::stop_attacking(),
@@ -80,13 +117,16 @@ mod tests {
         let player = Serial::new(0x0000_002A).unwrap();
         let target = Serial::new(0x0000_002B).unwrap();
         assert_eq!(
-            Outgoing::Attack(target).encode(player),
+            Outgoing::Attack(target).encode(player, ClientVersion::new(7, 0, 45, 65)),
             crate::combat::attack(target)
         );
         assert_eq!(
-            Outgoing::StopAttacking.encode(player),
+            Outgoing::StopAttacking.encode(player, ClientVersion::new(7, 0, 45, 65)),
             crate::combat::stop_attacking()
         );
-        assert_eq!(Outgoing::QuestLog.encode(player), crate::doll::quest_log(player));
+        assert_eq!(
+            Outgoing::QuestLog.encode(player, ClientVersion::new(7, 0, 45, 65)),
+            crate::doll::quest_log(player)
+        );
     }
 }

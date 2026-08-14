@@ -166,6 +166,38 @@ fn a_status_window_is_opened_by_local_intent_not_by_the_status_reply() {
     assert!(own_windows.is_empty(), "closing is local too");
 }
 
+/// A vendor's buy window is an `OpenContainer` on the vendor serial, whereas
+/// the character sheet is an `OpenPaperdoll` on the player serial.  They are
+/// independent overlay subjects: opening the first must not make the second
+/// disappear or leave it behind the reconciliation layer.
+#[test]
+fn a_trade_gump_and_own_paperdoll_stay_open_together() {
+    let mut view = bare_view();
+    let vendor = Serial::new(0x0000_0042).expect("a vendor serial");
+    let player = view.player.serial;
+    view.containers.insert(vendor, Graphic(0x0030));
+    view.paperdolls.insert(
+        player,
+        openshard_client_net::view::Paperdoll {
+            name: "Someone".to_owned(),
+            can_lift: true,
+        },
+    );
+    let mut own_windows = Vec::new();
+    let mut locally_closed = HashSet::new();
+
+    reconcile_own_windows(&view, &mut own_windows, &mut locally_closed, false, false);
+
+    assert_eq!(
+        own_windows
+            .iter()
+            .map(|window| window.subject)
+            .collect::<Vec<_>>(),
+        vec![WindowSubject::Container(vendor), WindowSubject::Paperdoll(player)],
+        "the later paperdoll is a separate, topmost window over the trade gump"
+    );
+}
+
 /// The three scrolls answer a double click, and this is what makes two
 /// clicks one: the same picture, on the same window, inside the same 350ms
 /// a door is opened in.

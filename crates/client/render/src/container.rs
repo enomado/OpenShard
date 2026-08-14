@@ -19,7 +19,9 @@
 //!   reference client does: icons in a bag overlap, and re-sorting them here
 //!   would put a different one on top than the server's own client shows.
 
+use crate::items::HIGHLIGHT_HUE;
 use openshard_protocol::containers::ContainedItem;
+use openshard_protocol::serial::Serial;
 use openshard_protocol::wire::Graphic;
 
 use crate::gump::{GumpArt, GumpAtlas, GumpPixel, Picture};
@@ -61,16 +63,31 @@ pub fn size(atlas: &GumpAtlas, gump: Graphic) -> Option<(i32, i32)> {
 /// why no atlas is needed here — placing a picture does not depend on how big it
 /// turned out to be, and only [`size`] and [`pick`] ever ask.
 pub fn window(gump: Graphic, contents: &[ContainedItem], at: GumpPixel) -> Vec<Picture> {
+    window_highlighted(gump, contents, at, None)
+}
+
+/// Lay out a container, tinting the icon named by `highlighted` while it is
+/// under the cursor.  The identity, rather than an index, survives container
+/// updates that reorder or remove another item between frames.
+pub fn window_highlighted(
+    gump: Graphic,
+    contents: &[ContainedItem],
+    at: GumpPixel,
+    highlighted: Option<Serial>,
+) -> Vec<Picture> {
     let mut pictures = Vec::with_capacity(contents.len() + 1);
     pictures.push(Picture::plain(GumpArt::Gump(gump), at));
     for item in contents {
-        pictures.push(
-            Picture::plain(
-                GumpArt::Item(item.graphic),
-                at.offset(GumpPixel::new(item.at.x, item.at.y)),
-            )
-            .hued(item.hue),
-        );
+        let picture = Picture::plain(
+            GumpArt::Item(item.graphic),
+            at.offset(GumpPixel::new(item.at.x, item.at.y)),
+        )
+        .hued(if highlighted == Some(item.serial) {
+            HIGHLIGHT_HUE
+        } else {
+            item.hue
+        });
+        pictures.push(picture);
     }
     pictures
 }

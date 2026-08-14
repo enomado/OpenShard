@@ -94,6 +94,12 @@ combat_era = 1
 # Pre-AoS is 15000; AoS uses 40000.
 speed_scale_factor = 15000
 
+# Shard-specific critical hits (not a classic-UO rule). The chance is per mille:
+# 50 = 5%. A critical multiplies normally scaled weapon/archery damage before
+# armour and resistances; set chance to 0 for strictly classic rolls.
+critical_chance = 50
+critical_damage_percent = 150
+
 # Milliseconds between a hunting creature's steps. The classic pace is 400 —
 # slower than a running player (250), so outrunning a monster works the way it
 # always has. Set 250 to let monsters keep pace with a runner.

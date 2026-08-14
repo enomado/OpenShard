@@ -188,4 +188,8 @@ pub struct CompositeTelemetry {
     pub in_flight: usize,
     pub gpu_bytes: u64,
     pub gpu_budget_bytes: u64,
+    /// Blocks deliberately held at the safe direct LOD0 path this session.
+    pub quarantined: usize,
+    /// Most recent block/key/source-owner proof and its safety reason.
+    pub latest_quarantine: Option<openshard_client_render::composite::CompositeQuarantine>,
 }

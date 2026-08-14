@@ -57,7 +57,7 @@ use winit::window::Window;
 use crate::desk::{Desk, Tab};
 use crate::diagnostics::{HealthBar, Height, Hud, PickedTile, PriorityZ, Route, Selection, TerrainOverlay};
 use crate::graphics::{HighlightStyle, HighlightTarget};
-use crate::world::WorldState;
+use crate::world::{Shard, WorldState};
 
 /// What the panels asked for this frame.
 ///
@@ -263,11 +263,35 @@ impl Shell {
         self.desk.open = !self.desk.open;
     }
 
-    /// Offer an event to the UI, answering whether it took it.
+    /// Record an event for egui and answer whether a *visible, active* egui
+    /// control owns it.
+    ///
+    /// `State::on_window_event` reports whether its internal input collector
+    /// accepted an event.  That is deliberately broader than ownership: a
+    /// stale or off-screen egui widget can accept a key while the player is
+    /// looking at the world.  Letting that implementation detail stop the
+    /// game's window manager was how an invisible shop could make chat and
+    /// paperdolls appear dead.  Egui still receives every event so its state
+    /// stays coherent; it may block the game only when it explicitly says it
+    /// owns the corresponding input channel.
     ///
     /// A `true` here means the camera and the walk keys must not see the event.
     pub fn on_window_event(&mut self, window: &Window, event: &winit::event::WindowEvent) -> bool {
-        self.state.on_window_event(window, event).consumed
+        let consumed = self.state.on_window_event(window, event).consumed;
+        if !consumed {
+            return false;
+        }
+        match event {
+            winit::event::WindowEvent::KeyboardInput { .. } | winit::event::WindowEvent::Ime(_) => {
+                self.context.egui_wants_keyboard_input()
+            }
+            winit::event::WindowEvent::CursorMoved { .. }
+            | winit::event::WindowEvent::MouseInput { .. }
+            | winit::event::WindowEvent::MouseWheel { .. }
+            | winit::event::WindowEvent::Touch { .. } => self.holds_pointer(),
+            // Lifecycle events do not belong to either interaction layer.
+            _ => false,
+        }
     }
 
     /// Whether the pointer belongs to the UI rather than to the world.
@@ -429,7 +453,14 @@ fn layout(root: &mut egui::Ui, hud: &Hud, camera: Camera, world: &WorldState, de
 
     egui::Panel::top("status").show(root, |ui| {
         ui.horizontal(|ui| {
-            ui.label(&world.connection);
+            // The shard has the last word on this line. A connection that has
+            // ended says why here rather than only in the terminal, and — the
+            // part that mattered — it stops reading "in world" over a socket
+            // that is closed.
+            match &world.shard {
+                Shard::Lost(reason) => ui.label(format!("disconnected: {reason}")),
+                Shard::Viewer | Shard::Live(_) => ui.label(&world.connection),
+            };
             ui.separator();
             match world.authoritative.view.as_ref().map(|view| view.player.serial) {
                 Some(serial) => ui.label(format!("serial {serial}")),
@@ -1593,7 +1624,10 @@ fn rig_panel(ui: &mut egui::Ui, hud: &Hud, world: &WorldState, request: &mut Req
             }
         }
         None => {
-            let offline = world.link.is_none();
+            // The viewer, and not merely "no link": a scenario walks the body
+            // itself, which is exactly what a client that has *lost* its shard
+            // must not do — see `world::Shard`.
+            let offline = world.shard.is_viewer();
             ui.horizontal_wrapped(|ui| {
                 for name in &hud.scripts {
                     if ui.add_enabled(offline, egui::Button::new(*name)).clicked() {
@@ -1738,6 +1772,17 @@ fn frames_panel(ui: &mut egui::Ui, hud: &Hud) {
         ui.label(format!("{:.1} MiB", mib(hud.composites.gpu_bytes)));
         ui.label("budget");
         ui.label(format!("{:.1} MiB", mib(hud.composites.gpu_budget_bytes)));
+        ui.end_row();
+        ui.label("quarantined");
+        ui.label(hud.composites.quarantined.to_string());
+        ui.label("latest");
+        ui.label(match hud.composites.latest_quarantine {
+            Some(quarantine) => format!(
+                "{:?} block {:?}, key {:?}, owner {:?}",
+                quarantine.reason, quarantine.block, quarantine.key, quarantine.ground
+            ),
+            None => "none".to_owned(),
+        });
         ui.end_row();
     });
     // The counter `docs/camera.md` asks for: without it, a full atlas repack

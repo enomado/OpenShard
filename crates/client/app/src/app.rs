@@ -578,7 +578,12 @@ impl App {
     /// refuses anyway, because a guard that only lives in a widget is a guard
     /// until somebody adds a keybinding.
     pub(crate) fn start_replay(&mut self, name: &str) {
-        if self.world.link.is_some() {
+        // The viewer, and not merely "nobody to send to": a scenario is a
+        // second writer of the body's position, and a client that *lost* its
+        // shard has no more right to move the character than a connected one —
+        // its last position is still the shard's fact. Same question the panel
+        // asks (`shell.rs`), so the widget and the guard cannot disagree.
+        if !self.world.shard.is_viewer() {
             return;
         }
         let Some(script) = self.scripts.iter().find(|script| script.name == name).cloned() else {

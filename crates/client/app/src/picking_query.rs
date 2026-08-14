@@ -837,6 +837,8 @@ impl App {
                     in_flight: self.composite_work.in_flight_len(),
                     gpu_bytes: window.composites.gpu_bytes(),
                     gpu_budget_bytes: window.composites.limits().max_gpu_bytes,
+                    quarantined: window.composites.quarantined_len(),
+                    latest_quarantine: window.composites.latest_quarantine(),
                 }),
         };
         let picking_cost = picking_started.elapsed();

@@ -34,6 +34,8 @@ use openshard_protocol::mobile::{Equipment, Notoriety, PaperdollFlags, StatusFla
 use openshard_protocol::serial::Serial;
 use openshard_protocol::server_packet::ServerPacket;
 use openshard_protocol::speech::{Font, SpokenMessage, TalkMode, UnicodeMessage};
+use openshard_protocol::target::TargetCursor;
+use openshard_protocol::vendor::{BuyLine, SellLine};
 use openshard_protocol::wire::{Graphic, Hue};
 use openshard_protocol::world::{MapSize, PlayerStart, Point};
 
@@ -47,6 +49,23 @@ pub use openshard_client_model::{Skill, Status};
 /// forget. The number is what a scrollback is worth reading, not a memory
 /// budget — the oldest line is dropped, silently, which is what a journal does.
 pub const JOURNAL_LINES: usize = 256;
+
+/// A vendor catalogue, keyed by the merchant's mobile serial.
+///
+/// The buy list itself names the stock crate while `0x24` opens a window on
+/// the merchant.  Keeping both identities is what lets a client draw the
+/// catalogue and later send a purchase naming the merchant.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct VendorBuy {
+    pub container: Serial,
+    pub lines: Vec<BuyLine>,
+}
+
+/// A vendor's offer to buy items from this character.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct VendorSell {
+    pub lines: Vec<SellLine>,
+}
 
 /// The client's own character, as the server last described it.
 ///
@@ -341,6 +360,22 @@ pub struct WorldView {
     /// here: a container's icons overlap, and the shard's order is the order the
     /// reference client draws them in.
     pub contents: HashMap<Serial, Vec<ContainedItem>>,
+    /// The one target cursor the shard currently has open for this player.
+    pub target: Option<TargetCursor>,
+    /// Buy catalogues currently opened by NPC vendors, keyed by vendor serial.
+    pub vendor_buys: HashMap<Serial, VendorBuy>,
+    /// Sell catalogues currently opened by NPC vendors, keyed by vendor serial.
+    pub vendor_sells: HashMap<Serial, VendorSell>,
+    /// A `0x74` arrives just before the `0x24` that identifies its vendor.
+    pending_vendor_buys: HashMap<Serial, Vec<BuyLine>>,
+    /// The stock crate each vendor most recently wore on shop layer `0x1A`.
+    ///
+    /// This deliberately does not live only in [`Mobile::equipment`].  A
+    /// vendor may send its shop `EquipUpdate` before the ordinary mobile
+    /// update reaches this client; dropping that identity made the later buy
+    /// list impossible to attach to the window even though every shop packet
+    /// had arrived.
+    vendor_stock: HashMap<Serial, Serial>,
     /// Whose paperdoll the shard has opened a window for (`0x88`), by the
     /// mobile's serial.
     ///
@@ -419,6 +454,22 @@ impl OpenGump {
 }
 
 impl WorldView {
+    /// A serial has one location. Destination packets do not always carry the
+    /// corresponding `Remove` back to the client that performed the drag, so
+    /// moving it must also retire any stale source entry in our snapshot.
+    fn remove_from_containers(&mut self, serial: Serial, except: Option<Serial>) -> bool {
+        let mut changed = false;
+        for (container, contents) in &mut self.contents {
+            if Some(*container) == except {
+                continue;
+            }
+            let before = contents.len();
+            contents.retain(|item| item.serial != serial);
+            changed |= contents.len() != before;
+        }
+        changed
+    }
+
     /// The world as the entry packet described it: nobody else on screen yet.
     #[must_use]
     pub fn entered(start: PlayerStart) -> Self {
@@ -453,8 +504,63 @@ impl WorldView {
             gumps: Vec::new(),
             containers: HashMap::new(),
             contents: HashMap::new(),
+            target: None,
+            vendor_buys: HashMap::new(),
+            vendor_sells: HashMap::new(),
+            pending_vendor_buys: HashMap::new(),
+            vendor_stock: HashMap::new(),
             paperdolls: HashMap::new(),
         }
+    }
+
+    /// The shard is gone: put out everything it was the author of, and say so
+    /// in the journal.
+    ///
+    /// # Why the world goes out rather than freezing
+    ///
+    /// Every table below is a statement the shard made, and the moment the
+    /// connection ends none of them is a statement about anything: the bodies
+    /// keep the poses they were drawn in, the bag stays open on contents that
+    /// may already be somewhere else, and a window keeps offering to send a
+    /// packet down a socket that is closed. A picture that goes on looking
+    /// right is the expensive kind of wrong — a lost shard read as "the game
+    /// got strange" for exactly as long as the last frame stayed convincing.
+    ///
+    /// # What is deliberately kept
+    ///
+    /// The **journal**, because the line this writes into it is the only thing
+    /// on screen that says what happened, and clearing the log to announce
+    /// something in the log is a joke the client would be playing on itself.
+    /// The **player** and the **map**, because they are what the camera is
+    /// anchored to and the map viewer's own state: with the body gone there is
+    /// nothing to draw a frame around, and the window would go black rather
+    /// than honest. What stops the body from being a lie is the caller's half —
+    /// `App::walk` refuses to move it once the shard is lost, so it stands
+    /// where the last packet left it.
+    pub fn shard_lost(&mut self, reason: &str) {
+        self.mobiles.clear();
+        self.items.clear();
+        self.contents.clear();
+        self.containers.clear();
+        self.gumps.clear();
+        self.paperdolls.clear();
+        self.vendor_buys.clear();
+        self.vendor_sells.clear();
+        self.pending_vendor_buys.clear();
+        self.vendor_stock.clear();
+        self.target = None;
+        self.heard(Heard {
+            serial: None,
+            graphic: None,
+            // A system line has the shape the shard's own private messages
+            // have — no speaker, muted grey, ordinary mode — because it is the
+            // same kind of line, said by the one participant still in the room.
+            mode: TalkMode::Regular,
+            hue: Hue::SYSTEM,
+            font: Font::DEFAULT,
+            name: String::new(),
+            text: format!("The shard is no longer answering: {reason}."),
+        });
     }
 
     /// Forget a paperdoll window this client has just closed.
@@ -617,6 +723,11 @@ impl WorldView {
                 self.heard(Heard::from(line));
                 true
             }
+            // The server uses `0x20` not only for relocations, but also for an
+            // authoritative turn of this client's own body.  `0x77` cannot do
+            // that job: its own-serial form is ignored below to preserve local
+            // walk prediction.  Keep the facing from this packet even when its
+            // position is unchanged.
             ServerPacket::PlayerUpdate(update) => {
                 let fresh = Player {
                     serial: self.player.serial,
@@ -730,6 +841,62 @@ impl WorldView {
                 self.mobiles.insert(incoming.serial, fresh);
                 changed
             }
+            // A single new or changed worn item.  Shops use this immediately
+            // before their buy list: the crate is equipped on layer `0x1A`,
+            // then `0x74` names that crate and `0x24` names the merchant.
+            // Dropping this packet therefore made a fully received shop look
+            // like a packet with no owner.
+            ServerPacket::EquipUpdate(update) if update.mobile == self.player.serial => {
+                let equipment = &mut self.player.equipment;
+                let fresh = Equipment {
+                    serial: update.item,
+                    graphic: update.graphic,
+                    layer: update.layer,
+                    hue: update.hue,
+                };
+                match equipment.iter_mut().find(|item| item.layer == update.layer) {
+                    Some(item) if *item == fresh => false,
+                    Some(item) => {
+                        *item = fresh;
+                        true
+                    }
+                    None => {
+                        equipment.push(fresh);
+                        true
+                    }
+                }
+            }
+            ServerPacket::EquipUpdate(update) => {
+                let stock_changed = if update.layer.0 == 0x1A {
+                    self.vendor_stock.insert(update.mobile, update.item) != Some(update.item)
+                } else {
+                    false
+                };
+                let Some(mobile) = self.mobiles.get_mut(&update.mobile) else {
+                    return stock_changed;
+                };
+                let fresh = Equipment {
+                    serial: update.item,
+                    graphic: update.graphic,
+                    layer: update.layer,
+                    hue: update.hue,
+                };
+                match mobile
+                    .equipment
+                    .iter_mut()
+                    .find(|item| item.layer == update.layer)
+                {
+                    Some(item) if *item == fresh => stock_changed,
+                    Some(item) => {
+                        *item = fresh;
+                        true
+                    }
+                    None => {
+                        mobile.equipment.push(fresh);
+                        true
+                    }
+                }
+            }
             ServerPacket::WorldItem(item) => {
                 let fresh = Item {
                     graphic: item.graphic,
@@ -739,6 +906,11 @@ impl WorldView {
                 };
                 let changed = self.items.get(&item.serial) != Some(&fresh);
                 self.items.insert(item.serial, fresh);
+                self.remove_from_containers(item.serial, None) || changed
+            }
+            ServerPacket::TargetCursor(cursor) => {
+                let changed = self.target != Some(*cursor);
+                self.target = Some(*cursor);
                 changed
             }
             // A window over a container. The contents are a separate packet and
@@ -752,7 +924,33 @@ impl WorldView {
             // until something else happened to that container.
             ServerPacket::OpenContainer(open) => {
                 self.contents.remove(&open.container);
-                self.containers.insert(open.container, open.gump) != Some(open.gump)
+                let changed = self.containers.insert(open.container, open.gump) != Some(open.gump);
+                // A shop gump opens on a mobile, but the buy list named the
+                // crate worn on its stock layer.  `EquipUpdate` precedes both,
+                // so join the two packets through that crate here.
+                if open.gump == Graphic(0x0030) {
+                    let stock = self.vendor_stock.get(&open.container).copied().or_else(|| {
+                        self.mobiles.get(&open.container).and_then(|mobile| {
+                            mobile
+                                .equipment
+                                .iter()
+                                .find(|item| item.layer.0 == 0x1A)
+                                .map(|item| item.serial)
+                        })
+                    });
+                    if let Some(stock) = stock {
+                        if let Some(lines) = self.pending_vendor_buys.remove(&stock) {
+                            self.vendor_buys.insert(
+                                open.container,
+                                VendorBuy {
+                                    container: stock,
+                                    lines,
+                                },
+                            );
+                        }
+                    }
+                }
+                changed
             }
             // An empty listing names no container at all — the wire has no field
             // for it — so there is nothing this can be about. See
@@ -765,6 +963,19 @@ impl WorldView {
                     changed
                 }
             },
+            ServerPacket::BuyList(list) => {
+                self.pending_vendor_buys
+                    .insert(list.container, list.lines.clone());
+                true
+            }
+            ServerPacket::SellList(list) => {
+                let fresh = VendorSell {
+                    lines: list.lines.clone(),
+                };
+                let changed = self.vendor_sells.get(&list.vendor) != Some(&fresh);
+                self.vendor_sells.insert(list.vendor, fresh);
+                changed
+            }
             // One more item in a container, which may be one this client has no
             // window for: a shard pushes a `0x25` to everyone it thinks has the
             // container open, and its list and ours part company the moment the
@@ -776,9 +987,11 @@ impl WorldView {
             // `0x25` for an item whose stack merely grew, and the reference
             // client replaces the record it already has.
             ServerPacket::AddToContainer(added) => {
+                let was_ground = self.items.remove(&added.item.serial).is_some();
+                let was_elsewhere = self.remove_from_containers(added.item.serial, Some(added.container));
                 let held = self.contents.entry(added.container).or_default();
                 match held.iter_mut().find(|item| item.serial == added.item.serial) {
-                    Some(item) if *item == added.item => false,
+                    Some(item) if *item == added.item => was_ground || was_elsewhere,
                     Some(item) => {
                         *item = added.item;
                         true
@@ -909,6 +1122,10 @@ impl WorldView {
                 // A container that is itself removed takes its window with it.
                 let had_window = self.containers.remove(&remove.serial).is_some();
                 self.contents.remove(&remove.serial);
+                let had_vendor = self.vendor_buys.remove(&remove.serial).is_some()
+                    || self.vendor_sells.remove(&remove.serial).is_some()
+                    || self.pending_vendor_buys.remove(&remove.serial).is_some()
+                    || self.vendor_stock.remove(&remove.serial).is_some();
                 // And so does a mobile: a body that walked out of range cannot
                 // be looked at any more, and the window over it would keep
                 // drawing the equipment as it stood when the body left. The
@@ -916,7 +1133,7 @@ impl WorldView {
                 // for a mobile that is not the player, which needs no guard
                 // here because a `0x1D` never names our own serial.
                 let had_paperdoll = self.paperdolls.remove(&remove.serial).is_some();
-                had_mobile || had_item || was_held || had_window || had_paperdoll
+                had_mobile || had_item || was_held || had_window || had_vendor || had_paperdoll
             }
             _ => false,
         }
@@ -1244,6 +1461,27 @@ mod tests {
     }
 
     #[test]
+    fn a_player_update_turns_the_players_own_body_in_place() {
+        let mut view = WorldView::entered(start());
+        let update = PlayerUpdate {
+            serial: view.player.serial,
+            body: view.player.body,
+            hue: view.player.hue,
+            flags: view.player.flags,
+            position: view.player.position,
+            facing: Facing::walking(Direction::East),
+        };
+
+        assert!(view.apply(&ServerPacket::PlayerUpdate(update)));
+        assert_eq!(
+            view.player.position,
+            start().position,
+            "a turn does not move the body"
+        );
+        assert_eq!(view.player.facing, Facing::walking(Direction::East));
+    }
+
+    #[test]
     fn a_confirmed_step_moves_the_player_and_says_when_it_did_not() {
         // What `Walk` hands back on a `0x22`. Turning is a step in UO and its
         // ack looks exactly like a move's, so "the position did not change"
@@ -1388,6 +1626,24 @@ mod tests {
         };
         assert!(view.apply(&ServerPacket::WorldItem(item)));
         assert_eq!(view.items.get(&item.serial).unwrap().amount, StackAmount(500));
+    }
+
+    #[test]
+    fn a_ground_destination_retires_the_lifters_stale_container_source() {
+        let mut view = WorldView::entered(start());
+        view.apply(&ServerPacket::AddToContainer(AddToContainer {
+            item: candle(),
+            container: chest(),
+        }));
+        assert!(view.apply(&ServerPacket::WorldItem(WorldItem {
+            serial: candle().serial,
+            graphic: candle().graphic,
+            amount: candle().amount,
+            position: Point::new(1000, 2000, 5),
+            hue: candle().hue,
+        })));
+        assert!(view.contents.get(&chest()).is_none_or(Vec::is_empty));
+        assert!(view.items.contains_key(&candle().serial));
     }
 
     #[test]
@@ -1765,6 +2021,25 @@ mod tests {
         );
     }
 
+    #[test]
+    fn a_container_destination_retires_the_lifters_stale_ground_source() {
+        let mut view = WorldView::entered(start());
+        let item = WorldItem {
+            serial: candle().serial,
+            graphic: candle().graphic,
+            amount: candle().amount,
+            position: Point::new(1000, 2000, 5),
+            hue: candle().hue,
+        };
+        view.apply(&ServerPacket::WorldItem(item));
+        assert!(view.apply(&ServerPacket::AddToContainer(AddToContainer {
+            item: candle(),
+            container: chest(),
+        })));
+        assert!(!view.items.contains_key(&item.serial));
+        assert_eq!(view.contents.get(&chest()), Some(&vec![candle()]));
+    }
+
     /// There is no "taken out of the container" packet: an item leaving a bag is
     /// a `0x1D` and nothing else, so a `0x1D` has to reach the contents or the
     /// icon stays in the window forever.
@@ -1811,6 +2086,103 @@ mod tests {
         })));
         assert!(view.contents.contains_key(&chest()));
         assert!(!view.containers.contains_key(&chest()));
+    }
+
+    /// What a lost shard leaves behind, and what it must not.
+    ///
+    /// Every table here was something the shard said, and the moment it stops
+    /// answering none of them is about anything — but a picture that goes on
+    /// looking right is what made a disconnect read as a game gone strange.
+    /// The journal is the exception, and it has to be: the line announcing the
+    /// loss is written into it.
+    #[test]
+    fn a_lost_shard_puts_out_the_world_it_described_and_says_so() {
+        let mut view = WorldView::entered(start());
+        let vendor = other();
+        view.apply(&ServerPacket::MobileIncoming(MobileIncoming {
+            serial: vendor,
+            body: Graphic(0x0190),
+            position: Point::new(1476, 1770, 20),
+            facing: Facing::walking(Direction::South),
+            hue: Hue::NONE,
+            flags: StatusFlags::NONE,
+            notoriety: Notoriety::Innocent,
+            equipment: Vec::new(),
+        }));
+        view.apply(&ServerPacket::ContainerContents(ContainerContents {
+            container: Some(chest()),
+            items: vec![candle()],
+        }));
+        view.apply(&ServerPacket::OpenContainer(
+            openshard_protocol::containers::OpenContainer {
+                container: chest(),
+                gump: Graphic(0x003C),
+            },
+        ));
+        view.apply(&paperdoll_of(view.player.serial));
+        let said = view.journal.len();
+
+        view.shard_lost("unknown packet 0xD6");
+
+        assert!(view.mobiles.is_empty(), "nobody is standing there any more");
+        assert!(view.containers.is_empty(), "no window offers to send a packet");
+        assert!(view.contents.is_empty());
+        assert!(view.paperdolls.is_empty());
+        assert!(view.items.is_empty());
+        assert!(view.target.is_none());
+        assert_eq!(view.journal.len(), said + 1, "and the log gained the reason");
+        let last = view.journal.back().expect("the line");
+        assert!(last.serial.is_none(), "the system said it, not a mobile");
+        assert!(last.text.contains("unknown packet 0xD6"));
+        assert_eq!(
+            view.player.serial,
+            start().serial,
+            "the body the camera is anchored to stays; `App::walk` is what stops moving it"
+        );
+    }
+
+    #[test]
+    fn a_vendor_buy_list_joins_its_stock_crate_even_before_the_vendor_body_arrives() {
+        let mut view = WorldView::entered(start());
+        let vendor = other();
+        let stock = Serial::new(0x4000_0099).unwrap();
+        let item = candle();
+        // The shop's `0x2E` can beat the ordinary `0x78` for this mobile.
+        // It must remain useful rather than being discarded merely because
+        // the body record is still in flight.
+        assert!(view.apply(&ServerPacket::EquipUpdate(
+            openshard_protocol::items::EquipUpdate {
+                item: stock,
+                graphic: Graphic(0x0E3F),
+                layer: openshard_protocol::wire::Layer(0x1A),
+                mobile: vendor,
+                hue: Hue::NONE,
+            },
+        )));
+        assert!(view.apply(&ServerPacket::ContainerContents(ContainerContents {
+            container: Some(stock),
+            items: vec![item],
+        })));
+        assert!(
+            view.apply(&ServerPacket::BuyList(openshard_protocol::vendor::BuyList {
+                container: stock,
+                lines: vec![BuyLine {
+                    price: 5,
+                    name: "candle".to_owned(),
+                }],
+            }))
+        );
+        assert!(view.apply(&ServerPacket::OpenContainer(
+            openshard_protocol::containers::OpenContainer {
+                container: vendor,
+                gump: Graphic(0x0030),
+            },
+        )));
+        assert_eq!(
+            view.vendor_buys.get(&vendor).map(|buy| buy.container),
+            Some(stock)
+        );
+        assert_eq!(view.vendor_buys[&vendor].lines[0].price, 5);
     }
 
     /// Closing a window is a click and no packet carries it — the same fact as

@@ -79,6 +79,19 @@ pub enum UseRequest {
 }
 
 impl DoubleClick {
+    /// Build the distinct `0x06` form that asks for a mobile's paperdoll.
+    ///
+    /// The high bit is protocol meaning, not part of the serial.  Keeping the
+    /// operation beside [`interpret`](Self::interpret) prevents clients from
+    /// accidentally sending a normal double-click when they mean the paperdoll
+    /// request that ServUO routes around ordinary `Use` handling.
+    #[must_use]
+    pub const fn paperdoll(serial: RawSerial) -> Self {
+        Self {
+            serial: RawSerial(serial.0 | PAPERDOLL_REQUEST),
+        }
+    }
+
     /// Encode a whole `0x06`. What `crates/client/net` sends when the player
     /// double-clicks something; this *server* never sends one, only ever decodes
     /// it — the same split as

@@ -66,12 +66,12 @@ impl App {
                     SkillLock::Locked => SkillLock::Up,
                 };
                 tree.set_lock(id, next);
-                if let Some(link) = self.world.link.as_ref() {
+                if let Some(link) = self.world.shard.link() {
                     link.set_skill_lock(RawSkillId(id.0), next);
                 }
             }
             skills::Hit::Use(id) => {
-                if let Some(link) = self.world.link.as_ref() {
+                if let Some(link) = self.world.shard.link() {
                     link.use_skill(RawSkillId(id.0));
                 }
             }

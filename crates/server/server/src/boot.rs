@@ -73,6 +73,8 @@ pub(crate) fn gameplay_of(config: &Config) -> Gameplay {
     Gameplay {
         combat_era: g.combat_era,
         speed_scale_factor: g.speed_scale_factor,
+        critical_chance: g.critical_chance,
+        critical_damage_percent: g.critical_damage_percent,
         skill_cap: g.skill_cap,
         total_skill_cap: g.total_skill_cap,
         stat_cap: g.stat_cap,

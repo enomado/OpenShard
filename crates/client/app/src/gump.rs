@@ -320,10 +320,7 @@ impl Dialogs {
             return true;
         }
         self.focus = None;
-        let Some(index) = gump::pick(&window.pictures, cursor, atlas) else {
-            return false;
-        };
-        let Some(hit) = window.hits.get(&index).copied() else {
+        let Some(hit) = window.hit(cursor, atlas) else {
             return false;
         };
         match hit {
@@ -356,8 +353,7 @@ impl Dialogs {
         if id != gump.gump_id {
             return None;
         }
-        let under =
-            gump::pick(&window.pictures, cursor, atlas).and_then(|index| window.hits.get(&index).copied());
+        let under = window.hit(cursor, atlas);
         if under != Some(held) {
             return None;
         }

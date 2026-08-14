@@ -29,6 +29,16 @@ pub fn use_object(serial: Serial) -> Vec<u8> {
     .encode()
 }
 
+/// Ask the shard to open a mobile's paperdoll.
+///
+/// This is still packet `0x06`, but it is not a normal use: the protocol's
+/// paperdoll bit routes it to `OnPaperdollRequest` and therefore cannot trigger
+/// a self-use action such as dismounting.
+#[must_use]
+pub fn paperdoll(serial: Serial) -> Vec<u8> {
+    DoubleClick::paperdoll(RawSerial(serial.raw())).encode()
+}
+
 #[cfg(test)]
 mod tests {
     use openshard_protocol::client_packet::ClientPacket;
@@ -50,5 +60,16 @@ mod tests {
             panic!("0x06 decoded as some other packet");
         };
         assert_eq!(heard.interpret(), UseRequest::Use(RawSerial(door.raw())));
+    }
+
+    #[test]
+    fn a_paperdoll_request_reaches_the_server_as_a_paperdoll() {
+        let mobile = Serial::new(0x0000_002A).unwrap();
+        let ClientPacket::DoubleClick(heard) =
+            ClientPacket::decode(&paperdoll(mobile), ClientVersion::new(7, 0, 45, 65)).expect("0x06 decodes")
+        else {
+            panic!("0x06 decoded as some other packet");
+        };
+        assert_eq!(heard.interpret(), UseRequest::Paperdoll(RawSerial(mobile.raw())));
     }
 }

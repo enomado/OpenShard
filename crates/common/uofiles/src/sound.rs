@@ -2,10 +2,12 @@
 //!
 //! Classic installs have the ordinary three-word `soundidx.mul` entries;
 //! modern ones put the same entries in `soundLegacyMUL.uop` under
-//! `build/soundlegacymul/{id:08}.dat`.  The data is old, mono, unsigned 8-bit
-//! PCM at 22,050 Hz; most installs wrap it in a tiny RIFF header, while a few
-//! legacy packs leave the forty-byte header unlabelled. [`SoundArchive`]
-//! accepts both shapes and presents ready-to-mix samples.
+//! `build/soundlegacymul/{id:08}.dat`.  The normal entry is a forty-byte name
+//! followed by mono, signed 16-bit PCM at 22,050 Hz; a few patched packs wrap
+//! their audio in RIFF/WAVE instead. [`SoundArchive`] accepts both shapes and
+//! presents ready-to-mix samples. A RIFF wrapper is authoritative: its channel
+//! count and sample width are used rather than treating every payload as the
+//! classic form.
 
 use std::fmt;
 use std::fs::File;
@@ -24,6 +26,8 @@ const DEFAULT_RATE: u32 = 22_050;
 pub struct Sound {
     /// Samples in Rodio's normal -1.0 to 1.0 range.
     pub samples: Vec<f32>,
+    /// Number of interleaved channels in [`samples`](Self::samples).
+    pub channels: u16,
     /// Samples per second.
     pub sample_rate: u32,
 }
@@ -179,27 +183,43 @@ impl SoundArchive {
 }
 
 fn decode(sound: SoundId, bytes: &[u8]) -> Result<Sound, SoundError> {
-    let (sample_rate, pcm) =
-        wave_data(bytes).unwrap_or((DEFAULT_RATE, bytes.get(LEGACY_HEADER..).unwrap_or_default()));
+    let wave = if bytes.get(0..4) == Some(b"RIFF") && bytes.get(8..12) == Some(b"WAVE") {
+        Some(wave_data(bytes).ok_or_else(|| SoundError::Malformed {
+            sound,
+            detail: "invalid RIFF/WAVE header".to_owned(),
+        })?)
+    } else {
+        None
+    };
+    let (sample_rate, channels, bits_per_sample, pcm) = wave
+        .map(|wave| (wave.sample_rate, wave.channels, wave.bits_per_sample, wave.data))
+        .unwrap_or((
+            DEFAULT_RATE,
+            1,
+            16,
+            bytes.get(LEGACY_HEADER..).unwrap_or_default(),
+        ));
     if pcm.is_empty() {
         return Err(SoundError::Malformed {
             sound,
             detail: "entry has no PCM samples after its header".to_owned(),
         });
     }
+    let samples = pcm_samples(pcm, bits_per_sample).ok_or_else(|| SoundError::Malformed {
+        sound,
+        detail: format!("unsupported PCM sample width {bits_per_sample}"),
+    })?;
     Ok(Sound {
-        samples: pcm
-            .iter()
-            .map(|sample| (f32::from(*sample) - 128.0) / 128.0)
-            .collect(),
+        samples,
+        channels,
         sample_rate,
     })
 }
 
 /// Find the `data` chunk in a standard RIFF/WAVE wrapper.
-fn wave_data(bytes: &[u8]) -> Option<(u32, &[u8])> {
+fn wave_data(bytes: &[u8]) -> Option<Wave<'_>> {
     (bytes.get(0..4)? == b"RIFF" && bytes.get(8..12)? == b"WAVE").then_some(())?;
-    let mut rate = DEFAULT_RATE;
+    let mut format = None;
     let mut at: usize = 12;
     while at.checked_add(8)? <= bytes.len() {
         let kind = bytes.get(at..at + 4)?;
@@ -208,14 +228,60 @@ fn wave_data(bytes: &[u8]) -> Option<(u32, &[u8])> {
         let end = data.checked_add(length)?;
         let chunk = bytes.get(data..end)?;
         if kind == b"fmt " && chunk.len() >= 16 {
-            rate = u32::from_le_bytes(chunk[4..8].try_into().ok()?);
+            format = Some(WaveFormat {
+                encoding: u16::from_le_bytes(chunk[0..2].try_into().ok()?),
+                channels: u16::from_le_bytes(chunk[2..4].try_into().ok()?),
+                sample_rate: u32::from_le_bytes(chunk[4..8].try_into().ok()?),
+                bits_per_sample: u16::from_le_bytes(chunk[14..16].try_into().ok()?),
+            });
         }
         if kind == b"data" {
-            return Some((rate, chunk));
+            let format = format?;
+            return (format.encoding == 1 && format.channels != 0 && format.sample_rate != 0).then_some(
+                Wave {
+                    data: chunk,
+                    channels: format.channels,
+                    sample_rate: format.sample_rate,
+                    bits_per_sample: format.bits_per_sample,
+                },
+            );
         }
         at = end.checked_add(length % 2)?;
     }
     None
+}
+
+struct Wave<'a> {
+    data: &'a [u8],
+    channels: u16,
+    sample_rate: u32,
+    bits_per_sample: u16,
+}
+
+struct WaveFormat {
+    encoding: u16,
+    channels: u16,
+    sample_rate: u32,
+    bits_per_sample: u16,
+}
+
+/// Convert interleaved little-endian PCM samples to Rodio's normalized range.
+fn pcm_samples(bytes: &[u8], bits_per_sample: u16) -> Option<Vec<f32>> {
+    match bits_per_sample {
+        8 => Some(
+            bytes
+                .iter()
+                .map(|sample| (f32::from(*sample) - 128.0) / 128.0)
+                .collect(),
+        ),
+        16 if bytes.len().is_multiple_of(2) => Some(
+            bytes
+                .chunks_exact(2)
+                .map(|sample| f32::from(i16::from_le_bytes(sample.try_into().expect("two bytes"))) / 32768.0)
+                .collect(),
+        ),
+        _ => None,
+    }
 }
 
 #[cfg(test)]
@@ -228,15 +294,70 @@ mod tests {
             b"RIFF\0\0\0\0WAVEfmt \x10\0\0\0\x01\0\x01\0\x22\x56\0\0\x22\x56\0\0\x01\0\x08\0data\x03\0\0\0"
                 .to_vec();
         wave.extend([0, 128, 255]);
-        assert_eq!(wave_data(&wave), Some((22_050, &[0, 128, 255][..])));
+        let wave = wave_data(&wave).unwrap();
+        assert_eq!(wave.sample_rate, 22_050);
+        assert_eq!(wave.channels, 1);
+        assert_eq!(wave.bits_per_sample, 8);
+        assert_eq!(wave.data, [0, 128, 255]);
     }
 
     #[test]
-    fn legacy_header_is_skipped_and_unsigned_pcm_is_centered() {
+    fn legacy_name_is_skipped_and_signed_pcm_is_normalized() {
         let mut bytes = vec![0; LEGACY_HEADER];
-        bytes.extend([0, 128, 255]);
+        bytes.extend(i16::MIN.to_le_bytes());
+        bytes.extend(0i16.to_le_bytes());
+        bytes.extend(i16::MAX.to_le_bytes());
         let sound = decode(SoundId(7), &bytes).unwrap();
+        assert_eq!(sound.channels, 1);
         assert_eq!(sound.sample_rate, DEFAULT_RATE);
-        assert_eq!(sound.samples, [-1.0, 0.0, 127.0 / 128.0]);
+        assert_eq!(sound.samples, [-1.0, 0.0, i16::MAX as f32 / 32768.0]);
+    }
+
+    #[test]
+    fn wave_16_bit_samples_keep_their_sample_boundaries() {
+        let mut wave =
+            b"RIFF\0\0\0\0WAVEfmt \x10\0\0\0\x01\0\x01\0\x44\xac\0\0\x88X\x01\0\x02\0\x10\0data\x06\0\0\0"
+                .to_vec();
+        wave.extend(i16::MIN.to_le_bytes());
+        wave.extend(0i16.to_le_bytes());
+        wave.extend(i16::MAX.to_le_bytes());
+
+        let sound = decode(SoundId(7), &wave).unwrap();
+        assert_eq!(sound.channels, 1);
+        assert_eq!(sound.sample_rate, 44_100);
+        assert_eq!(sound.samples, [-1.0, 0.0, i16::MAX as f32 / 32768.0]);
+    }
+
+    #[test]
+    fn wave_stereo_keeps_its_channel_layout() {
+        let mut wave =
+            b"RIFF\0\0\0\0WAVEfmt \x10\0\0\0\x01\0\x02\0\x22V\0\0\x88X\x01\0\x02\0\x08\0data\x04\0\0\0"
+                .to_vec();
+        wave.extend([0, 255, 128, 64]);
+
+        let sound = decode(SoundId(7), &wave).unwrap();
+        assert_eq!(sound.channels, 2);
+        assert_eq!(sound.samples, [-1.0, 127.0 / 128.0, 0.0, -0.5]);
+    }
+
+    #[test]
+    fn real_skeleton_attack_sound_is_a_valid_mono_source() {
+        let Some(dir) = std::env::var_os("OPENSHARD_CLIENT").map(std::path::PathBuf::from) else {
+            return;
+        };
+        let Ok(mut archive) = SoundArchive::open(&dir) else {
+            return;
+        };
+        // The skeleton's BaseSoundID is 0x048D; an attack is BaseSoundID + 2.
+        let sound = archive.sound(SoundId(0x048F)).unwrap().unwrap();
+        assert_eq!(sound.sample_rate, 22_050);
+        assert_eq!(sound.channels, 1);
+        assert_eq!(sound.samples.len(), 15_347);
+        assert!(
+            sound
+                .samples
+                .iter()
+                .all(|sample| sample.is_finite() && (-1.0..=1.0).contains(sample))
+        );
     }
 }

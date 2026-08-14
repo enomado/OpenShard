@@ -18,6 +18,24 @@ const RESURRECTION_DAGGER_GRAPHIC: Graphic = Graphic(0x0F52);
 /// The axe carried in the two-handed weapon slot after resurrection.
 const RESURRECTION_AXE_GRAPHIC: Graphic = Graphic(0x0F49);
 
+/// The two body graphics that share the skeleton loot table.
+const SKELETON_BODIES: [Graphic; 2] = [Graphic(0x0032), Graphic(0x0038)];
+/// A skeleton always carries a modest purse; the inclusive upper bound is 45.
+const SKELETON_GOLD_MIN: u16 = 20;
+const SKELETON_GOLD_SPREAD: u16 = 26;
+/// The battered weapons a skeleton may leave behind.
+const SKELETON_WEAPONS: [Graphic; 3] = [
+    Graphic(0x0F52), // dagger
+    Graphic(0x0F5C), // mace
+    Graphic(0x0F5E), // broadsword
+];
+/// A small ration, picked when the corpse is made.
+const SKELETON_FOOD: [Graphic; 3] = [
+    Graphic(0x09D0), // apple
+    Graphic(0x09F2), // ribs
+    Graphic(0x103B), // bread
+];
+
 impl World {
     /// Dispose of every mobile that died this tick: a creature becomes a corpse
     /// and leaves the world; a player becomes a ghost, leaving a corpse but
@@ -420,19 +438,10 @@ impl World {
             self.despawn_creature(entity, serial);
             return;
         };
-        // Its worn gear falls into the corpse, and a flat baseline of gold — the
-        // core's default so a bare shard still loots.
+        // Its worn gear falls into the corpse. Named creature tables add their
+        // own loot; every other creature keeps the core's baseline gold.
         self.move_gear_to_corpse(serial, corpse, &[]);
-        let gold = self.corpse_gold(max_hits);
-        if gold > 0 {
-            let _ = items::give(
-                &mut self.state,
-                corpse,
-                items::GOLD_GRAPHIC,
-                Hue(0),
-                u32::from(gold),
-            );
-        }
+        self.fill_creature_loot(corpse, body.map(|body| body.id), max_hits);
         // The loot hook: a pack adds the real per-creature table on top of the
         // baseline, by serial, off this event. Emitted before the creature is
         // despawned so `body` is still readable if a listener wants it live.
@@ -527,10 +536,144 @@ impl World {
         base + jitter
     }
 
+    /// Fill the built-in loot table for a creature corpse. Packs can still add
+    /// their own loot through [`CorpseCreated`] below.
+    fn fill_creature_loot(&mut self, corpse: Serial, body: Option<Graphic>, max_hits: u16) {
+        if body.is_some_and(|body| SKELETON_BODIES.contains(&body)) {
+            let gold = SKELETON_GOLD_MIN + self.state.rng.below(u32::from(SKELETON_GOLD_SPREAD)) as u16;
+            let weapon = SKELETON_WEAPONS[self.state.rng.below(SKELETON_WEAPONS.len() as u32) as usize];
+            let gold = items::give(
+                &mut self.state,
+                corpse,
+                items::GOLD_GRAPHIC,
+                Hue(0),
+                u32::from(gold),
+            );
+            let weapon = items::place_one(&mut self.state, corpse, weapon, Hue(0), 1);
+            let bandage = items::place_one(
+                &mut self.state,
+                corpse,
+                openshard_skills::BANDAGE_GRAPHIC,
+                Hue(0),
+                1,
+            );
+            let food = SKELETON_FOOD[self.state.rng.below(SKELETON_FOOD.len() as u32) as usize];
+            let food = items::place_one(&mut self.state, corpse, food, Hue(0), 1);
+            for (item, x, y) in [
+                (gold, 35, 50),
+                (weapon, 85, 50),
+                (bandage, 35, 100),
+                (food, 85, 100),
+            ] {
+                if let Some(item) = item {
+                    self.state.registry.insert(
+                        item,
+                        Contained {
+                            container: corpse,
+                            position: GumpPoint::new(x, y),
+                            grid: GridSlot(0),
+                        },
+                    );
+                }
+            }
+            return;
+        }
+
+        let gold = self.corpse_gold(max_hits);
+        if gold > 0 {
+            let _ = items::give(
+                &mut self.state,
+                corpse,
+                items::GOLD_GRAPHIC,
+                Hue(0),
+                u32::from(gold),
+            );
+        }
+    }
+
     /// Take a creature off the world. The disposal half of the old `combat::die`;
     /// the removal itself is the substrate's, shared with anything else that
     /// takes a mobile out (a guard that has done its work).
     fn despawn_creature(&mut self, entity: EntityId, _serial: Serial) {
         self.state.despawn_mobile(entity);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use openshard_protocol::serial::SerialKind;
+    use openshard_state::components::{Amount, Contained, Container, Drawn};
+
+    #[test]
+    fn a_skeleton_corpse_has_visible_gold_weapon_and_supplies() {
+        let mut world = World::new((1363, 1600));
+        let (corpse, corpse_serial) = world
+            .state
+            .registry
+            .spawn_with_serial(SerialKind::Item)
+            .expect("an item serial for the corpse");
+        world
+            .state
+            .registry
+            .insert(corpse, Container { gump: CORPSE_GUMP });
+
+        world.fill_creature_loot(corpse_serial, Some(SKELETON_BODIES[0]), 0);
+
+        let loot: Vec<(Graphic, u16)> = world
+            .state
+            .registry
+            .query::<Contained>()
+            .filter(|(_, held)| held.container == corpse_serial)
+            .filter_map(|(entity, _)| {
+                world.state.registry.get::<Drawn>(entity).map(|drawn| {
+                    (
+                        drawn.id,
+                        world
+                            .state
+                            .registry
+                            .get::<Amount>(entity)
+                            .map_or(1, |amount| amount.0),
+                    )
+                })
+            })
+            .collect();
+        let gold = loot
+            .iter()
+            .find_map(|&(graphic, amount)| (graphic == items::GOLD_GRAPHIC).then_some(amount))
+            .expect("a skeleton always carries gold");
+
+        assert!(
+            (SKELETON_GOLD_MIN..SKELETON_GOLD_MIN + SKELETON_GOLD_SPREAD).contains(&gold),
+            "the skeleton's purse stays within its loot table"
+        );
+        assert!(
+            loot.iter().any(|(graphic, _)| SKELETON_WEAPONS.contains(graphic)),
+            "a skeleton leaves one of its weapons behind"
+        );
+        assert!(
+            loot.iter()
+                .any(|(graphic, _)| *graphic == openshard_skills::BANDAGE_GRAPHIC),
+            "a skeleton carries a clean bandage"
+        );
+        assert!(
+            loot.iter().any(|(graphic, _)| SKELETON_FOOD.contains(graphic)),
+            "a skeleton carries one random ration"
+        );
+        let positions: Vec<GumpPoint> = world
+            .state
+            .registry
+            .query::<Contained>()
+            .filter(|(_, held)| held.container == corpse_serial)
+            .map(|(_, held)| held.position)
+            .collect();
+        assert_eq!(positions.len(), 4, "all skeleton loot was created");
+        assert!(
+            positions
+                .iter()
+                .enumerate()
+                .all(|(index, position)| positions[..index].iter().all(|other| other != position)),
+            "each loot icon has its own place in the corpse gump"
+        );
     }
 }

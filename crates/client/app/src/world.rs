@@ -18,6 +18,7 @@ use openshard_client_render::items::GroundItem;
 use openshard_client_render::mobiles::Mobile;
 use openshard_protocol::direction::Facing;
 use openshard_protocol::serial::Serial;
+use openshard_protocol::wire::Hue;
 use openshard_protocol::world::Point;
 use openshard_uofiles::map::Map;
 use openshard_uofiles::tiledata::TileData;
@@ -35,6 +36,9 @@ pub const DAMAGE_NUMBER_RISE: i32 = 28;
 pub struct DamageNumber {
     pub serial: Serial,
     pub amount: u16,
+    /// Colour distinguishes damage received by the local player from damage
+    /// shown over another mobile.
+    pub hue: Hue,
     pub elapsed: Duration,
 }
 
@@ -59,12 +63,61 @@ pub struct WorldState {
     pub render_ready: bool,
     /// What the connection is doing, for the status strip.
     pub connection: String,
-    /// The shard, if this run logged in to one.
-    ///
-    /// `None` is the offline viewer, and it is what the keyboard asks: a step
-    /// is a `0x02` when there is somebody to send it to, and a camera move when
-    /// there is not.
-    pub link: Option<link::Link>,
+    /// The shard: whether there is one, and — if there is not — whether there
+    /// ever was.
+    pub shard: Shard,
+}
+
+/// What is on the other end of this client, in the one field that decides it.
+///
+/// # Why three states and not an `Option`
+///
+/// Because two of them are *not having a shard* and they mean opposite things.
+/// A client with no shard walks the body itself — that is the map viewer, and
+/// the whole reason `App::walk` has an offline arm. A client that has **lost**
+/// one must not: the body's position is the shard's fact, the last one it
+/// stated, and a client that keeps stepping it draws a character somewhere
+/// nobody ever put it.
+///
+/// This was an `Option<Link>`, and the missing distinction is what let a
+/// disconnect pass for a game that had gone strange: the socket died on an
+/// unframable packet, the link went to `None`, and the arrows kept working
+/// because `None` was also how a map viewer says it is a map viewer. Everything
+/// else quietly stopped — the paperdoll returned without asking, speech went to
+/// the log — so the one thing that still answered was the one thing written
+/// twice. A second `lost: bool` beside the `Option` would put the same state in
+/// two shapes and let them disagree; this is one field with one answer.
+pub enum Shard {
+    /// No shard was ever dialled: this run is the offline map viewer.
+    Viewer,
+    /// Connected. What the keyboard asks: a step is a `0x02` when there is
+    /// somebody to send it to.
+    Live(link::Link),
+    /// There was one and the connection ended, with the reason it ended for.
+    /// Nothing is sent from here on, and nothing local moves in a shard's
+    /// place — see [`WorldView::shard_lost`](openshard_client_net::view::WorldView::shard_lost)
+    /// for the other half, which puts the world it described out.
+    Lost(String),
+}
+
+impl Shard {
+    /// Somewhere to send to, or `None` — the question every action asks, and
+    /// the only one that does not care *why* there is nobody.
+    #[must_use]
+    pub fn link(&self) -> Option<&link::Link> {
+        match self {
+            Self::Live(link) => Some(link),
+            Self::Viewer | Self::Lost(_) => None,
+        }
+    }
+
+    /// Whether this client is the map viewer — the one state in which it is
+    /// this end's business to move the body. Deliberately not `!is_live()`:
+    /// see the type's docs for what that conflation cost.
+    #[must_use]
+    pub fn is_viewer(&self) -> bool {
+        matches!(self, Self::Viewer)
+    }
 }
 
 /// Render-facing data rebuilt from the authoritative view and local prediction.
@@ -117,11 +170,12 @@ impl PresentationWorld {
     }
 
     /// Show the damage the last health update established for one mobile.
-    pub(crate) fn damage(&mut self, serial: Serial, amount: u16) {
+    pub(crate) fn damage(&mut self, serial: Serial, amount: u16, hue: Hue) {
         if amount > 0 {
             self.damage_numbers.push(DamageNumber {
                 serial,
                 amount,
+                hue,
                 elapsed: Duration::ZERO,
             });
         }
@@ -716,10 +770,11 @@ mod tests {
         assert_eq!(last_advance, update_arrived);
 
         let serial = Serial::new(7).unwrap();
-        presentation.damage(serial, 12);
+        presentation.damage(serial, 12, Hue::SKILL_CHANGED);
         presentation.advance(DAMAGE_NUMBER_HOLD / 2);
         assert_eq!(presentation.damage_numbers.len(), 1);
         assert_eq!(presentation.damage_numbers[0].amount, 12);
+        assert_eq!(presentation.damage_numbers[0].hue, Hue::SKILL_CHANGED);
         presentation.advance(DAMAGE_NUMBER_HOLD / 2);
         assert!(presentation.damage_numbers.is_empty());
     }

@@ -97,6 +97,16 @@ pub struct GameplayConfig {
     /// slower. The pre-AoS default is 15000; AoS uses 40000, SE 80000.
     #[serde(default = "default_speed_scale_factor")]
     pub speed_scale_factor: u64,
+    /// Chance, in per-mille, that a landed weapon or ranged blow is critical.
+    /// This is a shard-specific extension rather than a classic-UO rule: `50`
+    /// is 5%.  Set zero for strictly classic damage rolls.
+    #[serde(default = "default_critical_chance")]
+    pub critical_chance: u16,
+    /// Damage a critical blow deals, as a percentage of its normally scaled
+    /// damage. `150` is one and a half times; values below 100 are rejected so
+    /// enabling a critical can never make a landed hit weaker.
+    #[serde(default = "default_critical_damage_percent")]
+    pub critical_damage_percent: u16,
     /// The ceiling any one skill trains to, in tenths (so `1000` is 100.0).
     #[serde(default = "default_skill_cap")]
     pub skill_cap: u16,
@@ -307,6 +317,12 @@ fn default_combat_era() -> u8 {
 fn default_speed_scale_factor() -> u64 {
     15000
 }
+fn default_critical_chance() -> u16 {
+    50
+}
+fn default_critical_damage_percent() -> u16 {
+    150
+}
 fn default_skill_cap() -> u16 {
     1000
 }
@@ -399,6 +415,8 @@ impl Default for GameplayConfig {
         Self {
             combat_era: default_combat_era(),
             speed_scale_factor: default_speed_scale_factor(),
+            critical_chance: default_critical_chance(),
+            critical_damage_percent: default_critical_damage_percent(),
             skill_cap: default_skill_cap(),
             total_skill_cap: default_total_skill_cap(),
             stat_cap: default_stat_cap(),
@@ -799,6 +817,17 @@ pub enum ConfigError {
     },
     /// `gameplay.speed_scale_factor` is zero, which the swing formula divides by.
     ZeroSpeedScaleFactor,
+    /// `gameplay.critical_chance` names more than every landed blow.
+    CriticalChanceTooHigh {
+        /// The chance given, in per-mille.
+        chance: u16,
+    },
+    /// `gameplay.critical_damage_percent` would make a critical weaker than a
+    /// normal landed hit.
+    CriticalDamageBelowNormal {
+        /// The multiplier given, as a percentage.
+        percent: u16,
+    },
     /// `gameplay.lod` is on but `lod_radius` is zero, so no creature would ever
     /// think — a player is never within zero tiles of one.
     ZeroLodRadius,
@@ -870,6 +899,14 @@ impl fmt::Display for ConfigError {
                  2 (AoS), 3 (SE) and 4 (ML) are implemented",
             ),
             Self::ZeroSpeedScaleFactor => f.write_str("gameplay.speed_scale_factor must not be zero"),
+            Self::CriticalChanceTooHigh { chance } => write!(
+                f,
+                "gameplay.critical_chance is {chance}; it must be at most 1000 per-mille"
+            ),
+            Self::CriticalDamageBelowNormal { percent } => write!(
+                f,
+                "gameplay.critical_damage_percent is {percent}; it must be at least 100"
+            ),
             Self::ZeroLodRadius => {
                 f.write_str("gameplay.lod_radius must not be zero when gameplay.lod is on")
             }
@@ -968,6 +1005,16 @@ impl Config {
         // The swing formula divides by this; zero would panic mid-tick.
         if self.gameplay.speed_scale_factor == 0 {
             return Err(ConfigError::ZeroSpeedScaleFactor);
+        }
+        if self.gameplay.critical_chance > 1000 {
+            return Err(ConfigError::CriticalChanceTooHigh {
+                chance: self.gameplay.critical_chance,
+            });
+        }
+        if self.gameplay.critical_damage_percent < 100 {
+            return Err(ConfigError::CriticalDamageBelowNormal {
+                percent: self.gameplay.critical_damage_percent,
+            });
         }
         // LOD's two knobs only bite when it is on; a zero either freezes every
         // creature or spins the gate, so reject them rather than run them.

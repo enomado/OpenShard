@@ -17,8 +17,10 @@ use std::time::Instant;
 use openshard_client_render::gump::{self as gump_art, GumpPixel};
 use openshard_client_render::paperdoll;
 use openshard_client_render::skills;
-use openshard_protocol::gump::GumpId;
+use openshard_protocol::containers::ContainedItem;
+use openshard_protocol::gump::{GumpId, GumpPoint};
 use openshard_protocol::serial::Serial;
+use openshard_protocol::world::Point;
 
 use crate::gump;
 
@@ -118,6 +120,72 @@ pub enum Drawn {
     Status(openshard_client_render::status::Window),
 }
 
+/// A press on an item which becomes a drag only after the pointer actually
+/// moves. Keeping it as an explicit state lets a normal click still
+/// participate in the item's double-click "use" gesture.
+#[derive(Clone, Copy, Debug)]
+pub struct ItemPress {
+    pub item: ContainedItem,
+    /// The authoritative place the item is currently projected from.
+    pub origin: DragOrigin,
+    pub at: GumpPixel,
+    pub grab: GumpPixel,
+}
+
+/// The source removed by a drag transaction. Rendering is a projection of the
+/// authoritative view with this source subtracted until the server confirms a
+/// destination or cancels the transaction.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum DragOrigin {
+    Ground,
+    Container(Serial),
+}
+
+/// A locally projected drop while the authoritative response is in flight.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum PendingDrop {
+    Container { container: Serial, at: GumpPoint },
+    Ground(Point),
+}
+
+/// The item the client has asked the shard to put on its cursor.
+#[derive(Clone, Copy, Debug)]
+pub struct ItemDrag {
+    pub item: ContainedItem,
+    pub origin: DragOrigin,
+    /// Offset from the item's top-left corner where the pointer grabbed it.
+    pub grab: GumpPixel,
+}
+
+/// A single item transfer, including its local projection while the shard is
+/// deciding it.  This is deliberately one state machine: an item cannot be
+/// both pressed and held, nor can a completed drop still render at its source.
+#[derive(Clone, Copy, Debug)]
+pub enum ItemDragTransaction {
+    Pressed(ItemPress),
+    Held(ItemDrag),
+    Dropped {
+        drag: ItemDrag,
+        destination: PendingDrop,
+    },
+}
+
+impl ItemDragTransaction {
+    pub fn drag(self) -> Option<ItemDrag> {
+        match self {
+            Self::Pressed(_) => None,
+            Self::Held(drag) | Self::Dropped { drag, .. } => Some(drag),
+        }
+    }
+
+    pub fn pending_drop(self) -> Option<PendingDrop> {
+        match self {
+            Self::Dropped { destination, .. } => Some(destination),
+            Self::Pressed(_) | Self::Held(_) => None,
+        }
+    }
+}
+
 impl Drawn {
     /// What was drawn, in painter's order — the one question every window
     /// kind answers the same way.
@@ -180,6 +248,13 @@ pub struct Windows {
     /// reorders the list, so an index taken at the press names a different
     /// window by the time the mouse moves.
     pub dragging: Option<(WindowSubject, GumpPixel)>,
+    /// The container item currently under the pointer, tinted on the next frame.
+    pub hovered_container_item: Option<Serial>,
+    /// The one local item-transfer transaction, from mouse press through
+    /// authoritative confirmation or cancellation.
+    pub item_drag: Option<ItemDragTransaction>,
+    /// The first click of a potential double-click use inside a container.
+    pub last_container_click: Option<(Instant, Serial)>,
     /// The paperdoll button the mouse went down on, and whose doll it is.
     ///
     /// [`gump::Dialogs::holding`]'s counterpart for the one window kind that

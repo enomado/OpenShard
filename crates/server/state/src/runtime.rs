@@ -76,6 +76,11 @@ pub struct Gameplay {
     pub combat_era: u8,
     /// The swing formula's numerator (Sphere's `SpeedScaleFactor`).
     pub speed_scale_factor: u64,
+    /// Chance, in per-mille, for a landed weapon or ranged blow to be critical.
+    /// A shard extension: zero keeps strictly classic damage rolls.
+    pub critical_chance: u16,
+    /// Damage a critical blow deals as a percentage of its normally scaled hit.
+    pub critical_damage_percent: u16,
     /// The ceiling any one skill trains to, in tenths — the cap a character's
     /// skills are given when nothing raises one of them.
     pub skill_cap: u16,
@@ -297,6 +302,8 @@ impl Default for Gameplay {
         Self {
             combat_era: 1,
             speed_scale_factor: 15000,
+            critical_chance: 50,
+            critical_damage_percent: 150,
             skill_cap: 1000,
             total_skill_cap: 7000,
             stat_cap: 225,
@@ -1138,6 +1145,11 @@ impl WorldState {
             self.registry.insert(mobile, Movement(walker));
         }
         self.broadcast_move(mobile);
+        // `0x77` is deliberately ignored by its owner: the local client moves
+        // that body from its walk acknowledgements and prediction.  A combat
+        // turn has no acknowledgement, though, so its owner also needs the
+        // authoritative `0x20` update or will keep rendering the old facing.
+        self.send_player_update(mobile, from);
     }
 
     /// Animate `mobile` performing `action` — a swing, a death throe, a cast

@@ -277,6 +277,14 @@ impl ApplicationHandler<()> for App {
                         self.relock();
                         true
                     }
+                    // The character sheet must remain reachable even when the
+                    // body is obscured or a shop window covers it.  `P` sends
+                    // the protocol's explicit paperdoll request, not an
+                    // ordinary double click.
+                    KeyCode::KeyP => {
+                        self.open_own_paperdoll();
+                        true
+                    }
                     // Page up and down lift the eye rather than the body,
                     // which is a pan: the map has no vertical axis to walk
                     // along, only a projection that folds `z` into `y`.
@@ -490,6 +498,8 @@ impl ApplicationHandler<()> for App {
                 let mut changed = self.control.cursor_moved(cursor);
                 changed |= self.drag_own_window();
                 changed |= self.drag_thumb();
+                changed |= self.drag_container_item();
+                changed |= self.hover_container_item();
                 // Held, the button steers: a heading toward wherever the cursor
                 // is, by default, or a Ctrl-held move order — see
                 // `walk_toward_cursor` and `steer.rs`'s module docs for why
@@ -516,7 +526,10 @@ impl ApplicationHandler<()> for App {
                     // And a button that was pressed on a dialog is answered on
                     // the way up, if the pointer is still on it — see
                     // `gump::Dialogs::release`.
-                    if self.release_on_own_window() {
+                    if self.release_container_item()
+                        || self.release_container_press()
+                        || self.release_on_own_window()
+                    {
                         if let Some(window) = self.window.as_ref() {
                             window.window.request_redraw();
                         }
@@ -533,7 +546,10 @@ impl ApplicationHandler<()> for App {
                     if let Some(window) = self.window.as_ref() {
                         window.window.request_redraw();
                     }
-                } else if button == winit::event::MouseButton::Left && state == ElementState::Pressed {
+                } else if button == winit::event::MouseButton::Left
+                    && state == ElementState::Pressed
+                    && !self.target_under_cursor(*self.control.camera())
+                {
                     // The camera as it stands, which between two frames is the
                     // one the last frame was drawn with — the picture the player
                     // is clicking on.
@@ -594,6 +610,11 @@ impl ApplicationHandler<()> for App {
                     self.input.last_click = (!paired).then_some(now);
                     if paired {
                         self.use_under_cursor(camera);
+                    } else {
+                        // A world item is lifted only once the press becomes a
+                        // drag. The first click still selects it; the second is
+                        // the ordinary double-click use.
+                        self.press_world_item();
                     }
                     if let Some(window) = self.window.as_ref() {
                         window.window.request_redraw();

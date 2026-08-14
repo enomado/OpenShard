@@ -10,8 +10,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use openshard_client_render::camera::Camera;
 use openshard_client_render::composite::{
-    CaptureSource, CompositeProducerJob, CompositeQuad, CompositeWork, CompositeWorkQueue, ImmutableRevision,
-    MapBlock, MapBlockBounds,
+    CompositeProducerJob, CompositeQuad, ImmutableRevision, MapBlock, MapBlockBounds,
 };
 use openshard_client_render::geometry::Rect;
 use openshard_client_render::gump::{self as gump_art};
@@ -34,33 +33,13 @@ use crate::window::Screen;
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct WorldPassAudit {
     pub(crate) requested_lod: BlockLod,
+    pub(crate) composite_revision: ImmutableRevision,
     pub(crate) ready_blocks: usize,
     pub(crate) live_ground_quads: usize,
     pub(crate) full_ground_quads: usize,
 }
 use crate::windows::{Drawn, WindowSubject};
 use crate::{crowd, graphics, profile, resources, shell, windows, world};
-
-/// A whole source rectangle suitable for an immutable GPU capture.  Partially
-/// visible blocks stay detailed until a frame exposes their complete footprint;
-/// this avoids caching a clipped image at a viewport edge.
-fn capture_rect(rect: Rect, width: u32, height: u32) -> Option<ViewportRect> {
-    if rect.x < 0.0
-        || rect.y < 0.0
-        || rect.x.fract() != 0.0
-        || rect.y.fract() != 0.0
-        || rect.x + rect.width > width as f32
-        || rect.y + rect.height > height as f32
-    {
-        return None;
-    }
-    Some(ViewportRect {
-        x: rect.x as u32,
-        y: rect.y as u32,
-        width: rect.width as u32,
-        height: rect.height as u32,
-    })
-}
 
 /// The shard's dialogs, in the client's own art, packed and drawn — a
 /// container, a paperdoll, the skill sheet, all three through one machinery.
@@ -79,11 +58,19 @@ pub(crate) fn draw_gump_windows(
     resources: &mut resources::Resources,
     world: &world::WorldState,
     windows: &mut windows::Windows,
+    cursor: gump_art::GumpPixel,
     shell: Option<&shell::Shell>,
     window: &mut Screen,
     encoder: &mut wgpu::CommandEncoder,
     view: &wgpu::TextureView,
 ) {
+    // `drawn_windows` is both the previous frame's hit-test map and the
+    // source of the text overlay assembled later in `App::draw_from`.  It
+    // must therefore describe *this* frame's art pass, including the frame in
+    // which the pass cannot run.  Keeping yesterday's layout here used to
+    // leave an invisible window intercepting clicks (and its labels still
+    // eligible for the text pass) after gump assets or their GPU pass were
+    // unavailable.
     if let (Some(files), Some(pass)) = (resources.gumps.as_ref(), window.gump_pass.as_mut()) {
         // Every open dialog's art, packed before anything is laid out.
         //
@@ -204,11 +191,46 @@ pub(crate) fn draw_gump_windows(
                         let Some(gump) = view.containers.get(&serial).copied() else {
                             continue;
                         };
-                        let contents: Vec<ContainedItem> =
-                            view.contents.get(&serial).cloned().unwrap_or_default();
+                        // A vendor window is keyed by the vendor mobile, while
+                        // its displayed stock lives in the crate named by the
+                        // buy catalogue.  Ordinary bags use their own serial
+                        // for both.  Draw the stock in the classic shop gump;
+                        // purchases themselves still go through the vendor
+                        // controls rather than the normal item-drag path.
+                        let contents_serial = view
+                            .vendor_buys
+                            .get(&serial)
+                            .map_or(serial, |catalogue| catalogue.container);
+                        // A successful lift is not echoed as `Remove` to the
+                        // player holding it: that client already took the icon
+                        // out of its own gump. Mirror that rule locally until
+                        // the drag is completed or refused.
+                        let transaction = windows.item_drag;
+                        let held = transaction.and_then(crate::windows::ItemDragTransaction::drag);
+                        let mut contents: Vec<ContainedItem> = view
+                            .contents
+                            .get(&contents_serial)
+                            .into_iter()
+                            .flatten()
+                            .filter(|item| Some(item.serial) != held.map(|drag| drag.item.serial))
+                            .copied()
+                            .collect();
+                        if let (Some(drag), Some(crate::windows::PendingDrop::Container { container, at })) = (
+                            held,
+                            transaction.and_then(crate::windows::ItemDragTransaction::pending_drop),
+                        ) {
+                            if container == serial {
+                                contents.push(ContainedItem { at, ..drag.item });
+                            }
+                        }
                         drawn_windows.push((
                             open.subject,
-                            Drawn::Container(container::window(gump, &contents, open.at)),
+                            Drawn::Container(container::window_highlighted(
+                                gump,
+                                &contents,
+                                open.at,
+                                windows.hovered_container_item,
+                            )),
                         ));
                     }
                     WindowSubject::Paperdoll(serial) => {
@@ -295,6 +317,32 @@ pub(crate) fn draw_gump_windows(
             }
             pictures.extend(window.pictures().iter().copied());
         }
+        // The item follows the pointer above every window while the shard has
+        // it on the cursor. It intentionally is not added to `drawn_windows`:
+        // it is a cursor preview, not a window that can intercept a drop.
+        if let Some(drag) = windows
+            .item_drag
+            .filter(|transaction| transaction.pending_drop().is_none())
+            .and_then(crate::windows::ItemDragTransaction::drag)
+        {
+            let art_files = gump_art::ArtFiles {
+                gumps: files,
+                items: &resources.art,
+            };
+            if let Err(error) = resources
+                .gump_atlas
+                .add(art_files, [gump_art::GumpArt::Item(drag.item.graphic)])
+            {
+                eprintln!("packing dragged item art: {error}");
+            }
+            pictures.push(
+                gump_art::Picture::plain(
+                    gump_art::GumpArt::Item(drag.item.graphic),
+                    gump_art::GumpPixel::new(cursor.x - drag.grab.x, cursor.y - drag.grab.y),
+                )
+                .hued(drag.item.hue),
+            );
+        }
         // What the pointer is tested against from here on, and the atlas it
         // is tested in is the one just grown for it: the hit test and the
         // frame are now the same list. Kept even when it is empty — the
@@ -326,6 +374,8 @@ pub(crate) fn draw_gump_windows(
             &quads,
         );
         profile::end(window.gpu.as_ref(), encoder, timed);
+    } else {
+        windows.drawn_windows.clear();
     }
 }
 
@@ -373,8 +423,6 @@ pub(crate) fn encode_world_passes(
     composite_lod: BlockLod,
     composite_revision: ImmutableRevision,
     composite_visible: Option<MapBlockBounds>,
-    composite_jobs: &[CompositeWork],
-    composite_work: &mut CompositeWorkQueue,
 ) -> WorldPassAudit {
     // Ground first, because it clears; statics after, into what it left.
     // Which covers which is decided by the depth they share, not by this
@@ -402,13 +450,21 @@ pub(crate) fn encode_world_passes(
             if !texture.has_deferred() {
                 return None;
             }
-            Some((block, texture.rect_in(camera), texture))
+            debug_assert_eq!(texture.ground().block(), block);
+            let rect = texture.rect_in(camera);
+            debug_assert_eq!(
+                rect,
+                CompositeProducerJob::for_flat_ground(texture.key(), texture.ground()).rect_in(camera),
+                "the cached texture must restore through its producer transform"
+            );
+            Some((block, rect, texture))
         })
         .collect();
     let cached_blocks: BTreeSet<_> = ready.iter().map(|(block, _, _)| *block).collect();
     let ground = geometry.detail_ground(&cached_blocks);
     let audit = WorldPassAudit {
         requested_lod: composite_lod,
+        composite_revision,
         ready_blocks: ready.len(),
         live_ground_quads: ground.len(),
         full_ground_quads: geometry.quads.len(),
@@ -484,50 +540,6 @@ pub(crate) fn encode_world_passes(
         Some(map_statics.drawn),
     );
     profile::end(window.gpu.as_ref(), encoder, timed);
-    // Completing a queued job copies exactly the attachment state before live
-    // server items and mobiles are added. A miss remains LOD 0 this frame; the
-    // copy is consumed only by a later frame, never synchronously rebuilt.
-    //
-    // A cutaway splits map statics into a separate translucent path. Its normal
-    // map attachment is therefore not a complete immutable block, so it must
-    // neither be restored from a composite nor captured as one. Releasing the
-    // small dispatch reservation lets the ordinary frame after the cutaway
-    // schedule the same block again without invalidating every completed entry.
-    if geometry.cutaway_instances.drawn != 0 {
-        for work in composite_jobs {
-            composite_work.finished(work.key);
-        }
-    } else {
-        for work in composite_jobs {
-            let Some(rect) = capture_rect(
-                CompositeProducerJob::new(work.key).rect_in(camera),
-                target.width,
-                target.height,
-            ) else {
-                composite_work.finished(work.key);
-                continue;
-            };
-            let source = CaptureSource {
-                color: &window.world,
-                ids: window.gbuffer.ids(),
-                position: window.gbuffer.position(),
-                normal: window.gbuffer.normal(),
-                depth: target.depth,
-                depth_base: current_depth_base,
-                rect,
-            };
-            let _ = composite_work.finish_capture(
-                &window.device,
-                &window.queue,
-                encoder,
-                &mut window.composite_pass,
-                &mut window.composites,
-                work.key,
-                source,
-                0,
-            );
-        }
-    }
     // Composite entries are potentially eight RGBA-sized planes each.  Keep a
     // bounded LRU tail, but protect one block outside the current viewport so
     // a small pan cannot turn into an upload/pan-back loop.  This maintenance

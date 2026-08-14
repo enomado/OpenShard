@@ -802,18 +802,31 @@ impl Crowd {
     /// to the frame being drawn.
     pub fn frame_for(&self, who: Who, frame_count: AnimationFrameCount) -> u16 {
         self.tracked.get(&who).map_or(0, |tracked| {
+            // `frame_count` is the length of the group we are about to draw,
+            // not merely advisory metadata.  A movement packet may replace an
+            // action group with a walk/run group while the action packet still
+            // owns its cadence and declared frame count.  In that overlap an
+            // action with seven frames and a run with six used to produce frame
+            // six of the run.  There is no such atlas key, so the renderer quite
+            // correctly omitted the mobile for that frame.
+            //
+            // Keep the rendered key total: every non-empty packed group gets
+            // an index in its own bounds, whatever packet sequences overlap.
+            // An empty group remains frame zero; `place` handles the genuinely
+            // absent art without manufacturing another body's sprite.
+            let available = frame_count.0;
+            if available == 0 {
+                return 0;
+            }
             if tracked.corpse {
-                return frame_count.0.saturating_sub(1);
+                return available - 1;
             }
             match tracked.action {
                 Some(action) => {
                     let ticks = action.elapsed.as_millis() / action.delay.as_millis().max(1);
-                    let frame = (ticks % u128::from(action.frames.0.max(1))) as u16;
-                    if action.forward {
-                        frame
-                    } else {
-                        action.frames.0.saturating_sub(1).saturating_sub(frame)
-                    }
+                    let frames = action.frames.0.clamp(1, available);
+                    let frame = (ticks % u128::from(frames)) as u16;
+                    if action.forward { frame } else { frames - 1 - frame }
                 }
                 None => tracked.clock.frame(frame_count),
             }
@@ -1319,6 +1332,48 @@ mod tests {
                 "body {} advances its attack",
                 body.0
             );
+        }
+    }
+
+    /// A movement update may change the displayed group before the one-shot
+    /// attack packet has finished.  The action still supplies timing, but it
+    /// must never nominate a frame outside the newly displayed group's atlas
+    /// range: that is a missing key and therefore an invisible body.
+    #[test]
+    fn an_action_overlapping_a_run_stays_within_the_runs_frames() {
+        let who = serial(1);
+        let mut crowd = Crowd::default();
+        crowd.see(
+            who,
+            Point::new(10, 10, 0),
+            Graphic(PLAYER),
+            Facing::walking(Direction::South),
+            Hue::NONE,
+            false,
+        );
+        crowd.play_new(NewAnimation {
+            serial: who.expect("a serial"),
+            animation_type: 0,
+            action: 0,
+            delay: 0,
+        });
+        // A human unarmed attack has seven frames, while the running group may
+        // have fewer.  Movement owns the displayed group, so this is the
+        // overlap that previously let the action reach a nonexistent run frame.
+        crowd.see(
+            who,
+            Point::new(11, 10, 0),
+            Graphic(PLAYER),
+            Facing::running(Direction::South),
+            Hue::NONE,
+            false,
+        );
+        assert_eq!(crowd.group_for(who), Some(AnimationGroup(2)));
+
+        for _ in 0..7 {
+            let frame = crowd.frame_for(who, AnimationFrameCount(2));
+            assert!(frame < 2, "run frame {frame} must be packed");
+            crowd.advance(Duration::from_millis(80));
         }
     }
 

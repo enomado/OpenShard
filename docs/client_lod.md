@@ -46,6 +46,9 @@ so splitting their owners between a cached pass and a live pass is not safe.
 For a fully flat elevated plateau, the producer and restore rectangle use that
 plateau's shared `z`, rather than treating the 352-pixel source as sea level;
 otherwise the fixed source would clip the top or bottom of its diamonds.
+That eligibility result is carried as one immutable `FlatGroundBlock` from
+atlas preparation through producer capture into the cache entry: the queue
+will not rediscover a possibly different height or transform after dispatch.
 The queue prepares only land/texmap inputs,
 marks a job ready only on success, and never dispatches an unprepared job.
 `CompositeProducerJob::rect_in` is the one transform used both for producer

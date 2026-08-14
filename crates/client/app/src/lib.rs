@@ -721,7 +721,7 @@ pub fn run<D: Dial + Send + 'static>(
     let update_proxy = event_loop.create_proxy();
     let updates = link::Updates::new();
     let connected = shard.is_some();
-    let link = shard.map(|(dial, plan)| {
+    let shard = shard.map(|(dial, plan)| {
         eprintln!("logging in as {}", plan.account.0);
         let reports = updates.clone();
         link::connect(
@@ -825,7 +825,12 @@ pub fn run<D: Dial + Send + 'static>(
             },
             render_ready: !connected,
             connection: String::from("offline"),
-            link,
+            // No dial, no shard, and that is the *viewer* — the one state in
+            // which this end moves the body itself. See `world::Shard`.
+            shard: match shard {
+                Some(link) => world::Shard::Live(link),
+                None => world::Shard::Viewer,
+            },
         },
         updates,
         stall_on_update,
@@ -967,6 +972,9 @@ pub fn run<D: Dial + Send + 'static>(
             locally_closed: HashSet::new(),
             drawn_windows: Vec::new(),
             dragging: None,
+            hovered_container_item: None,
+            item_drag: None,
+            last_container_click: None,
             held_doll: None,
             // Shut until the player presses Skills on their own paperdoll:
             // the shard sends the whole list at world entry, and a window

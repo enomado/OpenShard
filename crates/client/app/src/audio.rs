@@ -131,7 +131,7 @@ impl NativeAudio {
         };
         use rodio::Source;
         let source = rodio::buffer::SamplesBuffer::new(
-            std::num::NonZeroU16::MIN,
+            std::num::NonZeroU16::new(sound.channels).unwrap_or(std::num::NonZeroU16::MIN),
             std::num::NonZeroU32::new(sound.sample_rate).unwrap_or(std::num::NonZeroU32::MIN),
             sound.samples,
         )

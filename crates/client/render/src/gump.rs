@@ -947,6 +947,26 @@ pub struct Window {
     pub fields: Vec<Field>,
 }
 
+impl Window {
+    /// Which button or switch owns `cursor`.
+    ///
+    /// A gump control's rectangle is interactive even where its bitmap is
+    /// transparent. Testing its ink instead made the visible margins of many
+    /// buttons dead zones, while the reference's `Button` owns its full bounds.
+    #[must_use]
+    pub fn hit(&self, cursor: GumpPixel, atlas: &GumpAtlas) -> Option<Hit> {
+        self.hits.iter().rev().find_map(|(index, hit)| {
+            let picture = self.pictures.get(index.position())?;
+            let sprite = atlas.sprite(picture.graphic)?;
+            (cursor.x >= picture.at.x
+                && cursor.y >= picture.at.y
+                && cursor.x < picture.at.x + i32::from(sprite.width)
+                && cursor.y < picture.at.y + i32::from(sprite.height))
+            .then_some(*hit)
+        })
+    }
+}
+
 /// Lay a parsed layout out at `at`, showing `page`.
 ///
 /// The three pieces of state a window has that the wire does not carry, and

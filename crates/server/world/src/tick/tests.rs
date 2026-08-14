@@ -3070,6 +3070,11 @@ fn a_player_in_war_mode_retaliates_when_struck_without_a_target() {
     let defender_entity = world.state.players[&defender];
     let defender_serial = serial_of(&world, defender);
     let attacker_serial = serial_of(&world, attacker);
+    teleport(&mut world, attacker, Point::new(START.0 + 1, START.1, 0));
+    world
+        .state
+        .registry
+        .insert(defender_entity, Heading(Facing::walking(Direction::South)));
 
     world.queue(Command::WarMode {
         connection: defender,
@@ -3096,12 +3101,24 @@ fn a_player_in_war_mode_retaliates_when_struck_without_a_target() {
         Some(attacker_serial),
         "a struck war-mode player aims back at the attacker"
     );
+    assert_eq!(
+        world.state.registry.get::<Heading>(defender_entity),
+        Some(&Heading(Facing::walking(Direction::East))),
+        "a struck war-mode player immediately faces the attacker"
+    );
+    let packets = packets_for(&mut world, defender);
+    assert!(
+        packets.iter().any(|packet| {
+            packet.first() == Some(&0x20) && packet.get(17) == Some(&Direction::East.to_bits())
+        }),
+        "the defender receives a 0x20 update for its own visible turn"
+    );
     assert!(
         !world.state.registry.has::<CriminalUntil>(defender_entity),
         "self-defence does not flag the defending player criminal"
     );
     assert!(
-        packets_for(&mut world, defender)
+        packets
             .iter()
             .any(|packet| packet[0] == 0xAA && mentions(packet, attacker_serial)),
         "the client receives the new confirmed target for its marker"
@@ -3482,6 +3499,51 @@ fn no_swing_out_of_reach() {
         world.state.registry.get::<Hitpoints>(mob_entity).unwrap().current,
         50,
         "a swing out of reach lands nothing"
+    );
+}
+
+#[test]
+fn no_melee_swing_through_an_adjacent_wall() {
+    let now = Instant::now();
+    let mut world = world();
+    let player = enter(&mut world, now);
+    // This is still melee range, but a wall occupies the line between the two
+    // tiles.  Melee must use the same live-terrain visibility gate as arrows.
+    let mob = spawn_mobile_at(&mut world, Point::new(START.0 + 1, START.1, 0), 50, now);
+    let mob_entity = entity(&world, mob);
+    world.state.facet_state_mut(Facet(0)).terrain = Some(Box::new(BlindTerrain));
+    engage(&mut world, player, mob, now);
+    for _ in 0..(WRESTLING_SWING_TICKS + 1) {
+        world.tick(now);
+    }
+
+    assert_eq!(
+        world.state.registry.get::<Hitpoints>(mob_entity).unwrap().current,
+        50,
+        "an adjacent wall blocks a melee swing"
+    );
+}
+
+#[test]
+fn a_forced_critical_multiplies_a_landed_melee_blow_before_defences() {
+    let now = Instant::now();
+    let mut world = world();
+    // A deterministic critical isolates its place in the formula: with no skills,
+    // armour or resistance, fists are the base five and a 200% critical is ten.
+    world.state.gameplay.critical_chance = 1000;
+    world.state.gameplay.critical_damage_percent = 200;
+    let player = enter(&mut world, now);
+    let mob = spawn_mobile_at(&mut world, Point::new(START.0, START.1, 0), 50, now);
+    let mob_entity = entity(&world, mob);
+    engage(&mut world, player, mob, now);
+    for _ in 0..=WRESTLING_SWING_TICKS {
+        world.tick(now);
+    }
+
+    assert_eq!(
+        world.state.registry.get::<Hitpoints>(mob_entity).unwrap().current,
+        40,
+        "a guaranteed 200% critical turns a five-damage fist blow into ten"
     );
 }
 
@@ -7368,6 +7430,7 @@ fn a_melee_swing_turns_the_attacker_toward_its_target() {
             next_swing: world.state.ticks,
         },
     );
+    let _ = packets_for(&mut world, attacker);
 
     combat::swings(&mut world.state);
 
@@ -7384,6 +7447,12 @@ fn a_melee_swing_turns_the_attacker_toward_its_target() {
             .map(|movement| movement.0.facing.direction),
         Some(Direction::East),
         "the next AI/player step agrees with the displayed heading"
+    );
+    assert!(
+        packets_for(&mut world, attacker).iter().any(|packet| {
+            packet.first() == Some(&0x20) && packet.get(17) == Some(&Direction::East.to_bits())
+        }),
+        "the attacking player receives its combat turn as a player update"
     );
 }
 
@@ -10072,6 +10141,88 @@ fn a_trade_answers_its_own_keyword_and_only_within_earshot() {
     );
 }
 
+/// Everything a shop says, read back the way the client reads it.
+///
+/// The defect this exists for lives in neither end: `open_shop` writes six
+/// kinds of packet and the client's own table has to know all six. The two
+/// ways it can fail are not equally loud, and the shop had one of each.
+///
+/// A missing **length** is fatal. `Connection::poll` cannot find where the next
+/// packet starts, so it ends the session — and the tooltip a shop sends per
+/// stocked item (`0xD6`, written as bytes by `PropertyList`, named by no
+/// `ServerPacket` variant) was not in the table. From inside the game that read
+/// as a trade window that would not draw and a paperdoll that would not open
+/// afterwards, because by then there was no shard on the other end.
+///
+/// A missing **decoder** is silent. The stream stays in step and the client
+/// simply never learns what it was told: `0x2E` carried the stock crate and
+/// `0x74` the catalogue, and without arms for either the window opened over an
+/// empty shelf while every byte of its contents had arrived.
+#[test]
+fn a_shop_says_nothing_the_client_cannot_read() {
+    use openshard_protocol::packet::Frame;
+    use openshard_protocol::server_packet::{ServerPacket, frame_server_packet};
+
+    let now = Instant::now();
+    let mut world = world();
+    let connection = enter(&mut world, now);
+    let (_keeper, keeper_serial) = spawn_shopkeeper(&mut world, now);
+    // Stock, so the catalogue has a line in it: an empty shelf would open a
+    // window and prove nothing about the packets that describe one.
+    world.queue(Command::StockVendor {
+        serial: keeper_serial,
+        stock: vec![npc::StockLine {
+            graphic: Graphic(0x0F7B),
+            hue: Hue(0),
+            amount: 5,
+            price: 3,
+            name: "black pearl".to_owned(),
+        }],
+    });
+    world.tick(now);
+
+    world.drain_outbound().count();
+    world.queue(Command::DoubleClick {
+        connection,
+        request: UseRequest::Use(RawSerial(keeper_serial.raw())),
+    });
+    world.tick(now);
+    let packets = packets_for(&mut world, connection);
+    assert!(
+        packets.iter().any(|p| p.first() == Some(&0x74)),
+        "the shop opened at all"
+    );
+
+    for packet in &packets {
+        assert_eq!(
+            frame_server_packet(packet, ClientVersion::TOL),
+            Ok(Frame::Complete(packet.len())),
+            "the client cannot frame {:#04x} and would drop the connection on it",
+            packet[0]
+        );
+    }
+
+    // And the four the window is actually built out of are understood, not
+    // merely stepped over.
+    let mut seen: Vec<u8> = Vec::new();
+    for packet in &packets {
+        if let Ok(Some(decoded)) = ServerPacket::decode(packet, ClientVersion::TOL) {
+            seen.push(decoded.id());
+            if let ServerPacket::BuyList(list) = decoded {
+                assert_eq!(list.lines.len(), 1, "the catalogue arrived with its line");
+                assert_eq!(list.lines[0].price, 3);
+                assert_eq!(list.lines[0].name, "black pearl");
+            }
+        }
+    }
+    for id in [0x2E, 0x3C, 0x74, 0x24] {
+        assert!(
+            seen.contains(&id),
+            "{id:#04x} reached the client as itself, not as an undecoded id"
+        );
+    }
+}
+
 #[test]
 fn a_criminal_is_refused_at_every_door_into_a_shop() {
     // ServUO's `CheckVendorAccess`, and the reason it is checked in four places
@@ -12233,6 +12384,11 @@ fn a_defensive_creature_answers_the_blow() {
     let combat = world.registry().get::<Combat>(creature).expect("engaged");
     assert_eq!(combat.target, Some(player_serial), "it turned on its attacker");
     assert!(combat.warmode, "and it means it");
+    assert_eq!(
+        world.state.registry.get::<Heading>(creature),
+        Some(&Heading(Facing::walking(Direction::North))),
+        "it immediately faces the attacker while preparing its return swing"
+    );
 }
 
 #[test]
@@ -12928,11 +13084,35 @@ fn a_shop_keyword_needs_the_vendor_named_and_an_empty_sell_answers_overhead() {
         text: "vendor buy".to_owned(),
     });
     world.tick(now);
+    let packets = packets_for(&mut world, gm);
     assert!(
-        packets_for(&mut world, gm)
-            .iter()
-            .any(|p| p.first() == Some(&0x74)),
+        packets.iter().any(|p| p.first() == Some(&0x74)),
         "'vendor buy' opened the shop with no name"
+    );
+    let spoken = packets
+        .iter()
+        .position(|p| p.first() == Some(&0xAE))
+        .expect("the player hears their own shop request");
+    let opened = packets
+        .iter()
+        .position(|p| p.first() == Some(&0x24))
+        .expect("the request opens the vendor's gump");
+    assert!(
+        spoken < opened,
+        "speech reaches the client before the vendor gump covers the world"
+    );
+
+    // A trade window never changes the separate paperdoll request path. This
+    // is the exact follow-up a player makes after speaking the shop keyword.
+    let player_serial = world.registry().serial_of(world.state.players[&gm]).unwrap();
+    world.queue(Command::DoubleClick {
+        connection: gm,
+        request: UseRequest::Paperdoll(RawSerial(player_serial.raw())),
+    });
+    world.tick(now);
+    assert!(
+        packets_for(&mut world, gm).iter().any(|p| p[0] == 0x88),
+        "a vendor gump does not suppress the player's paperdoll response"
     );
 
     // "sell" with nothing the vendor wants is answered over the vendor's head as

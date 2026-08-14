@@ -2595,6 +2595,60 @@ missing for each, are in [`docs/client.md`](client.md).
 - [ ] M4 — the gump layer
 - [ ] M5 — interaction
 
+### Backlog from the shop that disconnected the player
+
+Found by playing: saying "buy" to a shopkeeper drew no trade window and left a
+session in which nothing further worked — the paperdoll would not open. Two
+defects, one of each kind the seam has, both now fixed
+(`a_shop_says_nothing_the_client_cannot_read` in `world`'s tick tests is the
+oracle):
+
+- **The framing table is the authority for every byte a shard writes, and one
+  packet was not in it.** `0xD6`, the property list, is written as raw bytes by
+  `PropertyList::finish` and named by no `ServerPacket` variant, so nothing in
+  the enum would ever have added it — and `open_shop` sends one per stocked
+  item. A length the client does not know is not a packet skipped but a
+  connection ended (`Connection::poll`), which is why the *paperdoll* looked
+  broken afterwards: there was no shard left to answer it. The client's own
+  test used `0xD6` as its example of "an id the shard never sends", so the
+  assumption was written down twice and true nowhere.
+- **A decoder missing where an encoder exists is silent.** `0x2E`, `0x74`,
+  `0x9E`, `0x27` and `0x6C` had `EncodePacket` and a row in the table but no
+  arm in `ServerPacket::decode`, so `WorldView`'s vendor fold — `vendor_stock`,
+  `pending_vendor_buys`, `vendor_buys` — could never run outside its own unit
+  tests. The window opened over an empty shelf while every byte of the
+  catalogue had arrived. **Worth a sweep**: nothing today asserts that a
+  variant this engine *sends* is a variant the client can *read*, and the
+  remaining unread ones (`0x14`, `0xBF`'s subcommands, `0xDC`, `0xD6` itself)
+  should each be a decision rather than an omission.
+
+- **A lost shard is indistinguishable from never having had one, and the one
+  thing that hides it is the one thing implemented twice.** `Update::Lost`
+  writes `world.link = None` and an `eprintln!`, and nothing else
+  (`net_command.rs`). `App::walk` then takes its *offline* arm — the map
+  viewer's, gated on `link.is_none()` alone — and moves the body locally, so
+  the client keeps walking over a dead connection while `open_own_paperdoll`
+  returns silently, `say`/`use_object` log to tracing, and `authoritative.view`
+  keeps drawing the world as it stood at the moment of the drop. That is
+  exactly what made this bug read as "the state changed" rather than as a
+  disconnect. The offline fallback wants a reason — *never connected* is a map
+  viewer, *lost the shard* is an error — and the loss wants to reach the
+  screen, not stderr. **Fixed**, in the shape the three answers asked for:
+  `world::Shard` is one field with three states (`Viewer`, `Live`, `Lost`) in
+  place of the `Option<Link>` whose `None` meant both of the two that matter,
+  so `App::walk`'s offline arm, `start_replay`'s guard and the scenario panel
+  all ask *is this the viewer* rather than *is there a link*;
+  `WorldView::shard_lost` puts out every table the shard authored and writes
+  the reason into the journal, which is the one thing it keeps; and the status
+  strip reads the loss off `Shard` instead of going on saying "in world".
+  Left open: nothing reconnects, so the only way out is a restart.
+
+Still not built, and not a defect: the shop *interface*. What draws now is an
+ordinary container window over gump `0x0030` with the stock icons in it — no
+price column, no quantity, no Buy button, and `link::Link::buy`/`sell` have no
+caller (the compiler says so). `0x0030` is a marker in the reference client
+rather than container art; drawing the real shop gump is its own piece of work.
+
 ### Backlog from the client newtype sweep
 
 A pass over `crates/client/{app,artscan,net,pathtrace}` (`render` excluded on

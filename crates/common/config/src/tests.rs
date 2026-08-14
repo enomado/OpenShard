@@ -367,6 +367,7 @@ fn gameplay_defaults_to_the_pre_aos_feel() {
     let g = config(MINIMAL).gameplay;
     assert_eq!(g.combat_era, 1);
     assert_eq!(g.speed_scale_factor, 15000);
+    assert_eq!((g.critical_chance, g.critical_damage_percent), (50, 150));
     assert_eq!(g.skill_cap, 1000);
     assert_eq!(
         (g.distance_talk, g.distance_whisper, g.distance_yell),
@@ -422,6 +423,26 @@ fn a_zero_speed_scale_factor_is_refused() {
     assert!(matches!(
         config.validate(),
         Err(ConfigError::ZeroSpeedScaleFactor)
+    ));
+}
+
+#[test]
+fn an_impossible_critical_chance_is_refused() {
+    let mut config = config(MINIMAL);
+    config.gameplay.critical_chance = 1001;
+    assert!(matches!(
+        config.validate(),
+        Err(ConfigError::CriticalChanceTooHigh { chance: 1001 })
+    ));
+}
+
+#[test]
+fn a_critical_cannot_be_weaker_than_a_normal_hit() {
+    let mut config = config(MINIMAL);
+    config.gameplay.critical_damage_percent = 99;
+    assert!(matches!(
+        config.validate(),
+        Err(ConfigError::CriticalDamageBelowNormal { percent: 99 })
     ));
 }
 

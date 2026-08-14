@@ -15,6 +15,7 @@ use openshard_client_render::items::GroundItem;
 use openshard_client_render::mobiles;
 use openshard_movement::Terrain;
 use openshard_protocol::server_packet::ServerPacket;
+use openshard_protocol::wire::Hue;
 use openshard_uofiles::anim::is_ghost;
 
 use crate::app::App;
@@ -59,6 +60,17 @@ pub(crate) fn project_motion(
 }
 
 impl App {
+    /// Rebuild the presentation from the same authoritative snapshot after a
+    /// local item-transfer state change. The transfer is a projection, not a
+    /// mutation of `WorldView`, so its source subtraction is visible now,
+    /// rather than waiting for an unrelated inbound packet.
+    pub(crate) fn reproject_item_drag(&mut self) {
+        let Some(view) = self.world.authoritative.view.as_deref().cloned() else {
+            return;
+        };
+        self.entered(view, None);
+    }
+
     /// Refresh the renderer adapter from the current motion snapshot.
     ///
     /// This is also called after a frame advances: a stalled application may
@@ -139,9 +151,32 @@ impl App {
             link::Update::Prediction { body, sequence } => self.apply_prediction(body, sequence),
             link::Update::Animation(animation) => self.world.presentation.crowd.play(animation),
             link::Update::NewAnimation(animation) => self.world.presentation.crowd.play_new(animation),
+            // The connection ended, for any of the reasons the shard thread
+            // returns: the socket closed, a packet would not frame, the player
+            // logged out. Three things happen and the reason for all three is
+            // one: nothing here is a statement about the world any more.
+            //
+            // It used to be an `eprintln!` and a `None`, which is how a
+            // disconnect came to look like a game that had gone strange — the
+            // strip still said "in world", the last frame still stood, and the
+            // arrows still walked because the map viewer's own arm answers to
+            // "no link". Whoever adds a fourth reason to end a connection needs
+            // none of that repeated: it is the one arm.
             link::Update::Lost(reason) => {
                 eprintln!("disconnected: {reason}");
-                self.world.link = None;
+                if let Some(view) = self.world.authoritative.view.as_mut() {
+                    view.shard_lost(&reason);
+                }
+                // Windows over a world that is gone, and the presses they were
+                // holding: the reconcile drops them from the view's side, and
+                // these are the local halves it cannot answer for.
+                self.windows.skills = None;
+                self.windows.held_skill = None;
+                self.windows.held_doll = None;
+                self.windows.status = false;
+                self.windows.item_drag = None;
+                self.windows.dragging = None;
+                self.world.shard = crate::world::Shard::Lost(reason);
                 return false;
             }
         }
@@ -180,6 +215,48 @@ impl App {
     }
 
     fn apply_packet(&mut self, packet: &ServerPacket, movement: Option<link::Movement>) {
+        // A `0x20` is authoritative for the locally controlled body even if a
+        // caller delivers it as an ordinary mutation rather than through the
+        // socket thread's `link::fold`.  In particular, combat retaliation is
+        // a turn in place: without this fallback the view records its new
+        // facing but `PlayerMotion` keeps projecting the old one to the crowd.
+        let movement = movement.or_else(|| match packet {
+            ServerPacket::PlayerUpdate(update) => Some(link::Movement::Relocation {
+                confirmed: openshard_client_net::walk::Predicted {
+                    position: update.position,
+                    facing: update.facing,
+                },
+            }),
+            _ => None,
+        });
+        // A refused lift or drop bounces the server-held item back. The cursor
+        // preview is purely local, so it must follow that authoritative cancel
+        // instead of leaving a ghost icon under the pointer.
+        if let Some(transaction) = self.windows.item_drag {
+            let confirmed = match packet {
+                ServerPacket::DragCancel(_) => true,
+                ServerPacket::AddToContainer(added) => {
+                    matches!(
+                        transaction.pending_drop(),
+                        Some(crate::windows::PendingDrop::Container { .. })
+                    ) && transaction
+                        .drag()
+                        .is_some_and(|drag| added.item.serial == drag.item.serial)
+                }
+                ServerPacket::WorldItem(item) => {
+                    matches!(
+                        transaction.pending_drop(),
+                        Some(crate::windows::PendingDrop::Ground(_))
+                    ) && transaction
+                        .drag()
+                        .is_some_and(|drag| item.serial == drag.item.serial)
+                }
+                _ => false,
+            };
+            if confirmed {
+                self.windows.item_drag = None;
+            }
+        }
         // Sound and music are events, not facts in `WorldView`: a second
         // identical packet must play twice, while a view fold can correctly be
         // a no-op.  Take the listener from the same authoritative anchor the
@@ -206,7 +283,14 @@ impl App {
         let previous_latest = view.journal.back().cloned();
         view.apply(packet);
         if let Some((serial, amount)) = damage {
-            self.world.presentation.damage(serial, amount);
+            // Damage over our own head is incoming and therefore red; damage
+            // over any other mobile is shown in blue.
+            let hue = if serial == view.player.serial {
+                Hue(0x0022)
+            } else {
+                Hue::SKILL_CHANGED
+            };
+            self.world.presentation.damage(serial, amount, hue);
         }
         // `WalkAck` and `WalkReject` do not carry a position in the decoded
         // view. Their `Movement` counterpart does; every other packet leaves
@@ -217,6 +301,7 @@ impl App {
         }
         self.world.motion.accept_network(movement);
         self.entered(*view, previous_latest);
+        self.sync_target_cursor();
     }
 
     /// Apply prediction without changing authoritative server state.
@@ -356,7 +441,17 @@ impl App {
         self.world.presentation.items.clear();
         self.world.presentation.item_serials.clear();
         self.world.presentation.corpses.clear();
+        let transaction_drag = self
+            .windows
+            .item_drag
+            .and_then(crate::windows::ItemDragTransaction::drag);
+        let lifted_ground = transaction_drag
+            .filter(|drag| drag.origin == crate::windows::DragOrigin::Ground)
+            .map(|drag| drag.item.serial);
         for (serial, item) in items {
+            if Some(*serial) == lifted_ground {
+                continue;
+            }
             if item.graphic == CORPSE_GRAPHIC {
                 self.world.presentation.corpses.push((
                     Some(*serial),
@@ -375,6 +470,22 @@ impl App {
                 hue: item.hue,
             });
             self.world.presentation.item_serials.push(*serial);
+        }
+        // The authoritative lift deliberately does not echo a removal back to
+        // its owner. While a ground drop is pending, replace that suppressed
+        // source with its transactional destination so there is no old-place
+        // flash or gap before `WorldItem` confirms it.
+        if let Some((drag, crate::windows::PendingDrop::Ground(at))) = self
+            .windows
+            .item_drag
+            .and_then(|transaction| Some((transaction.drag()?, transaction.pending_drop()?)))
+        {
+            self.world.presentation.items.push(GroundItem {
+                at,
+                graphic: drag.item.graphic,
+                hue: drag.item.hue,
+            });
+            self.world.presentation.item_serials.push(drag.item.serial);
         }
         // The same list read for a second question — not what to draw, but what
         // a step cannot go through. Rebuilt here rather than per decision: one
