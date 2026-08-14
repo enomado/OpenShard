@@ -31,12 +31,31 @@ authors = ["OpenShard contributors"]
 # `target/` was 2.7GB before this block and it is the reason a sandbox ran out of
 # disk mid-test. `debug = false` on dependencies only — the workspace's own
 # crates keep theirs, because those are the backtraces that get read.
+#
+# `opt-level = 2` on the same glob, and it is the whole of what "the debug
+# client runs at twenty frames a second" was. `"*"` is dependencies only —
+# Cargo excludes workspace members from it — so this buys nothing in
+# debuggability: a backtrace through `egui` or `wgpu` was never the one being
+# read, and the crates that are stepped through keep their own settings below.
+#
+# Measured on the widest-zoom Britain scene, pinned, on the discrete adapter:
+# frame build p50 19.9ms -> 16.0ms, which is the surface's own 60Hz and
+# therefore the end of it. `ui` 2.13ms -> 0.33ms and `ui_layout` 1.69ms ->
+# 0.23ms, because egui laid out a frame at `opt-level = 0`; `encode` 5.45ms ->
+# 2.38ms, most of it `encode_statics` at 3.31ms -> 0.86ms in wgpu's own command
+# recording.
+#
+# It costs one full dependency rebuild — about a minute and a half on twelve
+# cores — and nothing after that: an edit to a workspace crate recompiles the
+# same crates it always did. See `docs/client_jank_plan.md`.
 [profile.dev.package."*"]
 debug = false
+opt-level = 2
 
 # The same, for the profile `cargo test` builds under.
 [profile.test.package."*"]
 debug = false
+opt-level = 2
 
 # The client's per-frame CPU work does not survive being unoptimized.
 #

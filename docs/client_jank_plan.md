@@ -77,9 +77,22 @@ is serving the ground outright.
 2. If release headroom is wanted, it is the GPU passes at the widest zoom, and
    the iGPU is the cheap way to see them move. Sessions 2–4 below are CPU work
    and their premise — that the CPU is the limit — no longer holds in release.
-3. The debug build is a separate question with a separate answer: client crates
-   build at `opt-level = 1` and every dependency at `0`. Raising them is
-   untested and is the first thing to try before optimising debug's algorithms.
+3. **Done: the debug build.** It was the twenty-frame client, and the cause was
+   not an algorithm. Every dependency compiled at `opt-level = 0`; the four
+   workspace crates named in `Cargo.toml` were already at `1`, so the profile
+   had been half-tuned and the half nobody had touched was doing the layout and
+   the command recording. `[profile.dev.package."*"] opt-level = 2` puts debug
+   on the same 60 Hz surface lock release is on — frame build p50 19.9 → 16.0 ms
+   — for one 95-second dependency rebuild and no per-edit cost, because Cargo's
+   `"*"` excludes workspace members and an edit recompiles exactly what it did
+   before. `ui_layout` 1.69 → 0.23 ms and `encode_statics` 3.31 → 0.86 ms are
+   where it landed: egui and wgpu, unoptimised.
+
+   Left alone deliberately: the four workspace crates stay at `opt-level = 1`.
+   `ground::collect` is 1.75 ms there against about 1.05 ms in release, so
+   raising them would close a real gap — but the frame is already at the
+   surface's rate, so it would buy no frames and cost compile time on every
+   edit, which is the trade `Cargo.toml`'s own comment made when it chose 1.
 
 ## Earlier handoff — 2026-08-13
 
