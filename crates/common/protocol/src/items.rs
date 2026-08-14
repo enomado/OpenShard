@@ -353,6 +353,26 @@ impl EncodePacket for DragCancel {
     }
 }
 
+impl DecodePacket for DragCancel {
+    const ID: u8 = 0x27;
+
+    /// An unknown reason byte is [`DragCancelReason::Other`] rather than an
+    /// error: the *cancel* is the fact — the item is going back where it came
+    /// from — and the byte only chooses which line the client prints. Refusing
+    /// the packet over it would leave a lift this end still believes in.
+    fn decode_body(reader: &mut PacketReader<'_>, _version: ClientVersion) -> Result<Self, DecodeError> {
+        let reason = match reader.u8()? {
+            0x00 => DragCancelReason::CannotLift,
+            0x01 => DragCancelReason::OutOfRange,
+            0x02 => DragCancelReason::OutOfSight,
+            0x03 => DragCancelReason::TryToSteal,
+            0x04 => DragCancelReason::AlreadyHolding,
+            _ => DragCancelReason::Other,
+        };
+        Ok(Self { reason })
+    }
+}
+
 /// `0x13` — the client asks to equip the dragged item onto a mobile. 10 bytes.
 ///
 /// Dragging an item onto a paperdoll sends this: the item goes onto `mobile` at
@@ -409,6 +429,41 @@ impl EncodePacket for EquipUpdate {
         out.u8(self.layer.0);
         out.u32(self.mobile.raw());
         out.u16(self.hue.0);
+    }
+}
+
+impl DecodePacket for EquipUpdate {
+    const ID: u8 = 0x2E;
+
+    /// The graphic-offset byte is read and dropped: this engine always writes
+    /// zero, and nothing this end draws is decided by it — the graphic is.
+    ///
+    /// A client that could not read this saw a mobile's clothes only in the
+    /// `0x78` that first drew it, so a hat taken off never came off. A vendor is
+    /// where that hurt most: its stock crate arrives *as* a `0x2E` on shop layer
+    /// `0x1A`, and without it the buy list that names the crate has nothing to
+    /// attach itself to.
+    fn decode_body(reader: &mut PacketReader<'_>, _version: ClientVersion) -> Result<Self, DecodeError> {
+        let raw_item = reader.u32()?;
+        let item = Serial::new(raw_item).ok_or(DecodeError::UnknownValue {
+            field: "0x2E item serial",
+            value: raw_item,
+        })?;
+        let graphic = Graphic(reader.u16()?);
+        reader.skip(1)?;
+        let layer = Layer(reader.u8()?);
+        let raw_mobile = reader.u32()?;
+        let mobile = Serial::new(raw_mobile).ok_or(DecodeError::UnknownValue {
+            field: "0x2E wearer serial",
+            value: raw_mobile,
+        })?;
+        Ok(Self {
+            item,
+            graphic,
+            layer,
+            mobile,
+            hue: Hue(reader.u16()?),
+        })
     }
 }
 

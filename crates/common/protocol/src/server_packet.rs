@@ -168,7 +168,7 @@ impl ServerPacket {
     #[must_use]
     pub const fn id(&self) -> u8 {
         match self {
-            Self::TargetCursor(_) => TargetCursor::ID,
+            Self::TargetCursor(_) => <TargetCursor as EncodePacket>::ID,
             Self::WarMode(_) => <WarMode as EncodePacket>::ID,
             Self::AttackTarget(_) => <AttackTarget as EncodePacket>::ID,
             Self::Health(_) => <HealthBar as EncodePacket>::ID,
@@ -201,13 +201,13 @@ impl ServerPacket {
             Self::MobileIncoming(_) => <MobileIncoming as EncodePacket>::ID,
             Self::StatLocks(_) => StatLocks::ID,
             Self::WorldItem(_) => <WorldItem as EncodePacket>::ID,
-            Self::DragCancel(_) => DragCancel::ID,
-            Self::EquipUpdate(_) => EquipUpdate::ID,
+            Self::DragCancel(_) => <DragCancel as EncodePacket>::ID,
+            Self::EquipUpdate(_) => <EquipUpdate as EncodePacket>::ID,
             Self::OpenContainer(_) => <OpenContainer as DecodePacket>::ID,
             Self::AddToContainer(_) => <AddToContainer as DecodePacket>::ID,
             Self::ContainerContents(_) => <ContainerContents as EncodePacket>::ID,
-            Self::BuyList(_) => BuyList::ID,
-            Self::SellList(_) => SellList::ID,
+            Self::BuyList(_) => <BuyList as EncodePacket>::ID,
+            Self::SellList(_) => <SellList as EncodePacket>::ID,
             Self::TooltipRevision(_) => TooltipRevision::ID,
             Self::SkillsFull(_) => SkillsFull::ID,
             Self::SkillUpdate(_) => SkillUpdate::ID,
@@ -465,6 +465,34 @@ impl ServerPacket {
             <OpenPaperdoll as DecodePacket>::ID => decode_server(packet, version)
                 .map(Self::OpenPaperdoll)
                 .map_err(ServerDecodeError::OpenPaperdoll)?,
+            // What a mobile is wearing, one layer at a time. Without this arm a
+            // body was dressed once, by the `0x78` that drew it, and never
+            // again — and a vendor's stock crate, which arrives as nothing but
+            // a `0x2E` on layer `0x1A`, had no way in at all.
+            <EquipUpdate as DecodePacket>::ID => decode_server(packet, version)
+                .map(Self::EquipUpdate)
+                .map_err(ServerDecodeError::EquipUpdate)?,
+            // The lift the shard refused. Purely local state depends on it: the
+            // item drawn on the cursor is this client's own projection, and
+            // nothing else ever says to put it back.
+            <DragCancel as DecodePacket>::ID => decode_server(packet, version)
+                .map(Self::DragCancel)
+                .map_err(ServerDecodeError::DragCancel)?,
+            // The crosshair. The client enforces what a cursor may pick, so a
+            // client that cannot read the request cannot raise one.
+            <TargetCursor as DecodePacket>::ID => decode_server(packet, version)
+                .map(Self::TargetCursor)
+                .map_err(ServerDecodeError::TargetCursor)?,
+            // The shop's two halves. Each names a different serial — the buy
+            // list names the stock crate, the sell list the vendor — which is
+            // why the window that joins them is keyed on neither by accident;
+            // see `WorldView::apply`'s `0x24` arm.
+            <BuyList as DecodePacket>::ID => decode_server(packet, version)
+                .map(Self::BuyList)
+                .map_err(ServerDecodeError::BuyList)?,
+            <SellList as DecodePacket>::ID => decode_server(packet, version)
+                .map(Self::SellList)
+                .map_err(ServerDecodeError::SellList)?,
             // The stance that settled — the answer to the paperdoll's toggle,
             // and the same five bytes the client asked with. Decoded through
             // the same type both directions share; there is nothing in the
@@ -587,6 +615,16 @@ pub enum ServerDecodeError {
     Skills(DecodeError),
     /// `0xC1` did not decode.
     LocalizedMessage(DecodeError),
+    /// `0x2E` did not decode.
+    EquipUpdate(DecodeError),
+    /// `0x27` did not decode.
+    DragCancel(DecodeError),
+    /// `0x6C` did not decode.
+    TargetCursor(DecodeError),
+    /// `0x74` did not decode.
+    BuyList(DecodeError),
+    /// `0x9E` did not decode.
+    SellList(DecodeError),
 }
 
 impl fmt::Display for ServerDecodeError {
@@ -624,6 +662,11 @@ impl fmt::Display for ServerDecodeError {
             Self::LogoutAck(error) => ("0xD1 logout ack", error),
             Self::Skills(error) => ("0x3A skills", error),
             Self::LocalizedMessage(error) => ("0xC1 localized message", error),
+            Self::EquipUpdate(error) => ("0x2E equip update", error),
+            Self::DragCancel(error) => ("0x27 drag cancel", error),
+            Self::TargetCursor(error) => ("0x6C target cursor", error),
+            Self::BuyList(error) => ("0x74 buy list", error),
+            Self::SellList(error) => ("0x9E sell list", error),
         };
         write!(f, "{name}: {error}")
     }
@@ -732,6 +775,16 @@ pub fn server_packet_length(id: u8, version: ClientVersion) -> Option<PacketLeng
         0xC0 => HuedEffect::LENGTH,
         0xC1 => LocalizedMessage::LENGTH,
         0xD1 => LogoutAck::LENGTH,
+        // The AoS property list, and the one id in this table with no
+        // `ServerPacket` variant behind it: a shard writes it as bytes through
+        // `PropertyList::finish` (`state::send_property_list`), so nothing in
+        // the enum would ever have put it here. It belongs here all the same —
+        // this table is what says where the *next* packet starts, and a length
+        // it does not know is not a packet dropped but a connection ended
+        // (`Connection::poll`'s `FrameError::UnknownPacket`). Opening a shop
+        // sends one of these per stocked item, which is how a purchase used to
+        // take the whole session down with it.
+        0xD6 => Variable,
         0xDC => TooltipRevision::LENGTH,
         0xE2 => NewAnimation::LENGTH,
         _ => return None,
@@ -1158,6 +1211,66 @@ mod tests {
         );
     }
 
+    /// Everything a shop is made of, written by the shard and read back the way
+    /// the client reads it.
+    ///
+    /// A packet with an encoder, an id in the framing table and *no arm in
+    /// `decode`* is the failure this covers, and it is the quietest one this
+    /// file can have: the stream stays in step, so nothing breaks — the client
+    /// simply never learns what it was told. A vendor was three packets of it
+    /// (`0x2E`, `0x74`, `0x9E`), which is why the buy window opened empty while
+    /// every byte of its catalogue had arrived.
+    #[test]
+    fn the_packets_a_shop_is_made_of_decode_as_themselves() {
+        for packet in [
+            ServerPacket::EquipUpdate(crate::items::EquipUpdate {
+                item: Serial::new(0x4000_0002).unwrap(),
+                graphic: crate::wire::Graphic(0x0E3F),
+                layer: crate::wire::Layer(0x1A),
+                mobile: Serial::new(0x0000_002A).unwrap(),
+                hue: crate::wire::Hue(0x0021),
+            }),
+            ServerPacket::BuyList(crate::vendor::BuyList {
+                container: Serial::new(0x4000_0010).unwrap(),
+                lines: vec![
+                    crate::vendor::BuyLine {
+                        price: 3,
+                        name: "black pearl".to_owned(),
+                    },
+                    crate::vendor::BuyLine {
+                        price: 12,
+                        name: "longsword".to_owned(),
+                    },
+                ],
+            }),
+            ServerPacket::SellList(crate::vendor::SellList {
+                vendor: Serial::new(0x0000_002A).unwrap(),
+                lines: vec![crate::vendor::SellLine {
+                    serial: Serial::new(0x4000_0011).unwrap(),
+                    graphic: crate::wire::Graphic(0x0F7B),
+                    hue: crate::wire::Hue::NONE,
+                    amount: 4,
+                    price: 2,
+                    name: "black pearl".to_owned(),
+                }],
+            }),
+            ServerPacket::DragCancel(crate::items::DragCancel {
+                reason: crate::items::DragCancelReason::OutOfRange,
+            }),
+            ServerPacket::TargetCursor(TargetCursor {
+                cursor_id: CursorId(0x0000_0007),
+                kind: TargetKind::Location,
+            }),
+        ] {
+            let bytes = packet.encode(version());
+            assert_eq!(
+                ServerPacket::decode(&bytes, version()),
+                Ok(Some(packet.clone())),
+                "{packet:?}"
+            );
+        }
+    }
+
     #[test]
     fn the_old_feature_mask_is_two_bytes_narrower() {
         // The one place the table's `version` earns its place: same id, and a
@@ -1178,12 +1291,35 @@ mod tests {
     #[test]
     fn an_id_this_engine_never_sends_is_fatal() {
         // Not a silent skip: without a length there is no way to find where the
-        // next packet starts, so the connection is over. 0xD6 is a real
-        // server-to-client packet this engine does not send — see the table.
-        assert_eq!(server_packet_length(0xD6, version()), None);
+        // next packet starts, so the connection is over. `0x99` — mount a
+        // ridable — is a real server-to-client packet this engine does not
+        // send; the example used to be `0xD6`, which it *does* send.
+        assert_eq!(server_packet_length(0x99, version()), None);
         assert_eq!(
-            frame_server_packet(&[0xD6, 0x00, 0x05], version()),
-            Err(FrameError::UnknownPacket(0xD6))
+            frame_server_packet(&[0x99, 0x00, 0x05], version()),
+            Err(FrameError::UnknownPacket(0x99))
+        );
+    }
+
+    /// The half of the table that is not the enum: a shard writes some packets
+    /// as bytes, and the framer has to know their length even though no
+    /// `ServerPacket` variant ever will. The property list is the whole of that
+    /// set today, and it took a session down before it was in the table —
+    /// opening a vendor's window sends one per stocked item.
+    #[test]
+    fn a_property_list_is_framed_even_though_no_variant_carries_it() {
+        let mut list = crate::properties::PropertyList::new(Serial::new(0x4000_0001).unwrap());
+        list.add(crate::wire::ClilocId(1_020_000));
+        let (bytes, _hash) = list.finish();
+
+        assert_eq!(bytes[0], crate::properties::PropertyList::ID);
+        assert_eq!(
+            server_packet_length(crate::properties::PropertyList::ID, version()),
+            Some(PacketLength::Variable)
+        );
+        assert_eq!(
+            frame_server_packet(&bytes, version()),
+            Ok(Frame::Complete(bytes.len()))
         );
     }
 

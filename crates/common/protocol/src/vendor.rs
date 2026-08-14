@@ -61,6 +61,39 @@ impl EncodePacket for BuyList {
     }
 }
 
+impl DecodePacket for BuyList {
+    const ID: u8 = 0x74;
+
+    /// The label's length byte counts the trailing NUL the encoder writes, so
+    /// the name is that many bytes less one — a list read as if the byte were
+    /// the text length alone would eat the next line's price.
+    ///
+    /// A short name is truncated at the first NUL rather than kept whole: the
+    /// reference client writes fixed-size buffers and pads them, and a label
+    /// with a `\0` in the middle of it is not a label.
+    fn decode_body(reader: &mut PacketReader<'_>, _version: ClientVersion) -> Result<Self, DecodeError> {
+        let raw = reader.u32()?;
+        let container = Serial::new(raw).ok_or(DecodeError::UnknownValue {
+            field: "0x74 stock container serial",
+            value: raw,
+        })?;
+        let count = reader.u8()?;
+        let mut lines = Vec::with_capacity(usize::from(count));
+        for _ in 0..count {
+            let price = reader.u32()?;
+            let length = usize::from(reader.u8()?);
+            let text = reader.bytes(length)?;
+            let name = String::from_utf8_lossy(match text.iter().position(|byte| *byte == 0) {
+                Some(end) => &text[..end],
+                None => text,
+            })
+            .into_owned();
+            lines.push(BuyLine { price, name });
+        }
+        Ok(Self { container, lines })
+    }
+}
+
 /// A purchase the client asked for: which stock item, how many.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Purchase {
@@ -162,6 +195,48 @@ impl EncodePacket for SellList {
             out.u16(take as u16);
             out.bytes(&name[..take]);
         }
+    }
+}
+
+impl DecodePacket for SellList {
+    const ID: u8 = 0x9E;
+
+    /// The label here is *not* NUL-terminated — the length is the text's own —
+    /// which is the one way this differs from [`BuyList`]'s lines and the one
+    /// way a decoder written from the other one would be wrong.
+    fn decode_body(reader: &mut PacketReader<'_>, _version: ClientVersion) -> Result<Self, DecodeError> {
+        let raw = reader.u32()?;
+        let vendor = Serial::new(raw).ok_or(DecodeError::UnknownValue {
+            field: "0x9E vendor serial",
+            value: raw,
+        })?;
+        let count = reader.u16()?;
+        // Bounded rather than trusted: the count is two bytes and the body is
+        // the shard's, but a reserve of 65,535 lines on a malformed packet is a
+        // cost this end need not pay before it has read one.
+        let mut lines = Vec::with_capacity(usize::from(count.min(64)));
+        for _ in 0..count {
+            let raw_item = reader.u32()?;
+            let serial = Serial::new(raw_item).ok_or(DecodeError::UnknownValue {
+                field: "0x9E offered item serial",
+                value: raw_item,
+            })?;
+            let graphic = Graphic(reader.u16()?);
+            let hue = Hue(reader.u16()?);
+            let amount = reader.u16()?;
+            let price = reader.u16()?;
+            let length = usize::from(reader.u16()?);
+            let name = String::from_utf8_lossy(reader.bytes(length)?).into_owned();
+            lines.push(SellLine {
+                serial,
+                graphic,
+                hue,
+                amount,
+                price,
+                name,
+            });
+        }
+        Ok(Self { vendor, lines })
     }
 }
 

@@ -62,6 +62,36 @@ impl EncodePacket for TargetCursor {
     }
 }
 
+impl DecodePacket for TargetCursor {
+    const ID: u8 = 0x6C;
+
+    /// The *request* half of the id, read by the client. Nineteen bytes in both
+    /// directions and the same first six mean different things in each — see
+    /// [`TargetResponse`], which decodes the other twelve.
+    ///
+    /// A `kind` byte that is neither 0 nor 1 is refused rather than guessed at:
+    /// what a raised cursor is allowed to pick decides whether a click on grass
+    /// is answered at all, and defaulting it would put a cursor on the screen
+    /// that refuses everything or accepts what the shard will not take.
+    fn decode_body(reader: &mut PacketReader<'_>, _version: ClientVersion) -> Result<Self, DecodeError> {
+        let raw_kind = reader.u8()?;
+        let kind = match raw_kind {
+            0 => TargetKind::Object,
+            1 => TargetKind::Location,
+            _ => {
+                return Err(DecodeError::UnknownValue {
+                    field: "0x6C target kind",
+                    value: u32::from(raw_kind),
+                });
+            }
+        };
+        Ok(Self {
+            cursor_id: CursorId(reader.u32()?),
+            kind,
+        })
+    }
+}
+
 /// `0x6C` — the client's answer: what the cursor picked.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct TargetResponse {

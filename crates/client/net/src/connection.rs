@@ -383,12 +383,50 @@ mod tests {
     fn an_id_the_shard_never_sends_ends_the_connection() {
         // There is no resynchronising: without a length there is no way to know
         // where the next packet starts, so the only honest move is to stop.
+        //
+        // `0x99` — the mount request — and not `0xD6`, which this test used to
+        // name: the shard *does* send a `0xD6` (a tooltip), and the assertion
+        // written against it was the reason a shop took the connection down.
+        // The example has to be an id the framing table genuinely has no row
+        // for, or the test asserts a defect rather than a rule.
         let mut connection = Connection::new(Stream::Plain, version());
-        connection.receive(&[0xD6, 0x00, 0x05, 0x01, 0x02]);
+        connection.receive(&[0x99, 0x00, 0x05, 0x01, 0x02]);
         assert!(matches!(
             connection.poll(),
-            Err(ConnectionError::Frame(FrameError::UnknownPacket(0xD6)))
+            Err(ConnectionError::Frame(FrameError::UnknownPacket(0x99)))
         ));
+    }
+
+    /// The tooltip a shop sends per stocked item. It has no decoder and is not
+    /// meant to have one yet — but it is framed, and that is the whole
+    /// difference between a packet skipped and a session ended: opening a
+    /// vendor's window used to disconnect the player, which looked from the
+    /// inside like a trade gump that would not draw and a paperdoll that would
+    /// not open afterwards.
+    #[test]
+    fn a_property_list_is_skipped_and_the_packet_behind_it_still_arrives() {
+        let mut list = openshard_protocol::properties::PropertyList::new(
+            openshard_protocol::serial::Serial::new(0x4000_0001).unwrap(),
+        );
+        list.add(openshard_protocol::wire::ClilocId(1_020_000));
+        let (tooltip, _hash) = list.finish();
+
+        let mut bytes = tooltip.clone();
+        bytes.extend(ServerPacket::LoginComplete(LoginComplete).encode(version()));
+        let mut connection = Connection::new(Stream::Plain, version());
+        connection.receive(&bytes);
+
+        assert_eq!(
+            connection.poll().unwrap(),
+            Some(Event::Undecoded {
+                id: PacketId(0xD6),
+                body: tooltip,
+            })
+        );
+        assert_eq!(
+            connection.poll().unwrap(),
+            Some(Event::Packet(ServerPacket::LoginComplete(LoginComplete)))
+        );
     }
 
     #[test]
