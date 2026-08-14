@@ -2626,6 +2626,7 @@ impl App {
                     composite_cpu_upload: world_pass_audit.composite_cpu_upload,
                     composite_cpu_bindings: world_pass_audit.composite_cpu_bindings,
                     composite_cpu_pass: world_pass_audit.composite_cpu_pass,
+                    static_animated: assembly_costs.static_animated,
                 },
                 atlas_work,
                 gpu_passes,

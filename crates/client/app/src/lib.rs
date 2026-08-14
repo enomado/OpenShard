@@ -810,6 +810,7 @@ pub fn run<D: Dial + Send + 'static>(
                 },
                 cutaway_at: start,
                 cutaway_fades: openshard_client_render::cutaway::Fades::default(),
+                static_geometry_cache: None,
                 others: Vec::new(),
                 corpses: Vec::new(),
                 items: Vec::new(),

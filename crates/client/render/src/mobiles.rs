@@ -744,6 +744,34 @@ pub struct OpaqueMask {
 }
 
 impl OpaqueMask {
+    /// Stable identity of the exact silhouette used by static cutaway tests.
+    ///
+    /// This is deliberately a fingerprint rather than just its bounding rect:
+    /// two body animation frames can share a rectangle while exposing a
+    /// different opaque texel to a wall behind them.
+    pub fn fingerprint(&self) -> u64 {
+        let mut hash = 0xcbf2_9ce4_8422_2325_u64;
+        let mut add = |word: u64| {
+            hash ^= word;
+            hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+        };
+        for value in [
+            self.rect.x.to_bits(),
+            self.rect.y.to_bits(),
+            self.rect.width.to_bits(),
+            self.rect.height.to_bits(),
+        ] {
+            add(u64::from(value));
+        }
+        add(self.order.tile as u64);
+        add(self.order.priority_z as u64);
+        add(u64::from(self.width));
+        for pixel in &self.pixels {
+            add(u64::from(*pixel));
+        }
+        hash
+    }
+
     /// The body frame's bounds, retained for the foliage policy.  Foliage is
     /// intentionally a separate, generous canopy rule; see
     /// [`crate::cutaway::hides_foliage_over`].

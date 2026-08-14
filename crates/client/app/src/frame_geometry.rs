@@ -22,6 +22,23 @@ use crate::picking::{self, SelectedIdentity};
 use crate::window::Screen;
 use crate::{graphics, resources, world};
 
+fn items_fingerprint(items: &[openshard_client_render::items::GroundItem]) -> u64 {
+    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
+    let mut add = |word: u64| {
+        hash ^= word;
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    };
+    add(items.len() as u64);
+    for item in items {
+        add(u64::from(item.at.x));
+        add(u64::from(item.at.y));
+        add(item.at.z as u64);
+        add(u64::from(item.graphic.0));
+        add(u64::from(item.hue.0));
+    }
+    hash
+}
+
 /// Everything `frame::assemble` and its neighbours collected for one frame —
 /// see [`assemble_geometry`]'s own doc.
 pub(crate) struct FrameGeometry {
@@ -182,6 +199,41 @@ pub(crate) fn assemble_geometry(
     let player_rect = player_mask
         .as_ref()
         .map(openshard_client_render::mobiles::OpaqueMask::rect);
+    let player_mask_fingerprint = player_mask
+        .as_ref()
+        .map(openshard_client_render::mobiles::OpaqueMask::fingerprint);
+    let static_atlas_revision = window.atlases.statics.revision();
+    let animation_tick = world.presentation.tile_animations.tick();
+    let items_fingerprint = items_fingerprint(&world.presentation.items);
+    // Map-static volume ownership depends on the occlusion grid, which exists
+    // only for a non-flat sky. Server items also participate in that grid, so
+    // leave the collector live whenever any are present. The cache is therefore
+    // an exact reuse of a static-only, unchanged view — never an approximation.
+    let has_occlusion = sky.is_some();
+    let reusable_map_statics = (graphics.drawing.statics && world.presentation.cutaway_fades.is_empty())
+        .then(|| {
+            world
+                .presentation
+                .static_geometry_cache
+                .as_ref()
+                .filter(|cache| {
+                    cache.matches(
+                        camera,
+                        *cutaway,
+                        static_atlas_revision,
+                        player_mask_fingerprint,
+                        has_occlusion,
+                        animation_tick,
+                        items_fingerprint,
+                    )
+                })
+                .map(|cache| cache.geometry().clone())
+        })
+        .flatten();
+    let mut draw = graphics.drawing;
+    if reusable_map_statics.is_some() {
+        draw.statics = false;
+    }
 
     // **One assembly, and the client is a caller of it like any other** —
     // `docs/parity.md`, decision D1. This sequence used to be written out by
@@ -240,7 +292,7 @@ pub(crate) fn assemble_geometry(
         // Which producers this frame draws — the World tab's own boxes. The
         // whole world unless somebody has ticked one off, and the lighting is
         // collected from all of it whatever they tick: see `frame::Draw`.
-        draw: graphics.drawing,
+        draw,
         // The view is the looker's, not the world's: a diagnostic draws from
         // the values this frame was lit with, and in daylight those are the
         // ambient and the place attachment — which is exactly what a person
@@ -272,6 +324,22 @@ pub(crate) fn assemble_geometry(
         mut map_statics,
         items: mut item_geometry,
     } = assembled;
+    if let Some(cached) = reusable_map_statics {
+        map_statics = cached;
+    } else if graphics.drawing.statics && world.presentation.cutaway_fades.is_empty() {
+        world.presentation.static_geometry_cache = Some(world::StaticGeometryCache::new(
+            camera,
+            *cutaway,
+            static_atlas_revision,
+            player_mask_fingerprint,
+            has_occlusion,
+            animation_tick,
+            items_fingerprint,
+            map_statics.clone(),
+        ));
+    } else {
+        world.presentation.static_geometry_cache = None;
+    }
     // The opaque lists stay split, but the private cutaway target has one
     // depth/G-buffer and therefore needs both producers in the same call.
     let item_instances = split_corners(std::mem::take(&mut item_geometry.quads));

@@ -427,6 +427,8 @@ pub struct AssemblyCosts {
     pub static_walk: Duration,
     /// Stable ordering of opaque and cutaway map statics.
     pub static_sort: Duration,
+    /// Whether the visible map-static list had clock-driven art this frame.
+    pub static_animated: bool,
     /// Server-owned items folded into the static render pass.
     pub items: Duration,
 }
@@ -621,6 +623,7 @@ pub fn assemble_split_profiled(inputs: Inputs<'_>) -> (SplitFrame, AssemblyCosts
             statics: statics_cost,
             static_walk: static_costs.walk,
             static_sort: static_costs.sort,
+            static_animated: static_costs.animated,
             items: items_cost,
         },
     )

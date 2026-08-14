@@ -135,6 +135,16 @@ impl StaticAnimations {
         self.elapsed
     }
 
+    /// The shared animation interval currently being shown.
+    ///
+    /// Every static cycle changes only on a multiple of [`FRAME_STEP`]. A
+    /// caller caching a fully collected static scene may therefore retain it
+    /// within one tick, but must invalidate it at this boundary even if the
+    /// camera did not move.
+    pub fn tick(&self) -> u128 {
+        self.elapsed.as_millis() / FRAME_STEP.as_millis()
+    }
+
     /// What is on screen for `graphic` at this instant.
     ///
     /// The graphic itself when it does not animate, which is the answer for all

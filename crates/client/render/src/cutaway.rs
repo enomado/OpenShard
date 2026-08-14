@@ -124,6 +124,14 @@ impl FadeKey {
 pub struct Fades(BTreeMap<FadeKey, u8>);
 
 impl Fades {
+    /// Whether no object is part-way through a cutaway transition.
+    ///
+    /// A cached static list is safe only between fade transitions: while this
+    /// map is non-empty the collector must keep advancing the affected rows.
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
     /// Advance one reference-style 25-point step toward `target`.
     ///
     /// Fully opaque objects need no retained state, while a zero-alpha hidden

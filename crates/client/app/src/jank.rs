@@ -63,6 +63,7 @@ pub(crate) struct CpuPasses {
     pub composite_cpu_upload: Duration,
     pub composite_cpu_bindings: Duration,
     pub composite_cpu_pass: Duration,
+    pub static_animated: bool,
 }
 
 /// Create a fresh file for jank records from this process.
@@ -138,7 +139,7 @@ pub fn record(frame: Frame, cpu: CpuPasses, atlas: AtlasWork, gpu_passes: &[Pass
             let _ = writeln!(
                 log,
                 "jank frame budget_ms={:.3} interval_ms={:.3} build_ms={:.3} ui_ms={:.3} \
-                 scene_ms={:.3} wait_ms={:.3} gpu_ms={gpu_ms:?} repacked={} atlas_uploaded_bytes={} composite_blocks={} composite_bindings_created={} composite_bindings_reused={} atlas_overflowed={atlas_overflowed:?} atlas_packed_graphics={atlas_packed_graphics:?} atlas_newly_requested_graphics={atlas_newly_requested_graphics:?} cpu_passes={cpu_passes:?} gpu_passes={passes:?}",
+                 scene_ms={:.3} wait_ms={:.3} gpu_ms={gpu_ms:?} repacked={} atlas_uploaded_bytes={} composite_blocks={} composite_bindings_created={} composite_bindings_reused={} static_animated={} atlas_overflowed={atlas_overflowed:?} atlas_packed_graphics={atlas_packed_graphics:?} atlas_newly_requested_graphics={atlas_newly_requested_graphics:?} cpu_passes={cpu_passes:?} gpu_passes={passes:?}",
                 ms(JANK_BUDGET),
                 ms(frame.interval),
                 ms(frame.build()),
@@ -150,6 +151,7 @@ pub fn record(frame: Frame, cpu: CpuPasses, atlas: AtlasWork, gpu_passes: &[Pass
                 cpu.composite_blocks,
                 cpu.composite_bindings_created,
                 cpu.composite_bindings_reused,
+                cpu.static_animated,
             );
             // Do not flush from the render thread.  A jank record is itself
             // diagnostic output; waiting for the filesystem here can turn one

@@ -14,9 +14,12 @@ use std::time::{Duration, Instant};
 
 use openshard_client_net::view::WorldView;
 use openshard_client_render::animate::StaticAnimations;
+use openshard_client_render::camera::Camera;
+use openshard_client_render::cutaway::Cutaway;
 use openshard_client_render::follow::Gaze;
 use openshard_client_render::items::GroundItem;
 use openshard_client_render::mobiles::Mobile;
+use openshard_client_render::statics::StaticGeometry;
 use openshard_protocol::direction::Facing;
 use openshard_protocol::serial::Serial;
 use openshard_protocol::wire::Hue;
@@ -176,6 +179,8 @@ pub struct PresentationWorld {
     pub cutaway_at: Point,
     /// Persistent opacity for world objects moving into or out of cutaway.
     pub cutaway_fades: openshard_client_render::cutaway::Fades,
+    /// Last reusable map-static collection. Dynamic server items remain live.
+    pub static_geometry_cache: Option<StaticGeometryCache>,
     /// Render mobiles beside the identity their animation clocks use.
     pub others: Vec<(Who, Mobile)>,
     /// Item corpses projected through the mobile renderer. Their serial remains
@@ -193,6 +198,68 @@ pub struct PresentationWorld {
     /// Animation and glide history, which belongs to presentation rather than
     /// authoritative state.
     pub crowd: Crowd,
+}
+
+/// A map-static result whose every input that can alter opaque/cutaway pixels
+/// is recorded. It is intentionally conservative: callers only populate it
+/// for non-animated, fully opaque collections with no fade in progress.
+#[derive(Debug)]
+pub struct StaticGeometryCache {
+    camera: Camera,
+    cutaway: Cutaway,
+    atlas_revision: u64,
+    player_mask: Option<u64>,
+    has_occlusion: bool,
+    animation_tick: u128,
+    items_fingerprint: u64,
+    geometry: StaticGeometry,
+}
+
+impl StaticGeometryCache {
+    pub fn new(
+        camera: Camera,
+        cutaway: Cutaway,
+        atlas_revision: u64,
+        player_mask: Option<u64>,
+        has_occlusion: bool,
+        animation_tick: u128,
+        items_fingerprint: u64,
+        geometry: StaticGeometry,
+    ) -> Self {
+        Self {
+            camera,
+            cutaway,
+            atlas_revision,
+            player_mask,
+            has_occlusion,
+            animation_tick,
+            items_fingerprint,
+            geometry,
+        }
+    }
+
+    pub fn matches(
+        &self,
+        camera: Camera,
+        cutaway: Cutaway,
+        atlas_revision: u64,
+        player_mask: Option<u64>,
+        has_occlusion: bool,
+        animation_tick: u128,
+        items_fingerprint: u64,
+    ) -> bool {
+        self.camera == camera
+            && self.cutaway == cutaway
+            && self.atlas_revision == atlas_revision
+            && self.player_mask == player_mask
+            && self.has_occlusion == has_occlusion
+            && self.animation_tick == animation_tick
+            && self.items_fingerprint == items_fingerprint
+    }
+
+    pub fn geometry(&self) -> &StaticGeometry {
+        &self.geometry
+    }
 }
 
 impl PresentationWorld {
@@ -834,6 +901,7 @@ mod tests {
             },
             cutaway_at: at,
             cutaway_fades: openshard_client_render::cutaway::Fades::default(),
+            static_geometry_cache: None,
             others: Vec::new(),
             corpses: Vec::new(),
             items: Vec::new(),

@@ -152,7 +152,7 @@ pub struct PickedStatic {
 /// One walk builds both — [`for_each_static_in`]'s own doc is why a second
 /// walk asking the same question of the same statics would be two answers to
 /// "which statics is this frame about" rather than one.
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct StaticGeometry {
     /// The pictures, back to front — what this function returned before mesh
     /// geometry existed, unchanged.
@@ -191,6 +191,8 @@ pub(crate) struct CollectCosts {
     pub walk: Duration,
     /// The two stable back-to-front sorts after collection.
     pub sort: Duration,
+    /// Whether an animated map static was visible to this collection.
+    pub animated: bool,
 }
 
 /// The opaque geometry left after the two picture lists have been spent.
@@ -474,9 +476,11 @@ pub(crate) fn collect_in_with_fades_profiled(
     let mesh_vertices = Vec::new();
     let mesh_rows = Vec::new();
     let mut boxes = Vec::new();
+    let mut animated = false;
 
     let walk_started = Instant::now();
     for_each_static_in(map, bounds, |item| {
+        animated |= animations.is_animated(item.tile);
         let at = Point::new(item.x, item.y, item.z);
         let is_foliage = tiledata.static_tile(item.tile.0).flags.is_foliage();
         let Some(placed) = place(
@@ -627,7 +631,7 @@ pub(crate) fn collect_in_with_fades_profiled(
             mesh_rows,
             boxes,
         },
-        CollectCosts { walk, sort },
+        CollectCosts { walk, sort, animated },
     )
 }
 
