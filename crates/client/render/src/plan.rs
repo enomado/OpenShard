@@ -590,9 +590,9 @@ fn drawn(
         .collect();
 
     // One row per distinct tile each kind actually used, keyed by first sight.
-    let mut face_ids: std::collections::HashMap<(u16, u16), u32> = std::collections::HashMap::new();
+    let mut face_ids: rustc_hash::FxHashMap<(u16, u16), u32> = rustc_hash::FxHashMap::default();
     let mut face_rows: Vec<u8> = Vec::new();
-    let mut ground_ids: std::collections::HashMap<(u16, u16), u32> = std::collections::HashMap::new();
+    let mut ground_ids: rustc_hash::FxHashMap<(u16, u16), u32> = rustc_hash::FxHashMap::default();
     let mut ground_rows: Vec<u8> = Vec::new();
     let mut ids: Vec<u32> = Vec::with_capacity(fragments.len());
     // What each of those rows said about the world, in the order they were

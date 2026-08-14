@@ -1,8 +1,9 @@
 //! The entity registry: the single owner of every entity and component.
 
 use std::any::TypeId;
-use std::collections::HashMap;
 use std::{fmt, iter, option};
+
+use rustc_hash::FxHashMap;
 
 use crate::component::{Column, Component, Iter, IterMut, SparseSet, split_two};
 use crate::entity::{EntityAllocator, EntityId};
@@ -84,9 +85,9 @@ pub struct Registry {
     /// reordered or removed, so indices stay stable for the lifetime of the
     /// registry.
     columns: Vec<Box<dyn Column>>,
-    column_index: HashMap<TypeId, usize>,
-    serial_to_entity: HashMap<Serial, EntityId>,
-    entity_to_serial: HashMap<EntityId, Serial>,
+    column_index: FxHashMap<TypeId, usize>,
+    serial_to_entity: FxHashMap<Serial, EntityId>,
+    entity_to_serial: FxHashMap<EntityId, Serial>,
     serials: SerialAllocator,
 }
 

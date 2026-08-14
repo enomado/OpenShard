@@ -24,7 +24,9 @@
 //! not a move at all. Both are routed by serial in [`WorldView::apply`], so
 //! [`WorldView::mobiles`] holds only *other* mobiles, as its docs promise.
 
-use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::collections::{BTreeMap, VecDeque};
+
+use rustc_hash::FxHashMap;
 
 use openshard_protocol::containers::ContainedItem;
 use openshard_protocol::direction::Facing;
@@ -308,9 +310,9 @@ pub struct WorldView {
     /// How big the facet is. The client needs it to bound the map it draws.
     pub map: MapSize,
     /// Every other mobile this client has been shown, by serial.
-    pub mobiles: HashMap<Serial, Mobile>,
+    pub mobiles: FxHashMap<Serial, Mobile>,
     /// Every ground item this client has been shown, by serial.
-    pub items: HashMap<Serial, Item>,
+    pub items: FxHashMap<Serial, Item>,
     /// What has been said to this client, oldest first, capped at
     /// [`JOURNAL_LINES`].
     ///
@@ -342,7 +344,7 @@ pub struct WorldView {
     /// and both windows stand. Removed by
     /// [`container_closed`](Self::container_closed) — closing one is a click,
     /// exactly as closing a gump is, and the wire has no packet for it either.
-    pub containers: HashMap<Serial, Graphic>,
+    pub containers: FxHashMap<Serial, Graphic>,
     /// What each container holds, as far as this client has been told
     /// (`0x3C`, then `0x25` per addition), in the order the shard listed it.
     ///
@@ -357,15 +359,15 @@ pub struct WorldView {
     /// A `Vec` and not a map keyed by serial, because painter's order is data
     /// here: a container's icons overlap, and the shard's order is the order the
     /// reference client draws them in.
-    pub contents: HashMap<Serial, Vec<ContainedItem>>,
+    pub contents: FxHashMap<Serial, Vec<ContainedItem>>,
     /// The one target cursor the shard currently has open for this player.
     pub target: Option<TargetCursor>,
     /// Buy catalogues currently opened by NPC vendors, keyed by vendor serial.
-    pub vendor_buys: HashMap<Serial, VendorBuy>,
+    pub vendor_buys: FxHashMap<Serial, VendorBuy>,
     /// Sell catalogues currently opened by NPC vendors, keyed by vendor serial.
-    pub vendor_sells: HashMap<Serial, VendorSell>,
+    pub vendor_sells: FxHashMap<Serial, VendorSell>,
     /// A `0x74` arrives just before the `0x24` that identifies its vendor.
-    pending_vendor_buys: HashMap<Serial, Vec<BuyLine>>,
+    pending_vendor_buys: FxHashMap<Serial, Vec<BuyLine>>,
     /// The stock crate each vendor most recently wore on shop layer `0x1A`.
     ///
     /// This deliberately does not live only in [`Mobile::equipment`].  A
@@ -373,7 +375,7 @@ pub struct WorldView {
     /// update reaches this client; dropping that identity made the later buy
     /// list impossible to attach to the window even though every shop packet
     /// had arrived.
-    vendor_stock: HashMap<Serial, Serial>,
+    vendor_stock: FxHashMap<Serial, Serial>,
     /// Whose paperdoll the shard has opened a window for (`0x88`), by the
     /// mobile's serial.
     ///
@@ -391,7 +393,7 @@ pub struct WorldView {
     /// title rather than stacking a window. Removed by
     /// [`paperdoll_closed`](Self::paperdoll_closed): closing one is a click,
     /// exactly as it is for a container and a gump.
-    pub paperdolls: HashMap<Serial, Paperdoll>,
+    pub paperdolls: FxHashMap<Serial, Paperdoll>,
 }
 
 /// A paperdoll window the shard has opened here.
@@ -511,18 +513,18 @@ impl WorldView {
                 skills: BTreeMap::new(),
             },
             map: start.map,
-            mobiles: HashMap::new(),
-            items: HashMap::new(),
+            mobiles: FxHashMap::default(),
+            items: FxHashMap::default(),
             journal: VecDeque::new(),
             gumps: Vec::new(),
-            containers: HashMap::new(),
-            contents: HashMap::new(),
+            containers: FxHashMap::default(),
+            contents: FxHashMap::default(),
             target: None,
-            vendor_buys: HashMap::new(),
-            vendor_sells: HashMap::new(),
-            pending_vendor_buys: HashMap::new(),
-            vendor_stock: HashMap::new(),
-            paperdolls: HashMap::new(),
+            vendor_buys: FxHashMap::default(),
+            vendor_sells: FxHashMap::default(),
+            pending_vendor_buys: FxHashMap::default(),
+            vendor_stock: FxHashMap::default(),
+            paperdolls: FxHashMap::default(),
         }
     }
 

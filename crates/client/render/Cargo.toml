@@ -25,6 +25,7 @@ wgpu = { version = "30", default-features = false, features = ["wgsl"] }
 # One log line: decision 38.2's ring radius. Emits nothing without a
 # subscriber, so this costs no I/O and keeps the crate's own header true.
 tracing.workspace = true
+rustc-hash.workspace = true
 
 # On the web the only backend is the browser's own. WebGL2 is the fallback for
 # browsers without WebGPU, and keeping it in the feature set here is what makes

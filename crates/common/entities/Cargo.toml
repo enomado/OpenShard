@@ -15,3 +15,4 @@ workspace = true
 # For `Serial`: the wire identity the registry borrows as an entity's external
 # name. The dependency runs this way and never the other — see the crate docs.
 openshard-protocol.workspace = true
+rustc-hash.workspace = true

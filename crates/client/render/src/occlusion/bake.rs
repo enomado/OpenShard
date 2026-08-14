@@ -47,8 +47,9 @@
 //! caller that loads a second facet builds a second bake. Nothing here can check
 //! it, and the client has one map.
 
-use std::collections::HashMap;
 use std::collections::hash_map::Entry;
+
+use rustc_hash::FxHashMap;
 
 use openshard_uofiles::map::{BLOCK_SIZE, Map};
 use openshard_uofiles::tiledata::TileData;
@@ -291,7 +292,7 @@ pub struct Bake {
     stamp: Stamp,
     /// Keyed by `(block_x, block_y)` packed into a word. A facet is at most 896
     /// blocks on a side, so sixteen bits each is room to spare.
-    blocks: HashMap<u32, Cached>,
+    blocks: FxHashMap<u32, Cached>,
     /// How many frames this bake has served, which is what [`Cached::used`] is
     /// counted in.
     frame: u64,

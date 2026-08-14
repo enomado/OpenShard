@@ -33,8 +33,9 @@
 //! hitch manufactured by the animation system, arriving on whichever frame the
 //! cycle happened to turn.
 
-use std::collections::HashMap;
 use std::time::Duration;
+
+use rustc_hash::FxHashMap;
 
 use openshard_protocol::wire::Graphic;
 use openshard_uofiles::animdata::{AnimData, Sequence};
@@ -71,7 +72,7 @@ pub struct StaticAnimations {
     /// Only the graphics that both carry the flag and have a cycle to play. A
     /// lookup that misses is a static that does not animate, which is almost all
     /// of them.
-    cycles: HashMap<u16, Sequence>,
+    cycles: FxHashMap<u16, Sequence>,
     /// Real time since this was built. Its own clock rather than an `Instant`,
     /// for the reason [`crate::follow`] gives: a rule that reads the wall cannot
     /// be handed a cadence by a test.
@@ -87,7 +88,7 @@ impl StaticAnimations {
     /// on every lookup — the reference keeps it and draws the base graphic, which
     /// is the same picture through a longer path.
     pub fn build(animdata: &AnimData, tiledata: &TileData) -> Self {
-        let mut cycles = HashMap::new();
+        let mut cycles = FxHashMap::default();
         for graphic in 0..=u16::MAX {
             if !tiledata.static_tile(graphic).flags.is_animated() {
                 continue;

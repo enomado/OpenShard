@@ -1,8 +1,9 @@
 //! The bus: one [`Events`] queue per event type, in one value.
 
 use std::any::{Any, TypeId};
-use std::collections::HashMap;
 use std::fmt;
+
+use rustc_hash::FxHashMap;
 
 use crate::queue::{Cursor, Event, Events};
 
@@ -64,7 +65,7 @@ impl<E: Event> AnyQueue for Events<E> {
 /// next; see [`Events`] for why.
 #[derive(Default)]
 pub struct EventBus {
-    queues: HashMap<TypeId, Box<dyn AnyQueue>>,
+    queues: FxHashMap<TypeId, Box<dyn AnyQueue>>,
 }
 
 impl fmt::Debug for EventBus {
