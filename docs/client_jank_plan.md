@@ -1,6 +1,87 @@
 # Client jank: plan of work
 
-## Current handoff — 2026-08-13
+## Current handoff — 2026-08-14: what release actually costs
+
+**The 20 fps figure this plan was written around is a debug-build number.**
+Measured again under controlled conditions — the discrete adapter selected
+explicitly, the client pinned to cores 6–23 and the compositor to 0–5 at a
+lowered priority — the widest-zoom Britain scene comes out:
+
+| Build | Frame build p50 | GPU total p50 | Verdict |
+| --- | ---: | ---: | --- |
+| release | 16.0 ms | 3.0 ms | vsync-locked 60 fps; `wait` 0.03 ms, every CPU phase ≈ 0 |
+| debug | 19.9 ms | 3.0 ms | about 50 fps; `encode` 5.5 ms, `geometry` 2.6 ms |
+
+In release the frame `build` sits at exactly 16.0 ms with p95 at 16.2 and
+`wait` at nothing: that is `queue.present` blocking on a FIFO surface, not work.
+There is no CPU shortage in release on this machine at this scene.
+
+**Two measurement traps this cost a session to find, both worth keeping:**
+
+- *Unpinned runs are worthless here.* The first before/after comparison showed
+  a uniform 3–5× "improvement" across phases that had not been touched at all —
+  `ui_paint`, `atlases`, `ui_layout`. That was contention, not the change. A
+  pinned, interleaved A/B (three runs each, alternating) put the same change at
+  1.4× on the ground collect and about 7% on the frame. Interleave and pin, or
+  do not compare.
+- *Headless picks the other adapter.* Under `WLR_BACKENDS=headless` the client
+  came up on the integrated Raphael GPU, where the `statics` pass alone costs
+  25–30 ms and the whole frame looks GPU-bound at roughly 20 fps. Forcing the
+  discrete card (`MESA_VK_DEVICE_SELECT=1002:747e`) drops that same pass to
+  1.0 ms. Any GPU number from a headless run must name the adapter it came from.
+
+The iGPU figure is not merely an artifact to discard, though: it is a free
+measurement of what a player on integrated graphics gets, and it says the
+release ceiling is the **`statics` fill rate at the widest zoom** — 7,288 sprite
+instances into a multi-attachment G-buffer — followed by `blit: lighting` at
+5–8 ms. That is where release headroom is, and it is a GPU question, not one of
+the CPU sessions below.
+
+### What was done
+
+The per-tile CPU cost of assembling a far-zoom frame, which the counts now in
+the jank record give a denominator for: 26,732 ground quads and 7,288 static
+rows at the widest zoom.
+
+- `LandWindow` copies the visible rectangle out of `Map` once, in the order the
+  map stores it, before the ground walk reads it in the order the screen wants.
+  The map is 8×8 blocks laid out column-major and the walk is by anti-diagonal,
+  so every tile was missing the cache four times over — its own cell and the
+  three neighbours its corner heights read. Ground collect: 1.48 → 1.05 ms.
+- `LandAtlas`, `TexmapAtlas` and `StaticAtlasPages` answered their per-graphic
+  lookups out of `BTreeMap`s, twice per visible tile and four times per drawn
+  static, and derived the atlas rectangle with divisions each time. All three
+  now index a dense table by the graphic and store the rectangle computed when
+  it was packed.
+- `detail_map_statics` copied the whole instance list every frame for a pass
+  that only reads it; `detail_ground` rebuilt the ground list even when no block
+  was cached and the filter kept every quad. Both borrow now.
+
+The jank record gained `ground_quads`, `static_rows` and `item_rows`, plus three
+sub-timers inside `geometry` that were previously unattributed — the
+static-cache copy, `split_corners`, and the overlay collectors. All three turned
+out to be noise (0.01–0.12 ms); the geometry cost is the two map walks and
+nothing else.
+
+`--scenario lod-sweep` is now on the playground as well as the client. It is the
+one to profile with: `zoom-soak` holds the camera still, so the static-geometry
+cache hits on almost every frame and the walk it is supposed to measure does not
+run. Under `lod-sweep` most frames report `ground_quads=0` — the composite cache
+is serving the ground outright.
+
+### Next, in order
+
+1. Confirm these numbers on the operator's own desktop session rather than a
+   headless one. Everything above says release is already at vsync; that claim
+   is worth one real run before any further CPU work is planned.
+2. If release headroom is wanted, it is the GPU passes at the widest zoom, and
+   the iGPU is the cheap way to see them move. Sessions 2–4 below are CPU work
+   and their premise — that the CPU is the limit — no longer holds in release.
+3. The debug build is a separate question with a separate answer: client crates
+   build at `opt-level = 1` and every dependency at `0`. Raising them is
+   untested and is the first thing to try before optimising debug's algorithms.
+
+## Earlier handoff — 2026-08-13
 
 ### What the current evidence says
 
