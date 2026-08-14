@@ -182,7 +182,8 @@ pub struct Shell {
     world_overlay_context: egui::Context,
     world_overlay_output: Option<egui::FullOutput>,
     state: egui_winit::State,
-    renderer: egui_wgpu::Renderer,
+    /// The HUD's stream; intentionally distinct from `world_overlay_renderer`.
+    hud_renderer: egui_wgpu::Renderer,
     /// The world-overlay pass and the HUD are encoded into one command buffer.
     /// They therefore cannot share egui's mutable vertex/index streams: the
     /// HUD upload would otherwise replace the health-bar mesh before the GPU
@@ -237,7 +238,7 @@ impl Shell {
             None,
             Some(device.limits().max_texture_dimension_2d as usize),
         );
-        let renderer = egui_wgpu::Renderer::new(
+        let hud_renderer = egui_wgpu::Renderer::new(
             device,
             format,
             egui_wgpu::RendererOptions {
@@ -252,7 +253,7 @@ impl Shell {
             world_overlay_context,
             world_overlay_output: None,
             state,
-            renderer,
+            hud_renderer,
             world_overlay_renderer,
             viewport: ViewportRect {
                 x: 0,
@@ -465,7 +466,7 @@ impl Shell {
         size_in_pixels: [u32; 2],
     ) {
         Self::paint_output(
-            &mut self.renderer,
+            &mut self.hud_renderer,
             &self.context,
             EguiLayer::Hud,
             device,

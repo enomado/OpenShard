@@ -1842,6 +1842,16 @@ mod tests {
         assert_eq!(quads[0].rect.height, 10.0);
     }
 
+    #[test]
+    fn a_translucent_picture_keeps_its_requested_alpha() {
+        let atlas = atlas_of([(Graphic(1), block(20, 10))]);
+        let quads = collect(
+            &[Picture::plain(GumpArt::Gump(Graphic(1)), GumpPixel::new(0, 0)).translucent(127)],
+            &atlas,
+        );
+        assert_eq!((quads[0].hue >> 16) & 0xFF, 127);
+    }
+
     /// A gump the client ships no art for is skipped, not drawn as a box and not
     /// an error: a layout naming one is the shard's business and the rest of the
     /// window is still worth having.

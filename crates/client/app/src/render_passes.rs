@@ -385,13 +385,14 @@ pub(crate) fn draw_gump_windows(
                                 let layer = openshard_protocol::wire::Layer(
                                     resources.tiledata.static_tile(item.graphic.0).layer,
                                 );
-                                (layer.0 > 0 && !equipment.iter().any(|worn| worn.layer == layer)).then_some(
-                                    openshard_client_render::mobiles::EquipmentLayer {
-                                        graphic: resources.tiledata.static_tile(item.graphic.0).anim_id,
-                                        hue: item.hue,
-                                        layer,
-                                    },
-                                )
+                                (own && layer.0 > 0
+                                    && layer.0 <= 25
+                                    && !equipment.iter().any(|worn| worn.layer == layer))
+                                .then_some(openshard_client_render::mobiles::EquipmentLayer {
+                                    graphic: resources.tiledata.static_tile(item.graphic.0).anim_id,
+                                    hue: item.hue,
+                                    layer,
+                                })
                             });
                         drawn_windows.push((
                             open.subject,

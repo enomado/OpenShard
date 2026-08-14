@@ -442,6 +442,69 @@ fn a_server_step_turns_first_then_moves() {
 }
 
 #[test]
+fn a_walk_into_another_mobile_is_refused() {
+    let now = Instant::now();
+    let mut world = world();
+    let connection = enter(&mut world, now);
+    let entity = world.state.players[&connection];
+    let from = world.state.registry.get::<Position>(entity).unwrap().0;
+    // The player begins facing south, so this is a real step rather than a turn.
+    spawn_mobile_at(&mut world, Point::new(from.x, from.y + 1, from.z), 50, now);
+    let _ = world.drain_outbound().count();
+
+    let mut refused: Cursor<StepRefused> = world.bus().cursor();
+    world.queue(Command::Walk {
+        connection,
+        request: walk(0, Direction::South),
+    });
+    world.tick(now);
+
+    assert_eq!(
+        world.state.registry.get::<Position>(entity).unwrap().0,
+        from,
+        "the occupied tile is not entered"
+    );
+    assert!(
+        world
+            .drain_outbound()
+            .any(|out| out.packet.first() == Some(&0x21)),
+        "the client receives the ordinary walk rejection"
+    );
+    assert!(
+        world.bus().read(&mut refused).any(|event| event.entity == entity),
+        "systems are told that the step was blocked"
+    );
+}
+
+#[test]
+fn a_server_step_into_another_mobile_is_refused() {
+    let now = Instant::now();
+    let mut world = world();
+    let connection = enter(&mut world, now);
+    let entity = world.state.players[&connection];
+    let serial = serial_of(&world, connection);
+    let from = world.state.registry.get::<Position>(entity).unwrap().0;
+    spawn_mobile_at(&mut world, Point::new(from.x, from.y + 1, from.z), 50, now);
+
+    let mut refused: Cursor<StepRefused> = world.bus().cursor();
+    world.queue(Command::Step {
+        serial,
+        direction: Direction::South.to_bits(),
+    });
+    world.tick(now);
+
+    assert_eq!(
+        world.state.registry.get::<Position>(entity).unwrap().0,
+        from,
+        "a server-directed mobile also stays off the occupied tile"
+    );
+    assert!(
+        world.bus().read(&mut refused).any(|event| event.entity == entity),
+        "the blocked server step is observable"
+    );
+}
+
+#[test]
 fn a_server_step_for_an_unknown_serial_is_a_no_op() {
     // A script can name a serial that has logged out between the event and
     // the command it queued in response. That is a miss, not a crash.

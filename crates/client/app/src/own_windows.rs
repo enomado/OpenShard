@@ -204,7 +204,16 @@ impl App {
             .item_drag
             .and_then(crate::windows::ItemDragTransaction::drag)
             .and_then(|drag| match self.window_under_pointer() {
-                Some(WindowSubject::Paperdoll(mobile)) => Some((mobile, drag.item)),
+                Some(WindowSubject::Paperdoll(mobile))
+                    if self
+                        .world
+                        .authoritative
+                        .view
+                        .as_ref()
+                        .is_some_and(|view| view.player.serial == mobile) =>
+                {
+                    Some((mobile, drag.item))
+                }
                 _ => None,
             });
         let changed = self.windows.hovered_equipment != hovered || self.windows.preview_equipment != preview;
@@ -260,6 +269,24 @@ impl App {
                 let layer = openshard_protocol::wire::Layer(
                     self.resources.tiledata.static_tile(drag.item.graphic.0).layer,
                 );
+                let Some(view) = self.world.authoritative.view.as_ref() else {
+                    return true;
+                };
+                // This is the same local gate ClassicUO uses for its ghost:
+                // a wearable can land only on our own doll and only in an
+                // empty slot.  The shard remains authoritative, but sending
+                // an equip it will certainly reject leaves a misleading drag.
+                let slot_taken = view.player.serial != mobile
+                    || layer.0 == 0
+                    || layer.0 > 25
+                    || view
+                        .player
+                        .equipment
+                        .iter()
+                        .any(|worn| worn.layer == layer && worn.serial != drag.item.serial);
+                if slot_taken {
+                    return true;
+                }
                 if let Some(link) = self.world.shard.link() {
                     link.equip(drag.item.serial, layer, mobile);
                     self.windows.item_drag = Some(crate::windows::ItemDragTransaction::Dropped {

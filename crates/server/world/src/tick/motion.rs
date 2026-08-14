@@ -77,12 +77,37 @@ impl World {
             .has::<openshard_state::components::Riding>(entity);
         // The live terrain, not the bare map: a closed door blocks a walk the
         // statics would allow.
+        let before = walker;
         let outcome = walker.request(
             request,
             &self.state.facet_state(facet).live_terrain(),
             now,
             mounted,
         );
+        // `Walker::request` commits an accepted position to its private copy.
+        // A body on that tile is another kind of obstruction, so restore the
+        // whole walker before replying with the ordinary refusal. This keeps the
+        // walk sequence and the authoritative position in lockstep for the next
+        // client request.
+        if matches!(outcome, Walk::Moved { position, .. } if self.state.mobile_occupies(facet, position, entity))
+        {
+            self.state.registry.insert(entity, Movement(before));
+            self.state.send_packet(
+                connection,
+                &ServerPacket::WalkReject(WalkReject {
+                    sequence: request.sequence.interpret(),
+                    position: before.position,
+                    facing: before.facing,
+                }),
+            );
+            self.state.bus.send(StepRefused {
+                entity,
+                serial,
+                reason: RefusedReason::Blocked,
+            });
+            debug!(%serial, reason = ?RefusedReason::Blocked, "step refused: mobile occupies the destination");
+            return;
+        }
         self.state.registry.insert(entity, Movement(walker));
 
         match outcome {
@@ -236,6 +261,14 @@ impl World {
             });
             return;
         };
+        if self.state.mobile_occupies(facet, landed, entity) {
+            self.state.bus.send(StepRefused {
+                entity,
+                serial,
+                reason: RefusedReason::Blocked,
+            });
+            return;
+        }
 
         let facing = Facing::walking(direction);
         walker.position = landed;

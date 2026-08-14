@@ -796,6 +796,20 @@ impl WorldState {
             .expect("an entity's facet is always loaded")
     }
 
+    /// Whether a mobile other than `except` is already standing at `at`.
+    ///
+    /// The sector grid also contains items and decorations, so looking up a tile
+    /// there is only the cheap candidate search. A [`Body`] is what distinguishes
+    /// a mobile from those world objects. Point equality includes the height: two
+    /// mobiles on separate floors at the same x/y do not block one another.
+    #[must_use]
+    pub fn mobile_occupies(&self, facet: Facet, at: Point, except: EntityId) -> bool {
+        self.facet_state(facet)
+            .sectors
+            .nearby(at, 0)
+            .any(|(entity, position)| entity != except && position == at && self.registry.has::<Body>(entity))
+    }
+
     /// The region a point on `facet` falls in, if any.
     #[must_use]
     pub fn region_at(&self, facet: Facet, point: Point) -> Option<&Region> {
