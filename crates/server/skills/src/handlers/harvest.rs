@@ -33,8 +33,12 @@ use crate::check::{roll_skill_band, skill_value};
 /// "You have worn out your tool!" — said before a cursor goes up, so a spent
 /// pickaxe never asks a question it cannot answer.
 const WORN_OUT: ClilocId = ClilocId(1_044_038);
-/// "Where do you wish to dig?" / the prompt each tool asks with.
+/// "Where do you wish to dig?" — mining's prompt.
 const DIG_WHERE: ClilocId = ClilocId(503_033);
+/// "What do you want to use this item on?" — ServUO's `BaseAxe` prompt.
+const CHOP_WHERE: ClilocId = ClilocId(1_010_018);
+/// "What water do you want to fish in?" — fishing's prompt.
+const FISH_WHERE: ClilocId = ClilocId(500_974);
 /// "Target a mountain or cave." — what a pick says about a patch of grass.
 const NOT_MINABLE: ClilocId = ClilocId(501_862);
 /// "You can't use an axe on that." — ServUO's `Lumberjacking.OnBadHarvestTarget`.
@@ -111,9 +115,9 @@ pub fn use_tool(state: &mut WorldState, harvester: EntityId, tool: EntityId) -> 
     else {
         return false;
     };
-    if tool_data(graphic).is_none() {
+    let Some(data) = tool_data(graphic) else {
         return false;
-    }
+    };
     // ServUO's `CheckTool`: a spent tool is refused before anything else, so the
     // player is told rather than left targeting into a no-op.
     if state
@@ -131,7 +135,13 @@ pub fn use_tool(state: &mut WorldState, harvester: EntityId, tool: EntityId) -> 
         return true;
     };
     state.raise_target(harvester, TargetPurpose::Harvest { tool });
-    state.localized_message(harvester, DIG_WHERE, "");
+    let prompt = match data.skill {
+        Skill::Mining => DIG_WHERE,
+        Skill::Lumberjacking => CHOP_WHERE,
+        Skill::Fishing => FISH_WHERE,
+        _ => unreachable!("harvesting tools only use harvesting skills"),
+    };
+    state.localized_message(harvester, prompt, "");
     // The *location* cursor, not the object one: a mountain face and a patch of
     // water are not entities, and an object cursor would refuse the click.
     state.send_packet(

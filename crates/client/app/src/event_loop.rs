@@ -443,7 +443,9 @@ impl ApplicationHandler<()> for App {
             // with, and a `KeyboardInput` for the shift itself would miss the
             // case of it going down between two steps.
             WindowEvent::ModifiersChanged(modifiers) => {
-                self.steer.set_running(modifiers.state().shift_key());
+                let shift = modifiers.state().shift_key();
+                self.steer.set_running(shift);
+                self.input.shift_held = shift;
                 // Toggling Ctrl mid-drag switches the right-hold from a
                 // heading to a move order (or back) on the next cursor move —
                 // no special-casing needed, `walk_toward_cursor` reads this
@@ -468,6 +470,7 @@ impl ApplicationHandler<()> for App {
                 } else {
                     self.steer.clear();
                     self.input.aiming = false;
+                    self.input.shift_held = false;
                     self.set_war_mode_held(false);
                 }
             }

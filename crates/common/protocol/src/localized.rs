@@ -188,6 +188,10 @@ pub const SERVER_MESSAGES: &[Message] = &[
         fallback: "You are already fishing.",
     },
     Message {
+        id: ClilocId(500974),
+        fallback: "What water do you want to fish in?",
+    },
+    Message {
         id: ClilocId(500976),
         fallback: "You need to be closer to the water to fish!",
     },
@@ -542,6 +546,10 @@ pub const SERVER_MESSAGES: &[Message] = &[
     Message {
         id: ClilocId(1008085),
         fallback: "You play your music and your target becomes angered.  Whom do you wish them to attack?",
+    },
+    Message {
+        id: ClilocId(1010018),
+        fallback: "What do you want to use this item on?",
     },
     Message {
         id: ClilocId(1010481),

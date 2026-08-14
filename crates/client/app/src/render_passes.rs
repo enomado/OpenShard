@@ -27,6 +27,10 @@ use crate::frame_geometry::FrameGeometry;
 use crate::picking::{self, SelectedIdentity};
 use crate::window::Screen;
 
+fn container_hover_text(item: &ContainedItem, name: &str) -> String {
+    format!("{name} ({})", item.amount.0)
+}
+
 /// Facts from the one world-pass encoding that a GPU dump can later compare
 /// with its attachments. Keeping these numbers beside the exact frame closes
 /// the gap between a requested LOD policy and the list the ground renderer was
@@ -500,6 +504,23 @@ pub(crate) fn draw_gump_windows(
             pass.render_layer(&window.device, &window.queue, encoder, frame, &art);
             let mut labels = Vec::new();
             let mut cut = Vec::new();
+            let container_hover = match subject {
+                WindowSubject::Container(serial) => windows.hovered_container_item.and_then(|hovered| {
+                    let item = world
+                        .authoritative
+                        .view
+                        .as_ref()?
+                        .contents
+                        .get(serial)?
+                        .iter()
+                        .find(|item| item.serial == hovered)?;
+                    Some(container_hover_text(
+                        item,
+                        &resources.tiledata.static_tile(item.graphic.0).name,
+                    ))
+                }),
+                _ => None,
+            };
             match (subject, drawn) {
                 (WindowSubject::Dialog(gump_id), Drawn::Dialog(laid_out)) => {
                     if let Some(gump) = world
@@ -582,20 +603,20 @@ pub(crate) fn draw_gump_windows(
                             .find(|item| item.layer == openshard_protocol::wire::Layer::BACKPACK)
                             .map(|item| item.serial)
                     });
-                    if backpack != Some(*serial) {
-                        if let (Some(view), Some(open), Some(gump)) = (
-                            world.authoritative.view.as_ref(),
-                            windows
-                                .own_windows
-                                .iter()
-                                .find(|window| window.subject == *subject),
-                            world
-                                .authoritative
-                                .view
-                                .as_ref()
-                                .and_then(|view| view.containers.get(serial)),
-                        ) {
-                            if !view.vendor_buys.contains_key(serial) {
+                    if let (Some(view), Some(open), Some(gump)) = (
+                        world.authoritative.view.as_ref(),
+                        windows
+                            .own_windows
+                            .iter()
+                            .find(|window| window.subject == *subject),
+                        world
+                            .authoritative
+                            .view
+                            .as_ref()
+                            .and_then(|view| view.containers.get(serial)),
+                    ) {
+                        if !view.vendor_buys.contains_key(serial) {
+                            if backpack != Some(*serial) {
                                 if let Some(button) =
                                     container::take_all_button(&resources.gump_atlas, *gump, open.at)
                                 {
@@ -608,21 +629,25 @@ pub(crate) fn draw_gump_windows(
                                     });
                                 }
                             }
+                            if backpack == Some(*serial) {
+                                if let Some(button) =
+                                    container::stack_all_button(&resources.gump_atlas, *gump, open.at)
+                                {
+                                    labels.push(openshard_client_render::text::GumpLabel {
+                                        at: button.label_at(),
+                                        text: container::STACK_ALL_LABEL,
+                                        font: openshard_protocol::speech::Font(1),
+                                        hue: openshard_protocol::wire::Hue::LABEL,
+                                        clip: None,
+                                    });
+                                }
+                            }
                         }
                     }
-                    if let Some(item) = windows.hovered_container_item.and_then(|hovered| {
-                        world
-                            .authoritative
-                            .view
-                            .as_ref()?
-                            .contents
-                            .get(serial)?
-                            .iter()
-                            .find(|item| item.serial == hovered)
-                    }) {
+                    if let Some(text) = container_hover.as_deref() {
                         labels.push(openshard_client_render::text::GumpLabel {
                             at: cursor.offset(gump_art::GumpPixel::new(14, 18)),
-                            text: &resources.tiledata.static_tile(item.graphic.0).name,
+                            text,
                             font: openshard_protocol::speech::Font(1),
                             hue: openshard_protocol::wire::Hue::LABEL,
                             clip: None,
@@ -1229,4 +1254,28 @@ pub(crate) fn encode_world_passes(
         profile::end(window.gpu.as_ref(), encoder, timed);
     }
     audit
+}
+
+#[cfg(test)]
+mod tests {
+    use super::container_hover_text;
+    use openshard_protocol::containers::{ContainedItem, GridSlot};
+    use openshard_protocol::gump::GumpPoint;
+    use openshard_protocol::items::ItemAmount;
+    use openshard_protocol::serial::Serial;
+    use openshard_protocol::wire::{Graphic, Hue};
+
+    #[test]
+    fn a_container_hover_names_the_item_and_its_amount() {
+        let gold = ContainedItem {
+            serial: Serial::new(0x4000_0001).expect("an item serial"),
+            graphic: Graphic(0x0EED),
+            amount: ItemAmount(137),
+            at: GumpPoint::new(60, 60),
+            grid: GridSlot(0),
+            hue: Hue(0),
+        };
+
+        assert_eq!(container_hover_text(&gold, "gold coins"), "gold coins (137)");
+    }
 }

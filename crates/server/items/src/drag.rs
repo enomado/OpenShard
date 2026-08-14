@@ -19,8 +19,12 @@ pub fn pick_up(state: &mut WorldState, connection: ConnectionId, serial: RawSeri
     let Some(&player) = state.players.get(&connection) else {
         return;
     };
-    if state.held_of(connection).is_some() {
-        reject_drag(state, connection, DragCancelReason::AlreadyHolding);
+    if let Some(held) = state.held_of(connection) {
+        // Converge even a confused/older client. Merely rejecting the second
+        // lift leaves the first item in server limbo while the one DragCancel
+        // clears whichever transaction the client currently remembers. Bounce
+        // the authoritative cursor item instead, so both sides become empty.
+        bounce(state, connection, held, DragCancelReason::AlreadyHolding);
         return;
     }
     // The seam, and a refusal rather than silence: a lift the server will not
@@ -73,12 +77,31 @@ pub fn pick_up(state: &mut WorldState, connection: ConnectionId, serial: RawSeri
             reject_drag(state, connection, DragCancelReason::OutOfRange);
             return;
         }
+        let held = HeldItem {
+            entity: item,
+            origin: Origin::Ground {
+                position: item_pos,
+                facet,
+            },
+        };
+        if state.hold(connection, held).is_err() {
+            reject_drag(state, connection, DragCancelReason::AlreadyHolding);
+            return;
+        }
         // Taking part of a stack: leave the remainder behind as a new pile
         // and lift the original, now reduced to what was taken. The original
         // keeps its serial and goes to the cursor — the client's drag and its
         // eventual drop still name it — so only the leftover is a new object.
         let total = amount_of(state, item);
-        if amount > 0 && amount < total && state.registry.has::<Stackable>(item) {
+        let stackable = state.registry.has::<Stackable>(item)
+            || state
+                .registry
+                .get::<Drawn>(item)
+                .is_some_and(|drawn| drawn.id == GOLD_GRAPHIC);
+        if amount > 0 && amount < total && stackable {
+            // Normalise legacy gold while it participates, so the correction
+            // survives persistence and every later stack operation.
+            state.registry.insert(item, Stackable);
             spawn_leftover(state, item, total - amount, item_pos, facet);
             set_stack_amount(state, item, amount);
         }
@@ -97,16 +120,6 @@ pub fn pick_up(state: &mut WorldState, connection: ConnectionId, serial: RawSeri
         state.registry.remove::<Position>(item);
         // Off the ground, off the decay clock.
         state.registry.remove::<Decays>(item);
-        state.hold(
-            connection,
-            HeldItem {
-                entity: item,
-                origin: Origin::Ground {
-                    position: item_pos,
-                    facet,
-                },
-            },
-        );
     } else if let Some(&contained) = state.registry.get::<Contained>(item) {
         // Both halves of a secure trade are visible to both players, but only
         // the owner of a half may remove its contents.  Visibility is not
@@ -116,12 +129,31 @@ pub fn pick_up(state: &mut WorldState, connection: ConnectionId, serial: RawSeri
             reject_drag(state, connection, DragCancelReason::CannotLift);
             return;
         }
+        if state
+            .hold(
+                connection,
+                HeldItem {
+                    entity: item,
+                    origin: Origin::Container(contained),
+                },
+            )
+            .is_err()
+        {
+            reject_drag(state, connection, DragCancelReason::AlreadyHolding);
+            return;
+        }
         // Taking part of a stack out of a container: leave the remainder behind
         // in the same slot as a new pile and lift the original, reduced to what
         // was taken — the ground split's `UnStackSplit`, but the leftover stays
         // contained rather than dropping to the floor.
         let total = amount_of(state, item);
-        if amount > 0 && amount < total && state.registry.has::<Stackable>(item) {
+        let stackable = state.registry.has::<Stackable>(item)
+            || state
+                .registry
+                .get::<Drawn>(item)
+                .is_some_and(|drawn| drawn.id == GOLD_GRAPHIC);
+        if amount > 0 && amount < total && stackable {
+            state.registry.insert(item, Stackable);
             spawn_contained_leftover(state, item, total - amount, contained);
             set_stack_amount(state, item, amount);
         }
@@ -132,14 +164,20 @@ pub fn pick_up(state: &mut WorldState, connection: ConnectionId, serial: RawSeri
         note_looter(state, contained.container, player);
         tell_watchers_removed_except(state, contained.container, item_serial, Some(connection));
         state.registry.remove::<Contained>(item);
-        state.hold(
-            connection,
-            HeldItem {
-                entity: item,
-                origin: Origin::Container(contained),
-            },
-        );
     } else if let Some(&worn) = state.registry.get::<Equipped>(item) {
+        if state
+            .hold(
+                connection,
+                HeldItem {
+                    entity: item,
+                    origin: Origin::Worn(worn),
+                },
+            )
+            .is_err()
+        {
+            reject_drag(state, connection, DragCancelReason::AlreadyHolding);
+            return;
+        }
         // Off a mobile. The picker's own client drags it off the paperdoll;
         // everyone else watching the mobile is told to forget it, because
         // they knew it only as part of that mobile.
@@ -154,13 +192,6 @@ pub fn pick_up(state: &mut WorldState, connection: ConnectionId, serial: RawSeri
                 }
             }
         }
-        state.hold(
-            connection,
-            HeldItem {
-                entity: item,
-                origin: Origin::Worn(worn),
-            },
-        );
     } else {
         // Neither on the ground nor in a container: already on a cursor, or
         // nowhere. Nothing to lift.
@@ -489,6 +520,13 @@ pub fn bounce(state: &mut WorldState, connection: ConnectionId, held: HeldItem, 
 /// Put a held item back exactly where it came from — the ground it lay on or
 /// the container it was in.
 pub fn restore(state: &mut WorldState, held: HeldItem) {
+    // A trusted command can consume an item while its drag is in flight. That
+    // path clears the cursor before despawning it, but keep recovery total for
+    // old/stale state too: never try to attach location components to an entity
+    // that no longer exists.
+    if !state.registry.contains(held.entity) {
+        return;
+    }
     match held.origin {
         Origin::Ground { position, facet } => {
             place_on_ground(state, held.entity, position, facet);

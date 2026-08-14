@@ -33,6 +33,8 @@ use crate::gump::{GumpArt, GumpAtlas, GumpPixel, Picture};
 /// available for every chest and corpse without guessing at free pixels inside
 /// the many different container backgrounds.
 pub const TAKE_ALL_LABEL: &str = "[ Take all ]";
+/// Caption for compacting like piles through ordinary client drag packets.
+pub const STACK_ALL_LABEL: &str = "[ Stack all ]";
 
 /// A rectangular client-side container action.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -95,6 +97,15 @@ pub fn take_all_button(atlas: &GumpAtlas, gump: Graphic, at: GumpPixel) -> Optio
     Some(ActionButton {
         at: at.offset(GumpPixel::new(0, height + 4)),
         size: (72, 18),
+    })
+}
+
+/// The compact-piles plate below the player's backpack.
+pub fn stack_all_button(atlas: &GumpAtlas, gump: Graphic, at: GumpPixel) -> Option<ActionButton> {
+    let (_, height) = size(atlas, gump)?;
+    Some(ActionButton {
+        at: at.offset(GumpPixel::new(0, height + 4)),
+        size: (80, 18),
     })
 }
 
@@ -231,6 +242,14 @@ mod tests {
         assert!(button.contains(GumpPixel::new(371, 321)));
         assert!(!button.contains(GumpPixel::new(372, 321)));
         assert!(!button.contains(GumpPixel::new(371, 322)));
+    }
+
+    #[test]
+    fn stack_all_button_uses_the_backpacks_action_slot() {
+        let button = stack_all_button(&atlas(), BAG, GumpPixel::new(300, 200)).expect("the bag is packed");
+        assert_eq!(button.at, GumpPixel::new(300, 304));
+        assert!(button.contains(GumpPixel::new(379, 321)));
+        assert!(!button.contains(GumpPixel::new(380, 321)));
     }
 
     /// Item coordinates are measured from the background's top left, so moving

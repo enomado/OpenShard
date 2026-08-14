@@ -401,6 +401,15 @@ impl Link {
         self.send(Command::Outgoing(Outgoing::DropInto { item, container, at }));
     }
 
+    /// Drop a held item onto another item, allowing the shard's normal stack rule.
+    pub fn drop_onto_item(&self, item: Serial, target: Serial) {
+        self.send(Command::Outgoing(Outgoing::DropInto {
+            item,
+            container: target,
+            at: GumpPoint::new(0, 0),
+        }));
+    }
+
     /// Drop the cursor item at a world position.
     pub fn drop_on_ground(&self, item: Serial, at: Point) {
         self.send(Command::Outgoing(Outgoing::DropOnGround { item, at }));

@@ -26,6 +26,8 @@ impl App {
             self.windows.skills = None;
             self.windows.held_skill = None;
             self.windows.status = false;
+            self.windows.stack_pass = None;
+            self.windows.split_pending = false;
             return;
         };
         // The state a dialog holds that no packet does, kept in step with the
@@ -39,5 +41,6 @@ impl App {
             self.windows.skills.is_some(),
             self.windows.status,
         );
+        self.advance_stack_pass();
     }
 }

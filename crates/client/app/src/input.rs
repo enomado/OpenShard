@@ -26,6 +26,8 @@ pub struct Input {
     /// — into a move order that plans a route with `find_path`. See
     /// `steer.rs`'s module docs.
     pub ctrl_held: bool,
+    /// Whether Shift is held; a stack drag reads it to request a partial amount.
+    pub shift_held: bool,
     /// Whether Tab is currently held for war mode. It must be remembered here
     /// rather than inferred from key-repeat events, which do not describe a
     /// second press and must not produce a second request.

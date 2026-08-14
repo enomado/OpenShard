@@ -207,17 +207,20 @@ fn a_lifted_pile_is_still_carried() {
 
     // Onto the cursor: out of the container, into the drag.
     world.state.registry.remove::<Contained>(purse);
-    world.state.hold(
-        connection,
-        openshard_state::HeldItem {
-            entity: purse,
-            origin: openshard_state::Origin::Container(Contained {
-                container: pack,
-                position: GumpPoint::new(40, 65),
-                grid: GridSlot(0),
-            }),
-        },
-    );
+    world
+        .state
+        .hold(
+            connection,
+            openshard_state::HeldItem {
+                entity: purse,
+                origin: openshard_state::Origin::Container(Contained {
+                    container: pack,
+                    position: GumpPoint::new(40, 65),
+                    grid: GridSlot(0),
+                }),
+            },
+        )
+        .expect("the test cursor is empty");
 
     assert_eq!(
         items::total_weight(&world.state, player, BODY_WEIGHT),

@@ -34,6 +34,29 @@ pub fn consume(state: &mut WorldState, serial: Serial, amount: u16) -> bool {
         // Worn or on a cursor — those never stack; fall through to whole removal.
     }
 
+    // A script may name an item while its ordinary drag is in flight. The item
+    // is allowed to be consumed, but the cursor is part of the same state
+    // transition: leaving `Connection::held` pointing at the despawned entity
+    // makes every later lift fail with AlreadyHolding forever.
+    let holders: Vec<ConnectionId> = state
+        .connections
+        .iter()
+        .filter_map(|(&connection, row)| {
+            row.held
+                .is_some_and(|held| held.entity == entity)
+                .then_some(connection)
+        })
+        .collect();
+    for connection in holders {
+        state.take_held(connection);
+        reject_drag(state, connection, DragCancelReason::Other);
+        // The lifter's authoritative view still projects the item at its
+        // origin: a successful lift intentionally echoed no Remove to that
+        // same client. DragCancel normally means "restore that projection",
+        // so consumption also has to say that the serial itself is gone.
+        state.send_packet(connection, &ServerPacket::Remove(Remove { serial }));
+    }
+
     // Whole-item removal, dispatched on where the item lives (the three location
     // components are mutually exclusive).
     if state.registry.has::<Position>(entity) {

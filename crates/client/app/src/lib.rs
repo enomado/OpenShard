@@ -953,6 +953,7 @@ pub fn run<D: Dial + Send + 'static>(
         input: input::Input {
             aiming: false,
             ctrl_held: false,
+            shift_held: false,
             war_mode_held: false,
             // No click has landed, so the next one cannot be the second of a
             // pair.
@@ -981,6 +982,8 @@ pub fn run<D: Dial + Send + 'static>(
             hovered_equipment: None,
             preview_equipment: None,
             item_drag: None,
+            split_pending: false,
+            stack_pass: None,
             last_container_click: None,
             held_doll: None,
             // Shut until the player presses Skills on their own paperdoll:

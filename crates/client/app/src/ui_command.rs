@@ -126,18 +126,26 @@ impl App {
         if cursor.kind == TargetKind::Object && object.is_none() {
             return false;
         }
-        let Some(location) = self
-            .pick_tile(camera)
-            .map(|tile| Point::new(tile.at.x, tile.at.y, tile.stand_z.0))
-        else {
-            return false;
+        // A location target still has to name a static when the cursor is on
+        // one.  Sending graphic zero means "bare land" on the 0x6C wire; doing
+        // that for a tree made the shard resolve the grass underneath it and
+        // reject an otherwise valid lumberjacking swing.  The static pick also
+        // carries its placed z, which is the exact value the shard verifies
+        // against the map.
+        let (location, graphic) = if let Some(picked) = self.picking.on_static {
+            (picked.at, Some(picked.graphic))
+        } else {
+            let Some(tile) = self.pick_tile(camera) else {
+                return false;
+            };
+            (Point::new(tile.at.x, tile.at.y, tile.stand_z.0), None)
         };
         if let Some(link) = self.world.shard.link() {
             link.target(TargetResponse {
                 cursor_id: cursor.cursor_id,
                 object,
                 location,
-                graphic: None,
+                graphic,
                 cancelled: false,
             });
         }

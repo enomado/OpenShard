@@ -398,6 +398,27 @@ fn a_fishing_pole_will_not_mine_and_a_pickaxe_will_not_fish() {
 }
 
 #[test]
+fn a_hatchet_asks_what_to_use_it_on_instead_of_where_to_dig() {
+    let now = Instant::now();
+    let mut world = world();
+    let player = enter(&mut world, now);
+    let axe = give_tool(&mut world, player, HATCHET);
+    world.tick(now);
+    let _ = packets_for(&mut world, player);
+
+    let serial = world.state.registry.serial_of(axe).unwrap();
+    world.queue(Command::DoubleClick {
+        connection: player,
+        request: UseRequest::Use(RawSerial(serial.raw())),
+    });
+    world.tick(now);
+
+    let messages = clilocs(&mut world, player);
+    assert!(messages.contains(&1_010_018), "the axe did not ask for an axe target");
+    assert!(!messages.contains(&503_033), "the axe asked where to dig");
+}
+
+#[test]
 fn a_hatchet_chops_a_tree_static() {
     // Two things at once: an axe is a harvesting tool *derived* from the weapon
     // table's `is_axe` rather than listed again, and a tree is a static — so the

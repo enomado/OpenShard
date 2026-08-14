@@ -2225,11 +2225,20 @@ impl WorldState {
         self.connections.get(&connection).and_then(|row| row.held)
     }
 
-    /// Put an item on `connection`'s cursor.
-    pub fn hold(&mut self, connection: ConnectionId, held: HeldItem) {
-        if let Some(row) = self.connections.get_mut(&connection) {
-            row.held = Some(held);
+    /// Put an item on `connection`'s empty cursor.
+    ///
+    /// Refuses both a missing connection and an occupied cursor. Replacing the
+    /// old value would orphan the first item in limbo, so callers must reserve
+    /// the cursor successfully before detaching a new item from its origin.
+    pub fn hold(&mut self, connection: ConnectionId, held: HeldItem) -> Result<(), HeldItem> {
+        let Some(row) = self.connections.get_mut(&connection) else {
+            return Err(held);
+        };
+        if row.held.is_some() {
+            return Err(held);
         }
+        row.held = Some(held);
+        Ok(())
     }
 
     /// Take whatever is on `connection`'s cursor off it.

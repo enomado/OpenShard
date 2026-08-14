@@ -31,7 +31,144 @@ mod paperdoll;
 mod skills;
 mod sync;
 
+const MAX_STACK: u16 = 60_000;
+const GOLD_GRAPHIC: Graphic = Graphic(0x0EED);
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+struct StackStep {
+    source: Serial,
+    target: Serial,
+    amount: u16,
+}
+
+fn split_amount(total: u16, requested: u16) -> Option<u16> {
+    (total > 1).then(|| requested.clamp(1, total - 1))
+}
+
+#[cfg(test)]
+mod stack_tests {
+    use super::*;
+    use openshard_protocol::containers::GridSlot;
+    use openshard_protocol::items::ItemAmount;
+    use openshard_protocol::wire::Hue;
+
+    fn pile(serial: u32, amount: u16) -> ContainedItem {
+        ContainedItem {
+            serial: Serial::new(serial).expect("item serial"),
+            graphic: GOLD_GRAPHIC,
+            amount: ItemAmount(amount),
+            at: GumpPoint::new(0, 0),
+            grid: GridSlot(0),
+            hue: Hue::NONE,
+        }
+    }
+
+    #[test]
+    fn stacking_prefers_a_whole_pile_that_fits() {
+        let items = [
+            pile(0x4000_0001, 50_000),
+            pile(0x4000_0002, 20_000),
+            pile(0x4000_0003, 5_000),
+        ];
+        assert_eq!(
+            next_stack_step(&items),
+            Some(StackStep {
+                source: items[2].serial,
+                target: items[0].serial,
+                amount: 5_000,
+            })
+        );
+    }
+
+    #[test]
+    fn stacking_splits_only_enough_to_fill_sixty_thousand() {
+        let items = [pile(0x4000_0001, 55_000), pile(0x4000_0002, 20_000)];
+        assert_eq!(next_stack_step(&items).expect("one pass").amount, 5_000);
+    }
+
+    #[test]
+    fn full_piles_are_skipped_on_the_way_to_a_remainder() {
+        let items = [
+            pile(0x4000_0001, MAX_STACK),
+            pile(0x4000_0002, 15_000),
+            pile(0x4000_0003, 10_000),
+        ];
+        let step = next_stack_step(&items).expect("the remainder piles merge");
+        assert_eq!(step.target, items[1].serial);
+        assert_eq!(step.amount, 10_000);
+    }
+
+    #[test]
+    fn a_split_never_takes_none_or_the_whole_stack() {
+        assert_eq!(split_amount(10, 0), Some(1));
+        assert_eq!(split_amount(10, 4), Some(4));
+        assert_eq!(split_amount(10, 10), Some(9));
+        assert_eq!(split_amount(1, 1), None);
+    }
+}
+
+/// Pick one safe merge for this pass. Whole donor piles are preferred when
+/// they fit; a partial donor is used only to finish a target at 60,000. That
+/// keeps serial churn low, while recomputing after every server refresh makes
+/// split remainders available to the following pass.
+fn next_stack_step(items: &[ContainedItem]) -> Option<StackStep> {
+    for (target_index, target) in items.iter().enumerate() {
+        let room = MAX_STACK.saturating_sub(target.amount.0);
+        if room == 0 {
+            continue;
+        }
+        let matches = |item: &&ContainedItem| {
+            item.graphic == target.graphic
+                && item.hue == target.hue
+                && (target.graphic == GOLD_GRAPHIC || target.amount.0 > 1 || item.amount.0 > 1)
+        };
+        let donors: Vec<_> = items[target_index + 1..].iter().filter(matches).collect();
+        let Some(source) = donors
+            .iter()
+            .rev()
+            .find(|item| item.amount.0 <= room)
+            .copied()
+            .or_else(|| donors.last().copied())
+        else {
+            continue;
+        };
+        return Some(StackStep {
+            source: source.serial,
+            target: target.serial,
+            amount: room.min(source.amount.0),
+        });
+    }
+    None
+}
+
 impl App {
+    fn stack_all_button_under_pointer(&self) -> Option<Serial> {
+        let view = self.world.authoritative.view.as_ref()?;
+        let backpack = view
+            .player
+            .equipment
+            .iter()
+            .find(|item| item.layer == Layer::BACKPACK)
+            .map(|item| item.serial)?;
+        for open in self.windows.own_windows.iter().rev() {
+            if let WindowSubject::Container(serial) = open.subject {
+                if serial == backpack && !view.vendor_buys.contains_key(&serial) {
+                    if let Some(gump) = view.containers.get(&serial) {
+                        if container::stack_all_button(&self.resources.gump_atlas, *gump, open.at)
+                            .is_some_and(|button| button.contains(self.input.pointer_gump))
+                        {
+                            return Some(serial);
+                        }
+                    }
+                }
+            }
+            if self.window_under_pointer() == Some(open.subject) {
+                return None;
+            }
+        }
+        None
+    }
+
     /// The visible loot action under the pointer, if it is not covered by a
     /// higher window. The player's own backpack and vendor catalogues never
     /// offer it: neither is loot to sweep into the backpack.
@@ -98,6 +235,67 @@ impl App {
                 backpack,
                 GumpPoint::new(20 + column * 18, 20 + row * 18),
             );
+        }
+    }
+
+    fn start_stack_pass(&mut self, container: Serial) {
+        if self.windows.item_drag.is_some() {
+            return;
+        }
+        self.windows.stack_pass = Some(crate::windows::StackPass {
+            container,
+            awaiting: None,
+        });
+        self.advance_stack_pass();
+    }
+
+    /// Send one merge from the latest authoritative container snapshot.
+    /// A refresh follows every drag because a successful merge consumes the
+    /// source serial without echoing a Remove packet to the client that lifted
+    /// it. The next pass therefore never plans against a stale split remainder.
+    pub(crate) fn advance_stack_pass(&mut self) {
+        const RESPONSE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+        let Some(pass) = self.windows.stack_pass.as_ref() else {
+            return;
+        };
+        if self.windows.item_drag.is_some() {
+            self.windows.stack_pass = None;
+            return;
+        }
+        let container_serial = pass.container;
+        let Some(items) = self
+            .world
+            .authoritative
+            .view
+            .as_ref()
+            .and_then(|view| view.contents.get(&container_serial))
+        else {
+            self.windows.stack_pass = None;
+            return;
+        };
+        if let Some((source, sent_at)) = &pass.awaiting {
+            if items.iter().any(|item| item.serial == *source) {
+                if sent_at.elapsed() >= RESPONSE_TIMEOUT {
+                    self.windows.stack_pass = None;
+                }
+                return;
+            }
+        }
+        let Some(step) = next_stack_step(items) else {
+            self.windows.stack_pass = None;
+            return;
+        };
+        let Some(link) = self.world.shard.link() else {
+            self.windows.stack_pass = None;
+            return;
+        };
+        link.pick_up_item(step.source, openshard_protocol::items::ItemAmount(step.amount));
+        link.drop_onto_item(step.source, step.target);
+        // Reopening requests a complete 0x3C list and repairs the intentionally
+        // suppressed Remove-to-lifter packet before the following pass.
+        link.use_object(container_serial);
+        if let Some(pass) = self.windows.stack_pass.as_mut() {
+            pass.awaiting = Some((step.source, Instant::now()));
         }
     }
 
@@ -309,6 +507,17 @@ impl App {
         {
             return false;
         }
+        if self.input.shift_held && press.item.amount.0 > 1 {
+            if !self.windows.split_pending {
+                let Some(shell) = self.shell.as_mut() else {
+                    return false;
+                };
+                shell.open_split(press.item.amount.0 - 1);
+                self.windows.split_pending = true;
+                self.windows.dragging = None;
+            }
+            return true;
+        }
         let Some(link) = self.world.shard.link() else {
             return false;
         };
@@ -324,6 +533,59 @@ impl App {
         self.windows.hovered_container_item = None;
         self.windows.dragging = None;
         true
+    }
+
+    /// Continue or cancel the Pressed transaction held while the amount prompt
+    /// was open. A contained stack is placed back beside its remainder so the
+    /// modal gesture finishes visibly; a ground stack remains on the cursor.
+    pub(crate) fn finish_stack_split(&mut self, decision: crate::shell::SplitDecision) {
+        self.windows.split_pending = false;
+        let Some(crate::windows::ItemDragTransaction::Pressed(press)) = self.windows.item_drag else {
+            return;
+        };
+        let crate::shell::SplitDecision::Confirm(amount) = decision else {
+            self.windows.item_drag = None;
+            return;
+        };
+        let Some(amount) = split_amount(press.item.amount.0, amount) else {
+            self.windows.item_drag = None;
+            return;
+        };
+        let Some(link) = self.world.shard.link() else {
+            self.windows.item_drag = None;
+            return;
+        };
+        let split_item = ContainedItem {
+            amount: openshard_protocol::items::ItemAmount(amount),
+            ..press.item
+        };
+        let drag = crate::windows::ItemDrag {
+            item: split_item,
+            origin: press.origin,
+            grab: press.grab,
+        };
+        link.pick_up_item(press.item.serial, split_item.amount);
+        self.windows.item_drag = match press.origin {
+            crate::windows::DragOrigin::Container(container) => {
+                // Finish a backpack split immediately. The lift path suppresses
+                // Remove for its own client, so leaving the part on the cursor
+                // after a modal prompt can hide the old serial indefinitely.
+                // Dropping it back produces an Add for that serial; reopening
+                // then replaces the whole list, including the new remainder.
+                let at = GumpPoint::new(press.item.at.x + 18, press.item.at.y + 18);
+                link.drop_into(split_item.serial, container, at);
+                link.use_object(container);
+                Some(crate::windows::ItemDragTransaction::Dropped {
+                    drag,
+                    destination: crate::windows::PendingDrop::Container { container, at },
+                })
+            }
+            crate::windows::DragOrigin::Ground | crate::windows::DragOrigin::Equipment { .. } => {
+                Some(crate::windows::ItemDragTransaction::Held(drag))
+            }
+        };
+        self.reproject_item_drag();
+        self.windows.hovered_container_item = None;
     }
 
     /// Commit a held item to an open bag or a picked world tile. Its local
@@ -344,24 +606,10 @@ impl App {
                 let layer = openshard_protocol::wire::Layer(
                     self.resources.tiledata.static_tile(drag.item.graphic.0).layer,
                 );
-                let Some(view) = self.world.authoritative.view.as_ref() else {
-                    return true;
-                };
-                // This is the same local gate ClassicUO uses for its ghost:
-                // a wearable can land only on our own doll and only in an
-                // empty slot.  The shard remains authoritative, but sending
-                // an equip it will certainly reject leaves a misleading drag.
-                let slot_taken = view.player.serial != mobile
-                    || layer.0 == 0
-                    || layer.0 > 25
-                    || view
-                        .player
-                        .equipment
-                        .iter()
-                        .any(|worn| worn.layer == layer && worn.serial != drag.item.serial);
-                if slot_taken {
-                    return true;
-                }
+                // Always finish through the shard. An occupied or invalid
+                // slot is still an answer: `equip_item` sends DragCancel and
+                // restores the remembered origin. Keeping that rejection
+                // local used to strand this transaction in `Held`.
                 if let Some(link) = self.world.shard.link() {
                     link.equip(drag.item.serial, layer, mobile);
                     self.windows.item_drag = Some(crate::windows::ItemDragTransaction::Dropped {
@@ -430,6 +678,9 @@ impl App {
     /// Finish a click that never became a drag. The double-click decision was
     /// made on press, before this window can be raised or relaid out again.
     pub(crate) fn release_container_press(&mut self) -> bool {
+        if self.windows.split_pending {
+            return true;
+        }
         matches!(
             self.windows.item_drag,
             Some(crate::windows::ItemDragTransaction::Pressed(_))
@@ -522,6 +773,23 @@ impl App {
     /// drags it, which is how a gump is moved when it has no title bar to move
     /// it by. See `gump::Dialogs::press`.
     pub(crate) fn press_on_own_window(&mut self) -> bool {
+        // Once a lift has gone to the shard, this transaction is the cursor.
+        // A second press chooses another destination for that same item; it
+        // must never overwrite `item_drag` with a new source while the shard
+        // is still holding the old one.
+        if self
+            .windows
+            .item_drag
+            .is_some_and(crate::windows::ItemDragTransaction::owns_cursor)
+        {
+            self.windows.dragging = None;
+            return true;
+        }
+        if let Some(container) = self.stack_all_button_under_pointer() {
+            self.start_stack_pass(container);
+            self.windows.dragging = None;
+            return true;
+        }
         if let Some(container) = self.take_all_button_under_pointer() {
             self.take_all_from_container(container);
             self.windows.dragging = None;

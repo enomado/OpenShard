@@ -247,6 +247,12 @@ impl App {
         if let Some(transaction) = self.windows.item_drag {
             let confirmed = match packet {
                 ServerPacket::DragCancel(_) => true,
+                // A script or another authoritative system may remove the
+                // cursor item instead of landing it. That is terminal too:
+                // keeping the local transaction would block every new drag.
+                ServerPacket::Remove(removed) => transaction
+                    .drag()
+                    .is_some_and(|drag| removed.serial == drag.item.serial),
                 ServerPacket::AddToContainer(added) => {
                     matches!(
                         transaction.pending_drop(),
@@ -266,7 +272,8 @@ impl App {
                 ServerPacket::EquipUpdate(update) => {
                     matches!(
                         transaction.pending_drop(),
-                        Some(crate::windows::PendingDrop::Equipment { .. })
+                        Some(crate::windows::PendingDrop::Equipment { mobile, layer })
+                            if update.mobile == mobile && update.layer == layer
                     ) && transaction
                         .drag()
                         .is_some_and(|drag| update.item == drag.item.serial)

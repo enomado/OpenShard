@@ -69,6 +69,8 @@ pub struct Request {
     /// Save the next fully rendered world frame and its GPU planes. This is an
     /// edge-triggered diagnostic action, not a persistent display setting.
     pub frame_dump: bool,
+    /// Result of the modal stack-split prompt, when it closed this frame.
+    pub split: Option<SplitDecision>,
     /// Put the eye back on the body and lock it there.
     pub relock: bool,
     /// Let go of the body.
@@ -141,6 +143,18 @@ pub struct Request {
     pub audio: Option<crate::desk::Audio>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SplitDecision {
+    Confirm(u16),
+    Cancel,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct SplitPrompt {
+    amount: u16,
+    max: u16,
+}
+
 /// What the script picker asked for.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ScriptRequest {
@@ -202,6 +216,7 @@ pub struct Shell {
     /// the app has a file to write. The `window` field is the one part of it this
     /// never touches: the operating system's window is the app's, not the HUD's.
     desk: Desk,
+    split_prompt: Option<SplitPrompt>,
 }
 
 impl Shell {
@@ -265,6 +280,15 @@ impl Shell {
             // animation clock is what wakes the loop.
             repaint_after: std::time::Duration::MAX,
             desk,
+            split_prompt: None,
+        }
+    }
+
+    /// Open the modal amount picker for a Shift-dragged stack.
+    pub fn open_split(&mut self, max: u16) {
+        if max > 0 {
+            self.split_prompt = Some(SplitPrompt { amount: 1, max });
+            self.context.request_repaint();
         }
     }
 
@@ -390,8 +414,40 @@ impl Shell {
         // a docked panel shrinks the world and a floating window sits over it.
         let mut free = egui::Rect::from_min_size(egui::Pos2::ZERO, self.context.content_rect().size());
         let desk = &mut self.desk;
+        let split_prompt = &mut self.split_prompt;
         let output = self.context.run_ui(input, |ui| {
             request = layout(ui, hud, camera, world, desk);
+            if let Some(prompt) = split_prompt.as_mut() {
+                let mut decision = None;
+                egui::Window::new("Split stack")
+                    .collapsible(false)
+                    .resizable(false)
+                    .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+                    .show(ui.ctx(), |ui| {
+                        ui.label(format!("Amount (1–{}):", prompt.max));
+                        ui.add(
+                            egui::DragValue::new(&mut prompt.amount)
+                                .range(1..=prompt.max)
+                                .speed(1),
+                        );
+                        ui.horizontal(|ui| {
+                            if ui.button("Split").clicked()
+                                || ui.input(|input| input.key_pressed(egui::Key::Enter))
+                            {
+                                decision = Some(SplitDecision::Confirm(prompt.amount));
+                            }
+                            if ui.button("Cancel").clicked()
+                                || ui.input(|input| input.key_pressed(egui::Key::Escape))
+                            {
+                                decision = Some(SplitDecision::Cancel);
+                            }
+                        });
+                    });
+                if let Some(decision) = decision {
+                    request.split = Some(decision);
+                    *split_prompt = None;
+                }
+            }
             free = ui.available_rect_before_wrap();
         });
         // The scale lives in egui — Ctrl+`+` is egui's own shortcut and writes it

@@ -186,7 +186,24 @@ pub enum ItemDragTransaction {
     },
 }
 
+/// A client-side multi-pass compaction of one open container.
+#[derive(Clone, Debug)]
+pub struct StackPass {
+    pub container: Serial,
+    /// Source serial of the last merge, until a full container refresh removes it.
+    pub awaiting: Option<(Serial, Instant)>,
+}
+
 impl ItemDragTransaction {
+    /// Whether this transaction already owns the protocol cursor.
+    ///
+    /// A later mouse press must not replace either state: after `Held` the
+    /// shard may already have detached the item from its source, and after
+    /// `Dropped` its answer is still in flight. `Pressed` has sent no packet.
+    pub const fn owns_cursor(self) -> bool {
+        matches!(self, Self::Held(_) | Self::Dropped { .. })
+    }
+
     pub fn drag(self) -> Option<ItemDrag> {
         match self {
             Self::Pressed(_) => None,
@@ -278,6 +295,10 @@ pub struct Windows {
     /// The one local item-transfer transaction, from mouse press through
     /// authoritative confirmation or cancellation.
     pub item_drag: Option<ItemDragTransaction>,
+    /// A Shift-drag is waiting for the client-side amount prompt.
+    pub split_pending: bool,
+    /// An automatic sequence of ordinary lift/drop requests, one per fresh snapshot.
+    pub stack_pass: Option<StackPass>,
     /// The first click of a potential double-click use inside a container.
     pub last_container_click: Option<(Instant, Serial)>,
     /// The paperdoll button the mouse went down on, and whose doll it is.

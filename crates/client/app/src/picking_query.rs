@@ -615,6 +615,9 @@ impl App {
     /// *asked* for — it is what the layout left over, which `Shell` holds between
     /// frames — and it is applied beside this call rather than through it.
     pub(crate) fn apply(&mut self, request: shell::Request) {
+        if let Some(decision) = request.split {
+            self.finish_stack_split(decision);
+        }
         if request.frame_dump {
             self.request_frame_dump();
         }

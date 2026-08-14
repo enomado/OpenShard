@@ -756,6 +756,49 @@ fn picking_up_out_of_reach_is_rejected_and_leaves_the_item() {
 }
 
 #[test]
+fn a_second_lift_recovers_the_item_already_on_the_cursor() {
+    let now = Instant::now();
+    let mut world = world();
+    let player = enter(&mut world, now);
+    let here = Point::new(START.0, START.1, 0);
+    let first = spawn_plain_item_at(&mut world, here, now);
+    let second = spawn_plain_item_at(&mut world, here, now);
+    let first_item = entity(&world, first);
+    let second_item = entity(&world, second);
+
+    world.queue(Command::PickUpItem {
+        connection: player,
+        serial: RawSerial(first.raw()),
+        amount: 1,
+    });
+    world.tick(now);
+    let _ = packets_for(&mut world, player);
+    world.queue(Command::PickUpItem {
+        connection: player,
+        serial: RawSerial(second.raw()),
+        amount: 1,
+    });
+    world.tick(now);
+
+    assert!(
+        nothing_is_held(&world),
+        "the confused client and authoritative cursor converge on empty"
+    );
+    assert!(
+        world.state.registry.has::<Position>(first_item),
+        "the first item is recovered at its remembered origin"
+    );
+    assert!(
+        world.state.registry.has::<Position>(second_item),
+        "the rejected second item was never detached from its origin"
+    );
+    assert!(
+        packets_for(&mut world, player).iter().any(|p| p[0] == 0x27),
+        "the client receives a terminal answer for the second lift"
+    );
+}
+
+#[test]
 fn dropping_out_of_reach_bounces_the_item_back_to_where_it_was() {
     let now = Instant::now();
     let mut world = world();
@@ -1594,6 +1637,35 @@ fn consuming_a_ground_item_removes_it_and_clears_every_screen() {
 }
 
 #[test]
+fn consuming_an_item_on_the_cursor_releases_the_drag_transaction() {
+    let now = Instant::now();
+    let mut world = world();
+    let player = enter(&mut world, now);
+    let (item_serial, item) = take_loose_item(&mut world, player, now);
+    let _ = packets_for(&mut world, player);
+
+    assert!(world.state.held_of(player).is_some(), "the lift is in flight");
+    world.queue(Command::ConsumeItem {
+        serial: item_serial,
+        amount: 0,
+    });
+    world.tick(now);
+
+    assert!(!world.state.registry.contains(item), "the item was consumed");
+    assert!(nothing_is_held(&world), "the server cursor was released with it");
+    assert!(
+        {
+            let packets = packets_for(&mut world, player);
+            packets.iter().any(|p| p[0] == 0x27)
+                && packets
+                    .iter()
+                    .any(|p| p == &encode_packet(&Remove { serial: item_serial }, ClientVersion::TOL))
+        },
+        "the client was told to clear both its cursor and stale source projection"
+    );
+}
+
+#[test]
 fn consuming_a_contained_item_removes_it_from_the_open_gump() {
     // In a container the only client that need hear is one with the gump open —
     // the reagent-burn path. Put an item in, open the bag, consume it, and the
@@ -1813,6 +1885,36 @@ fn a_layer_holds_only_one_item() {
         "and returns to where it was lifted"
     );
     assert!(!world.state.registry.has::<Equipped>(second_item));
+    assert!(nothing_is_held(&world), "the rejected equip releases the cursor");
+}
+
+#[test]
+fn you_cannot_equip_an_item_onto_another_player() {
+    let now = Instant::now();
+    let mut world = world();
+    let player = enter(&mut world, now);
+    let other = enter_as(&mut world, ConnectionId::from_raw(2), now);
+    let other_serial = serial_of(&world, other);
+    let (held, held_item) = take_loose_item(&mut world, player, now);
+    let _ = packets_for(&mut world, player);
+
+    world.queue(Command::EquipItem {
+        connection: player,
+        item: RawSerial(held.raw()),
+        layer: RawLayer(LAYER_TORSO.0),
+        mobile: RawSerial(other_serial.raw()),
+    });
+    world.tick(now);
+
+    assert!(
+        packets_for(&mut world, player).iter().any(|p| p[0] == 0x27),
+        "the shard rejects dressing another mobile"
+    );
+    assert!(
+        world.state.registry.has::<Position>(held_item),
+        "the item returns to its remembered origin"
+    );
+    assert!(nothing_is_held(&world), "and the cursor is released");
 }
 
 #[test]
@@ -2394,6 +2496,9 @@ fn picking_up_part_of_a_stack_from_a_container_splits_it() {
     let here = Point::new(START.0, START.1, 0);
     let (container, pile) = gold_in_open_container(&mut world, player, here, 100, now);
     let pile_item = entity(&world, pile);
+    // Saves from before gold was intrinsically stackable can still be alive in
+    // a running world. Splitting uses the same graphic fallback as merging.
+    world.state.registry.remove::<Stackable>(pile_item);
     let _ = packets_for(&mut world, player);
 
     world.queue(Command::PickUpItem {

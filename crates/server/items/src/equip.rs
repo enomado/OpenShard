@@ -59,11 +59,18 @@ pub fn equip_item(
         bounce(state, connection, held, DragCancelReason::Other);
         return;
     };
-    // Only a mobile wears things, and only within reach of the player.
+    // Only the player on this connection may wear the item. Besides being the
+    // authority boundary, this prevents another cursor from filling an origin
+    // layer while its owner is in the middle of a drag.
     let Some(&player) = state.players.get(&connection) else {
         bounce(state, connection, held, DragCancelReason::Other);
         return;
     };
+    if wearer != player {
+        bounce(state, connection, held, DragCancelReason::Other);
+        return;
+    }
+    // Only a mobile wears things, and it still has to be in reach.
     let (Some(&Position(wearer_pos)), Some(&Position(player_pos))) = (
         state.registry.get::<Position>(wearer),
         state.registry.get::<Position>(player),
