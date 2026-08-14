@@ -108,6 +108,14 @@ pub fn pick_up(state: &mut WorldState, connection: ConnectionId, serial: RawSeri
             },
         );
     } else if let Some(&contained) = state.registry.get::<Contained>(item) {
+        // Both halves of a secure trade are visible to both players, but only
+        // the owner of a half may remove its contents.  Visibility is not
+        // authority: otherwise a partner could lift an offered item straight
+        // into their own pack before either checkbox was ticked.
+        if trade_container_owner(state, contained.container).is_some_and(|owner| owner != player) {
+            reject_drag(state, connection, DragCancelReason::CannotLift);
+            return;
+        }
         // Taking part of a stack out of a container: leave the remainder behind
         // in the same slot as a new pile and lift the original, reduced to what
         // was taken — the ground split's `UnStackSplit`, but the leftover stays
@@ -256,6 +264,13 @@ pub fn drop_into_container(
         bounce(state, connection, held, DragCancelReason::Other);
         return;
     };
+    // A trade escrow is only writable by its owner.  The partner watches this
+    // container, which is deliberately different from sharing permission to
+    // alter its offer.
+    if trade_container_owner(state, container_serial).is_some_and(|owner| owner != player) {
+        bounce(state, connection, held, DragCancelReason::Other);
+        return;
+    }
     // The container must be in reach — on the ground near the player, or worn on
     // them (their backpack) or on a mobile beside them. A worn pack has no
     // `Position` of its own; `in_reach` handles that. Dropping into a

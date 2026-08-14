@@ -97,6 +97,24 @@ fn trade_of_container(state: &WorldState, container: Serial) -> Option<TradeInde
         .map(TradeIndex)
 }
 
+/// The player who owns one half of a live trade window.
+///
+/// An escrow is a normal container so the regular drag machinery can draw and
+/// update it, but it is not a normal shared container: each party may only put
+/// goods in and take goods out of *their* half.  Without this gate, looking at
+/// the other offer would also grant permission to steal it.
+pub(crate) fn trade_container_owner(state: &WorldState, container: Serial) -> Option<EntityId> {
+    state.trades.iter().find_map(|trade| {
+        if trade.from.container_serial == container {
+            Some(trade.from.player)
+        } else if trade.to.container_serial == container {
+            Some(trade.to.player)
+        } else {
+            None
+        }
+    })
+}
+
 /// A held item was dropped on another player: open a trade, or add to the one
 /// already open with them.
 ///
@@ -300,9 +318,9 @@ pub fn set_accepted(state: &mut WorldState, connection: ConnectionId, container:
         return;
     };
     let trade = &mut state.trades[index.0];
-    if trade.from.player == player {
+    if trade.from.player == player && trade.from.container_serial == container {
         trade.from.accepted = accepted;
-    } else if trade.to.player == player {
+    } else if trade.to.player == player && trade.to.container_serial == container {
         trade.to.accepted = accepted;
     } else {
         return;
@@ -460,7 +478,7 @@ pub fn cancel_by_container(state: &mut WorldState, connection: ConnectionId, con
     let Some(index) = trade_of_container(state, container) else {
         return;
     };
-    if !state.trades[index.0].involves(player) {
+    if trade_container_owner(state, container) != Some(player) {
         return;
     }
     cancel(state, index);

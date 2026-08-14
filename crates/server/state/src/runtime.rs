@@ -23,6 +23,7 @@ use openshard_protocol::casting::SpellId;
 use openshard_protocol::combat::HealthBar;
 use openshard_protocol::feedback::{Animation, NewAnimation, PlaySound};
 use openshard_protocol::items::WorldItem;
+use openshard_protocol::localized;
 use openshard_protocol::mobile::{Equipment, MobileIncoming, MobileMove, Notoriety, Remove, StatusFlags};
 use openshard_protocol::properties::{PropertyList, TooltipRevision};
 use openshard_protocol::serial::Serial;
@@ -1004,6 +1005,11 @@ impl WorldState {
     /// fills the cliloc's `~1_val~` slots, tab-separated, and is usually empty.
     /// A mobile with no client hears nothing, like [`system_message`](Self::system_message).
     pub fn localized_message(&mut self, mobile: EntityId, cliloc: ClilocId, arguments: &str) {
+        debug_assert!(
+            localized::contains(cliloc),
+            "server emitted cliloc {} outside the shared catalogue",
+            cliloc.0
+        );
         let Some(&Client { connection, .. }) = self.registry.get::<Client>(mobile) else {
             return;
         };
@@ -1033,6 +1039,11 @@ impl WorldState {
         cliloc: ClilocId,
         arguments: &str,
     ) {
+        debug_assert!(
+            localized::contains(cliloc),
+            "server emitted cliloc {} outside the shared catalogue",
+            cliloc.0
+        );
         let Some(&Client { connection, .. }) = self.registry.get::<Client>(watcher) else {
             return;
         };

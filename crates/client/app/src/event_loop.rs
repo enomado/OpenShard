@@ -629,6 +629,13 @@ impl ApplicationHandler<()> for App {
                 // world cannot be a heading into it.
                 if button == winit::event::MouseButton::Right
                     && state == ElementState::Pressed
+                    && self.cancel_target_cursor()
+                {
+                    if let Some(window) = self.window.as_ref() {
+                        window.window.request_redraw();
+                    }
+                } else if button == winit::event::MouseButton::Right
+                    && state == ElementState::Pressed
                     && self.close_window_under_pointer()
                 {
                     if let Some(window) = self.window.as_ref() {
@@ -663,7 +670,11 @@ impl ApplicationHandler<()> for App {
                 // A list under the pointer takes the notch before the camera
                 // does: rolling a wheel over a window is scrolling that window,
                 // in this client as in every other.
-                if notches != 0.0 && (self.scroll_skills(notches) || self.zoom(notches > 0.0)) {
+                if notches != 0.0
+                    && (self.scroll_skills(notches)
+                        || self.scroll_vendor(notches)
+                        || self.zoom(notches > 0.0))
+                {
                     if let Some(window) = self.window.as_ref() {
                         window.window.request_redraw();
                     }

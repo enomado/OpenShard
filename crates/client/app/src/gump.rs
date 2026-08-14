@@ -52,6 +52,8 @@ use openshard_client_render::gump::{self, CAPTION_FONT, CaptionSource, GumpAtlas
 use openshard_client_render::text::{self, GumpLabel};
 use openshard_protocol::gump::layout::{Element, Flag};
 use openshard_protocol::gump::{GumpId, RawButtonId, RawGumpId, RawGumpKey, RawSwitchId};
+use openshard_protocol::localized;
+use openshard_protocol::wire::ClilocId;
 use openshard_uofiles::cliloc::{Cliloc, ClilocNumber};
 
 use crate::link::GumpReply;
@@ -254,7 +256,9 @@ impl Dialogs {
                 // `gump.line` already has.
                 let text = match caption.source {
                     CaptionSource::Line(line) => gump.line(line)?,
-                    CaptionSource::Cliloc(number) => cliloc?.get(ClilocNumber::new(number))?,
+                    CaptionSource::Cliloc(number) => cliloc
+                        .and_then(|table| table.get(ClilocNumber::new(number)))
+                        .or_else(|| localized::fallback(ClilocId(number)))?,
                 };
                 Some(GumpLabel {
                     at: caption.at,

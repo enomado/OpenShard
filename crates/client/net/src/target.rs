@@ -50,4 +50,26 @@ mod tests {
         };
         assert_eq!(decoded, response);
     }
+
+    #[test]
+    fn cancellation_reaches_the_shards_target_handler() {
+        let response = TargetResponse {
+            cursor_id: CursorId(42),
+            object: None,
+            location: Point::new(0, 0, 0),
+            graphic: None,
+            cancelled: true,
+        };
+        let ClientPacket::TargetResponse(decoded) =
+            ClientPacket::decode(&answer(response), ClientVersion::new(7, 0, 45, 65)).unwrap()
+        else {
+            panic!("target answer had the wrong packet type");
+        };
+        assert_eq!(decoded.cursor_id, response.cursor_id);
+        assert!(decoded.cancelled);
+        assert_eq!(decoded.object, None);
+        // A cancelled answer deliberately carries the protocol's `0xFFFF`
+        // sentinel in `x`, not the placeholder point passed to `answer`.
+        assert_eq!(decoded.location.x, u16::MAX);
+    }
 }

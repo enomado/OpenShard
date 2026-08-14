@@ -14,9 +14,12 @@ use openshard_client_render::control::Follow;
 use openshard_client_render::items::GroundItem;
 use openshard_client_render::mobiles;
 use openshard_movement::Terrain;
+use openshard_protocol::localized;
 use openshard_protocol::server_packet::ServerPacket;
+use openshard_protocol::speech::LocalizedMessage;
 use openshard_protocol::wire::Hue;
 use openshard_uofiles::anim::is_ghost;
+use openshard_uofiles::cliloc::{Cliloc, ClilocNumber};
 
 use crate::app::App;
 use crate::world::{MotionRenderState, advance_presentation_to, cluttered};
@@ -215,6 +218,19 @@ impl App {
     }
 
     fn apply_packet(&mut self, packet: &ServerPacket, movement: Option<link::Movement>) {
+        // A vendor catalogue has no wire-level close packet: closing it is a
+        // local decision, so `locally_closed` keeps the stale catalogue in the
+        // last view snapshot from immediately reappearing.  Conversely every
+        // fresh `0x24` from a shopkeeper is an explicit request to show it
+        // again, even when its stock has not changed since the previous open.
+        if let ServerPacket::OpenContainer(open) = packet {
+            const SHOP_GUMP: openshard_protocol::wire::Graphic = openshard_protocol::wire::Graphic(0x0030);
+            if open.gump == SHOP_GUMP {
+                self.windows
+                    .locally_closed
+                    .remove(&crate::windows::WindowSubject::Vendor(open.container));
+            }
+        }
         // A `0x20` is authoritative for the locally controlled body even if a
         // caller delivers it as an ordinary mutation rather than through the
         // socket thread's `link::fold`.  In particular, combat retaliation is
@@ -281,7 +297,16 @@ impl App {
             _ => None,
         };
         let previous_latest = view.journal.back().cloned();
+        let localized = match packet {
+            ServerPacket::LocalizedMessage(message) => {
+                Some((message, self.resolve_localized_message(message)))
+            }
+            _ => None,
+        };
         view.apply(packet);
+        if let Some((message, text)) = localized {
+            view.localized_message(message, text);
+        }
         if let Some((serial, amount)) = damage {
             // Damage over our own head is incoming and therefore red; damage
             // over any other mobile is shown in blue.
@@ -302,6 +327,13 @@ impl App {
         self.world.motion.accept_network(movement);
         self.entered(*view, previous_latest);
         self.sync_target_cursor();
+    }
+
+    /// Turn a `0xC1` cliloc packet into the text the player can read in the
+    /// journal.  Server feedback for tools (including a bandage awaiting a
+    /// patient and a patient already at full health) uses this packet family.
+    fn resolve_localized_message(&self, message: &LocalizedMessage) -> String {
+        resolve_localized_message(self.resources.cliloc.as_ref(), message)
     }
 
     /// Apply prediction without changing authoritative server state.
@@ -618,6 +650,31 @@ impl App {
     }
 }
 
+/// Fill the numbered slots used by `Cliloc.enu` without making the art-file
+/// reader depend on the packet format that supplies their values.
+fn resolve_cliloc_arguments(template: &str, arguments: &str) -> String {
+    arguments
+        .split('\t')
+        .enumerate()
+        .fold(template.to_owned(), |text, (index, argument)| {
+            let slot = index + 1;
+            text.replace(&format!("~{slot}_val~"), argument)
+                .replace(&format!("~{slot}_VAL~"), argument)
+        })
+}
+
+/// Resolve a server-selected cliloc, retaining a readable built-in line for
+/// gameplay messages whose number is absent from the installed client files.
+fn resolve_localized_message(cliloc: Option<&Cliloc>, message: &LocalizedMessage) -> String {
+    let template = cliloc
+        .and_then(|cliloc| cliloc.get(ClilocNumber::new(message.cliloc.0)))
+        .or_else(|| localized::fallback(message.cliloc));
+    let Some(template) = template else {
+        return format!("Localized message #{}", message.cliloc.0);
+    };
+    resolve_cliloc_arguments(template, &message.arguments)
+}
+
 #[cfg(test)]
 mod tests {
     use std::rc::Rc;
@@ -626,11 +683,39 @@ mod tests {
     use openshard_client_render::mobiles::EquipmentLayer;
     use openshard_movement::WALK_HOLD;
     use openshard_protocol::direction::{Direction, Facing};
+    use openshard_protocol::speech::{Font, TalkMode};
     use openshard_protocol::wire::{Graphic, Hue, Layer};
     use openshard_protocol::world::Point;
     use openshard_uofiles::tiledata::AnimId;
 
     use super::*;
+
+    #[test]
+    fn cliloc_arguments_fill_their_numbered_slots() {
+        assert_eq!(
+            resolve_cliloc_arguments("You apply ~1_val~ to ~2_VAL~.", "a bandage\tBob"),
+            "You apply a bandage to Bob."
+        );
+    }
+
+    #[test]
+    fn a_missing_begging_cliloc_uses_the_shared_fallback() {
+        let message = LocalizedMessage {
+            serial: None,
+            graphic: None,
+            mode: TalkMode::Regular,
+            hue: Hue::NONE,
+            font: Font::DEFAULT,
+            cliloc: localized::begging::UNWILLING,
+            name: "System".to_owned(),
+            arguments: String::new(),
+        };
+
+        assert_eq!(
+            resolve_localized_message(None, &message),
+            "They seem unwilling to give you any money."
+        );
+    }
 
     #[test]
     fn a_prediction_starts_the_players_glide_before_an_ack_arrives() {

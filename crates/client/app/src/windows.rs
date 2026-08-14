@@ -17,6 +17,7 @@ use std::time::Instant;
 use openshard_client_render::gump::{self as gump_art, GumpPixel};
 use openshard_client_render::paperdoll;
 use openshard_client_render::skills;
+use openshard_client_render::vendor;
 use openshard_protocol::containers::ContainedItem;
 use openshard_protocol::gump::{GumpId, GumpPoint};
 use openshard_protocol::serial::Serial;
@@ -77,6 +78,9 @@ pub struct OwnWindow {
 pub enum WindowSubject {
     /// A container the shard has opened, by its serial.
     Container(Serial),
+    /// A vendor catalogue, whose controls are client-side rather than ordinary
+    /// container dragging. It exists for both buy (`0x74`) and sell (`0x9E`).
+    Vendor(Serial),
     /// A mobile whose paperdoll the shard has opened, by its serial. The same
     /// serial may name a container *and* a paperdoll — a player is both —
     /// which is why this is the identity and not the serial alone.
@@ -111,6 +115,7 @@ pub enum Drawn {
     Dialog(gump_art::Window),
     /// A container: the background and every icon in it.
     Container(Vec<gump_art::Picture>),
+    Vendor(vendor::Window),
     /// A paperdoll: the frame, its furniture and the doll.
     Paperdoll(paperdoll::Doll),
     /// The skill window: the scroll, the rows inside its viewport, and the
@@ -193,6 +198,7 @@ impl Drawn {
         match self {
             Self::Dialog(window) => &window.pictures,
             Self::Container(pictures) => pictures,
+            Self::Vendor(window) => &window.pictures,
             Self::Paperdoll(doll) => &doll.pictures,
             Self::Skills(sheet) => &sheet.pictures,
             Self::Status(status) => &status.pictures,
@@ -211,6 +217,10 @@ pub struct Windows {
     /// drawn over the others and the first one picking finds. One list and
     /// not two, because a bag dragged over a paperdoll has to stay over it.
     pub own_windows: Vec<OwnWindow>,
+    /// Selected quantities, by the row order the current catalogue supplied.
+    pub vendor_amounts: std::collections::HashMap<Serial, Vec<u16>>,
+    /// First visible row in each vendor catalogue.
+    pub vendor_scrolls: std::collections::HashMap<Serial, usize>,
     /// A window this end has closed, ahead of the shard thread's own
     /// [`view::WorldView`](openshard_client_net::view::WorldView) agreeing.
     ///
@@ -334,6 +344,9 @@ pub fn reconcile_own_windows(
 ) {
     locally_closed.retain(|subject| match *subject {
         WindowSubject::Container(serial) => view.containers.contains_key(&serial),
+        WindowSubject::Vendor(serial) => {
+            view.vendor_buys.contains_key(&serial) || view.vendor_sells.contains_key(&serial)
+        }
         WindowSubject::Paperdoll(serial) => view.paperdolls.contains_key(&serial),
         WindowSubject::Dialog(gump_id) => view.gumps.iter().any(|gump| gump.gump_id == gump_id),
         WindowSubject::Skills => false,
@@ -344,7 +357,12 @@ pub fn reconcile_own_windows(
             return false;
         }
         match window.subject {
-            WindowSubject::Container(serial) => view.containers.contains_key(&serial),
+            WindowSubject::Container(serial) => {
+                view.containers.contains_key(&serial) && !view.vendor_buys.contains_key(&serial)
+            }
+            WindowSubject::Vendor(serial) => {
+                view.vendor_buys.contains_key(&serial) || view.vendor_sells.contains_key(&serial)
+            }
             WindowSubject::Paperdoll(serial) => view.paperdolls.contains_key(&serial),
             WindowSubject::Dialog(gump_id) => view.gumps.iter().any(|gump| gump.gump_id == gump_id),
             // The one kind the view cannot answer for — see the variant's
@@ -362,12 +380,19 @@ pub fn reconcile_own_windows(
     let wanted = view
         .containers
         .keys()
+        .filter(|serial| !view.vendor_buys.contains_key(serial))
         .map(|serial| WindowSubject::Container(*serial))
         .chain(
             view.paperdolls
                 .keys()
                 .map(|serial| WindowSubject::Paperdoll(*serial)),
         );
+    let wanted = wanted.chain(
+        view.vendor_buys
+            .keys()
+            .chain(view.vendor_sells.keys())
+            .map(|serial| WindowSubject::Vendor(*serial)),
+    );
     for subject in wanted.collect::<Vec<_>>() {
         if own_windows.iter().any(|window| window.subject == subject) {
             continue;

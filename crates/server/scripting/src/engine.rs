@@ -507,6 +507,67 @@ mod tests {
     }
 
     #[test]
+    fn an_unspecified_horse_is_passive() {
+        // Horse scripts normally name just the body and position. The scripting
+        // default must preserve a tame animal's harmless idle behaviour, while
+        // still allowing a pack to request aggression explicitly.
+        let mut engine = DenoEngine::new();
+        engine
+            .load(
+                "function onEvent(e) {\n\
+                 if (e.type === 'PlayerEntered') {\n\
+                     Deno.core.ops.op_spawn_mobile({ body: 0x00C8, x: 100, y: 100 });\n\
+                 }\n\
+                 }",
+            )
+            .unwrap();
+        engine
+            .deliver(&Event::PlayerEntered {
+                serial: serial!(1),
+                x: 0,
+                y: 0,
+                z: 0,
+            })
+            .unwrap();
+
+        let commands = engine.take_commands();
+        let [Command::SpawnMobile { aggression, .. }] = commands.as_slice() else {
+            panic!("the script should spawn one horse: {commands:?}");
+        };
+        assert_eq!(*aggression, Aggression::Passive);
+    }
+
+    #[test]
+    fn an_unspecified_spawner_horse_is_passive() {
+        let mut engine = DenoEngine::new();
+        engine
+            .load(
+                "function onEvent(e) {\n\
+                 if (e.type === 'AdminAction') {\n\
+                     Deno.core.ops.op_register_spawner({ x: 100, y: 100, width: 1, height: 1,\n\
+                         maxCount: 1, respawnDelay: 60, creatures: [{ body: 0x00C8 }] });\n\
+                 }\n\
+                 }",
+            )
+            .unwrap();
+        engine
+            .deliver(&Event::AdminAction {
+                serial: Some(serial!(1)),
+                action: "populate:horses".to_owned(),
+            })
+            .unwrap();
+
+        let commands = engine.take_commands();
+        let [Command::RegisterSpawner { creatures, .. }] = commands.as_slice() else {
+            panic!("the script should register one horse spawner: {commands:?}");
+        };
+        let [horse] = creatures.as_slice() else {
+            panic!("the spawner should contain one horse: {creatures:?}");
+        };
+        assert_eq!(horse.aggression, Aggression::Passive);
+    }
+
+    #[test]
     fn an_admin_action_can_register_a_spawner() {
         // The pack-driven spawn path: a staff button emits AdminAction, and the
         // pack turns the verb into a spawn region through op_register_spawner.

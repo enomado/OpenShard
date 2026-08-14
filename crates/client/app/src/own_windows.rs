@@ -12,6 +12,7 @@
 use std::time::Instant;
 
 use openshard_client_render::gump::{self as gump_art, GumpPixel};
+use openshard_client_render::vendor::Hit as VendorHit;
 use openshard_protocol::containers::ContainedItem;
 use openshard_protocol::gump::GumpId;
 use openshard_protocol::gump::GumpPoint;
@@ -25,6 +26,43 @@ mod skills;
 mod sync;
 
 impl App {
+    /// Scroll the catalogue under the pointer by one row per wheel gesture.
+    ///
+    /// Vendor packets can contain an entire restock, so their window has a
+    /// fixed viewport rather than growing past the screen.  The row offset is
+    /// local UI state, like a skill tree's scroll position; stock and selected
+    /// quantities remain authoritative on the shard and in `WorldView`.
+    pub(crate) fn scroll_vendor(&mut self, notches: f32) -> bool {
+        let Some(WindowSubject::Vendor(vendor)) = self.window_under_pointer() else {
+            return false;
+        };
+        let rows = self
+            .world
+            .authoritative
+            .view
+            .as_ref()
+            .and_then(|view| {
+                view.vendor_buys
+                    .get(&vendor)
+                    .map(|catalogue| catalogue.lines.len())
+                    .or_else(|| {
+                        view.vendor_sells
+                            .get(&vendor)
+                            .map(|catalogue| catalogue.lines.len())
+                    })
+            })
+            .unwrap_or_default();
+        let offset = self.windows.vendor_scrolls.entry(vendor).or_default();
+        let before = *offset;
+        let maximum = rows.saturating_sub(openshard_client_render::vendor::VISIBLE_ROWS);
+        if notches > 0.0 {
+            *offset = offset.saturating_sub(1);
+        } else {
+            *offset = (*offset + 1).min(maximum);
+        }
+        *offset != before
+    }
+
     /// Remember a world item's press so a following pointer move can lift it.
     /// A plain click remains available to the normal selection/double-click
     /// use path in the event loop.
@@ -246,6 +284,9 @@ impl App {
         let cursor = self.input.pointer_gump;
         self.windows.own_windows.iter().rev().find_map(|window| {
             let drawn = self.drawn(window.subject)?;
+            if let Drawn::Vendor(vendor) = drawn {
+                return vendor.hit(cursor).map(|_| window.subject);
+            }
             // A dialog's fields are the one part of a window that is a box
             // rather than a picture — see `gump::Field` — and a click in one is
             // still a click on the window. It sits over the background, which is
@@ -316,6 +357,52 @@ impl App {
             return false;
         };
         self.raise_window(subject);
+        if let WindowSubject::Vendor(vendor) = subject {
+            let hit = self.drawn(subject).and_then(|drawn| match drawn {
+                Drawn::Vendor(window) => window.hit(self.input.pointer_gump),
+                _ => None,
+            });
+            match hit {
+                Some(VendorHit::Row(row)) => {
+                    let limit = self
+                        .world
+                        .authoritative
+                        .view
+                        .as_ref()
+                        .map(|view| {
+                            if let Some(sale) = view.vendor_sells.get(&vendor) {
+                                sale.lines.get(row).map_or(0, |line| line.amount)
+                            } else {
+                                view.contents
+                                    .get(&view.vendor_buys[&vendor].container)
+                                    .and_then(|items| items.get(row))
+                                    .map_or(0, |item| item.amount)
+                            }
+                        })
+                        .unwrap_or(0);
+                    let amounts = self.windows.vendor_amounts.entry(vendor).or_default();
+                    if amounts.len() <= row {
+                        amounts.resize(row + 1, 0);
+                    }
+                    amounts[row] = if amounts[row] >= limit {
+                        0
+                    } else {
+                        amounts[row] + 1
+                    };
+                    self.windows.dragging = None;
+                    return true;
+                }
+                Some(VendorHit::Confirm) => {
+                    self.confirm_vendor(vendor);
+                    return true;
+                }
+                Some(VendorHit::Close) => {
+                    self.close_window(subject);
+                    return true;
+                }
+                None => return false,
+            }
+        }
         if let WindowSubject::Container(container) = subject {
             if let Some(item) = self.container_item_under_pointer() {
                 let window = self
@@ -592,6 +679,11 @@ impl App {
                 self.windows.locally_closed.insert(subject);
                 self.apply_close_window(link::CloseTarget::Container(serial));
             }
+            WindowSubject::Vendor(serial) => {
+                self.windows.vendor_amounts.remove(&serial);
+                self.windows.vendor_scrolls.remove(&serial);
+                self.windows.locally_closed.insert(subject);
+            }
             WindowSubject::Paperdoll(serial) => {
                 self.windows.locally_closed.insert(subject);
                 self.apply_close_window(link::CloseTarget::Paperdoll(serial));
@@ -615,6 +707,45 @@ impl App {
             .retain(|window| window.subject != subject);
         self.windows.dragging = None;
         true
+    }
+
+    /// Send one atomic catalogue answer. Selecting rows is purely local; only
+    /// this button crosses the wire, so the server remains the authority for
+    /// stock, money and the contents of the player's backpack.
+    fn confirm_vendor(&mut self, vendor: openshard_protocol::serial::Serial) {
+        let Some(view) = self.world.authoritative.view.as_ref() else {
+            return;
+        };
+        let amounts = self
+            .windows
+            .vendor_amounts
+            .get(&vendor)
+            .cloned()
+            .unwrap_or_default();
+        if let Some(catalogue) = view.vendor_sells.get(&vendor) {
+            let sales = catalogue
+                .lines
+                .iter()
+                .zip(amounts)
+                .filter_map(|(line, amount)| (amount > 0).then_some((line.serial, amount)))
+                .collect();
+            if let Some(link) = self.world.shard.link() {
+                link.sell(vendor, sales);
+            }
+        } else if let Some(catalogue) = view.vendor_buys.get(&vendor) {
+            let purchases = view
+                .contents
+                .get(&catalogue.container)
+                .into_iter()
+                .flatten()
+                .zip(amounts)
+                .filter_map(|(item, amount)| (amount > 0).then_some((item.serial, amount)))
+                .collect();
+            if let Some(link) = self.world.shard.link() {
+                link.buy(vendor, purchases);
+            }
+        }
+        self.close_window(WindowSubject::Vendor(vendor));
     }
 
     /// Say a line out loud, if there is a shard to hear it.

@@ -5,28 +5,16 @@
 //! and neither is large enough to be alone.
 
 use openshard_entities::EntityId;
+use openshard_protocol::localized::begging::{
+    FEEL_SORRY, FROM_A_THING, FROM_PLAYER, NOT_ENOUGH_MONEY, NOT_TRUSTWORTHY, TOO_FAR_HER, TOO_FAR_HIM,
+    UNWILLING,
+};
 use openshard_protocol::wire::ClilocId;
 use openshard_state::components::{Body, BodyType, Client, Fame, Karma, Lock, Riding, Trap, body_type};
 use openshard_state::{Skill, WorldState};
 
 use crate::check::roll_skill_band;
 
-/// "Perhaps just asking would work better." — begging from a player.
-const BEG_FROM_PLAYER: ClilocId = ClilocId(500_398);
-/// "There is little chance of getting money from that!"
-const BEG_FROM_A_THING: ClilocId = ClilocId(500_399);
-/// "You are too far away to beg from him."
-const TOO_FAR_HIM: ClilocId = ClilocId(500_401);
-/// "You are too far away to beg from her."
-const TOO_FAR_HER: ClilocId = ClilocId(500_402);
-/// "They seem unwilling to give you any money." — mounted, or a failed roll.
-const UNWILLING: ClilocId = ClilocId(500_404);
-/// "I feel sorry for thee..." — said by the giver, over their head.
-const FEEL_SORRY: ClilocId = ClilocId(500_405);
-/// "Thou dost not look trustworthy... no gold for thee today!"
-const NOT_TRUSTWORTHY: ClilocId = ClilocId(500_406);
-/// "I have not enough money to give thee any!" — said by a giver with nothing.
-const NOT_ENOUGH_MONEY: ClilocId = ClilocId(500_407);
 /// How close you must be to beg — ServUO's `InRange(targ, 2)`.
 const BEG_RANGE: u32 = 2;
 /// The karma floor begging pushes toward, and the most it takes at once.
@@ -66,13 +54,13 @@ const TRAP_BAND_WIDTH: i32 = 100;
 /// Whether a mobile may be begged from at all, and the line if not.
 fn beg_refusal(state: &WorldState, target: EntityId) -> Option<ClilocId> {
     if state.registry.has::<Client>(target) {
-        return Some(BEG_FROM_PLAYER);
+        return Some(FROM_PLAYER);
     }
     let Some(body) = state.registry.get::<Body>(target) else {
-        return Some(BEG_FROM_A_THING);
+        return Some(FROM_A_THING);
     };
     if body_type(body.id) != BodyType::Human {
-        return Some(BEG_FROM_A_THING);
+        return Some(FROM_A_THING);
     }
     None
 }

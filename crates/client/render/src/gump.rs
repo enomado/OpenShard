@@ -1530,6 +1530,58 @@ impl GumpRenderer {
         pass.set_vertex_buffer(1, self.instances.slice(..));
         pass.draw(0..4, 0..quads.len() as u32);
     }
+
+    /// Draw one independently ordered interface layer.
+    ///
+    /// Unlike [`render`](Self::render), this owns an instance buffer for this
+    /// one encoder command.  That makes it safe to interleave two atlases in a
+    /// frame — a window's art, then its labels, then the next window — without
+    /// a later `Queue::write_buffer` replacing the instances an earlier pass
+    /// still refers to.
+    pub fn render_layer(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        encoder: &mut wgpu::CommandEncoder,
+        frame: Frame<'_>,
+        quads: &[SpriteQuad],
+    ) {
+        if quads.is_empty() {
+            return;
+        }
+        let mut uniform_bytes = Vec::with_capacity(GUMP_UNIFORM_BYTES as usize);
+        for value in [frame.width as f32, frame.height as f32, frame.scale, 0.0] {
+            uniform_bytes.extend_from_slice(&value.to_le_bytes());
+        }
+        queue.write_buffer(&self.uniforms, 0, &uniform_bytes);
+        let instances = new_static_instance_buffer(device, quads.len() as u64);
+        let mut instance_bytes = Vec::with_capacity(quads.len() * SpriteQuad::STRIDE as usize);
+        for quad in quads {
+            quad.write(&mut instance_bytes);
+        }
+        queue.write_buffer(&instances, 0, &instance_bytes);
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("gump layer"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: frame.target,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Load,
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            multiview_mask: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+        });
+        pass.set_pipeline(&self.pipeline);
+        pass.set_bind_group(0, &self.bind_group, &[]);
+        pass.set_vertex_buffer(0, self.quad.slice(..));
+        pass.set_vertex_buffer(1, instances.slice(..));
+        pass.draw(0..4, 0..quads.len() as u32);
+    }
 }
 
 #[cfg(test)]

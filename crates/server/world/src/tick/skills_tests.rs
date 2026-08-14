@@ -753,6 +753,17 @@ fn begging_takes_coin_from_a_townsperson_and_karma_from_the_beggar() {
         .get::<openshard_state::components::Karma>(entity)
         .map_or(0, |k| k.0);
     assert!(karma < 0, "begging costs karma: {karma}");
+    let serial = world
+        .state
+        .registry
+        .serial_of(entity)
+        .expect("the beggar has a serial");
+    let backpack = openshard_items::backpack_of(&world.state, serial).expect("a backpack");
+    let gold = openshard_items::count_in_container(&world.state, backpack, openshard_items::GOLD_GRAPHIC);
+    assert!(
+        (10..=14).contains(&gold),
+        "a successful beg puts its handout in the backpack: {gold}"
+    );
 }
 
 #[test]

@@ -116,6 +116,40 @@ impl App {
         self.sync_target_cursor();
         true
     }
+
+    /// Cancel the modal target cursor currently owned by the shard.
+    ///
+    /// A target is not a movement gesture while it is open: the classic
+    /// right-click means "never mind", even if the pointer happens to be over
+    /// a window.  Sending the cancellation matters as much as clearing the
+    /// local crosshair; otherwise the shard keeps the pending purpose and the
+    /// next answer can be applied to a tool the player thought they had left.
+    pub(crate) fn cancel_target_cursor(&mut self) -> bool {
+        let Some(cursor) = self
+            .world
+            .authoritative
+            .view
+            .as_ref()
+            .and_then(|view| view.target)
+        else {
+            return false;
+        };
+        if let Some(link) = self.world.shard.link() {
+            link.target(TargetResponse {
+                cursor_id: cursor.cursor_id,
+                object: None,
+                location: Point::new(0, 0, 0),
+                graphic: None,
+                cancelled: true,
+            });
+        }
+        if let Some(view) = self.world.authoritative.view.as_mut() {
+            view.target = None;
+        }
+        self.sync_target_cursor();
+        true
+    }
+
     /// Take a step, answering whether anything on screen changed.
     ///
     /// Movement is clamped to the map rather than wrapped: walking off the north

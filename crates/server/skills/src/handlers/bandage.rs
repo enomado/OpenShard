@@ -24,24 +24,15 @@ pub const BANDAGE_GRAPHIC: Graphic = Graphic(0x0E21);
 /// A lockpick — ServUO's `Lockpick`, item `0x14FC`.
 pub const LOCKPICK_GRAPHIC: Graphic = Graphic(0x14FC);
 
-/// "Who will you use the bandage on?"
-const HEAL_WHOM: ClilocId = ClilocId(500_951);
-/// "That being is not damaged!"
-const NOT_DAMAGED: ClilocId = ClilocId(500_955);
-/// "You begin applying the bandages."
-const BEGIN_BANDAGES: ClilocId = ClilocId(500_956);
-/// "You finish applying the bandages."
-const FINISH_BANDAGES: ClilocId = ClilocId(500_965);
-/// "You apply the bandages, but they barely help."
-const BARELY_HELP: ClilocId = ClilocId(500_968);
-/// "You have cured the target of all poisons!"
-const CURED: ClilocId = ClilocId(500_962);
-/// "You are able to resurrect your patient."
-const RESURRECTED: ClilocId = ClilocId(500_965);
-/// "You are unable to resurrect your patient."
-const NOT_RESURRECTED: ClilocId = ClilocId(500_966);
-/// "You cannot heal that."
-const CANNOT_HEAL: ClilocId = ClilocId(500_970);
+const HEAL_WHOM: &str = "Who will you use the bandage on?";
+const NOT_DAMAGED: &str = "That being is not damaged!";
+const BEGIN_BANDAGES: &str = "You begin applying the bandages.";
+const FINISH_BANDAGES: &str = "You finish applying the bandages.";
+const BARELY_HELP: &str = "You apply the bandages, but they barely help.";
+const CURED: &str = "You have cured the target of all poisons!";
+const RESURRECTED: &str = "You are able to resurrect your patient.";
+const NOT_RESURRECTED: &str = "You are unable to resurrect your patient.";
+const CANNOT_HEAL: &str = "You cannot heal that.";
 
 /// "That did not work." — a lockpick that broke, or a lock that held.
 const PICK_FAILED: ClilocId = ClilocId(502_075);
@@ -78,7 +69,7 @@ pub fn use_bandage(state: &mut WorldState, healer: EntityId, bandage: EntityId) 
             first: bandage,
         },
     );
-    state.localized_message(healer, HEAL_WHOM, "");
+    state.system_message(healer, HEAL_WHOM);
     super::send_object_cursor(state, connection, serial);
     true
 }
@@ -91,7 +82,7 @@ pub(super) fn begin_heal(
     patient: EntityId,
 ) -> Option<BandageStarted> {
     if !state.registry.has::<openshard_state::components::Body>(patient) {
-        state.localized_message(healer, CANNOT_HEAL, "");
+        state.system_message(healer, CANNOT_HEAL);
         return None;
     }
     let dead = state.registry.has::<Ghost>(patient);
@@ -101,7 +92,7 @@ pub(super) fn begin_heal(
         .is_some_and(|hits| hits.current < hits.max);
     let poisoned = state.registry.has::<Poisoned>(patient);
     if !dead && !hurt && !poisoned {
-        state.localized_message(healer, NOT_DAMAGED, "");
+        state.system_message(healer, NOT_DAMAGED);
         return None;
     }
     // Pre-AoS timing, off the healer's dexterity: patching yourself is slow, and a
@@ -132,7 +123,7 @@ pub(super) fn begin_heal(
             done_at: state.ticks + ticks,
         },
     );
-    state.localized_message(healer, BEGIN_BANDAGES, "");
+    state.system_message(healer, BEGIN_BANDAGES);
     // The bandage is spent at the *start*, as ServUO consumes it when the work
     // begins — walking away does not get it back.
     Some(BandageStarted { bandage })
@@ -197,7 +188,7 @@ pub fn finish_bandages(state: &mut WorldState) -> Vec<BandageFinished> {
             let able = healing >= RESURRECT_NEEDS && anatomy >= RESURRECT_NEEDS;
             let chance = (i32::from(healing) - 680) * 1000 / 500;
             if able && chance > i32::try_from(state.rng.below(1000)).unwrap_or(0) {
-                state.localized_message(healer, RESURRECTED, "");
+                state.system_message(healer, RESURRECTED);
                 finished.push(BandageFinished {
                     patient,
                     healed: 0,
@@ -205,7 +196,7 @@ pub fn finish_bandages(state: &mut WorldState) -> Vec<BandageFinished> {
                     resurrected: true,
                 });
             } else {
-                state.localized_message(healer, NOT_RESURRECTED, "");
+                state.system_message(healer, NOT_RESURRECTED);
             }
             continue;
         }
@@ -215,7 +206,7 @@ pub fn finish_bandages(state: &mut WorldState) -> Vec<BandageFinished> {
             let able = healing >= CURE_NEEDS && anatomy >= CURE_NEEDS;
             let chance = (i32::from(healing) - 300) * 1000 / 500 - i32::from(level.get()) * 100;
             if able && chance > i32::try_from(state.rng.below(1000)).unwrap_or(0) {
-                state.localized_message(healer, CURED, "");
+                state.system_message(healer, CURED);
                 finished.push(BandageFinished {
                     patient,
                     healed: 0,
@@ -224,7 +215,7 @@ pub fn finish_bandages(state: &mut WorldState) -> Vec<BandageFinished> {
                 });
                 continue;
             }
-            state.localized_message(healer, BARELY_HELP, "");
+            state.system_message(healer, BARELY_HELP);
             continue;
         }
 
@@ -235,14 +226,14 @@ pub fn finish_bandages(state: &mut WorldState) -> Vec<BandageFinished> {
         let took = roll_skill_band(state, healer, skill, crate::SkillBand::new(0, 1000))
             && chance > i32::try_from(state.rng.below(1000)).unwrap_or(0);
         if !took {
-            state.localized_message(healer, BARELY_HELP, "");
+            state.system_message(healer, BARELY_HELP);
             continue;
         }
         let min = anatomy / 50 + healing / 50 + 3;
         let max = anatomy / 50 + healing / 20 + 10;
         let span = u32::from(max.saturating_sub(min)) + 1;
         let healed = min + u16::try_from(state.rng.below(span)).unwrap_or(0);
-        state.localized_message(healer, FINISH_BANDAGES, "");
+        state.system_message(healer, FINISH_BANDAGES);
         finished.push(BandageFinished {
             patient,
             healed,

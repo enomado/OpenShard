@@ -2262,7 +2262,10 @@ impl App {
             // one. Extended onto the same draw call, which is the point — one
             // texture, one pass, whatever produced the quads.
             let mut cut: Vec<SpriteQuad> = Vec::new();
-            for (subject, drawn) in &self.windows.drawn_windows {
+            // Window text is rendered in `draw_gump_windows` immediately
+            // after the matching frame, preserving the window stack's depth.
+            // This pass now keeps only non-window overlays below.
+            for (subject, drawn) in std::iter::empty::<(&WindowSubject, &Drawn)>() {
                 match (subject, drawn) {
                     (WindowSubject::Dialog(gump_id), Drawn::Dialog(laid_out)) => {
                         if let Some(gump) = self
@@ -2329,6 +2332,11 @@ impl App {
                     (WindowSubject::Status, Drawn::Status(status)) => {
                         labels.extend(status.lines.iter().map(|line| line.label()));
                     }
+                    // Vendor labels are drawn alongside their own art in
+                    // `draw_gump_windows`: putting them in this global pass
+                    // would let text from a lower catalogue cover a later
+                    // paperdoll.
+                    (WindowSubject::Vendor(_), Drawn::Vendor(_)) => {}
                     _ => {}
                 }
             }

@@ -19,7 +19,7 @@ use openshard_client_render::outline::{self, Ring};
 use openshard_client_render::renderer::Target;
 use openshard_client_render::select::{self, Selection};
 use openshard_client_render::sprite::SpriteQuad;
-use openshard_client_render::{container, paperdoll, skills, solids, status};
+use openshard_client_render::{container, paperdoll, skills, solids, status, vendor};
 use openshard_protocol::containers::ContainedItem;
 
 use crate::frame_geometry::FrameGeometry;
@@ -119,8 +119,84 @@ pub(crate) fn draw_gump_windows(
         // tested against next frame — see `windows::Windows::drawn_windows`.
         let mut drawn_windows: Vec<(WindowSubject, Drawn)> = Vec::new();
         if let Some(view) = world.authoritative.view.as_ref() {
+            let art_files = gump_art::ArtFiles {
+                gumps: files,
+                items: &resources.art,
+            };
+            if let Err(error) = resources.gump_atlas.add(art_files, vendor::art_of()) {
+                eprintln!("packing vendor gump art: {error}");
+            }
+            for open in &windows.own_windows {
+                let WindowSubject::Container(serial) = open.subject else {
+                    continue;
+                };
+                let Some(gump) = view.containers.get(&serial).copied() else {
+                    continue;
+                };
+                let contents_serial = view
+                    .vendor_buys
+                    .get(&serial)
+                    .map_or(serial, |catalogue| catalogue.container);
+                let contents = view
+                    .contents
+                    .get(&contents_serial)
+                    .map_or(&[] as &[ContainedItem], Vec::as_slice);
+                if let Err(error) = resources
+                    .gump_atlas
+                    .add(art_files, container::art_of(gump, contents))
+                {
+                    eprintln!("packing container art for {serial}: {error}");
+                }
+            }
             for open in &windows.own_windows {
                 match open.subject {
+                    WindowSubject::Vendor(serial) => {
+                        let Some(catalogue) = view.vendor_buys.get(&serial) else {
+                            let Some(catalogue) = view.vendor_sells.get(&serial) else {
+                                continue;
+                            };
+                            let amounts = windows
+                                .vendor_amounts
+                                .entry(serial)
+                                .or_insert_with(|| vec![0; catalogue.lines.len()]);
+                            if amounts.len() != catalogue.lines.len() {
+                                amounts.resize(catalogue.lines.len(), 0);
+                            }
+                            let scroll = *windows.vendor_scrolls.entry(serial).or_default();
+                            drawn_windows.push((
+                                open.subject,
+                                Drawn::Vendor(vendor::sell(
+                                    serial,
+                                    &catalogue.lines,
+                                    amounts,
+                                    scroll,
+                                    open.at,
+                                    &resources.gump_atlas,
+                                )),
+                            ));
+                            continue;
+                        };
+                        let amounts = windows
+                            .vendor_amounts
+                            .entry(serial)
+                            .or_insert_with(|| vec![0; catalogue.lines.len()]);
+                        if amounts.len() != catalogue.lines.len() {
+                            amounts.resize(catalogue.lines.len(), 0);
+                        }
+                        let scroll = *windows.vendor_scrolls.entry(serial).or_default();
+                        drawn_windows.push((
+                            open.subject,
+                            Drawn::Vendor(vendor::buy(
+                                serial,
+                                &catalogue.lines,
+                                view.contents.get(&catalogue.container).map_or(&[], Vec::as_slice),
+                                amounts,
+                                scroll,
+                                open.at,
+                                &resources.gump_atlas,
+                            )),
+                        ));
+                    }
                     WindowSubject::Dialog(gump_id) => {
                         let Some(gump) = view.gumps.iter().find(|gump| gump.gump_id == gump_id) else {
                             continue;
@@ -315,7 +391,6 @@ pub(crate) fn draw_gump_windows(
             {
                 eprintln!("packing window art: {error}");
             }
-            pictures.extend(window.pictures().iter().copied());
         }
         // The item follows the pointer above every window while the shard has
         // it on the cursor. It intentionally is not added to `drawn_windows`:
@@ -351,29 +426,80 @@ pub(crate) fn draw_gump_windows(
         if let Some(rows) = resources.gump_atlas.take_dirty() {
             pass.upload_rows(&window.queue, resources.gump_atlas.pixels(), rows);
         }
-        let quads = gump_art::collect(&pictures, &resources.gump_atlas);
-        let timed = profile::begin(window.gpu.as_ref(), "gump art", encoder);
-        pass.render(
-            &window.device,
-            &window.queue,
-            encoder,
-            gump_art::Frame {
-                target: view,
-                width: window.config.width,
-                height: window.config.height,
-                // A whole number, and the same one egui is laying its
-                // widgets out at: gump art is five-bit pixel art sampled
-                // with Nearest, and a fractional scale doubles some of its
-                // rows and not others.
-                // egui's own, and not the window's scale factor rounded:
-                // the art is placed at coordinates egui laid out in
-                // points, so any other number here slides a window's
-                // pictures off its buttons.
-                scale: shell.map(|shell| shell.pixels_per_point()).unwrap_or(1.0),
-            },
-            &quads,
-        );
-        profile::end(window.gpu.as_ref(), encoder, timed);
+        let frame = gump_art::Frame {
+            target: view,
+            width: window.config.width,
+            height: window.config.height,
+            scale: shell.map(|shell| shell.pixels_per_point()).unwrap_or(1.0),
+        };
+        // A window is one painter layer: its frame and icons, then the text
+        // belonging to that frame, before the next window is allowed to cover
+        // it.  A global text pass cannot express this ordering.
+        for (subject, drawn) in &windows.drawn_windows {
+            let art = gump_art::collect(drawn.pictures(), &resources.gump_atlas);
+            pass.render_layer(&window.device, &window.queue, encoder, frame, &art);
+            let mut labels = Vec::new();
+            let mut cut = Vec::new();
+            match (subject, drawn) {
+                (WindowSubject::Dialog(gump_id), Drawn::Dialog(laid_out)) => {
+                    if let Some(gump) = world
+                        .authoritative
+                        .view
+                        .as_ref()
+                        .and_then(|view| view.gumps.iter().find(|gump| gump.gump_id == *gump_id))
+                    {
+                        labels.extend(windows.dialogs.lines(
+                            gump,
+                            laid_out,
+                            &resources.font_atlas,
+                            resources.cliloc.as_ref(),
+                        ));
+                    }
+                }
+                (WindowSubject::Paperdoll(serial), Drawn::Paperdoll(_)) => {
+                    if let (Some(at), Some(doll)) = (
+                        windows
+                            .own_windows
+                            .iter()
+                            .find(|window| window.subject == *subject)
+                            .map(|window| window.at),
+                        world
+                            .authoritative
+                            .view
+                            .as_ref()
+                            .and_then(|view| view.paperdolls.get(serial)),
+                    ) {
+                        labels.push(paperdoll::name(&doll.name, at));
+                    }
+                }
+                (WindowSubject::Skills, Drawn::Skills(sheet)) => {
+                    for line in &sheet.lines {
+                        let mut quads = openshard_client_render::text::collect_gump(
+                            &[line.label()],
+                            &resources.font_atlas,
+                        );
+                        if let Some(scissor) = line.scissor {
+                            scissor.cut(&mut quads);
+                        }
+                        cut.extend(quads);
+                    }
+                }
+                (WindowSubject::Status, Drawn::Status(status)) => {
+                    labels.extend(status.lines.iter().map(|line| line.label()));
+                }
+                (WindowSubject::Vendor(_), Drawn::Vendor(vendor)) => {
+                    labels.extend(vendor.lines.iter().map(|line| line.label()));
+                }
+                _ => {}
+            }
+            let mut text = openshard_client_render::text::collect_gump(&labels, &resources.font_atlas);
+            text.extend(cut);
+            window
+                .gump_text_pass
+                .render_layer(&window.device, &window.queue, encoder, frame, &text);
+        }
+        let dragged = gump_art::collect(&pictures, &resources.gump_atlas);
+        pass.render_layer(&window.device, &window.queue, encoder, frame, &dragged);
     } else {
         windows.drawn_windows.clear();
     }

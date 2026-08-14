@@ -33,7 +33,7 @@ use openshard_protocol::gump::{GumpId, GumpKey, GumpPoint};
 use openshard_protocol::mobile::{Equipment, Notoriety, PaperdollFlags, StatusFlags, Vitals};
 use openshard_protocol::serial::Serial;
 use openshard_protocol::server_packet::ServerPacket;
-use openshard_protocol::speech::{Font, SpokenMessage, TalkMode, UnicodeMessage};
+use openshard_protocol::speech::{Font, LocalizedMessage, SpokenMessage, TalkMode, UnicodeMessage};
 use openshard_protocol::target::TargetCursor;
 use openshard_protocol::vendor::{BuyLine, SellLine};
 use openshard_protocol::wire::{Graphic, Hue};
@@ -626,6 +626,24 @@ impl WorldView {
         self.journal.push_back(line);
     }
 
+    /// Record a localized system line after the application has resolved its
+    /// cliloc number through the client's language table.
+    ///
+    /// Resolution belongs above this wire-only crate: `Cliloc.enu` is an art
+    /// resource, while this view owns the bounded, ordered journal every kind
+    /// of server feedback shares.
+    pub fn localized_message(&mut self, message: &LocalizedMessage, text: String) {
+        self.heard(Heard {
+            serial: message.serial,
+            graphic: message.graphic,
+            mode: message.mode,
+            hue: message.hue,
+            font: message.font,
+            name: message.name.clone(),
+            text,
+        });
+    }
+
     /// Record a step of the player's own that the server has confirmed.
     ///
     /// The one thing that reaches the player from outside [`apply`](Self::apply),
@@ -940,6 +958,7 @@ impl WorldView {
                     });
                     if let Some(stock) = stock {
                         if let Some(lines) = self.pending_vendor_buys.remove(&stock) {
+                            self.vendor_sells.remove(&open.container);
                             self.vendor_buys.insert(
                                 open.container,
                                 VendorBuy {
@@ -974,6 +993,11 @@ impl WorldView {
                 };
                 let changed = self.vendor_sells.get(&list.vendor) != Some(&fresh);
                 self.vendor_sells.insert(list.vendor, fresh);
+                // A sell offer replaces the buy catalogue on this merchant.
+                // The protocol has no explicit close packet, so retaining it
+                // would leave the client submitting purchases while showing a
+                // resale list.
+                self.vendor_buys.remove(&list.vendor);
                 changed
             }
             // One more item in a container, which may be one this client has no

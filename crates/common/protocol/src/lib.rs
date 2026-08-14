@@ -71,6 +71,7 @@ pub mod gump;
 pub mod huffman;
 pub mod identity;
 pub mod items;
+pub mod localized;
 pub mod login;
 pub mod mobile;
 pub mod packet;

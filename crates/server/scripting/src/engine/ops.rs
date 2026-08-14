@@ -56,7 +56,19 @@ struct SpawnSpec {
     facet: Facet,
 }
 
-/// The serde default for a spec's `aggression`: aggressive, the old behaviour.
+/// The natural posture a script gets when it does not explicitly set aggression.
+///
+/// Ordinary horses are tameable mounts, not monsters: a bare
+/// `op_spawn_mobile({ body: 0x00c8, ... })` must not make one hunt nearby
+/// players. Other bodies keep the historic aggressive default, and a script can
+/// always supply `aggression` when it needs an exception.
+fn default_aggression(body: u16) -> Aggression {
+    match body {
+        0x00C8 | 0x00CC | 0x00E2 | 0x00E4 => Aggression::Passive,
+        _ => Aggression::Aggressive,
+    }
+}
+
 /// The default stack size: a single item.
 fn one() -> u16 {
     1
@@ -132,8 +144,7 @@ struct MobileSpec {
     swing: u64,
     #[serde(default)]
     sight: Sight,
-    #[serde(default)]
-    aggression: Aggression,
+    aggression: Option<Aggression>,
     #[serde(default)]
     beat: u64,
     #[serde(default, with = "openshard_protocol::world::ranged")]
@@ -216,7 +227,7 @@ fn op_spawn_mobile(state: &mut OpState, #[serde] spec: MobileSpec) {
         resistance: spec.resistance,
         swing: spec.swing,
         sight: spec.sight,
-        aggression: spec.aggression,
+        aggression: spec.aggression.unwrap_or_else(|| default_aggression(spec.body)),
         beat: spec.beat,
         ranged: spec.ranged,
         ranged_kind: spec.ranged_kind,
@@ -769,8 +780,7 @@ struct CreatureSpec {
     swing: u64,
     #[serde(default)]
     sight: Sight,
-    #[serde(default)]
-    aggression: Aggression,
+    aggression: Option<Aggression>,
     #[serde(default)]
     beat: u64,
     #[serde(default, with = "openshard_protocol::world::ranged")]
@@ -816,7 +826,7 @@ fn op_register_spawner(state: &mut OpState, #[serde] spec: SpawnerSpec) {
             karma: c.karma,
             swing: c.swing,
             sight: c.sight,
-            aggression: c.aggression,
+            aggression: c.aggression.unwrap_or_else(|| default_aggression(c.body)),
             beat: c.beat,
             ranged: c.ranged,
             ranged_kind: c.ranged_kind,

@@ -547,6 +547,68 @@ fn taking_an_offer_back_out_of_the_window_is_an_ordinary_lift() {
 }
 
 #[test]
+fn a_partner_cannot_take_an_item_from_the_other_half_of_a_trade() {
+    let now = Instant::now();
+    let mut world = world();
+    let (first, second) = two_players(&mut world, now);
+    let sword = give(&mut world, first, 0x0F5E, now);
+    offer_to(&mut world, first, sword, second, now);
+    let escrow = escrow_of(&world, first).unwrap();
+
+    world.queue(Command::PickUpItem {
+        connection: second,
+        serial: RawSerial(sword.raw()),
+        amount: 1,
+    });
+    world.tick(now);
+
+    assert!(super::tests::nothing_is_held(&world));
+    assert_eq!(contained_serials(&world, escrow), vec![sword]);
+}
+
+#[test]
+fn a_partner_cannot_add_an_item_to_the_other_half_of_a_trade() {
+    let now = Instant::now();
+    let mut world = world();
+    let (first, second) = two_players(&mut world, now);
+    let sword = give(&mut world, first, 0x0F5E, now);
+    let shield = give(&mut world, second, 0x1B76, now);
+    let second_pack = backpack_serial(&world, second);
+    offer_to(&mut world, first, sword, second, now);
+    let first_escrow = escrow_of(&world, first).unwrap();
+
+    drop_onto(&mut world, second, shield, first_escrow, now);
+
+    assert_eq!(contained_serials(&world, first_escrow), vec![sword]);
+    assert!(contained_serials(&world, second_pack).contains(&shield));
+}
+
+#[test]
+fn trade_actions_must_name_the_senders_own_escrow() {
+    let now = Instant::now();
+    let mut world = world();
+    let (first, second) = two_players(&mut world, now);
+    let sword = give(&mut world, first, 0x0F5E, now);
+    offer_to(&mut world, first, sword, second, now);
+    let second_escrow = escrow_of(&world, second).unwrap();
+
+    world.queue(Command::TradeAction {
+        connection: first,
+        container: RawSerial(second_escrow.raw()),
+        accepted: true,
+    });
+    world.tick(now);
+    assert!(!world.state.trades[0].from.accepted);
+
+    world.queue(Command::TradeCancel {
+        connection: first,
+        container: RawSerial(second_escrow.raw()),
+    });
+    world.tick(now);
+    assert_eq!(world.state.trades.len(), 1);
+}
+
+#[test]
 fn the_escrow_wears_servuos_own_graphic_and_layer() {
     // Pinned because both are the client's business: the graphic is what the
     // window is drawn from, and the layer is the one no `0x13` can reach.

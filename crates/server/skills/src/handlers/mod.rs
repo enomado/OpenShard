@@ -39,6 +39,7 @@ pub use taming::{MAX_FOLLOWERS, Tamed, followers_of};
 
 use openshard_entities::EntityId;
 use openshard_gateway::ConnectionId;
+use openshard_protocol::localized::begging;
 use openshard_protocol::serial::Serial;
 use openshard_protocol::server_packet::ServerPacket;
 use openshard_protocol::target::{TargetCursor, TargetKind};
@@ -72,7 +73,7 @@ const ASKS: &[(Skill, Ask)] = &[
     (Skill::Forensics, Ask { prompt: ClilocId(501_000), range: 10 }), // Show me the crime.
     (Skill::TasteId,   Ask { prompt: ClilocId(502_807), range: 2 }),  // What would you like to taste?
     (Skill::Poisoning, Ask { prompt: ClilocId(502_137), range: 2 }),  // Select the poison you wish to use
-    (Skill::Begging,   Ask { prompt: ClilocId(500_397), range: 2 }),  // To whom do you wish to grovel?
+    (Skill::Begging,   Ask { prompt: begging::PROMPT, range: 2 }),
     (Skill::RemoveTrap, Ask { prompt: ClilocId(502_368), range: 2 }), // Which trap will you attempt to disarm?
     (Skill::Stealing,  Ask { prompt: ClilocId(502_698), range: stealth::STEAL_RANGE }), // What do you wish to steal?
     (Skill::AnimalTaming, Ask { prompt: ClilocId(502_789), range: taming::TAME_RANGE }), // Tame which animal?

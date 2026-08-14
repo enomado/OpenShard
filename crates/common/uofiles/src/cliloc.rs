@@ -18,10 +18,9 @@
 //! Records run back to back to the end of the file, in no particular number
 //! order — a lookup is a table built once, not a scan per call.
 //!
-//! One real-client wrinkle is deliberately not handled: a `Cliloc.enu` whose
-//! fourth byte is `0x8E` is BWT-compressed (a client newer than this project
-//! targets). That file is rejected rather than silently read as garbage — see
-//! [`ClilocError::Compressed`].
+//! Newer clients BWT-compress the complete table and mark it with `0x8E` as the
+//! fourth byte. [`Cliloc::load`] expands that form before parsing it, so the
+//! caller gets the same number-to-text lookup from either client generation.
 
 use std::collections::HashMap;
 use std::fmt;
@@ -60,8 +59,7 @@ pub enum ClilocError {
         /// Why.
         source: std::io::Error,
     },
-    /// The fourth byte is `0x8E`: a BWT-compressed table from a client newer
-    /// than this project targets. Rejected rather than read as noise.
+    /// The fourth byte is `0x8E`, but its BWT-compressed payload is malformed.
     Compressed {
         /// Which file.
         path: PathBuf,
@@ -73,11 +71,7 @@ impl fmt::Display for ClilocError {
         match self {
             Self::Read { path, source } => write!(f, "cannot read {}: {source}", path.display()),
             Self::Compressed { path } => {
-                write!(
-                    f,
-                    "{} is BWT-compressed, which this reader does not decode",
-                    path.display()
-                )
+                write!(f, "{} has an invalid BWT-compressed payload", path.display())
             }
         }
     }
@@ -114,11 +108,12 @@ impl Cliloc {
             path: path.to_owned(),
             source,
         })?;
-        if bytes.get(3) == Some(&0x8E) {
-            return Err(ClilocError::Compressed {
+        let bytes = match bytes.get(3) == Some(&0x8E) {
+            true => decompress_bwt(&bytes).ok_or_else(|| ClilocError::Compressed {
                 path: path.to_owned(),
-            });
-        }
+            })?,
+            false => bytes,
+        };
         Ok(Self::parse(&bytes))
     }
 
@@ -165,6 +160,113 @@ impl Cliloc {
     pub fn get(&self, number: ClilocNumber) -> Option<&str> {
         self.entries.get(&number).map(String::as_str)
     }
+}
+
+/// Decode the BWT form used by recent `Cliloc.*` files.
+///
+/// The first four bytes identify the compressed stream; the rest is a
+/// move-to-front stage followed by the client's BWT variant. Its decoded
+/// prefix is a 256-entry frequency table, followed by the byte stream itself.
+/// Invalid offsets or inconsistent frequencies are rejected instead of making
+/// a corrupt client file look like a valid, empty localization table.
+fn decompress_bwt(bytes: &[u8]) -> Option<Vec<u8>> {
+    // The original reader primes `first_char` from byte four, then consumes the
+    // next byte at the end of every iteration. That processes byte four through
+    // the penultimate byte; its `file_len - 4` buffer leaves one trailing zero.
+    let input = bytes.get(4..bytes.len().checked_sub(1)?)?;
+    if input.len() < 1024 {
+        return None;
+    }
+
+    let mut move_to_front: Vec<u16> = (0..=u16::MAX).collect();
+    // ClassicUO allocates `file_len - 4` bytes but fills all except the final
+    // one. Preserve that trailing zero: the BWT stage reads it as part of its
+    // run data.
+    let mut transformed = Vec::with_capacity(input.len() + 1);
+    for &current in input {
+        let current = usize::from(current);
+        let value = move_to_front[current];
+        move_to_front.copy_within(0..current, 1);
+        move_to_front[0] = value;
+        transformed.push(value as u8);
+    }
+    transformed.push(0);
+
+    let mut partial = [0i32; 256 * 3];
+    for (entry, chunk) in partial[..256].iter_mut().zip(transformed[..1024].chunks_exact(4)) {
+        *entry = i32::from_le_bytes(chunk.try_into().ok()?);
+    }
+    let length = partial[..256].iter().try_fold(0usize, |sum, &count| {
+        sum.checked_add(usize::try_from(count).ok()?)
+    })?;
+    if length == 0 {
+        return Some(Vec::new());
+    }
+
+    let mut symbols: [u8; 256] = std::array::from_fn(|index| index as u8);
+    let mut frequencies = partial[..256].to_vec();
+    let mut ranked = [0u8; 256];
+    let mut nonzero = 0usize;
+    for rank in &mut ranked {
+        // `BwtDecompress.Frequency` picks the first index on ties.  The
+        // ordering controls the offsets below, so `Iterator::max_by_key` is
+        // not equivalent: it retains the last tied item.
+        let mut index = 0;
+        let mut count = 0;
+        for (candidate, &frequency) in frequencies.iter().enumerate() {
+            if frequency > count {
+                index = candidate;
+                count = frequency;
+            }
+        }
+        if count == 0 {
+            break;
+        }
+        *rank = index as u8;
+        frequencies[index] = 0;
+        nonzero += 1;
+    }
+
+    let mut offset = 0usize;
+    for &symbol in ranked.iter().take(nonzero) {
+        let symbol = usize::from(symbol);
+        let count = usize::try_from(partial[symbol]).ok()?;
+        let end = offset.checked_add(count)?;
+        if end > transformed.len().saturating_sub(1024) {
+            return None;
+        }
+        symbols[transformed[1024 + offset] as usize] = symbol as u8;
+        partial[symbol + 256] = i32::try_from(offset.checked_add(1)?).ok()?;
+        offset = end;
+        partial[symbol + 512] = i32::try_from(offset).ok()?;
+    }
+
+    let mut output = Vec::with_capacity(length);
+    let mut value = symbols[0];
+    while output.len() < length {
+        output.push(value);
+        let index = usize::from(value);
+        let cursor = usize::try_from(partial[index + 256]).ok()?;
+        let end = usize::try_from(partial[index + 512]).ok()?;
+        if cursor >= end {
+            if nonzero == 0 {
+                return None;
+            }
+            nonzero -= 1;
+            symbols.copy_within(1..=nonzero, 0);
+            value = symbols[0];
+        } else {
+            let next = *transformed.get(cursor.checked_add(1024)?)?;
+            partial[index + 256] = partial[index + 256].checked_add(1)?;
+            if next != 0 {
+                let next = usize::from(next);
+                symbols.copy_within(1..=next, 0);
+                symbols[next] = value;
+                value = symbols[0];
+            }
+        }
+    }
+    Some(output)
 }
 
 #[cfg(test)]
@@ -217,7 +319,7 @@ mod tests {
     }
 
     #[test]
-    fn a_compressed_file_is_refused_by_its_own_marker() {
+    fn a_malformed_compressed_file_is_rejected() {
         let mut bytes = vec![0u8; 8];
         bytes[3] = 0x8E;
         let stamp = std::time::SystemTime::now()
@@ -231,5 +333,13 @@ mod tests {
         let error = Cliloc::load(&path).unwrap_err();
         assert!(matches!(error, ClilocError::Compressed { .. }));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_compressed_empty_table_loads() {
+        let mut bytes = vec![0u8; 4 + 1024];
+        bytes[3] = 0x8E;
+        let table = Cliloc::parse(&decompress_bwt(&bytes).expect("a valid compressed stream"));
+        assert_eq!(table.count(), 0);
     }
 }

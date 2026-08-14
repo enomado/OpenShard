@@ -80,3 +80,4 @@ pub mod statics;
 pub mod status;
 pub mod text;
 pub mod tonemap;
+pub mod vendor;
