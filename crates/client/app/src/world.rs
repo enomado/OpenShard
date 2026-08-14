@@ -8,7 +8,7 @@
 //! fields here change together, on every `Update::World`, and a method that
 //! only touches this half can be written and tested against it alone.
 
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 use std::fmt;
 use std::time::{Duration, Instant};
 
@@ -31,6 +31,8 @@ use crate::{clutter, link, resources};
 pub const DAMAGE_NUMBER_HOLD: Duration = Duration::from_secs(1);
 /// Vertical distance, in world pixels, a damage number travels during its hold.
 pub const DAMAGE_NUMBER_RISE: i32 = 28;
+/// How long a health estimate takes to settle on a newly confirmed value.
+pub const HEALTH_ESTIMATE_LAG: Duration = Duration::from_millis(450);
 
 /// A short-lived combat number shown over a mobile.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -41,6 +43,29 @@ pub struct DamageNumber {
     /// shown over another mobile.
     pub hue: Hue,
     pub elapsed: Duration,
+}
+
+/// The delayed part of an overhead health bar. The shard's current health is
+/// never replaced by this value; it only leaves a readable red/green trail for
+/// a hit, a heal, and a sequence of DoT ticks.
+#[derive(Clone, Copy, Debug)]
+pub struct HealthEstimate {
+    from: u16,
+    target: u16,
+    elapsed: Duration,
+}
+
+impl HealthEstimate {
+    fn shown(self) -> u16 {
+        let progress = (self.elapsed.as_secs_f32() / HEALTH_ESTIMATE_LAG.as_secs_f32()).min(1.0);
+        (f32::from(self.from) + (f32::from(self.target) - f32::from(self.from)) * progress)
+            .round()
+            .clamp(0.0, f32::from(u16::MAX)) as u16
+    }
+
+    fn settled(self) -> bool {
+        self.elapsed >= HEALTH_ESTIMATE_LAG
+    }
 }
 
 /// Damage in the health-bar scale, kept distinct from other wire `u16`s.
@@ -161,6 +186,8 @@ pub struct PresentationWorld {
     pub item_serials: Vec<Serial>,
     /// Damage numbers are presentation events, not authoritative world state.
     pub damage_numbers: Vec<DamageNumber>,
+    /// Presentation-only delayed health, keyed by the mobile the shard named.
+    pub health_estimates: BTreeMap<Serial, HealthEstimate>,
     /// The corresponding transient obstacles used by local movement.
     pub clutter: clutter::Clutter,
     /// Animation and glide history, which belongs to presentation rather than
@@ -184,6 +211,10 @@ impl PresentationWorld {
         }
         self.damage_numbers
             .retain(|number| number.elapsed < DAMAGE_NUMBER_HOLD);
+        for estimate in self.health_estimates.values_mut() {
+            estimate.elapsed += elapsed;
+        }
+        self.health_estimates.retain(|_, estimate| !estimate.settled());
     }
 
     /// Show the damage the last health update established for one mobile.
@@ -196,6 +227,34 @@ impl PresentationWorld {
                 elapsed: Duration::ZERO,
             });
         }
+    }
+
+    /// Start (or retarget) the fake-health interpolation at a newly confirmed
+    /// value. Retargeting from the value currently on screen preserves every
+    /// individual DoT tick instead of making a busy fight visibly jump.
+    pub(crate) fn health_changed(&mut self, serial: Serial, previous: u16, current: u16) {
+        let from = self
+            .health_estimates
+            .get(&serial)
+            .copied()
+            .map_or(previous, HealthEstimate::shown);
+        if from != current {
+            self.health_estimates.insert(
+                serial,
+                HealthEstimate {
+                    from,
+                    target: current,
+                    elapsed: Duration::ZERO,
+                },
+            );
+        }
+    }
+
+    pub(crate) fn estimated_health(&self, serial: Serial, current: u16) -> u16 {
+        self.health_estimates
+            .get(&serial)
+            .copied()
+            .map_or(current, HealthEstimate::shown)
     }
 }
 
@@ -772,6 +831,7 @@ mod tests {
             items: Vec::new(),
             item_serials: Vec::new(),
             damage_numbers: Vec::new(),
+            health_estimates: BTreeMap::new(),
             clutter: clutter::Clutter::default(),
             crowd: Crowd::default(),
         };
@@ -1167,5 +1227,20 @@ mod tests {
 
         assert_eq!(online.snapshot(), offline.snapshot());
         assert_eq!(offline.snapshot(), replay.snapshot());
+    }
+
+    #[test]
+    fn health_estimate_moves_from_confirmed_damage_to_the_new_health() {
+        let mut estimate = HealthEstimate {
+            from: 80,
+            target: 50,
+            elapsed: Duration::ZERO,
+        };
+        assert_eq!(estimate.shown(), 80);
+        estimate.elapsed = HEALTH_ESTIMATE_LAG / 2;
+        assert_eq!(estimate.shown(), 65);
+        estimate.elapsed = HEALTH_ESTIMATE_LAG;
+        assert_eq!(estimate.shown(), 50);
+        assert!(estimate.settled());
     }
 }

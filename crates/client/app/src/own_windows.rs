@@ -16,6 +16,9 @@ use openshard_client_render::vendor::Hit as VendorHit;
 use openshard_protocol::containers::ContainedItem;
 use openshard_protocol::gump::GumpId;
 use openshard_protocol::gump::GumpPoint;
+use openshard_protocol::mobile::Equipment;
+use openshard_protocol::serial::Serial;
+use openshard_protocol::wire::Graphic;
 
 use crate::app::App;
 use crate::windows::{Drawn, WindowSubject};
@@ -36,6 +39,12 @@ impl App {
         let Some(WindowSubject::Vendor(vendor)) = self.window_under_pointer() else {
             return false;
         };
+        let Some(Drawn::Vendor(window)) = self.drawn(WindowSubject::Vendor(vendor)) else {
+            return false;
+        };
+        if !window.catalogue_contains(self.input.pointer_gump) {
+            return false;
+        }
         let rows = self
             .world
             .authoritative
@@ -158,6 +167,52 @@ impl App {
         true
     }
 
+    /// The worn item under the pointer in the paperdoll drawn last frame.
+    pub(crate) fn paperdoll_item_under_pointer(&self) -> Option<(Serial, Equipment)> {
+        let WindowSubject::Paperdoll(mobile) = self.window_under_pointer()? else {
+            return None;
+        };
+        let Drawn::Paperdoll(doll) = self.drawn(WindowSubject::Paperdoll(mobile))? else {
+            return None;
+        };
+        let index = gump_art::pick(
+            &doll.pictures,
+            self.input.pointer_gump,
+            &self.resources.gump_atlas,
+        )?;
+        let layer = *doll.equipment_hits.get(&index)?;
+        let view = self.world.authoritative.view.as_ref()?;
+        let equipment = if view.player.serial == mobile {
+            &view.player.equipment
+        } else {
+            &view.mobiles.get(&mobile)?.equipment
+        };
+        equipment
+            .iter()
+            .find(|item| item.layer == layer)
+            .copied()
+            .map(|item| (mobile, item))
+    }
+
+    /// Refresh the paperdoll's worn-item hover tint.
+    pub(crate) fn hover_paperdoll_item(&mut self) -> bool {
+        let hovered = self
+            .paperdoll_item_under_pointer()
+            .map(|(mobile, item)| (mobile, item.layer));
+        let preview = self
+            .windows
+            .item_drag
+            .and_then(crate::windows::ItemDragTransaction::drag)
+            .and_then(|drag| match self.window_under_pointer() {
+                Some(WindowSubject::Paperdoll(mobile)) => Some((mobile, drag.item)),
+                _ => None,
+            });
+        let changed = self.windows.hovered_equipment != hovered || self.windows.preview_equipment != preview;
+        self.windows.hovered_equipment = hovered;
+        self.windows.preview_equipment = preview;
+        changed
+    }
+
     /// Turn a genuine pointer move into a lift. A press without this movement
     /// remains a click and can therefore use the item on a double-click.
     pub(crate) fn drag_container_item(&mut self) -> bool {
@@ -199,7 +254,22 @@ impl App {
         if transaction.pending_drop().is_some() {
             return true;
         }
+        self.windows.preview_equipment = None;
         let target = match self.window_under_pointer() {
+            Some(WindowSubject::Paperdoll(mobile)) => {
+                let layer = openshard_protocol::wire::Layer(
+                    self.resources.tiledata.static_tile(drag.item.graphic.0).layer,
+                );
+                if let Some(link) = self.world.shard.link() {
+                    link.equip(drag.item.serial, layer, mobile);
+                    self.windows.item_drag = Some(crate::windows::ItemDragTransaction::Dropped {
+                        drag,
+                        destination: crate::windows::PendingDrop::Equipment { mobile, layer },
+                    });
+                    self.reproject_item_drag();
+                }
+                return true;
+            }
             Some(WindowSubject::Container(serial)) => serial,
             _ => {
                 // Outside a gump the protocol's x/y/z are world coordinates,
@@ -285,7 +355,7 @@ impl App {
         self.windows.own_windows.iter().rev().find_map(|window| {
             let drawn = self.drawn(window.subject)?;
             if let Drawn::Vendor(vendor) = drawn {
-                return vendor.hit(cursor).map(|_| window.subject);
+                return vendor.contains(cursor).then_some(window.subject);
             }
             // A dialog's fields are the one part of a window that is a box
             // rather than a picture — see `gump::Field` — and a click in one is
@@ -396,11 +466,29 @@ impl App {
                     self.confirm_vendor(vendor);
                     return true;
                 }
-                Some(VendorHit::Close) => {
-                    self.close_window(subject);
+                Some(VendorHit::Remove(row)) => {
+                    if let Some(amount) = self
+                        .windows
+                        .vendor_amounts
+                        .get_mut(&vendor)
+                        .and_then(|amounts| amounts.get_mut(row))
+                    {
+                        *amount = amount.saturating_sub(1);
+                    }
+                    self.windows.dragging = None;
                     return true;
                 }
-                None => return false,
+                Some(VendorHit::Clear) => {
+                    if let Some(amounts) = self.windows.vendor_amounts.get_mut(&vendor) {
+                        amounts.fill(0);
+                    }
+                    self.windows.dragging = None;
+                    return true;
+                }
+                // The art's header and empty parchment are deliberately not
+                // actions.  Let the normal window path below pick the gump up
+                // from either of them.
+                None => {}
             }
         }
         if let WindowSubject::Container(container) = subject {
@@ -419,7 +507,26 @@ impl App {
                     self.windows.last_container_click = (!paired).then_some((now, item.serial));
                     if paired {
                         if let Some(link) = self.world.shard.link() {
-                            link.use_object(item.serial);
+                            // A katana's ordinary double-click is a wield: lift
+                            // it and immediately place it in the tiledata slot,
+                            // exactly as a drag onto the doll does.
+                            if item.graphic == Graphic(0x13FF) {
+                                if let Some(player) = self
+                                    .world
+                                    .authoritative
+                                    .view
+                                    .as_ref()
+                                    .map(|view| view.player.serial)
+                                {
+                                    let layer = openshard_protocol::wire::Layer(
+                                        self.resources.tiledata.static_tile(item.graphic.0).layer,
+                                    );
+                                    link.pick_up_item(item.serial, item.amount);
+                                    link.equip(item.serial, layer, player);
+                                }
+                            } else {
+                                link.use_object(item.serial);
+                            }
                         }
                         self.windows.item_drag = None;
                         self.windows.dragging = None;
@@ -487,6 +594,45 @@ impl App {
                 self.windows.held_doll = Some((subject, button));
                 self.windows.dragging = None;
                 return true;
+            }
+            if let Some((mobile, item)) = self.paperdoll_item_under_pointer() {
+                if self
+                    .world
+                    .authoritative
+                    .view
+                    .as_ref()
+                    .is_some_and(|view| view.player.serial == mobile)
+                {
+                    self.windows.item_drag = Some(crate::windows::ItemDragTransaction::Pressed(
+                        crate::windows::ItemPress {
+                            item: ContainedItem {
+                                serial: item.serial,
+                                graphic: item.graphic,
+                                amount: 1,
+                                at: GumpPoint::new(0, 0),
+                                grid: Default::default(),
+                                hue: item.hue,
+                            },
+                            origin: crate::windows::DragOrigin::Equipment {
+                                mobile,
+                                layer: item.layer,
+                            },
+                            at: self.input.pointer_gump,
+                            grab: self
+                                .resources
+                                .art
+                                .static_art(item.graphic)
+                                .ok()
+                                .flatten()
+                                .map(|art| {
+                                    GumpPixel::new(i32::from(art.width()) / 2, i32::from(art.height()) / 2)
+                                })
+                                .unwrap_or_default(),
+                        },
+                    ));
+                    self.windows.dragging = None;
+                    return true;
+                }
             }
         }
         // The skill window's own furniture: a heading's arrow, the two ends of

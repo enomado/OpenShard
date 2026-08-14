@@ -866,14 +866,18 @@ impl App {
         drawn_mobiles
             .iter()
             .filter_map(|(who, drawn)| {
-                let (hits, notoriety, targeted) = match who {
-                    Some(serial) if *serial == view.player.serial => {
-                        (view.player.hits, Notoriety::Innocent, false)
-                    }
+                let (hits, mana, notoriety, targeted) = match who {
+                    Some(serial) if *serial == view.player.serial => (
+                        view.player.hits,
+                        view.player.status.as_ref().map(|status| status.mana),
+                        Notoriety::Innocent,
+                        false,
+                    ),
                     Some(serial) => {
                         let mobile = view.mobiles.get(serial)?;
                         (
                             mobile.hits,
+                            None,
                             mobile.notoriety,
                             view.player.attacking == Some(*serial),
                         )
@@ -881,10 +885,18 @@ impl App {
                     None => return None,
                 };
                 let hits = hits?;
+                let serial = who.expect("the None identity returned above");
                 let anchor = mobiles::head_anchor(drawn, &camera, &window.atlases.mobiles)?;
                 Some(HealthBar {
                     anchor,
                     current: HealthPoints::new(hits.current),
+                    estimated: HealthPoints::new(
+                        self.world.presentation.estimated_health(serial, hits.current),
+                    ),
+                    mana: mana.map(|mana| crate::diagnostics::ResourceBar {
+                        current: HealthPoints::new(mana.current),
+                        max: HealthPoints::new(mana.max),
+                    }),
                     max: HealthPoints::new(hits.max),
                     notoriety,
                     targeted,

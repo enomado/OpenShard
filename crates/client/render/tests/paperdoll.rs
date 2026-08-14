@@ -90,7 +90,7 @@ fn a_dressed_body_draws_its_gump_first_and_its_backpack_last() {
     };
     let at = GumpPixel::new(100, 50);
     let whose = Whose::Own { war: false };
-    let doll = paperdoll::window(Some(&wearer), whose, None, &equip_conv, &gumps, at);
+    let doll = paperdoll::window(Some(&wearer), whose, None, None, None, &equip_conv, &gumps, at);
     let stack = stack(&doll);
 
     assert_eq!(
@@ -165,7 +165,16 @@ fn every_button_on_a_frame_is_a_picture_the_client_ships() {
         Whose::Own { war: true },
         Whose::Another,
     ] {
-        let doll = paperdoll::window(None, whose, None, &equip_conv, &gumps, GumpPixel::new(0, 0));
+        let doll = paperdoll::window(
+            None,
+            whose,
+            None,
+            None,
+            None,
+            &equip_conv,
+            &gumps,
+            GumpPixel::new(0, 0),
+        );
         assert!(!doll.hits.is_empty(), "a frame has furniture on it: {whose:?}");
         for index in doll.hits.keys() {
             let GumpArt::Gump(graphic) = doll.pictures[index.position()].graphic else {
@@ -184,6 +193,8 @@ fn every_button_on_a_frame_is_a_picture_the_client_ships() {
             None,
             whose,
             doll.hits.values().next().copied(),
+            None,
+            None,
             &equip_conv,
             &gumps,
             GumpPixel::new(0, 0),
@@ -210,7 +221,16 @@ fn a_stranger_gets_the_status_button_and_none_of_the_rest() {
         return;
     };
     let buttons = |whose| {
-        let doll = paperdoll::window(None, whose, None, &equip_conv, &gumps, GumpPixel::new(0, 0));
+        let doll = paperdoll::window(
+            None,
+            whose,
+            None,
+            None,
+            None,
+            &equip_conv,
+            &gumps,
+            GumpPixel::new(0, 0),
+        );
         doll.hits.values().copied().collect::<Vec<_>>()
     };
     let stranger = buttons(Whose::Another);
@@ -258,6 +278,8 @@ fn a_layer_with_no_anim_id_draws_nothing() {
         Some(&wearer),
         Whose::Another,
         None,
+        None,
+        None,
         &equip_conv,
         &gumps,
         GumpPixel::new(0, 0),
@@ -281,6 +303,8 @@ fn a_paperdoll_of_an_unknown_body_is_still_a_frame() {
     let doll = paperdoll::window(
         None,
         Whose::Another,
+        None,
+        None,
         None,
         &equip_conv,
         &gumps,

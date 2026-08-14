@@ -171,6 +171,7 @@ pub(crate) fn draw_gump_windows(
                                     amounts,
                                     scroll,
                                     open.at,
+                                    cursor,
                                     &resources.gump_atlas,
                                 )),
                             ));
@@ -193,6 +194,7 @@ pub(crate) fn draw_gump_windows(
                                 amounts,
                                 scroll,
                                 open.at,
+                                cursor,
                                 &resources.gump_atlas,
                             )),
                         ));
@@ -338,6 +340,21 @@ pub(crate) fn draw_gump_windows(
                                 None => Vec::new(),
                             },
                         };
+                        let equipment: Vec<_> = equipment
+                            .into_iter()
+                            .filter(|item| {
+                                windows
+                                    .item_drag
+                                    .and_then(crate::windows::ItemDragTransaction::drag)
+                                    .is_none_or(|drag| {
+                                        drag.origin
+                                            != crate::windows::DragOrigin::Equipment {
+                                                mobile: serial,
+                                                layer: item.layer,
+                                            }
+                                    })
+                            })
+                            .collect();
                         let wearer = body.map(|(body, hue)| paperdoll::Wearer {
                             body,
                             hue,
@@ -361,12 +378,31 @@ pub(crate) fn draw_gump_windows(
                             .held_doll
                             .filter(|(window, _)| *window == open.subject)
                             .map(|(_, button)| button);
+                        let preview = windows
+                            .preview_equipment
+                            .filter(|(mobile, _)| *mobile == serial)
+                            .and_then(|(_, item)| {
+                                let layer = openshard_protocol::wire::Layer(
+                                    resources.tiledata.static_tile(item.graphic.0).layer,
+                                );
+                                (layer.0 > 0 && !equipment.iter().any(|worn| worn.layer == layer)).then_some(
+                                    openshard_client_render::mobiles::EquipmentLayer {
+                                        graphic: resources.tiledata.static_tile(item.graphic.0).anim_id,
+                                        hue: item.hue,
+                                        layer,
+                                    },
+                                )
+                            });
                         drawn_windows.push((
                             open.subject,
                             Drawn::Paperdoll(paperdoll::window(
                                 wearer.as_ref(),
                                 whose,
                                 held,
+                                windows
+                                    .hovered_equipment
+                                    .and_then(|(mobile, layer)| (mobile == serial).then_some(layer)),
+                                preview,
                                 &resources.equip_conv,
                                 files,
                                 open.at,
@@ -471,6 +507,30 @@ pub(crate) fn draw_gump_windows(
                     ) {
                         labels.push(paperdoll::name(&doll.name, at));
                     }
+                    if let Some((mobile, layer)) = windows.hovered_equipment {
+                        if mobile == *serial {
+                            let item = world.authoritative.view.as_ref().and_then(|view| {
+                                if view.player.serial == mobile {
+                                    view.player.equipment.iter().find(|item| item.layer == layer)
+                                } else {
+                                    view.mobiles
+                                        .get(&mobile)?
+                                        .equipment
+                                        .iter()
+                                        .find(|item| item.layer == layer)
+                                }
+                            });
+                            if let Some(item) = item {
+                                labels.push(openshard_client_render::text::GumpLabel {
+                                    at: cursor.offset(gump_art::GumpPixel::new(14, 18)),
+                                    text: &resources.tiledata.static_tile(item.graphic.0).name,
+                                    font: openshard_protocol::speech::Font(1),
+                                    hue: openshard_protocol::wire::Hue::LABEL,
+                                    clip: None,
+                                });
+                            }
+                        }
+                    }
                 }
                 (WindowSubject::Skills, Drawn::Skills(sheet)) => {
                     for line in &sheet.lines {
@@ -489,6 +549,26 @@ pub(crate) fn draw_gump_windows(
                 }
                 (WindowSubject::Vendor(_), Drawn::Vendor(vendor)) => {
                     labels.extend(vendor.lines.iter().map(|line| line.label()));
+                }
+                (WindowSubject::Container(serial), Drawn::Container(_)) => {
+                    if let Some(item) = windows.hovered_container_item.and_then(|hovered| {
+                        world
+                            .authoritative
+                            .view
+                            .as_ref()?
+                            .contents
+                            .get(serial)?
+                            .iter()
+                            .find(|item| item.serial == hovered)
+                    }) {
+                        labels.push(openshard_client_render::text::GumpLabel {
+                            at: cursor.offset(gump_art::GumpPixel::new(14, 18)),
+                            text: &resources.tiledata.static_tile(item.graphic.0).name,
+                            font: openshard_protocol::speech::Font(1),
+                            hue: openshard_protocol::wire::Hue::LABEL,
+                            clip: None,
+                        });
+                    }
                 }
                 _ => {}
             }

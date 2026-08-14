@@ -2202,6 +2202,19 @@ impl App {
             composite_revision,
             composite_visible,
         );
+        // The composition contract is explicit: world-attached overlays sit
+        // over the finished map but below every client window. In particular a
+        // mobile's health bar must disappear beneath a vendor gump rather than
+        // leak through its art.
+        if let Some(shell) = self.shell.as_mut() {
+            shell.paint_world_overlays(
+                &window.device,
+                &window.queue,
+                &mut encoder,
+                &view,
+                [window.config.width, window.config.height],
+            );
+        }
         // The shard's dialogs, in the client's own art, over the finished
         // picture and under egui's.
         //

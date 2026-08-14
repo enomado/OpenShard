@@ -815,6 +815,7 @@ pub fn run<D: Dial + Send + 'static>(
                 items: Vec::new(),
                 item_serials: Vec::new(),
                 damage_numbers: Vec::new(),
+                health_estimates: std::collections::BTreeMap::new(),
                 clutter: clutter::Clutter::default(),
                 crowd: {
                     // The body's ease, which is not the camera's — see `STARTUP_EASE`.
@@ -975,6 +976,8 @@ pub fn run<D: Dial + Send + 'static>(
             drawn_windows: Vec::new(),
             dragging: None,
             hovered_container_item: None,
+            hovered_equipment: None,
+            preview_equipment: None,
             item_drag: None,
             last_container_click: None,
             held_doll: None,

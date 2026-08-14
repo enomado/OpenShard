@@ -138,12 +138,25 @@ pub struct HealthBar {
     pub anchor: ViewPixel,
     /// Current hit points in the same scale as [`max`](Self::max).
     pub current: HealthPoints,
+    /// The short-lived visual estimate, which follows [`current`](Self::current)
+    /// after damage or healing rather than snapping with the wire packet.
+    pub estimated: HealthPoints,
+    /// Mana is available only for the local player: the wire does not disclose
+    /// other mobiles' mana in the ordinary world update.
+    pub mana: Option<ResourceBar>,
     /// Maximum hit points in the scale the shard chose for this body.
     pub max: HealthPoints,
     /// The wire fact the presentation uses to choose the bar colour.
     pub notoriety: Notoriety,
     /// Whether this body is the attack target the shard settled on.
     pub targeted: bool,
+}
+
+/// A current/max resource in the health-bar scale.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct ResourceBar {
+    pub current: HealthPoints,
+    pub max: HealthPoints,
 }
 
 #[cfg(test)]

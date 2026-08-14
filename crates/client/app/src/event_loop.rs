@@ -500,6 +500,7 @@ impl ApplicationHandler<()> for App {
                 changed |= self.drag_thumb();
                 changed |= self.drag_container_item();
                 changed |= self.hover_container_item();
+                changed |= self.hover_paperdoll_item();
                 // Held, the button steers: a heading toward wherever the cursor
                 // is, by default, or a Ctrl-held move order — see
                 // `walk_toward_cursor` and `steer.rs`'s module docs for why

@@ -177,6 +177,8 @@ fn paperdolls(client: &Client, out: &Path) {
             // Nothing held: what a pressed button looks like is a question for
             // the app, which is the only thing that has a mouse.
             None,
+            None,
+            None,
             &client.equip_conv,
             &client.gumps,
             at,

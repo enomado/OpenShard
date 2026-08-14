@@ -144,13 +144,24 @@ pub struct ItemPress {
 pub enum DragOrigin {
     Ground,
     Container(Serial),
+    Equipment {
+        mobile: Serial,
+        layer: openshard_protocol::wire::Layer,
+    },
 }
 
 /// A locally projected drop while the authoritative response is in flight.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum PendingDrop {
-    Container { container: Serial, at: GumpPoint },
+    Container {
+        container: Serial,
+        at: GumpPoint,
+    },
     Ground(Point),
+    Equipment {
+        mobile: Serial,
+        layer: openshard_protocol::wire::Layer,
+    },
 }
 
 /// The item the client has asked the shard to put on its cursor.
@@ -260,6 +271,10 @@ pub struct Windows {
     pub dragging: Option<(WindowSubject, GumpPixel)>,
     /// The container item currently under the pointer, tinted on the next frame.
     pub hovered_container_item: Option<Serial>,
+    /// The worn layer under the pointer, used to tint its paperdoll picture.
+    pub hovered_equipment: Option<(Serial, openshard_protocol::wire::Layer)>,
+    /// A held wearable projected onto the paperdoll currently under the cursor.
+    pub preview_equipment: Option<(Serial, ContainedItem)>,
     /// The one local item-transfer transaction, from mouse press through
     /// authoritative confirmation or cancellation.
     pub item_drag: Option<ItemDragTransaction>,

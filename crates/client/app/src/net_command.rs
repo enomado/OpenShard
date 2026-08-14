@@ -267,6 +267,14 @@ impl App {
                         .drag()
                         .is_some_and(|drag| item.serial == drag.item.serial)
                 }
+                ServerPacket::EquipUpdate(update) => {
+                    matches!(
+                        transaction.pending_drop(),
+                        Some(crate::windows::PendingDrop::Equipment { .. })
+                    ) && transaction
+                        .drag()
+                        .is_some_and(|drag| update.item == drag.item.serial)
+                }
                 _ => false,
             };
             if confirmed {
@@ -286,6 +294,17 @@ impl App {
         // the previous value only long enough to turn a falling value into a
         // presentation event; the authoritative view remains the sole record
         // of the current hit points.
+        let health_before = match packet {
+            ServerPacket::Health(bar) => match bar.serial == view.player.serial {
+                true => view.player.hits.map(|hits| (bar.serial, hits.current)),
+                false => view
+                    .mobiles
+                    .get(&bar.serial)
+                    .and_then(|mobile| mobile.hits)
+                    .map(|hits| (bar.serial, hits.current)),
+            },
+            _ => None,
+        };
         let damage = match packet {
             ServerPacket::Health(bar) => match bar.serial == view.player.serial {
                 true => view.player.hits,
@@ -304,6 +323,16 @@ impl App {
             _ => None,
         };
         view.apply(packet);
+        if let Some((serial, before)) = health_before {
+            let current = match serial == view.player.serial {
+                true => view.player.hits,
+                false => view.mobiles.get(&serial).and_then(|mobile| mobile.hits),
+            }
+            .map(|hits| hits.current);
+            if let Some(current) = current.filter(|current| *current != before) {
+                self.world.presentation.health_changed(serial, before, current);
+            }
+        }
         if let Some((message, text)) = localized {
             view.localized_message(message, text);
         }

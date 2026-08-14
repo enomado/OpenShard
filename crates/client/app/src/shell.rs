@@ -150,11 +150,44 @@ pub enum ScriptRequest {
     Stop,
 }
 
+/// The two egui compositions recorded into one GPU command buffer.
+///
+/// They have independent contexts and renderers.  A renderer owns mutable
+/// vertex and index streams, so sharing it would let the later HUD upload
+/// replace the already-encoded world-overlay mesh before the GPU executes it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum EguiLayer {
+    WorldOverlay,
+    Hud,
+}
+
+impl EguiLayer {
+    const fn pass_label(self) -> &'static str {
+        match self {
+            Self::WorldOverlay => "egui: world overlay",
+            Self::Hud => "egui: HUD",
+        }
+    }
+}
+
 /// egui, and the two crates that put it on a window and on a GPU.
 pub struct Shell {
     context: egui::Context,
+    /// A deliberately separate egui frame for things anchored in the world.
+    ///
+    /// It is recorded after the world has been drawn and submitted before the
+    /// gump layer.  Keeping it out of the HUD frame makes the composition
+    /// order a property of the renderer, not an accident of egui painter
+    /// creation order.
+    world_overlay_context: egui::Context,
+    world_overlay_output: Option<egui::FullOutput>,
     state: egui_winit::State,
     renderer: egui_wgpu::Renderer,
+    /// The world-overlay pass and the HUD are encoded into one command buffer.
+    /// They therefore cannot share egui's mutable vertex/index streams: the
+    /// HUD upload would otherwise replace the health-bar mesh before the GPU
+    /// executes the earlier world-overlay render pass.
+    world_overlay_renderer: egui_wgpu::Renderer,
     /// Where the world may be drawn: what [`egui::CentralPanel`] left free,
     /// converted to physical pixels. Held between frames because the camera is
     /// resized from it before the next frame's UI has run.
@@ -184,6 +217,15 @@ impl Shell {
     /// wrong coordinate system.
     pub fn new(device: &wgpu::Device, format: wgpu::TextureFormat, window: &Window, desk: Desk) -> Self {
         let context = egui::Context::default();
+        let world_overlay_context = egui::Context::default();
+        let world_overlay_renderer = egui_wgpu::Renderer::new(
+            device,
+            format,
+            egui_wgpu::RendererOptions {
+                depth_stencil_format: None,
+                ..Default::default()
+            },
+        );
         // On top of the monitor's own density, which `egui_winit::State` is given
         // below and which nothing here saves.
         context.set_zoom_factor(desk.zoom.hud_scale_factor());
@@ -207,8 +249,11 @@ impl Shell {
         let size = window.inner_size();
         Self {
             context,
+            world_overlay_context,
+            world_overlay_output: None,
             state,
             renderer,
+            world_overlay_renderer,
             viewport: ViewportRect {
                 x: 0,
                 y: 0,
@@ -372,6 +417,27 @@ impl Shell {
             width: clamp(free.width() * scale, size.width - x),
             height: clamp(free.height() * scale, size.height - y),
         };
+        // World-attached UI is a separate composition layer. It has no input
+        // and no widgets, but gets the same point-to-pixel transform as the
+        // HUD so anchors line up on HiDPI displays and at every HUD zoom.
+        self.world_overlay_context
+            .set_pixels_per_point(self.context.pixels_per_point());
+        let world_overlay = self.world_overlay_context.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    self.context.content_rect().size(),
+                )),
+                ..Default::default()
+            },
+            |ui| draw_world_overlays(ui.ctx(), &hud, camera, free),
+        );
+        debug_assert_eq!(
+            world_overlay.pixels_per_point,
+            self.world_overlay_context.pixels_per_point(),
+            "the world-overlay output must be tessellated at its own context's scale"
+        );
+        self.world_overlay_output = Some(world_overlay);
         (request, output)
     }
 
@@ -398,20 +464,80 @@ impl Shell {
         output: egui::FullOutput,
         size_in_pixels: [u32; 2],
     ) {
-        let pixels_per_point = self.context.pixels_per_point();
-        let jobs = self.context.tessellate(output.shapes, pixels_per_point);
+        Self::paint_output(
+            &mut self.renderer,
+            &self.context,
+            EguiLayer::Hud,
+            device,
+            queue,
+            encoder,
+            target,
+            output,
+            size_in_pixels,
+        );
+    }
+
+    /// Paint the world-overlay layer between the world and client windows.
+    /// Calling this after the world pass and before gumps is the only legal
+    /// placement for health bars, routes and diagnostic markers.
+    pub fn paint_world_overlays(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        encoder: &mut wgpu::CommandEncoder,
+        target: &wgpu::TextureView,
+        size_in_pixels: [u32; 2],
+    ) {
+        let output = self.world_overlay_output.take();
+        debug_assert!(
+            output.is_some(),
+            "world overlays must be encoded once after Shell::run and before HUD painting"
+        );
+        if let Some(output) = output {
+            Self::paint_output(
+                &mut self.world_overlay_renderer,
+                &self.world_overlay_context,
+                EguiLayer::WorldOverlay,
+                device,
+                queue,
+                encoder,
+                target,
+                output,
+                size_in_pixels,
+            );
+        }
+    }
+
+    fn paint_output(
+        renderer: &mut egui_wgpu::Renderer,
+        context: &egui::Context,
+        layer: EguiLayer,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        encoder: &mut wgpu::CommandEncoder,
+        target: &wgpu::TextureView,
+        output: egui::FullOutput,
+        size_in_pixels: [u32; 2],
+    ) {
+        let pixels_per_point = output.pixels_per_point;
+        debug_assert_eq!(
+            pixels_per_point,
+            context.pixels_per_point(),
+            "{} used an output from a different egui context",
+            layer.pass_label(),
+        );
+        let jobs = context.tessellate(output.shapes, pixels_per_point);
         for (id, delta) in &output.textures_delta.set {
-            self.renderer.update_texture(device, queue, *id, delta);
+            renderer.update_texture(device, queue, *id, delta);
         }
         let descriptor = egui_wgpu::ScreenDescriptor {
             size_in_pixels,
             pixels_per_point,
         };
-        self.renderer
-            .update_buffers(device, queue, encoder, &jobs, &descriptor);
+        renderer.update_buffers(device, queue, encoder, &jobs, &descriptor);
 
         let pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("egui"),
+            label: Some(layer.pass_label()),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                 view: target,
                 depth_slice: None,
@@ -427,11 +553,10 @@ impl Shell {
             timestamp_writes: None,
             occlusion_query_set: None,
         });
-        self.renderer
-            .render(&mut pass.forget_lifetime(), &jobs, &descriptor);
+        renderer.render(&mut pass.forget_lifetime(), &jobs, &descriptor);
 
         for id in &output.textures_delta.free {
-            self.renderer.free_texture(id);
+            renderer.free_texture(id);
         }
     }
 }
@@ -573,8 +698,6 @@ fn layout(root: &mut egui::Ui, hud: &Hud, camera: Camera, world: &WorldState, de
             height: rect.height(),
         });
     }
-
-    overlays(root, hud, camera);
 
     request
 }
@@ -1306,7 +1429,7 @@ fn prism_editor(ui: &mut egui::Ui, graphic: Graphic, prism: Prism, request: &mut
 /// Taken out of [`layout`] with the rest of the panels' bodies, and for the same
 /// reason — what is left in `layout` is then the arrangement, one screenful of
 /// it, and nothing else.
-fn overlays(root: &mut egui::Ui, hud: &Hud, camera: Camera) {
+fn draw_world_overlays(context: &egui::Context, hud: &Hud, camera: Camera, viewport: egui::Rect) {
     // Every panel has claimed its edge by now, so what is left of the root `Ui`
     // is the world's own rectangle — the very rect `Shell::run` reads back a
     // moment later and hands the camera. Read *here*, at the foot of the layout
@@ -1315,8 +1438,7 @@ fn overlays(root: &mut egui::Ui, hud: &Hud, camera: Camera) {
     // it were painted over the strip. Windows do not narrow it and must not: they
     // float over the world, and a marker under one is correctly hidden by it
     // rather than clipped away.
-    let viewport = root.available_rect_before_wrap();
-    let world = world_painter(root, viewport);
+    let world = world_painter(context, viewport);
     // The terrain map goes down first: it is a wash over the ground, and the
     // three markers below are read against it.
     if let Some(terrain) = &hud.terrain {
@@ -1405,6 +1527,7 @@ fn draw_health_bars(
 ) {
     const WIDTH: f32 = 42.0;
     const HEIGHT: f32 = 5.0;
+    const RESOURCE_GAP: f32 = 2.0;
     const GAP: f32 = 8.0;
 
     // The anchor belongs to the rendered world, not to egui. Project it
@@ -1416,6 +1539,11 @@ fn draw_health_bars(
             0.0
         } else {
             f32::from(bar.current.get()).min(f32::from(bar.max.get())) / f32::from(bar.max.get())
+        };
+        let estimated_ratio = if bar.max.get() == 0 {
+            0.0
+        } else {
+            f32::from(bar.estimated.get()).min(f32::from(bar.max.get())) / f32::from(bar.max.get())
         };
         let projected = camera.to_viewport(bar.anchor);
         let centre = viewport_origin
@@ -1431,11 +1559,61 @@ fn draw_health_bars(
             egui::Color32::from_rgba_unmultiplied(0, 0, 0, 180),
         );
         painter.rect_filled(fill, 1.0, health_colour(bar.notoriety));
+        // A delayed estimate is the "fake HP" familiar from HotS. Damage
+        // leaves red health behind the authoritative bar; healing leaves a
+        // green preview ahead of it. Each packet retargets the estimate, so a
+        // DoT reads as a chain of ticks instead of a series of hard snaps.
+        if estimated_ratio > ratio {
+            painter.rect_filled(
+                egui::Rect::from_min_max(
+                    egui::pos2(rect.left() + rect.width() * ratio, rect.top()),
+                    egui::pos2(rect.left() + rect.width() * estimated_ratio, rect.bottom()),
+                ),
+                1.0,
+                egui::Color32::from_rgba_unmultiplied(220, 55, 45, 210),
+            );
+        } else if estimated_ratio < ratio {
+            painter.rect_filled(
+                egui::Rect::from_min_max(
+                    egui::pos2(rect.left() + rect.width() * estimated_ratio, rect.top()),
+                    egui::pos2(rect.left() + rect.width() * ratio, rect.bottom()),
+                ),
+                1.0,
+                egui::Color32::from_rgba_unmultiplied(75, 225, 125, 210),
+            );
+        }
         let stroke = match bar.targeted {
             true => egui::Stroke::new(1.2, egui::Color32::from_rgb(255, 230, 80)),
             false => egui::Stroke::new(1.0, egui::Color32::from_rgba_unmultiplied(20, 20, 20, 220)),
         };
         painter.rect_stroke(rect, 1.0, stroke, egui::StrokeKind::Middle);
+        if let Some(mana) = bar.mana {
+            let ratio = if mana.max.get() == 0 {
+                0.0
+            } else {
+                f32::from(mana.current.get()).min(f32::from(mana.max.get())) / f32::from(mana.max.get())
+            };
+            let mana_rect = rect.translate(egui::vec2(0.0, HEIGHT + RESOURCE_GAP));
+            painter.rect_filled(
+                mana_rect.expand(1.0),
+                1.0,
+                egui::Color32::from_rgba_unmultiplied(0, 0, 0, 180),
+            );
+            painter.rect_filled(
+                egui::Rect::from_min_size(
+                    mana_rect.min,
+                    egui::vec2(mana_rect.width() * ratio, mana_rect.height()),
+                ),
+                1.0,
+                egui::Color32::from_rgb(75, 120, 255),
+            );
+            painter.rect_stroke(
+                mana_rect,
+                1.0,
+                egui::Stroke::new(1.0, egui::Color32::from_rgba_unmultiplied(20, 20, 20, 220)),
+                egui::StrokeKind::Middle,
+            );
+        }
     }
 }
 
@@ -2165,8 +2343,8 @@ fn tile_text(tile: &PickedTile) -> String {
 ///   the order alone does not keep a marker off a docked panel. The clip rect
 ///   does, and it is the same rectangle the world itself is drawn into, so
 ///   nothing can be painted where the world is not.
-fn world_painter(ui: &egui::Ui, viewport: egui::Rect) -> egui::Painter {
-    ui.ctx()
+fn world_painter(context: &egui::Context, viewport: egui::Rect) -> egui::Painter {
+    context
         .layer_painter(egui::LayerId::new(
             egui::Order::Background,
             egui::Id::new("world-overlay"),

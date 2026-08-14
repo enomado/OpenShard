@@ -516,6 +516,9 @@ pub struct Picture {
     pub at: GumpPixel,
     /// The hue to tint it with, or [`Hue::NONE`].
     pub hue: Hue,
+    /// Opacity applied after the hue.  Ordinary gump art is opaque; a
+    /// paperdoll's pending equipment preview is deliberately translucent.
+    pub opacity: u8,
     /// The box to repeat it over, or `None` to draw it once at its own size.
     ///
     /// This is `gumppictiled`, and the nine-slice's edges and middle: the art
@@ -543,6 +546,7 @@ impl Picture {
             graphic,
             at,
             hue: Hue::NONE,
+            opacity: u8::MAX,
             tiled: None,
             scissor: None,
         }
@@ -559,6 +563,11 @@ impl Picture {
     /// The same picture, tinted.
     pub const fn hued(self, hue: Hue) -> Self {
         Self { hue, ..self }
+    }
+
+    /// The same picture, composited at an opacity below full strength.
+    pub const fn translucent(self, opacity: u8) -> Self {
+        Self { opacity, ..self }
     }
 
     /// The same picture, repeated to fill `width` by `height`.
@@ -627,18 +636,21 @@ pub fn collect(pictures: &[Picture], atlas: &GumpAtlas) -> Vec<SpriteQuad> {
                     x += art_width;
                     continue;
                 };
-                quads.push(SpriteQuad {
-                    rect,
-                    region,
-                    // No depth test in this pass; see the module docs.
-                    depth: 0.0,
-                    hue,
-                    // A gump stands on no tile and is never lit.
-                    place: crate::place::Place::NOWHERE,
-                    twin: 0,
-                    owner: u32::from(crate::occlusion::OwnerId::NONE.raw()),
-                    volumes: crate::impostor::Range::default(),
-                });
+                quads.push(
+                    SpriteQuad {
+                        rect,
+                        region,
+                        // No depth test in this pass; see the module docs.
+                        depth: 0.0,
+                        hue,
+                        // A gump stands on no tile and is never lit.
+                        place: crate::place::Place::NOWHERE,
+                        twin: 0,
+                        owner: u32::from(crate::occlusion::OwnerId::NONE.raw()),
+                        volumes: crate::impostor::Range::default(),
+                    }
+                    .with_opacity(picture.opacity),
+                );
                 x += art_width;
             }
             y += art_height;

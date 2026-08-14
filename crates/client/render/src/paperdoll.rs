@@ -64,6 +64,7 @@ use openshard_uofiles::gumpart::Gumps;
 use openshard_uofiles::tiledata::AnimId;
 
 use crate::gump::{GumpArt, GumpPixel, Picture, PictureIndex};
+use crate::items::HIGHLIGHT_HUE;
 use crate::mobiles::EquipmentLayer;
 use crate::text::GumpLabel;
 
@@ -261,6 +262,9 @@ pub struct Doll {
     pub pictures: Vec<Picture>,
     /// Which of those pictures is a button, by its index.
     pub hits: BTreeMap<PictureIndex, DollButton>,
+    /// Worn-item pictures, keyed by their painter index.  The app resolves a
+    /// layer back to the authoritative item serial before it starts a drag.
+    pub equipment_hits: BTreeMap<PictureIndex, Layer>,
 }
 
 /// Where the body picture sits inside the frame.
@@ -808,6 +812,8 @@ pub fn window(
     wearer: Option<&Wearer<'_>>,
     whose: Whose,
     held: Option<DollButton>,
+    highlighted: Option<Layer>,
+    preview: Option<EquipmentLayer>,
     equip_conv: &EquipConv,
     gumps: &Gumps,
     at: GumpPixel,
@@ -815,6 +821,7 @@ pub fn window(
     let mut doll = Doll {
         pictures: vec![Picture::plain(GumpArt::Gump(frame(whose)), at)],
         hits: BTreeMap::new(),
+        equipment_hits: BTreeMap::new(),
     };
     furniture(&mut doll, whose, held, at);
     let Some(wearer) = wearer else {
@@ -830,23 +837,40 @@ pub fn window(
     let (body, hue) = body_gump(wearer.body, wearer.hue);
     pictures.push(Picture::plain(GumpArt::Gump(body), at).hued(hue));
 
+    let mut equipment = wearer.equipment.to_vec();
+    if let Some(item) = preview {
+        if !equipment.iter().any(|worn| worn.layer == item.layer) {
+            equipment.push(item);
+        }
+    }
     let worn = |layer: Layer| -> Option<&EquipmentLayer> {
-        wearer
-            .equipment
+        equipment
             .iter()
             .find(|item| item.layer == layer && item.graphic != AnimId(0))
     };
     let draw = |pictures: &mut Vec<Picture>, item: &EquipmentLayer| {
         let graphic = gump_of(wearer.body, item.graphic, female, equip_conv, gumps);
-        pictures.push(Picture::plain(GumpArt::Gump(graphic), at).hued(item.hue));
+        pictures.push(
+            Picture::plain(GumpArt::Gump(graphic), at).hued(if highlighted == Some(item.layer) {
+                HIGHLIGHT_HUE
+            } else {
+                item.hue
+            }),
+        );
     };
 
-    for layer in order(wearer.equipment, alt_torso) {
+    for layer in order(&equipment, alt_torso) {
         if ghost && (layer == Layer::HAIR || layer == Layer::BEARD) {
             continue;
         }
         if let Some(item) = worn(layer) {
             draw(pictures, item);
+            if preview == Some(*item) {
+                let last = pictures.last_mut().expect("the item picture was appended");
+                *last = last.translucent(127);
+            }
+            doll.equipment_hits
+                .insert(PictureIndex::new(pictures.len() - 1), layer);
         }
     }
     let mut backpack_index = None;

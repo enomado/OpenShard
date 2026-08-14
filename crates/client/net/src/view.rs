@@ -470,6 +470,21 @@ impl WorldView {
         changed
     }
 
+    /// Equipment destinations likewise omit a matching `Remove` for the
+    /// acting client.  Keep a serial in exactly one projection: worn, held in
+    /// a container, or on the ground.
+    fn remove_from_equipment(&mut self, serial: Serial) -> bool {
+        let before = self.player.equipment.len();
+        self.player.equipment.retain(|item| item.serial != serial);
+        let mut changed = self.player.equipment.len() != before;
+        for mobile in self.mobiles.values_mut() {
+            let before = mobile.equipment.len();
+            mobile.equipment.retain(|item| item.serial != serial);
+            changed |= mobile.equipment.len() != before;
+        }
+        changed
+    }
+
     /// The world as the entry packet described it: nobody else on screen yet.
     #[must_use]
     pub fn entered(start: PlayerStart) -> Self {
@@ -865,6 +880,11 @@ impl WorldView {
             // Dropping this packet therefore made a fully received shop look
             // like a packet with no owner.
             ServerPacket::EquipUpdate(update) if update.mobile == self.player.serial => {
+                let was_ground = self.items.remove(&update.item).is_some();
+                let was_contained = self.remove_from_containers(update.item, None);
+                // A slot replacement is a separate item leaving the body, so
+                // keep the incoming serial's old copy out of every other slot.
+                let was_worn = self.remove_from_equipment(update.item);
                 let equipment = &mut self.player.equipment;
                 let fresh = Equipment {
                     serial: update.item,
@@ -873,7 +893,7 @@ impl WorldView {
                     hue: update.hue,
                 };
                 match equipment.iter_mut().find(|item| item.layer == update.layer) {
-                    Some(item) if *item == fresh => false,
+                    Some(item) if *item == fresh => was_ground || was_contained || was_worn,
                     Some(item) => {
                         *item = fresh;
                         true
@@ -885,13 +905,16 @@ impl WorldView {
                 }
             }
             ServerPacket::EquipUpdate(update) => {
+                let was_ground = self.items.remove(&update.item).is_some();
+                let was_contained = self.remove_from_containers(update.item, None);
+                let was_worn = self.remove_from_equipment(update.item);
                 let stock_changed = if update.layer.0 == 0x1A {
                     self.vendor_stock.insert(update.mobile, update.item) != Some(update.item)
                 } else {
                     false
                 };
                 let Some(mobile) = self.mobiles.get_mut(&update.mobile) else {
-                    return stock_changed;
+                    return stock_changed || was_ground || was_contained || was_worn;
                 };
                 let fresh = Equipment {
                     serial: update.item,
@@ -904,7 +927,7 @@ impl WorldView {
                     .iter_mut()
                     .find(|item| item.layer == update.layer)
                 {
-                    Some(item) if *item == fresh => stock_changed,
+                    Some(item) if *item == fresh => stock_changed || was_ground || was_contained || was_worn,
                     Some(item) => {
                         *item = fresh;
                         true
@@ -1013,9 +1036,10 @@ impl WorldView {
             ServerPacket::AddToContainer(added) => {
                 let was_ground = self.items.remove(&added.item.serial).is_some();
                 let was_elsewhere = self.remove_from_containers(added.item.serial, Some(added.container));
+                let was_worn = self.remove_from_equipment(added.item.serial);
                 let held = self.contents.entry(added.container).or_default();
                 match held.iter_mut().find(|item| item.serial == added.item.serial) {
-                    Some(item) if *item == added.item => was_ground || was_elsewhere,
+                    Some(item) if *item == added.item => was_ground || was_elsewhere || was_worn,
                     Some(item) => {
                         *item = added.item;
                         true
@@ -2062,6 +2086,44 @@ mod tests {
         })));
         assert!(!view.items.contains_key(&item.serial));
         assert_eq!(view.contents.get(&chest()), Some(&vec![candle()]));
+    }
+
+    #[test]
+    fn moving_an_equipped_item_into_a_bag_retires_its_paperdoll_copy() {
+        let mut view = WorldView::entered(start());
+        view.player.equipment.push(shirt());
+
+        assert!(view.apply(&ServerPacket::AddToContainer(AddToContainer {
+            item: ContainedItem {
+                serial: shirt().serial,
+                graphic: shirt().graphic,
+                amount: 1,
+                at: GumpPoint::new(20, 30),
+                grid: Default::default(),
+                hue: shirt().hue,
+            },
+            container: chest(),
+        })));
+        assert!(view.player.equipment.is_empty());
+        assert_eq!(view.contents.get(&chest()).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn equipping_a_bag_item_retires_its_container_copy() {
+        let mut view = WorldView::entered(start());
+        view.contents.insert(chest(), vec![candle()]);
+
+        assert!(view.apply(&ServerPacket::EquipUpdate(
+            openshard_protocol::items::EquipUpdate {
+                item: candle().serial,
+                graphic: candle().graphic,
+                layer: openshard_protocol::wire::Layer(1),
+                mobile: view.player.serial,
+                hue: candle().hue,
+            },
+        )));
+        assert!(view.contents.get(&chest()).unwrap().is_empty());
+        assert_eq!(view.player.equipment.len(), 1);
     }
 
     /// There is no "taken out of the container" packet: an item leaving a bag is

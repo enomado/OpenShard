@@ -11,7 +11,7 @@ use openshard_protocol::serial::Serial;
 use openshard_protocol::skill::SkillLock;
 use openshard_protocol::target::TargetResponse;
 use openshard_protocol::version::ClientVersion;
-use openshard_protocol::wire::RawSkillId;
+use openshard_protocol::wire::{RawLayer, RawSkillId};
 use openshard_protocol::world::Point;
 
 /// A reply to a shard-owned gump.
@@ -44,6 +44,11 @@ pub enum Outgoing {
     DropOnGround {
         item: Serial,
         at: Point,
+    },
+    Equip {
+        item: Serial,
+        layer: RawLayer,
+        mobile: Serial,
     },
     Buy {
         vendor: Serial,
@@ -89,6 +94,7 @@ impl Outgoing {
             Self::PickUp { item, amount } => crate::drag::pick_up(item, amount),
             Self::DropInto { item, container, at } => crate::drag::drop_into(item, container, at, version),
             Self::DropOnGround { item, at } => crate::drag::drop_on_ground(item, at, version),
+            Self::Equip { item, layer, mobile } => crate::drag::equip(item, layer.0, mobile),
             Self::Buy { vendor, purchases } => crate::vendor::buy(vendor, &purchases),
             Self::Sell { vendor, sales } => crate::vendor::sell(vendor, &sales),
             Self::WarMode(war) => crate::doll::war_mode(war),

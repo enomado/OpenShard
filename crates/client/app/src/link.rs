@@ -33,6 +33,7 @@ use openshard_protocol::gump::GumpPoint;
 use openshard_protocol::serial::Serial;
 use openshard_protocol::target::TargetResponse;
 use openshard_protocol::version::ClientVersion;
+use openshard_protocol::wire::{Layer, RawLayer};
 use openshard_protocol::world::Point;
 use openshard_protocol::world::ResyncRequest;
 use openshard_protocol::world::StepSequence;
@@ -396,6 +397,15 @@ impl Link {
     /// Drop the cursor item at a world position.
     pub fn drop_on_ground(&self, item: Serial, at: Point) {
         self.send(Command::Outgoing(Outgoing::DropOnGround { item, at }));
+    }
+
+    /// Put the cursor item onto a paperdoll slot.
+    pub fn equip(&self, item: Serial, layer: Layer, mobile: Serial) {
+        self.send(Command::Outgoing(Outgoing::Equip {
+            item,
+            layer: RawLayer(layer.0),
+            mobile,
+        }));
     }
 
     /// Buy the selected quantities from an NPC vendor.
