@@ -29,6 +29,24 @@ pub struct TileDepth(pub i32);
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub struct PriorityZ(pub i32);
 
+/// Hit points in the shard's health-bar scale.
+///
+/// Keeping current and maximum values in this domain type prevents unrelated
+/// `u16` quantities (such as map coordinates or item amounts) from being
+/// accidentally mixed into a health bar.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, Default)]
+pub struct HealthPoints(u16);
+
+impl HealthPoints {
+    pub const fn new(value: u16) -> Self {
+        Self(value)
+    }
+
+    pub const fn get(self) -> u16 {
+        self.0
+    }
+}
+
 /// Everything the client knows about one map tile for inspection.
 #[derive(Clone)]
 pub struct PickedTile {
@@ -119,13 +137,24 @@ pub struct HealthBar {
     /// Top-centre of the body sprite, in the world's viewport.
     pub anchor: ViewPixel,
     /// Current hit points in the same scale as [`max`](Self::max).
-    pub current: u16,
+    pub current: HealthPoints,
     /// Maximum hit points in the scale the shard chose for this body.
-    pub max: u16,
+    pub max: HealthPoints,
     /// The wire fact the presentation uses to choose the bar colour.
     pub notoriety: Notoriety,
     /// Whether this body is the attack target the shard settled on.
     pub targeted: bool,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::HealthPoints;
+
+    #[test]
+    fn health_points_round_trip_without_wire_conversion() {
+        let points = HealthPoints::new(u16::MAX);
+        assert_eq!(points.get(), u16::MAX);
+    }
 }
 
 /// Everything this frame's cursor is over, answered once and carried whole to

@@ -9,6 +9,7 @@
 //! only touches this half can be written and tested against it alone.
 
 use std::collections::VecDeque;
+use std::fmt;
 use std::time::{Duration, Instant};
 
 use openshard_client_net::view::WorldView;
@@ -35,11 +36,27 @@ pub const DAMAGE_NUMBER_RISE: i32 = 28;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DamageNumber {
     pub serial: Serial,
-    pub amount: u16,
+    pub amount: DamageAmount,
     /// Colour distinguishes damage received by the local player from damage
     /// shown over another mobile.
     pub hue: Hue,
     pub elapsed: Duration,
+}
+
+/// Damage in the health-bar scale, kept distinct from other wire `u16`s.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct DamageAmount(u16);
+
+impl DamageAmount {
+    pub const fn new(value: u16) -> Self {
+        Self(value)
+    }
+}
+
+impl fmt::Display for DamageAmount {
+    fn fmt(&self, out: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(out)
+    }
 }
 
 /// What the connection has told this client the world looks like — see the
@@ -174,7 +191,7 @@ impl PresentationWorld {
         if amount > 0 {
             self.damage_numbers.push(DamageNumber {
                 serial,
-                amount,
+                amount: DamageAmount::new(amount),
                 hue,
                 elapsed: Duration::ZERO,
             });
@@ -773,7 +790,7 @@ mod tests {
         presentation.damage(serial, 12, Hue::SKILL_CHANGED);
         presentation.advance(DAMAGE_NUMBER_HOLD / 2);
         assert_eq!(presentation.damage_numbers.len(), 1);
-        assert_eq!(presentation.damage_numbers[0].amount, 12);
+        assert_eq!(presentation.damage_numbers[0].amount, DamageAmount::new(12));
         assert_eq!(presentation.damage_numbers[0].hue, Hue::SKILL_CHANGED);
         presentation.advance(DAMAGE_NUMBER_HOLD / 2);
         assert!(presentation.damage_numbers.is_empty());

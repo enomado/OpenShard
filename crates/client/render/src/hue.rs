@@ -34,10 +34,18 @@ use openshard_uofiles::hues::{COLORS_PER_HUE, Hues};
 /// Holds its pixels rather than a GPU handle, like every other atlas in this
 /// crate: building one needs no device, so a test can assert on the bytes.
 pub struct HueRamp {
-    height: u32,
+    height: HueCount,
     /// `COLORS_PER_HUE * height` RGBA8 pixels, row-major.
     pixels: Vec<u8>,
 }
+
+/// Number of hue rows packed into a [`HueRamp`].
+///
+/// This is a row count, not a texture coordinate or a byte length. Keeping
+/// that unit distinct inside the atlas prevents the stored height from being
+/// accidentally reused as one of the other `u32` dimensions during packing.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+struct HueCount(u32);
 
 impl fmt::Debug for HueRamp {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -48,15 +56,15 @@ impl fmt::Debug for HueRamp {
 impl HueRamp {
     /// Pack every hue `hues` holds.
     pub fn build(hues: &Hues) -> Self {
-        let height = hues.count() as u32;
-        let mut pixels = vec![0u8; COLORS_PER_HUE * height as usize * 4];
-        for row in 0..height {
+        let height = HueCount(hues.count() as u32);
+        let mut pixels = vec![0u8; COLORS_PER_HUE * height.0 as usize * 4];
+        for row in 0..height.0 {
             // Row `n` is `Hue(n + 1)`: `Hues::get` is one-based, and skipping
             // that offset here would shift every ramp in the texture up by one,
             // exactly the mistake `Hues::get`'s own docs warn about.
             let entry = hues.get(Hue(row as u16 + 1)).expect("row is inside the count");
             for (column, color) in entry.colors.iter().enumerate() {
-                write_pixel(&mut pixels, column as u32, row, height, *color);
+                write_pixel(&mut pixels, column as u32, row, height.0, *color);
             }
         }
         Self { height, pixels }
@@ -70,7 +78,7 @@ impl HueRamp {
 
     /// The texture's height in pixels: one row per hue this was built from.
     pub fn height(&self) -> u32 {
-        self.height
+        self.height.0
     }
 
     /// Its pixels, RGBA8 and row-major, ready for `write_texture`.

@@ -1412,10 +1412,10 @@ fn draw_health_bars(
     // the world image and prevents a second, guessed projection here.
     let physical_to_points = 1.0 / painter.ctx().pixels_per_point();
     for bar in bars {
-        let ratio = if bar.max == 0 {
+        let ratio = if bar.max.get() == 0 {
             0.0
         } else {
-            f32::from(bar.current).min(f32::from(bar.max)) / f32::from(bar.max)
+            f32::from(bar.current.get()).min(f32::from(bar.max.get())) / f32::from(bar.max.get())
         };
         let projected = camera.to_viewport(bar.anchor);
         let centre = viewport_origin

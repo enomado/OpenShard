@@ -8,26 +8,43 @@ use openshard_protocol::serial::Serial;
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct ObjectiveIndex(pub usize);
 
+/// A count of credit earned toward a quest objective.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
+pub struct ObjectiveCount(u16);
+
+impl ObjectiveCount {
+    pub const fn new(raw: u16) -> Self {
+        Self(raw)
+    }
+
+    pub const fn raw(self) -> u16 {
+        self.0
+    }
+}
+
 /// The current and required amounts for one objective.
 ///
 /// These values always travel together: a progress update without its goal is
-/// not useful to either the client or a script, and two positional `u16`s made
+/// not useful to either the client or a script, and two positional counts made
 /// it easy to reverse them while relaying an update through the quest systems.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct ObjectiveProgress {
     /// How much credit the player has now.
-    pub current: u16,
+    pub current: ObjectiveCount,
     /// How much credit completes this objective.
-    pub goal: u16,
+    pub goal: ObjectiveCount,
 }
 
 impl ObjectiveProgress {
     pub const fn new(current: u16, goal: u16) -> Self {
-        Self { current, goal }
+        Self {
+            current: ObjectiveCount::new(current),
+            goal: ObjectiveCount::new(goal),
+        }
     }
 
     pub const fn is_complete(self) -> bool {
-        self.current >= self.goal
+        self.current.raw() >= self.goal.raw()
     }
 }
 
@@ -98,12 +115,17 @@ pub struct QuestCompleted {
 
 #[cfg(test)]
 mod tests {
-    use super::ObjectiveProgress;
+    use super::{ObjectiveCount, ObjectiveProgress};
 
     #[test]
     fn completion_includes_progress_past_the_goal() {
         assert!(!ObjectiveProgress::new(4, 5).is_complete());
         assert!(ObjectiveProgress::new(5, 5).is_complete());
         assert!(ObjectiveProgress::new(6, 5).is_complete());
+    }
+
+    #[test]
+    fn count_preserves_the_domain_value() {
+        assert_eq!(ObjectiveCount::new(42).raw(), 42);
     }
 }

@@ -37,18 +37,22 @@ pub(crate) enum GenFacing {
     NorthCcw,
 }
 
+/// Index into the generated-door facing tables.
+#[derive(Clone, Copy)]
+struct DoorFacingIndex(u16);
+
 /// The base graphic of a `DarkWoodDoor` — the closed WestCW leaf. Every other
 /// leaf is `base + 2 * facing` closed, `+ 1` open, from ServUO's `DarkWoodDoor`.
 const DARK_WOOD_BASE: u16 = 0x06A5;
 
 impl GenFacing {
     /// This facing's `DoorFacing` index — its offset into ServUO's tables.
-    fn index(self) -> u16 {
+    fn index(self) -> DoorFacingIndex {
         match self {
-            GenFacing::WestCw => 0,
-            GenFacing::EastCcw => 1,
-            GenFacing::SouthCw => 4,
-            GenFacing::NorthCcw => 5,
+            GenFacing::WestCw => DoorFacingIndex(0),
+            GenFacing::EastCcw => DoorFacingIndex(1),
+            GenFacing::SouthCw => DoorFacingIndex(4),
+            GenFacing::NorthCcw => DoorFacingIndex(5),
         }
     }
 
@@ -59,8 +63,9 @@ impl GenFacing {
         // `DARK_WOOD_BASE` is a base the facing indexes off, so it stays a bare
         // `u16` and the two ids are named on the way out — the same split the
         // cliloc sweep settled on for `base + arithmetic`.
-        let closed = DARK_WOOD_BASE + 2 * self.index();
-        let (ox, oy) = OFFSETS[self.index() as usize];
+        let index = self.index();
+        let closed = DARK_WOOD_BASE + 2 * index.0;
+        let (ox, oy) = OFFSETS[index.0 as usize];
         (Graphic(closed), Graphic(closed + 1), ox, oy)
     }
 }

@@ -328,7 +328,7 @@ impl Walker {
         // seam. What comes back out on a `0x22`/`0x21` is the same byte,
         // interpreted rather than validated — see
         // `openshard_protocol::world::RawStepSequence::interpret`.
-        if self.sequence.accept(request.sequence.0).is_err() {
+        if self.sequence.accept(request.sequence).is_err() {
             self.sequence.reset();
             return Walk::Refused;
         }

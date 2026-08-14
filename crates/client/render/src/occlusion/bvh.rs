@@ -58,6 +58,42 @@ enum Axis {
 /// may not change a pixel, and the oracle is what says so.
 pub const LEAF_PRIMITIVES: usize = 4;
 
+/// The number of primitives in one BVH leaf.
+///
+/// This is kept distinct from other byte-sized counts because a leaf count is
+/// part of the tree's shape: it is always non-zero and never exceeds
+/// [`LEAF_PRIMITIVES`].
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
+pub struct LeafCount(u8);
+
+impl LeafCount {
+    fn new(value: usize) -> Self {
+        Self(u8::try_from(value).expect("a leaf count fits in u8"))
+    }
+
+    fn get(self) -> u8 {
+        self.0
+    }
+}
+
+impl From<LeafCount> for usize {
+    fn from(value: LeafCount) -> Self {
+        usize::from(value.0)
+    }
+}
+
+impl From<LeafCount> for u32 {
+    fn from(value: LeafCount) -> Self {
+        u32::from(value.0)
+    }
+}
+
+impl std::fmt::Display for LeafCount {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
 /// Which node of a [`Bvh`], and never a place in the primitives — the two are
 /// different lists and a traversal holds one of each.
 ///
@@ -117,7 +153,7 @@ pub struct Leaf {
     /// Where the run starts in [`Bvh::order`].
     pub first: OrderIndex,
     /// How many primitives it holds — `1..=`[`LEAF_PRIMITIVES`].
-    pub count: u8,
+    pub count: LeafCount,
 }
 
 /// One node: the box, where a miss continues, and the primitives if it is a
@@ -323,7 +359,7 @@ fn split(nodes: &mut Vec<Node>, order: &mut [SolidId], range: std::ops::Range<us
         true => {
             nodes[at].leaf = Some(Leaf {
                 first: OrderIndex::new(range.start as u32),
-                count: range.len() as u8,
+                count: LeafCount::new(range.len()),
             });
         }
         false => {
@@ -412,7 +448,7 @@ mod tests {
             root.leaf,
             Some(Leaf {
                 first: OrderIndex::new(0),
-                count: LEAF_PRIMITIVES as u8
+                count: LeafCount::new(LEAF_PRIMITIVES),
             })
         );
         assert_eq!(root.escape, bvh.past_the_end());
@@ -446,7 +482,7 @@ mod tests {
         let bvh = Bvh::of(&solids);
         for leaf in bvh.nodes().iter().filter_map(|node| node.leaf) {
             assert!(
-                leaf.count >= 1 && usize::from(leaf.count) <= LEAF_PRIMITIVES,
+                leaf.count.get() >= 1 && usize::from(leaf.count) <= LEAF_PRIMITIVES,
                 "a leaf of {} primitives",
                 leaf.count
             );
@@ -592,7 +628,7 @@ mod tests {
             let bvh = Bvh::of(&row(count as i32));
             for leaf in bvh.nodes().iter().filter_map(|node| node.leaf) {
                 assert!(
-                    leaf.count >= 2,
+                    leaf.count.get() >= 2,
                     "a leaf of {} over {count} primitives",
                     leaf.count
                 );

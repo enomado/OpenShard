@@ -27,6 +27,28 @@ use std::collections::HashMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
 
+/// The stable number a client's localized string table assigns to a sentence.
+///
+/// This is a content identifier, not a byte offset or a record length. Keeping
+/// it distinct from other `u32` values prevents a cliloc lookup from accepting
+/// an unrelated numeric field by accident.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Debug)]
+pub struct ClilocNumber(u32);
+
+impl ClilocNumber {
+    /// Construct a cliloc number from its client-defined value.
+    #[must_use]
+    pub const fn new(value: u32) -> Self {
+        Self(value)
+    }
+
+    /// Return the numeric value used by the file format.
+    #[must_use]
+    pub const fn get(self) -> u32 {
+        self.0
+    }
+}
+
 /// `Cliloc.enu` could not be read.
 #[derive(Debug)]
 #[non_exhaustive]
@@ -73,7 +95,7 @@ impl std::error::Error for ClilocError {
 /// Every numbered string the client's own `Cliloc.enu` holds.
 #[derive(Clone, Default)]
 pub struct Cliloc {
-    entries: HashMap<u32, String>,
+    entries: HashMap<ClilocNumber, String>,
 }
 
 impl fmt::Debug for Cliloc {
@@ -116,7 +138,10 @@ impl Cliloc {
             let Some(text) = rest.get(7..7 + length) else {
                 break;
             };
-            entries.insert(number, String::from_utf8_lossy(text).into_owned());
+            entries.insert(
+                ClilocNumber::new(number),
+                String::from_utf8_lossy(text).into_owned(),
+            );
             rest = &rest[7 + length..];
         }
         Self { entries }
@@ -137,7 +162,7 @@ impl Cliloc {
     /// string). A sentence with no slots — the common case for a plain
     /// dialog's title and buttons — reads exactly as authored.
     #[must_use]
-    pub fn get(&self, number: u32) -> Option<&str> {
+    pub fn get(&self, number: ClilocNumber) -> Option<&str> {
         self.entries.get(&number).map(String::as_str)
     }
 }
@@ -162,10 +187,10 @@ mod tests {
 
         let table = Cliloc::parse(&bytes);
         assert_eq!(table.count(), 2);
-        assert_eq!(table.get(1_011_022), Some("Resurrection"));
-        assert_eq!(table.get(1_011_011), Some("CONTINUE"));
+        assert_eq!(table.get(ClilocNumber::new(1_011_022)), Some("Resurrection"));
+        assert_eq!(table.get(ClilocNumber::new(1_011_011)), Some("CONTINUE"));
         assert_eq!(
-            table.get(1),
+            table.get(ClilocNumber::new(1)),
             None,
             "a number never written is absent, not a panic"
         );
@@ -178,7 +203,7 @@ mod tests {
         bytes.extend_from_slice(&[9, 0, 0, 0, 0, 20, 0]); // a length claiming 20 bytes it does not have
         let table = Cliloc::parse(&bytes);
         assert_eq!(
-            table.get(1),
+            table.get(ClilocNumber::new(1)),
             Some("whole"),
             "the good record before the cut still reads"
         );

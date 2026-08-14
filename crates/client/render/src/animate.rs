@@ -155,7 +155,7 @@ impl StaticAnimations {
         // and so is any clock a frame advances by, so this is exact division
         // rather than a float that could land a hair either side of a boundary
         // and show two different frames to two readers of the same instant.
-        let index = (self.elapsed.as_millis() / step.as_millis()) % u128::from(sequence.count());
+        let index = (self.elapsed.as_millis() / step.as_millis()) % u128::from(sequence.count().get());
         let offset = sequence
             .offsets()
             .nth(index as usize)

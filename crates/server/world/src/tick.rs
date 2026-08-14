@@ -922,7 +922,7 @@ impl World {
                     target,
                     mana,
                     skill_band: openshard_skills::SkillBand::new(min_skill, max_skill),
-                    skill,
+                    skill: magic::SkillId::new(skill),
                     pack,
                     reagents: &reagents,
                 },

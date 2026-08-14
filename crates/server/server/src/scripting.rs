@@ -189,7 +189,7 @@ impl Scripts {
                     serial: e.serial,
                     skill: e.skill.id(),
                     success: e.success,
-                    value: e.value,
+                    value: e.value.raw(),
                 });
             }
             for e in bus.read(&mut self.requested) {

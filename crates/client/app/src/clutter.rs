@@ -76,6 +76,22 @@ use openshard_uofiles::tiledata::TileData;
 /// the other end of the wire.
 const MOBILE_HEIGHT: i32 = openshard_movement::PLAYER_HEIGHT;
 
+/// A placed item's tiledata height, kept distinct from other byte-sized item
+/// properties such as weight and layer.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+struct TileHeight(u8);
+
+impl TileHeight {
+    const fn new(raw: u8) -> Self {
+        Self(raw)
+    }
+
+    /// The span a blocker occupies. Zero-height art still occupies its tile.
+    fn span(self) -> i32 {
+        i32::from(self.0).max(1)
+    }
+}
+
 /// One placed item blocking a tile: where its body starts, how tall it is, and
 /// whether it is something that could be opened.
 ///
@@ -92,7 +108,7 @@ struct Blocker {
     /// Its tiledata height: its body spans `[z, z + height)`. Zero-height art
     /// still occupies its own tile, so the span is never empty — see
     /// [`Clutter::blocked_at`].
-    height: u8,
+    height: TileHeight,
     /// A shut door: in the way now, and not in the way at all if somebody opens
     /// it. What [`Clutter::blocked_through_doors`] leaves out, and the whole of
     /// what "potentially passable" means here.
@@ -138,7 +154,7 @@ impl Clutter {
             let at = Tile::new(item.at.x, item.at.y);
             blocked.entry(at).or_default().push(Blocker {
                 z: item.at.z,
-                height: tile.height,
+                height: TileHeight::new(tile.height),
                 door: doors::is_door(item.graphic),
             });
         }
@@ -178,7 +194,7 @@ impl Clutter {
                     return false;
                 }
                 let bottom = i32::from(blocker.z);
-                let top = bottom + i32::from(blocker.height).max(1);
+                let top = bottom + blocker.height.span();
                 bottom < stand_z + MOBILE_HEIGHT && stand_z < top
             })
         })
@@ -356,7 +372,7 @@ impl Clutter {
         for (at, height) in blockers {
             tiles.entry(Tile::new(at.x, at.y)).or_default().push(Blocker {
                 z: at.z,
-                height: *height,
+                height: TileHeight::new(*height),
                 door: false,
             });
         }

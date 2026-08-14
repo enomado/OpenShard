@@ -187,7 +187,7 @@ impl Uop {
         let Some(entry) = self.entries.get(&hash_file_name(name.as_bytes())) else {
             return Ok(None);
         };
-        if entry.compression != 0 {
+        if entry.compression != UopCompression::STORED {
             return Err(UopError::Compressed {
                 path: self.path.clone(),
                 name: name.to_owned(),
@@ -249,16 +249,31 @@ impl Uop {
 pub struct RawEntry<'a> {
     /// The compression flag the container recorded for this entry: `0` for
     /// stored, `3` for every entry `gumpartLegacyMUL.uop` ships. This reader
-    /// has never seen another value, so it is not an enum — a caller seeing
-    /// something else here is looking at a format this crate has no reader
-    /// for yet, and that is its own error to raise.
-    pub compression: u16,
+    /// has never seen another value; a caller seeing something else here is
+    /// looking at a format this crate has no reader for yet.
+    pub compression: UopCompression,
     /// What zlib alone should produce from `bytes`. For a flag-3 entry this is
     /// an intermediate length, not the final picture data: see
     /// `gumpart`'s module documentation for the second pass that sits on top.
     pub decompressed_length: usize,
     /// The entry's stored bytes, exactly as the container holds them.
     pub bytes: &'a [u8],
+}
+
+/// The compression scheme recorded in a UOP entry header.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct UopCompression(u16);
+
+impl UopCompression {
+    /// An entry stored without a second compression pass.
+    pub const STORED: Self = Self(0);
+    /// zlib followed by the container's gump decompression pass.
+    pub const ZLIB_THEN_BWT: Self = Self(3);
+
+    /// The value as it appears in the UOP header.
+    pub const fn raw(self) -> u16 {
+        self.0
+    }
 }
 
 /// Read a UOP container and concatenate its entries in index order.
@@ -312,7 +327,7 @@ struct Entry {
     /// `entry` never looks past `compressed_length`, since a stored entry's
     /// compressed and decompressed lengths are the same number.
     decompressed_length: usize,
-    compression: u16,
+    compression: UopCompression,
 }
 
 impl Header {
@@ -365,7 +380,9 @@ impl Header {
                     decompressed_length: read_u32(bytes, at + 16)
                         .ok_or_else(|| malformed("truncated entry"))?
                         as usize,
-                    compression: read_u16(bytes, at + 32).ok_or_else(|| malformed("truncated entry"))?,
+                    compression: UopCompression(
+                        read_u16(bytes, at + 32).ok_or_else(|| malformed("truncated entry"))?,
+                    ),
                 };
                 let hash = read_u64(bytes, at + 20).ok_or_else(|| malformed("truncated entry"))?;
                 entries.insert(hash, entry);
@@ -595,7 +612,12 @@ mod tests {
             let bytes = std::fs::read(&path).unwrap();
             let header = Header::parse(&bytes).unwrap();
             for entry in header.entries(&bytes, &path).unwrap().values() {
-                assert_eq!(entry.compression, 0, "{} has a compressed chunk", path.display());
+                assert_eq!(
+                    entry.compression,
+                    UopCompression::STORED,
+                    "{} has a compressed chunk",
+                    path.display()
+                );
                 checked += 1;
             }
         }

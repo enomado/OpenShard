@@ -36,6 +36,25 @@ use openshard_state::WorldState;
 use openshard_state::components::{Hitpoints, Mana, Skills, Stamina, Stats};
 use openshard_state::skill::Skill;
 
+/// A trained skill value, represented in tenths (`755` means `75.5`).
+///
+/// Keeping the fixed-point unit in the type prevents skill events from being
+/// accidentally populated with an unrelated `u16` such as a stat or a cap.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
+pub struct SkillValue(u16);
+
+impl SkillValue {
+    /// Construct a value from the protocol/gameplay fixed-point representation.
+    pub const fn new(raw: u16) -> Self {
+        Self(raw)
+    }
+
+    /// Return the fixed-point value for protocol and scripting boundaries.
+    pub const fn raw(self) -> u16 {
+        self.0
+    }
+}
+
 /// A mobile's skill moved.
 ///
 /// Every change passes through the one gain path, so this is the single place a
@@ -52,9 +71,9 @@ pub struct SkillChanged {
     /// Which skill.
     pub skill: Skill,
     /// Its trained value before this move, in tenths.
-    pub previous: u16,
+    pub previous: SkillValue,
     /// The skill's value now, in tenths.
-    pub value: u16,
+    pub value: SkillValue,
 }
 
 /// A mobile used a skill: the check resolved, and any gain is already applied.
@@ -73,7 +92,7 @@ pub struct SkillUsed {
     /// Whether the check succeeded.
     pub success: bool,
     /// The skill's value now, in tenths, after any gain.
-    pub value: u16,
+    pub value: SkillValue,
 }
 
 /// Set a mobile's stats by serial, and re-cap its pools to match.
@@ -191,6 +210,19 @@ pub fn use_skill(state: &mut WorldState, serial: Serial, skill: u8, min_skill: i
         serial,
         skill,
         success,
-        value,
+        value: SkillValue::new(value),
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::SkillValue;
+
+    #[test]
+    fn skill_value_keeps_fixed_point_tenths_explicit() {
+        let value = SkillValue::new(755);
+
+        assert_eq!(value.raw(), 755);
+        assert!(value > SkillValue::new(754));
+    }
 }

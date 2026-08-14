@@ -34,7 +34,7 @@ use openshard_state::WorldState;
 use openshard_state::components::{Client, Skills, Stats};
 use openshard_state::skill::Skill;
 
-use crate::SkillChanged;
+use crate::{SkillChanged, SkillValue};
 
 /// The lower and upper difficulty edges for a skill check, in tenths.
 ///
@@ -279,8 +279,8 @@ fn gain_skill(state: &mut WorldState, entity: EntityId, skill: Skill) {
                 entity,
                 serial,
                 skill: moved,
-                previous,
-                value,
+                previous: SkillValue::new(previous),
+                value: SkillValue::new(value),
             });
         }
     }

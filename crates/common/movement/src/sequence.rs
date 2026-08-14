@@ -1,5 +1,7 @@
 //! The walk sequence: the handshake under every step a client takes.
 
+use openshard_protocol::world::RawStepSequence;
+
 /// Tracks where a client is in the walk sequence.
 ///
 /// # What the sequence is for
@@ -38,13 +40,13 @@
 /// let mut sequence = WalkSequence::new();
 ///
 /// // A fresh connection must open with zero.
-/// assert!(sequence.accept(0).is_ok());
-/// assert!(sequence.accept(1).is_ok());
+/// assert!(sequence.accept(RawStepSequence(0)).is_ok());
+/// assert!(sequence.accept(RawStepSequence(1)).is_ok());
 ///
 /// // A reject puts both ends back to zero.
 /// sequence.reset();
-/// assert!(sequence.accept(5).is_err(), "the client must restart at zero");
-/// assert!(sequence.accept(0).is_ok());
+/// assert!(sequence.accept(RawStepSequence(5)).is_err(), "the client must restart at zero");
+/// assert!(sequence.accept(RawStepSequence(0)).is_ok());
 /// ```
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub struct WalkSequence {
@@ -56,7 +58,7 @@ pub struct WalkSequence {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct OutOfSequence {
     /// What the client sent.
-    pub got: u8,
+    pub got: RawStepSequence,
 }
 
 impl WalkSequence {
@@ -79,13 +81,13 @@ impl WalkSequence {
     ///
     /// Fails only when a fresh connection opens with something other than zero.
     /// The caller should answer `0x21` and call [`WalkSequence::reset`].
-    pub fn accept(&mut self, sequence: u8) -> Result<(), OutOfSequence> {
-        if self.expected == 0 && sequence != 0 {
+    pub fn accept(&mut self, sequence: RawStepSequence) -> Result<(), OutOfSequence> {
+        if self.expected == 0 && sequence.0 != 0 {
             return Err(OutOfSequence { got: sequence });
         }
         // 255 wraps to 1: zero is reserved for a fresh connection, so a wrap
         // through it would be indistinguishable from a reconnect.
-        self.expected = if sequence == u8::MAX { 1 } else { sequence + 1 };
+        self.expected = if sequence.0 == u8::MAX { 1 } else { sequence.0 + 1 };
         Ok(())
     }
 
@@ -166,6 +168,10 @@ impl StepCounter {
 mod tests {
     use super::*;
 
+    fn raw(value: u8) -> RawStepSequence {
+        RawStepSequence(value)
+    }
+
     #[test]
     fn a_fresh_connection_expects_zero() {
         let sequence = WalkSequence::new();
@@ -180,8 +186,8 @@ mod tests {
         for opening in 1..=u8::MAX {
             let mut sequence = WalkSequence::new();
             assert_eq!(
-                sequence.accept(opening),
-                Err(OutOfSequence { got: opening }),
+                sequence.accept(raw(opening)),
+                Err(OutOfSequence { got: raw(opening) }),
                 "a fresh connection must not accept {opening}"
             );
             assert!(sequence.is_fresh(), "a refusal leaves it fresh");
@@ -192,7 +198,7 @@ mod tests {
     fn steps_advance_one_at_a_time() {
         let mut sequence = WalkSequence::new();
         for step in 0..100u8 {
-            assert!(sequence.accept(step).is_ok());
+            assert!(sequence.accept(raw(step)).is_ok());
             assert_eq!(sequence.expected(), step + 1);
         }
     }
@@ -204,11 +210,11 @@ mod tests {
         // step would then have to be 0 as well, and a client that dutifully sent
         // 1 would be refused — walking would break once every 256 steps.
         let mut sequence = WalkSequence::new();
-        sequence.accept(0).unwrap();
-        sequence.accept(254).unwrap();
+        sequence.accept(raw(0)).unwrap();
+        sequence.accept(raw(254)).unwrap();
         assert_eq!(sequence.expected(), 255);
 
-        sequence.accept(255).unwrap();
+        sequence.accept(raw(255)).unwrap();
         assert_eq!(sequence.expected(), 1, "zero is skipped on the wrap");
         assert!(!sequence.is_fresh(), "a wrap is not a reconnect");
     }
@@ -218,9 +224,9 @@ mod tests {
         // `sequence + 1` on a u8 of 255 would panic in debug and wrap in
         // release. The wrap rule is what stops it, but it has to actually run.
         let mut sequence = WalkSequence::new();
-        sequence.accept(0).unwrap();
+        sequence.accept(raw(0)).unwrap();
         for _ in 0..1000 {
-            sequence.accept(255).unwrap();
+            sequence.accept(raw(255)).unwrap();
             assert_eq!(sequence.expected(), 1);
         }
     }
@@ -228,24 +234,24 @@ mod tests {
     #[test]
     fn a_reject_puts_the_sequence_back_to_zero() {
         let mut sequence = WalkSequence::new();
-        sequence.accept(0).unwrap();
-        sequence.accept(1).unwrap();
+        sequence.accept(raw(0)).unwrap();
+        sequence.accept(raw(1)).unwrap();
         assert!(!sequence.is_fresh());
 
         sequence.reset();
         assert!(sequence.is_fresh(), "the client resets too, on seeing 0x21");
-        assert!(sequence.accept(0).is_ok());
+        assert!(sequence.accept(raw(0)).is_ok());
     }
 
     #[test]
     fn after_a_reject_the_client_must_restart_at_zero() {
         let mut sequence = WalkSequence::new();
-        sequence.accept(0).unwrap();
-        sequence.accept(1).unwrap();
+        sequence.accept(raw(0)).unwrap();
+        sequence.accept(raw(1)).unwrap();
         sequence.reset();
 
-        assert_eq!(sequence.accept(2), Err(OutOfSequence { got: 2 }));
-        assert!(sequence.accept(0).is_ok());
+        assert_eq!(sequence.accept(raw(2)), Err(OutOfSequence { got: raw(2) }));
+        assert!(sequence.accept(raw(0)).is_ok());
     }
 
     #[test]
@@ -255,10 +261,10 @@ mod tests {
         // server that refused on mismatch would turn a hiccup into a client that
         // cannot walk until it reconnects. The byte is an echo tag, not a nonce.
         let mut sequence = WalkSequence::new();
-        sequence.accept(0).unwrap();
+        sequence.accept(raw(0)).unwrap();
         assert_eq!(sequence.expected(), 1);
 
-        assert!(sequence.accept(200).is_ok(), "not our place to refuse");
+        assert!(sequence.accept(raw(200)).is_ok(), "not our place to refuse");
         assert_eq!(sequence.expected(), 201, "follow the client");
     }
 
@@ -273,7 +279,7 @@ mod tests {
         for step in 0..300 {
             let sending = counter.take();
             assert!(
-                sequence.accept(sending).is_ok(),
+                sequence.accept(raw(sending)).is_ok(),
                 "step {step} with sequence {sending}"
             );
             assert!(
@@ -306,11 +312,11 @@ mod tests {
         let mut sequence = WalkSequence::new();
         let mut counter = StepCounter::new();
         for _ in 0..5 {
-            sequence.accept(counter.take()).unwrap();
+            sequence.accept(raw(counter.take())).unwrap();
         }
 
         sequence.reset();
         counter.reset();
-        assert!(sequence.accept(counter.take()).is_ok());
+        assert!(sequence.accept(raw(counter.take())).is_ok());
     }
 }

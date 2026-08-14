@@ -28,8 +28,8 @@ use std::time::{Duration, Instant};
 use crate::app::App;
 use crate::crowd::Who;
 use crate::diagnostics::{
-    CompositeTelemetry, HealthBar, Height, Hud, OccluderSurface, Pick, PickedItem, PickedMobile, PickedTile,
-    PriorityZ, Route, Selection, TerrainOverlay, TileDepth,
+    CompositeTelemetry, HealthBar, HealthPoints, Height, Hud, OccluderSurface, Pick, PickedItem,
+    PickedMobile, PickedTile, PriorityZ, Route, Selection, TerrainOverlay, TileDepth,
 };
 use crate::graphics::HighlightTarget;
 use crate::picking::SelectedIdentity;
@@ -884,8 +884,8 @@ impl App {
                 let anchor = mobiles::head_anchor(drawn, &camera, &window.atlases.mobiles)?;
                 Some(HealthBar {
                     anchor,
-                    current: hits.current,
-                    max: hits.max,
+                    current: HealthPoints::new(hits.current),
+                    max: HealthPoints::new(hits.max),
                     notoriety,
                     targeted,
                 })

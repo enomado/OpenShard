@@ -148,8 +148,12 @@ impl World {
             self.state
                 .send_packet(connection, &ServerPacket::SkillUpdate(SkillUpdate { entry }));
             if event.value > event.previous {
-                self.state
-                    .skill_changed_message(event.entity, event.skill, event.previous, event.value);
+                self.state.skill_changed_message(
+                    event.entity,
+                    event.skill,
+                    event.previous.raw(),
+                    event.value.raw(),
+                );
             }
         }
     }

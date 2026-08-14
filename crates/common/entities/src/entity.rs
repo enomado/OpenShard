@@ -18,6 +18,23 @@ pub struct EntityId {
     generation: NonZeroU32,
 }
 
+/// A slot index waiting to be reused by the allocator.
+///
+/// Keeping this separate from a general `u32` prevents the allocator's free
+/// list from being confused with generations or packed entity bits.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct EntitySlot(u32);
+
+impl EntitySlot {
+    const fn new(index: u32) -> Self {
+        Self(index)
+    }
+
+    const fn index(self) -> u32 {
+        self.0
+    }
+}
+
 impl EntityId {
     pub(crate) const fn new(index: u32, generation: NonZeroU32) -> Self {
         Self { index, generation }
@@ -76,7 +93,7 @@ pub(crate) struct EntityAllocator {
     /// Whether each slot is currently occupied.
     alive: Vec<bool>,
     /// Slots that can be recycled.
-    free: Vec<u32>,
+    free: Vec<EntitySlot>,
     live_count: usize,
 }
 
@@ -88,9 +105,9 @@ impl EntityAllocator {
         self.live_count += 1;
         match self.free.pop() {
             Some(index) => {
-                let slot = index as usize;
+                let slot = index.index() as usize;
                 self.alive[slot] = true;
-                EntityId::new(index, self.generations[slot])
+                EntityId::new(index.index(), self.generations[slot])
             }
             None => {
                 let index = u32::try_from(self.generations.len())
@@ -114,7 +131,7 @@ impl EntityAllocator {
         // Skipping zero keeps the NonZeroU32 niche and the `from_bits` contract.
         let next = self.generations[slot].get().wrapping_add(1);
         self.generations[slot] = NonZeroU32::new(next).unwrap_or(FIRST_GENERATION);
-        self.free.push(entity.index());
+        self.free.push(EntitySlot::new(entity.index()));
         true
     }
 
@@ -145,7 +162,7 @@ impl EntityAllocator {
                 self.generations[slot] = NonZeroU32::new(next).unwrap_or(FIRST_GENERATION);
                 self.alive[slot] = false;
             }
-            self.free.push(slot as u32);
+            self.free.push(EntitySlot::new(slot as u32));
         }
         self.live_count = 0;
     }

@@ -59,6 +59,29 @@ pub struct SpellCast {
     pub success: bool,
 }
 
+/// A skill identifier carried by a pending cast.
+///
+/// This is deliberately distinct from other wire-sized values: a cast's
+/// skill is resolved as a [`Skill`] at the cast boundary, and must not be
+/// confused with mana, a spell id, or an arbitrary byte.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[repr(transparent)]
+pub struct SkillId(u8);
+
+impl SkillId {
+    /// Wrap the raw skill id received from the command queue.
+    #[must_use]
+    pub const fn new(raw: u8) -> Self {
+        Self(raw)
+    }
+
+    /// Return the protocol representation for validation at resolution.
+    #[must_use]
+    pub const fn raw(self) -> u8 {
+        self.0
+    }
+}
+
 /// Everything a cast needs — a plain bundle, so [`cast_spell`] takes one argument
 /// and the reagents can ride along by reference.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -74,7 +97,7 @@ pub struct Cast<'a> {
     /// The skill band it is cast against.
     pub skill_band: SkillBand,
     /// The skill it rolls (Magery).
-    pub skill: u8,
+    pub skill: SkillId,
     /// The container reagents come out of, or `None` for a spell that needs none.
     pub pack: Option<Serial>,
     /// The reagents the spell consumes, as `(graphic, count)`.
@@ -118,7 +141,7 @@ pub fn cast_spell(state: &mut WorldState, cast: Cast<'_>) {
     // delivery, not a checkpoint"); this is the seam that owns the roll, so this
     // is where an id past the table is refused — the same shape
     // `skills::set_skill` uses.
-    let Some(skill) = Skill::from_id(skill) else {
+    let Some(skill) = Skill::from_id(skill.raw()) else {
         fizzle(state);
         return;
     };

@@ -94,19 +94,19 @@ use openshard_protocol::wire::Graphic;
 
 use crate::color::Color16;
 use crate::image::Image;
-use crate::uop::{RawEntry, Uop, UopError};
+use crate::uop::{RawEntry, Uop, UopCompression, UopError};
 
 mod bwt;
 
 /// The compression flag every entry in a modern `gumpartLegacyMUL.uop`
 /// carries: zlib, then [`bwt::decode`] on top. Named for ClassicUO's
 /// `CompressionType.ZlibBwt`.
-const FLAG_ZLIB_THEN_BWT: u16 = 3;
+const FLAG_ZLIB_THEN_BWT: UopCompression = UopCompression::ZLIB_THEN_BWT;
 /// The flag [`crate::uop::Uop::entry`] treats as "nothing to inflate" —
 /// included here so a future container that ships a stored gump (no entry in
 /// `gumpartLegacyMUL.uop` has ever done this) is read rather than rejected as
 /// a mystery flag.
-const FLAG_STORED: u16 = 0;
+const FLAG_STORED: UopCompression = UopCompression::STORED;
 
 /// The gump art could not be read.
 #[derive(Debug)]
@@ -254,7 +254,12 @@ fn decode_entry(graphic: Graphic, raw: &RawEntry<'_>) -> Result<Option<Image>, G
             }
             bwt::decode(graphic, &inflated)?
         }
-        flag => return Err(GumpError::UnsupportedCompression { graphic, flag }),
+        flag => {
+            return Err(GumpError::UnsupportedCompression {
+                graphic,
+                flag: flag.raw(),
+            });
+        }
     };
 
     decode_pixels(graphic, &payload)

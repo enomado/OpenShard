@@ -48,6 +48,31 @@ const HEADER: usize = 4;
 /// slot is 64 bytes wide either way and a count is only trusted up to it.
 pub const MAX_FRAMES: usize = 64;
 
+/// The number of offsets in an animated static's cycle.
+///
+/// `animdata.mul` stores this as a byte, but only the non-zero range that fits
+/// in an entry describes a playable cycle. Keeping that invariant at the
+/// parsed-data boundary prevents callers from treating the file's padding as
+/// additional frames.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct AnimationFrameCount(u8);
+
+impl AnimationFrameCount {
+    /// Construct a count accepted by `animdata.mul`.
+    pub const fn new(raw: u8) -> Option<Self> {
+        if raw == 0 || raw as usize > MAX_FRAMES {
+            None
+        } else {
+            Some(Self(raw))
+        }
+    }
+
+    /// Number of offsets in the cycle.
+    pub const fn get(self) -> u8 {
+        self.0
+    }
+}
+
 /// What one animated static does, read out of the file.
 ///
 /// The offsets are *signed and relative*: the graphic on screen is the base
@@ -63,7 +88,7 @@ pub struct Sequence {
     frames: [i8; MAX_FRAMES],
     /// How many of them there are. Never zero and never above [`MAX_FRAMES`] —
     /// [`AnimData::sequence`] answers `None` rather than handing back either.
-    count: u8,
+    count: AnimationFrameCount,
     /// How long each offset is shown, in units of [`FRAME_STEP`].
     ///
     /// Zero means one step: `AnimatedStaticsManager.Process` schedules
@@ -82,7 +107,7 @@ pub struct Sequence {
 
 impl Sequence {
     /// How many graphics this cycles through.
-    pub const fn count(self) -> u8 {
+    pub const fn count(self) -> AnimationFrameCount {
         self.count
     }
 
@@ -98,7 +123,7 @@ impl Sequence {
 
     /// The offsets in use, in the order they are played.
     pub fn offsets(self) -> impl Iterator<Item = i8> {
-        (0..usize::from(self.count)).map(move |index| self.frames[index])
+        (0..usize::from(self.count.get())).map(move |index| self.frames[index])
     }
 }
 
@@ -173,10 +198,7 @@ impl AnimData {
         let at = index * ENTRY + HEADER * ((index / GROUP) + 1);
         let raw = self.bytes.get(at..at + ENTRY)?;
 
-        let count = raw[MAX_FRAMES + 1];
-        if count == 0 || usize::from(count) > MAX_FRAMES {
-            return None;
-        }
+        let count = AnimationFrameCount::new(raw[MAX_FRAMES + 1])?;
         let mut frames = [0i8; MAX_FRAMES];
         for (slot, byte) in frames.iter_mut().zip(&raw[..MAX_FRAMES]) {
             *slot = *byte as i8;
@@ -222,6 +244,13 @@ impl std::error::Error for AnimDataError {
 mod tests {
     use super::*;
 
+    #[test]
+    fn animation_frame_count_rejects_empty_and_overflowing_cycles() {
+        assert_eq!(AnimationFrameCount::new(0), None);
+        assert_eq!(AnimationFrameCount::new((MAX_FRAMES + 1) as u8), None);
+        assert_eq!(AnimationFrameCount::new(6).map(AnimationFrameCount::get), Some(6));
+    }
+
     /// A file of `groups` whole groups, where entry `g` has `g % 7` offsets, each
     /// offset being its own index, and an interval of `g % 5`.
     ///
@@ -261,7 +290,7 @@ mod tests {
             match data.sequence(Graphic(graphic)) {
                 None => assert_eq!(count, 0, "{graphic} has {count} offsets and was not read"),
                 Some(sequence) => {
-                    assert_eq!(sequence.count(), count, "{graphic}");
+                    assert_eq!(sequence.count().get(), count, "{graphic}");
                     assert_eq!(sequence.interval(), (usize::from(graphic) % 5) as u8, "{graphic}");
                     assert_eq!(sequence.start(), (usize::from(graphic) % 3) as u8, "{graphic}");
                     let offsets: Vec<i8> = sequence.offsets().collect();
@@ -321,7 +350,7 @@ mod tests {
         assert!(data.graphics() > 0x4000, "only {} entries", data.graphics());
 
         let fire = data.sequence(Graphic(0x006D)).expect("0x006D animates");
-        assert_eq!(fire.count(), 6);
+        assert_eq!(fire.count().get(), 6);
         assert_eq!(fire.offsets().collect::<Vec<_>>(), [-3, -2, -1, 0, 1, 2]);
         let next = data.sequence(Graphic(0x006E)).expect("0x006E animates");
         assert_eq!(next.offsets().collect::<Vec<_>>(), [-2, -1, 0, 1, -4, -3]);
