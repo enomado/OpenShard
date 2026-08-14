@@ -1792,6 +1792,60 @@ pub struct Combat {
     pub next_swing: u64,
 }
 
+/// A hidden wrestler's next strike is an ambush rather than an ordinary swing.
+///
+/// This is deliberately a short-lived, target-bound fact.  Hiding does not make
+/// every later punch stronger: it only arms the first legal blow after the
+/// attacker commits to somebody.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct WrestlingOpener {
+    /// The mobile the concealed fighter committed to.
+    pub target: Serial,
+    /// The last tick at which the opening remains armed.
+    pub expires_at: u64,
+}
+
+/// The recovery that stops repeatedly hiding from producing an unlimited stream
+/// of ambushes.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct WrestlingAmbushCooldown {
+    /// The tick at which another ambush may be armed.
+    pub until: u64,
+}
+
+/// Consecutive unarmed hits against one mobile.
+///
+/// The count is reset by a miss, a target change, or a pause, so the third hit
+/// rewards staying on an opponent rather than merely owning the skill.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct WrestlingCombo {
+    /// The opponent the sequence belongs to.
+    pub target: Serial,
+    /// Successful hits already landed in this sequence (one or two).
+    pub hits: u8,
+    /// The last tick on which the next hit still continues the sequence.
+    pub expires_at: u64,
+}
+
+/// Recent footwork available to an unarmed fighter.
+///
+/// Movement records this independently of combat; attacking consumes it only
+/// when it earns a first-contact swing, so running cannot accelerate every hit.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct WrestlingStride {
+    /// Steps made inside the current short window.
+    pub steps: u8,
+    /// The tick at which the stored steps expire.
+    pub expires_at: u64,
+}
+
+/// The recovery after using recent footwork to intercept a new target.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct WrestlingInterceptCooldown {
+    /// The tick at which another intercept can be armed.
+    pub until: u64,
+}
+
 /// How hard a mobile hits in melee — the base a swing deals before the target's
 /// armour takes its cut.
 ///

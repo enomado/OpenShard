@@ -23,14 +23,15 @@ use openshard_protocol::server_packet::ServerPacket;
 use openshard_protocol::wire::{Graphic, SoundId};
 use openshard_protocol::world::{Point, PoisonLevel};
 use openshard_state::components::{
-    BehaviourBuffs, Body, Client, Combat, CriminalUntil, DamageType, Equipped, Frozen, Ghost, Guard,
+    BehaviourBuffs, Body, Client, Combat, CriminalUntil, DamageType, Equipped, Frozen, Ghost, Guard, Hidden,
     Hitpoints, MeleeDamage, MurderDecay, Murders, PoisonCharges, Poisoned, Position, RangedAttack,
-    Resistance, Skills, Stamina, Stats, Steps, SwingSpeed, body_is_female, body_opens_doors,
+    Resistance, Skills, Stamina, Stats, Steps, SwingSpeed, WrestlingAmbushCooldown, WrestlingCombo,
+    WrestlingInterceptCooldown, WrestlingOpener, WrestlingStride, body_is_female, body_opens_doors,
     creature_base_sound,
 };
 use openshard_state::sectors::in_range;
 use openshard_state::weapon::{LAYER_ONE_HANDED, LAYER_TWO_HANDED};
-use openshard_state::{Action, Skill, WorldState};
+use openshard_state::{Action, Skill, TICKS_PER_SECOND, WorldState};
 
 pub mod armor;
 pub mod weapons;
@@ -47,6 +48,23 @@ const DEFAULT_DEXTERITY: u16 = 100;
 /// Damage a swing deals. A flat number until the damage formula — resistances,
 /// weapon, strength — is written, and that is a script-first slice of its own.
 pub const SWING_DAMAGE: u16 = 5;
+/// A hidden wrestler has this long to reach the target they selected before the
+/// opening disappears.  It keeps an ambush immediate without making it a buff
+/// one can carry across the map.
+const WRESTLING_OPENER_TICKS: u64 = 2 * TICKS_PER_SECOND;
+/// A victim can be ambushed again only after this recovery.
+const WRESTLING_AMBUSH_COOLDOWN_TICKS: u64 = 12 * TICKS_PER_SECOND;
+/// Three quick steps are enough to turn a normal first swing into an intercept.
+const WRESTLING_INTERCEPT_STEPS: u8 = 3;
+/// Footwork goes stale quickly; walking in circles before a fight is not a
+/// charge.
+const WRESTLING_STRIDE_TICKS: u64 = TICKS_PER_SECOND + TICKS_PER_SECOND / 2;
+/// Intercept is a first-contact privilege, not a permanent attack-speed bonus.
+const WRESTLING_INTERCEPT_COOLDOWN_TICKS: u64 = 8 * TICKS_PER_SECOND;
+/// A combo must remain continuous.
+const WRESTLING_COMBO_TICKS: u64 = 6 * TICKS_PER_SECOND;
+/// The third consecutive unarmed hit gets this much extra damage.
+const WRESTLING_COMBO_DAMAGE_PERCENT: u16 = 35;
 /// The human unarmed thwack — ServUO's `Fists.HitSound`, the fallback for a body
 /// with no creature sound of its own (a player, a townsperson). A creature makes
 /// its own attack sound instead; see [`attack_sound`].
@@ -524,10 +542,67 @@ pub fn attack(state: &mut WorldState, connection: ConnectionId, target: Option<S
         );
         return;
     };
-    let next = state.ticks + swing_speed(state, player);
+    // Wrestling owns the first contact rather than the whole exchange.  An
+    // ambush from cover wins it outright; recent footwork halves the usual wait.
+    // Both are target-bound and cooldown-gated before the mutable Combat borrow.
+    let now = state.ticks;
+    let unarmed = is_wrestling(state, player);
+    let previous_target = state
+        .registry
+        .get::<Combat>(player)
+        .and_then(|combat| combat.target);
+    let ambush = unarmed
+        && state.registry.has::<Hidden>(player)
+        && state
+            .registry
+            .get::<WrestlingAmbushCooldown>(player)
+            .is_none_or(|cooldown| now >= cooldown.until);
+    let intercept = unarmed
+        && !ambush
+        && previous_target != Some(serial)
+        && state
+            .registry
+            .get::<WrestlingStride>(player)
+            .is_some_and(|stride| stride.steps >= WRESTLING_INTERCEPT_STEPS && now <= stride.expires_at)
+        && state
+            .registry
+            .get::<WrestlingInterceptCooldown>(player)
+            .is_none_or(|cooldown| now >= cooldown.until);
+    let pace = swing_speed(state, player);
+    let next = if ambush {
+        now
+    } else if intercept {
+        now + (pace / 2).max(1)
+    } else {
+        now + pace
+    };
     if let Some(combat) = state.registry.get_mut::<Combat>(player) {
         combat.target = Some(serial);
         combat.next_swing = next;
+    }
+    if ambush {
+        state.registry.insert(
+            player,
+            WrestlingOpener {
+                target: serial,
+                expires_at: now + WRESTLING_OPENER_TICKS,
+            },
+        );
+        state.registry.insert(
+            player,
+            WrestlingAmbushCooldown {
+                until: now + WRESTLING_AMBUSH_COOLDOWN_TICKS,
+            },
+        );
+    }
+    if intercept {
+        state.registry.remove::<WrestlingStride>(player);
+        state.registry.insert(
+            player,
+            WrestlingInterceptCooldown {
+                until: now + WRESTLING_INTERCEPT_COOLDOWN_TICKS,
+            },
+        );
     }
     // Raising a hand against someone blue or green is a crime — it turns the
     // attacker grey. (Flagged on the attack, not the landed blow: close enough,
@@ -669,7 +744,7 @@ pub fn volleys(state: &mut WorldState) {
         // The bolt still flew and twanged; on a miss it simply finds no mark. The
         // hit roll trains the shooter's Archery the same as a melee swing trains
         // its weapon. Damage precedence matches melee via `scaled_blow`.
-        if check_hit(state, attacker, target) {
+        if check_hit(state, attacker, target, 0) {
             let blow = scaled_blow(state, attacker, target);
             if let Some(hit) = state.registry.serial_of(target) {
                 damage(state, hit, blow.amount, kind, by);
@@ -732,6 +807,10 @@ pub fn swings(state: &mut WorldState) {
         {
             continue;
         }
+        // The opener is captured before revealing the attacker and spent on this
+        // attempt even on a miss.  Cover is a way into a fight, never a permanent
+        // accuracy aura.
+        let ambush = take_wrestling_opener(state, attacker, target_serial);
         // Swinging at somebody is the loudest thing you can do — ServUO calls
         // `RevealingAction` in the combat timer, before the blow is even rolled.
         state.break_cover(attacker);
@@ -739,12 +818,25 @@ pub fn swings(state: &mut WorldState) {
         state.animate(attacker, Action::Attack);
         // Roll to hit (and train the weapon skill by trying). A miss whistles past
         // and does no damage; the timer resets either way.
-        if !check_hit(state, attacker, target) {
+        if !check_hit(state, attacker, target, if ambush { 25 } else { 0 }) {
+            state.registry.remove::<WrestlingCombo>(attacker);
             state.play_sound(attacker, SoundId(miss_sound(state, attacker)));
             set_next_swing(state, attacker, now + swing_speed(state, attacker));
             continue;
         }
-        let blow = scaled_blow(state, attacker, target);
+        let mut blow = scaled_blow(state, attacker, target);
+        if is_wrestling(state, attacker) {
+            if wrestling_combo_lands(state, attacker, target_serial) {
+                blow.amount =
+                    (u32::from(blow.amount) * (100 + u32::from(WRESTLING_COMBO_DAMAGE_PERCENT)) / 100) as u16;
+                restore_wrestling_stamina(state, attacker);
+                state.system_message(attacker, "Combo strike!");
+            }
+        } else {
+            // A weapon hit interrupts a bare-handed sequence even if the fighter
+            // puts it away before the combo window expires.
+            state.registry.remove::<WrestlingCombo>(attacker);
+        }
         // The blow lands with the attacker's own thwack — a creature's growl, a
         // human's fist — from the attacker, who is still here even when the blow
         // just killed the target.
@@ -1077,6 +1169,85 @@ pub fn swing_speed(state: &WorldState, mobile: EntityId) -> u64 {
     )
 }
 
+/// Record one successful step for an unarmed fighter's next first contact.
+///
+/// Called by both player and server-directed movement after the position has
+/// changed. A turn, failed step, teleport, or mounted movement intentionally
+/// does not count: this is footwork, not a generic movement-speed bonus.
+pub fn record_wrestling_step(state: &mut WorldState, mobile: EntityId) {
+    if !is_wrestling(state, mobile) {
+        state.registry.remove::<WrestlingStride>(mobile);
+        return;
+    }
+    let now = state.ticks;
+    let steps = state
+        .registry
+        .get::<WrestlingStride>(mobile)
+        .filter(|stride| now <= stride.expires_at)
+        .map_or(1, |stride| stride.steps.saturating_add(1));
+    state.registry.insert(
+        mobile,
+        WrestlingStride {
+            steps,
+            expires_at: now + WRESTLING_STRIDE_TICKS,
+        },
+    );
+}
+
+/// Bare hands are the wrestling setup. This deliberately follows the combat
+/// weapon resolver, so an item the shard does not recognise as a weapon keeps
+/// its existing wrestling behaviour instead of becoming a loophole.
+fn is_wrestling(state: &WorldState, mobile: EntityId) -> bool {
+    weapons::equipped_weapon(state, mobile).is_none()
+}
+
+/// Spend a concealed wrestler's opener if this is the target it was armed for.
+fn take_wrestling_opener(state: &mut WorldState, attacker: EntityId, target: Serial) -> bool {
+    let now = state.ticks;
+    let Some(opener) = state.registry.remove::<WrestlingOpener>(attacker) else {
+        return false;
+    };
+    is_wrestling(state, attacker) && opener.target == target && now <= opener.expires_at
+}
+
+/// Continue an unarmed three-hit chain and report whether this was its payoff.
+fn wrestling_combo_lands(state: &mut WorldState, attacker: EntityId, target: Serial) -> bool {
+    let now = state.ticks;
+    let hits = state
+        .registry
+        .get::<WrestlingCombo>(attacker)
+        .filter(|combo| combo.target == target && now <= combo.expires_at)
+        .map_or(1, |combo| combo.hits.saturating_add(1));
+    if hits >= 3 {
+        state.registry.remove::<WrestlingCombo>(attacker);
+        true
+    } else {
+        state.registry.insert(
+            attacker,
+            WrestlingCombo {
+                target,
+                hits,
+                expires_at: now + WRESTLING_COMBO_TICKS,
+            },
+        );
+        false
+    }
+}
+
+/// The combo's small stamina refund, capped at the mobile's own pool.
+fn restore_wrestling_stamina(state: &mut WorldState, attacker: EntityId) {
+    let Some(&Stamina { current, max }) = state.registry.get::<Stamina>(attacker) else {
+        return;
+    };
+    state.registry.insert(
+        attacker,
+        Stamina {
+            current: current.saturating_add(5).min(max),
+            max,
+        },
+    );
+}
+
 /// The base damage a blow from `attacker` carries, before armour. Precedence:
 /// an explicit [`MeleeDamage`] (a creature's natural blow, a script's pin) wins;
 /// else a wielded weapon rolls its era's min..=max; else the bare-hands default.
@@ -1115,7 +1286,12 @@ fn skill_value(state: &WorldState, mobile: EntityId, skill: Skill) -> u16 {
 /// mobile has none and keeps the pre-feature certainty — its natural blow always
 /// lands and trains nothing. The moment a mobile has skills (a trained player, a
 /// creature the pack equips with them) its swings roll and gain.
-fn check_hit(state: &mut WorldState, attacker: EntityId, defender: EntityId) -> bool {
+fn check_hit(
+    state: &mut WorldState,
+    attacker: EntityId,
+    defender: EntityId,
+    accuracy_bonus_percent: u16,
+) -> bool {
     if !state.registry.has::<Skills>(attacker) {
         return true;
     }
@@ -1126,7 +1302,8 @@ fn check_hit(state: &mut WorldState, attacker: EntityId, defender: EntityId) -> 
     // Values are tenths, so ServUO's `(v/10 + 50)` is `(v + 500)/10`; the tenths
     // cancel, leaving `chance = (atk + 500) / (2·(def + 500))`, per-mille below and
     // clamped to certainty (pre-AoS lets a wide skill gap always land).
-    let chance = (1000 * (u32::from(attack) + 500) / (2 * (u32::from(defend) + 500))).min(1000);
+    let base_chance = 1000 * (u32::from(attack) + 500) / (2 * (u32::from(defend) + 500));
+    let chance = (base_chance * (100 + u32::from(accuracy_bonus_percent)) / 100).min(1000);
     openshard_skills::roll_skill_chance(state, attacker, attack_skill, chance)
 }
 

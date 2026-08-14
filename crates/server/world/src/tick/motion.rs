@@ -97,6 +97,9 @@ impl World {
                     .step_while_hidden(entity, request.facing.running, mounted);
                 self.state.registry.insert(entity, Position(position));
                 self.state.registry.insert(entity, Heading(facing));
+                if !mounted {
+                    combat::record_wrestling_step(&mut self.state, entity);
+                }
                 // The index is a second copy of the position; this is the line
                 // that keeps it honest.
                 self.state.facet_state_mut(facet).sectors.insert(entity, position);
@@ -244,6 +247,7 @@ impl World {
         self.state.step_while_hidden(entity, false, false);
         self.state.registry.insert(entity, Movement(walker));
         self.state.registry.insert(entity, Heading(facing));
+        combat::record_wrestling_step(&mut self.state, entity);
         // A script may control a player as well as an NPC. `move_to` sends that
         // player's own client the 0x20 position update a client-side prediction
         // would otherwise supply, then refreshes both sides' interest sets. A

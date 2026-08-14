@@ -21,7 +21,7 @@ use openshard_state::components::{
     Amount, Contained, Container, CriminalUntil, Decays, Drawn, Equipped, MurderDecay, Murders, Skills,
     Stackable,
 };
-use openshard_state::components::{Banker, SwingSpeed};
+use openshard_state::components::{Banker, SwingSpeed, WrestlingCombo, WrestlingOpener, WrestlingStride};
 use openshard_state::sectors::distance;
 use openshard_state::{Skill, StatLock};
 
@@ -7498,6 +7498,144 @@ fn a_melee_swing_turns_the_attacker_toward_its_target() {
             packet.first() == Some(&0x20) && packet.get(17) == Some(&Direction::East.to_bits())
         }),
         "the attacking player receives its combat turn as a player update"
+    );
+}
+
+#[test]
+fn a_hidden_wrestler_arms_an_immediate_target_bound_ambush() {
+    let now = Instant::now();
+    let mut world = world();
+    let attacker = enter(&mut world, now);
+    let defender = enter(&mut world, now);
+    teleport(&mut world, defender, Point::new(START.0 + 1, START.1, 0));
+
+    let attacker_entity = world.state.players[&attacker];
+    let defender_serial = serial_of(&world, defender);
+    world
+        .state
+        .registry
+        .insert(attacker_entity, openshard_state::Hidden);
+
+    combat::attack(&mut world.state, attacker, Some(defender_serial));
+
+    assert_eq!(
+        world
+            .state
+            .registry
+            .get::<Combat>(attacker_entity)
+            .unwrap()
+            .next_swing,
+        world.state.ticks,
+        "an ambush does not wait through the normal first swing timer"
+    );
+    assert_eq!(
+        world.state.registry.get::<WrestlingOpener>(attacker_entity),
+        Some(&WrestlingOpener {
+            target: defender_serial,
+            expires_at: world.state.ticks + 2 * openshard_state::TICKS_PER_SECOND,
+        })
+    );
+}
+
+#[test]
+fn three_recent_wrestling_steps_shorten_only_the_next_new_engagement() {
+    let now = Instant::now();
+    let mut world = world();
+    let attacker = enter(&mut world, now);
+    let defender = enter(&mut world, now);
+    let attacker_entity = world.state.players[&attacker];
+    let defender_serial = serial_of(&world, defender);
+
+    for _ in 0..3 {
+        combat::record_wrestling_step(&mut world.state, attacker_entity);
+    }
+    assert_eq!(
+        world
+            .state
+            .registry
+            .get::<WrestlingStride>(attacker_entity)
+            .unwrap()
+            .steps,
+        3
+    );
+
+    combat::attack(&mut world.state, attacker, Some(defender_serial));
+
+    assert_eq!(
+        world
+            .state
+            .registry
+            .get::<Combat>(attacker_entity)
+            .unwrap()
+            .next_swing,
+        world.state.ticks + WRESTLING_SWING_TICKS / 2,
+        "intercept spends the footwork on first contact, not every following hit"
+    );
+    assert!(
+        !world.state.registry.has::<WrestlingStride>(attacker_entity),
+        "the stride cannot be reused after it earned an intercept"
+    );
+}
+
+#[test]
+fn a_wrestlers_third_consecutive_hit_is_a_combo_and_restores_stamina() {
+    let now = Instant::now();
+    let mut world = world();
+    let attacker = enter(&mut world, now);
+    let defender = enter(&mut world, now);
+    teleport(&mut world, defender, Point::new(START.0 + 1, START.1, 0));
+
+    let attacker_entity = world.state.players[&attacker];
+    let defender_entity = world.state.players[&defender];
+    let defender_serial = serial_of(&world, defender);
+    // An unskilled attacker lands deterministically; a fixed natural blow makes
+    // the combo's extra point visible through pre-AoS PvP's halving rule.
+    world.state.registry.remove::<Skills>(attacker_entity);
+    world
+        .state
+        .registry
+        .insert(attacker_entity, MeleeDamage { amount: 10 });
+    world.state.registry.insert(
+        attacker_entity,
+        Stamina {
+            current: 80,
+            max: 100,
+        },
+    );
+
+    for _ in 0..3 {
+        world.state.registry.insert(
+            attacker_entity,
+            Combat {
+                warmode: true,
+                target: Some(defender_serial),
+                next_swing: world.state.ticks,
+            },
+        );
+        combat::swings(&mut world.state);
+    }
+
+    assert_eq!(
+        world
+            .state
+            .registry
+            .get::<Hitpoints>(defender_entity)
+            .unwrap()
+            .current,
+        84
+    );
+    assert_eq!(
+        world
+            .state
+            .registry
+            .get::<Stamina>(attacker_entity)
+            .unwrap()
+            .current,
+        85
+    );
+    assert!(
+        !world.state.registry.has::<WrestlingCombo>(attacker_entity),
+        "the third hit pays the combo out and starts a fresh sequence"
     );
 }
 

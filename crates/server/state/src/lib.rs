@@ -62,8 +62,9 @@ pub use components::{
     Murders, Name, NightHome, Npc, POISON_POTION_GRAPHIC, Pacified, PoisonCharges, Poisoned, Position,
     RECALL_RUNE_GRAPHIC, RUNEBOOK_ENTRIES, RUNEBOOK_GRAPHIC, Resistance, RuneMark, Runebook, RunebookEntry,
     Scripted, SkillCooldown, Skills, SpawnedBy, Stackable, Stamina, StatEffectKind, StatLock, StatLocks,
-    StatMod, StatMods, Stats, Stealthing, SwingSpeed, Title, Tool, TradeWindow, Trap, TrapKind, effect,
-    is_debuff, stat_shift,
+    StatMod, StatMods, Stats, Stealthing, SwingSpeed, Title, Tool, TradeWindow, Trap, TrapKind,
+    WrestlingAmbushCooldown, WrestlingCombo, WrestlingInterceptCooldown, WrestlingOpener, WrestlingStride,
+    effect, is_debuff, stat_shift,
 };
 pub use dialogue::{Dialogue, SpeechEntry, SpeechTable};
 pub use obstruct::{DOOR_HEIGHT, LiveTerrain, Obstacle, Obstructions};
