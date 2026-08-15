@@ -203,7 +203,25 @@ guards = true
 # npc_home_hour = 21
 
 # Development accounts, in plaintext, until there is a database.
+#
+# `access` is what a staff command is gated on, and it ships absent — so this
+# account is an ordinary player despite its name. That is deliberate: this file
+# is written on first run with a password anyone can read, and a shard that
+# handed out authority to it would be owned by whoever guessed two words.
+#
+# It is also the one thing here that goes wrong *silently*. A `.` command from an
+# account without the authority is not refused — it is **spoken**, out loud, over
+# your character's head, because a player is allowed to say ".hello". So `.admin`
+# with this file as it ships puts the words ".admin" in the chat and opens
+# nothing, and there is no error anywhere to explain it.
+#
+# Uncomment the line below to make this account staff. The level is re-derived
+# from this file at every login and never saved with the character, so a restart
+# and a relog are all it takes — and it is `administrator`, `gamemaster`, `gm` or
+# `player`, case-insensitively. An unknown word is logged and treated as
+# `player`: authority is never granted by a typo.
 [[accounts]]
 name = "admin"
 password = "hunter2"
 characters = ["Lord British"]
+# access = "administrator"

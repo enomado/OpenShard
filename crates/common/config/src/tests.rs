@@ -268,6 +268,38 @@ fn the_shipped_default_parses_and_validates() {
     assert_eq!(config.accounts[0].name, "admin");
 }
 
+/// The account this file ships is a **player**, whatever it is called.
+///
+/// A decision, pinned here so that changing it is a decision too. The file is
+/// written on first run with a password anyone can read, so authority in it
+/// would mean a shard on defaults is owned by whoever guesses two words.
+///
+/// It costs something, and the cost is what the comment above the account in
+/// `default.toml` is for: `.admin` from this account is not refused, it is
+/// *spoken* — a player may say ".hello" out loud — so the words land in the chat
+/// and no window opens, with nothing anywhere to say why. That is hours of
+/// hunting through the server, the packet and the renderer, all of which are
+/// working.
+#[test]
+fn the_shipped_account_has_no_authority_and_the_file_says_so() {
+    let config: Config = toml::from_str(DEFAULT_TOML).expect("DEFAULT_TOML must parse");
+    assert_eq!(
+        config.accounts[0]
+            .access
+            .0
+            .parse::<openshard_protocol::access::AccessLevel>()
+            .unwrap_or_default(),
+        openshard_protocol::access::AccessLevel::Player,
+        "the shipped account gained authority: see this test's doc before changing it"
+    );
+    // And the knob is named where an operator will look for it. Absent from the
+    // file, it is a knob nobody knows exists — which is how it went wrong.
+    assert!(
+        DEFAULT_TOML.contains("access = \"administrator\""),
+        "default.toml no longer shows how to grant authority"
+    );
+}
+
 #[test]
 fn a_config_round_trips_through_toml() {
     let original = config(MINIMAL);
