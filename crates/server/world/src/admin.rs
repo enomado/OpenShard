@@ -10,11 +10,10 @@
 //! **Who answers a verb is not this module's business, and more than one may.**
 //! The verb is a string on an
 //! [`AdminMenuAction`](crate::events::AdminMenuAction); everyone listening turns
-//! it into commands, and the world applies all of them. Today `server::content`
-//! answers `regions:felucca`, `decorate:felucca` and the spawn-regions half of
-//! `populate:felucca` from data in the tree; a configured script pack answers the
-//! *standing townsfolk* half of `populate:felucca`, which is what is still
-//! outside the repository. A verb nobody answers lays nothing and says nothing.
+//! it into commands, and the world applies all of them. `server::content` answers
+//! all three lay verbs from data in the tree, and a configured script pack may
+//! answer the same ones or others of its own. A verb nobody answers lays nothing
+//! and says nothing.
 
 use openshard_entities::EntityId;
 use openshard_gateway::ConnectionId;

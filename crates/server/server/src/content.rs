@@ -23,13 +23,18 @@
 //! townsfolk speech are registered unconditionally, before the first tick.
 //!
 //! [`verb`] is for content an operator lays and clears by hand — the staff
-//! menu's `regions:felucca` and the `--seed` argument that sends the same string
-//! without a client attached. `world::admin` owns the buttons; this owns what
-//! each one means, now that the answer is in the tree rather than in a pack's
-//! `onEvent`.
+//! menu's buttons, and the `--seed` argument that sends the same strings without
+//! a client attached. `world::admin` owns the buttons; this owns what each one
+//! means, now that the answer is in the tree rather than in a pack's `onEvent`.
 //!
-//! Both return commands and queue nothing, for the reason above. Spawns and
-//! decoration are verbs too and will land in [`verb`] beside regions.
+//! Both return commands and queue nothing, for the reason above.
+//!
+//! # Every dataset is here now
+//!
+//! Quests, townsfolk speech, the named regions, the spawn regions, the placed
+//! townsfolk with their stock and their escorts, and the decoration. What is left
+//! in the Community Pack is *logic* — loot tables, two item behaviours — and not
+//! content, so this module is finished until something new is written.
 
 use openshard_state::{dialogue, quest, region};
 use openshard_world::Command;
@@ -63,10 +68,9 @@ pub fn boot() -> Vec<Command> {
 
 /// What an admin verb lays down — the staff menu's buttons, and `--seed`.
 ///
-/// Empty for a verb the tree has no data for, which is not an error: the menu
-/// still offers `populate:felucca` and `decorate:felucca`, and until those
-/// datasets move a configured pack is what answers them. An unknown string is
-/// the same case and needs no separate arm.
+/// Empty for a verb the tree has no data for, which is not an error: an unknown
+/// string is what a pack that dropped a set produces, and the engine has never
+/// treated it as a failure.
 ///
 /// # Why the verb is in the data
 ///
@@ -75,21 +79,20 @@ pub fn boot() -> Vec<Command> {
 /// list to keep level with `world::admin`'s `ROWS`, and the failure when they
 /// drifted would be a button that silently does nothing.
 ///
-/// # A verb may have more than one answer, and `populate:` does
+/// # One verb, several datasets
 ///
-/// The spawn *regions* are here; the 789 standing townsfolk that ride on the
-/// same verb in the pack's data are not, and become in-tree spawn data of their
-/// own later. Both sides answering the same verb is fine — the world applies
-/// what each lays, and `register_spawner` de-duplicates by `SpawnArea`, so the
-/// pack's copy of a region the tree already laid is dropped rather than stacked.
+/// `populate:felucca` lays the spawn regions *and* the standing townsfolk, which
+/// is what it has always meant. A configured pack answering the same verb is
+/// fine: the world applies what each lays, and each of them de-duplicates.
 ///
-/// # Laying twice is safe *here*, and will not be everywhere
+/// # Laying twice
 ///
-/// `Regions::set` replaces the facet's whole list and `register_spawner`
-/// de-duplicates by area, so pressing either button twice leaves one of each.
-/// Decoration does not have that property — it is additive and persisted — so
-/// the dataset that lands in this function next brings the idempotency question
-/// with it. Neither of these answers it.
+/// Every verb here is idempotent, which is what makes `--seed` safe on a shard
+/// that already has a world. `Regions::set` replaces the facet's whole list;
+/// `register_spawner` de-duplicates by `SpawnArea`; `decorate` skips a row
+/// already standing; and a placed townsperson is skipped when one of its trade
+/// already stands on the tile. None of that was true before this migration, and
+/// `main.rs` used to warn that seeding twice laid everything twice.
 #[must_use]
 pub fn verb(action: &str) -> Vec<Command> {
     let regions = region::shipped()
@@ -104,6 +107,13 @@ pub fn verb(action: &str) -> Vec<Command> {
         .filter(|set| set.verb == action)
         .flat_map(|set| set.spawners)
         .map(|spawner| Command::RegisterSpawner { spawner });
+    // The people, after the regions that keep the wilderness full — the pack's
+    // order, and the order the verb has always meant: a populate both maintains a
+    // facet and puts its named townsfolk on their doorsteps.
+    let people = openshard_world::townsfolk::shipped()
+        .into_iter()
+        .filter(|set| set.verb == action)
+        .flat_map(|set| set.townsfolk);
     // Decoration, then the door generation that reads it. The order is the pack's
     // and it is load-bearing: a generated door goes in the gap between two static
     // frames, and some of those frames are laid by the batch above.
@@ -129,7 +139,7 @@ pub fn verb(action: &str) -> Vec<Command> {
                 });
             std::iter::once(batch).chain(scans)
         });
-    regions.chain(spawners).chain(decor).collect()
+    regions.chain(spawners).chain(people).chain(decor).collect()
 }
 
 #[cfg(test)]
@@ -352,12 +362,17 @@ mod tests {
             .filter_map(crate::scripting::into_world)
             .collect();
 
-        let (tree_spawners, pack_spawners) = (only_spawners(verb(populate)), only_spawners(pack_populate));
+        let (tree_spawners, pack_spawners) = (
+            only_spawners(verb(populate)),
+            only_spawners(pack_populate.clone()),
+        );
         assert!(
             !pack_spawners.is_empty(),
             "the pack at {pack:?} laid no spawn regions for {populate:?}"
         );
         compare_spawners(&tree_spawners, &pack_spawners);
+
+        compare_townsfolk(&mut engine, verb(populate), pack_populate);
 
         let decorate = "decorate:felucca";
         openshard_scripting::ScriptEngine::deliver(
@@ -373,6 +388,147 @@ mod tests {
             .filter_map(crate::scripting::into_world)
             .collect();
         compare_decoration(&verb(decorate), &pack_decorate);
+    }
+
+    /// The placed townsfolk, and the two things the pack could only deliver on a
+    /// second round trip.
+    ///
+    /// **This is the only comparison in this file that cannot be a straight
+    /// equality**, because the two sources do not produce the same *shape*. The
+    /// pack sends 789 bare `SpawnMobile`s and then waits: its stock and its escort
+    /// destinations live in tables keyed by the tile an NPC stands on, and it
+    /// looks them up when the world answers with a `MobileSpawned` carrying the
+    /// serial. The tree puts both on the placement, because it knows them there.
+    ///
+    /// So this plays the world's part. Every placement is compared with its stock
+    /// and escort blanked — that is the part both sides really do agree on
+    /// literally — and then each NPC's `MobileSpawned` is handed back to the pack
+    /// and what it *would* have sent is compared against what the tree already
+    /// carried. If the rendezvous was collapsed faithfully, the two match.
+    fn compare_townsfolk(
+        engine: &mut openshard_scripting::DenoEngine,
+        tree: Vec<Command>,
+        pack: Vec<Command>,
+    ) {
+        use openshard_protocol::serial::Serial;
+
+        let placements = |commands: Vec<Command>| -> Vec<Command> {
+            commands
+                .into_iter()
+                .filter(|c| matches!(c, Command::SpawnMobile { .. }))
+                .collect()
+        };
+        // The same placement with the three late-arriving fields cleared, so the
+        // literal comparison is over what both sources genuinely spell out at
+        // placement time. Each of the three is checked below, against what the
+        // pack answers when it is handed the serial it was waiting for.
+        let bare = |command: &Command| -> Command {
+            let mut command = command.clone();
+            if let Command::SpawnMobile {
+                stock,
+                escort_to,
+                quests,
+                ..
+            } = &mut command
+            {
+                stock.clear();
+                *escort_to = None;
+                quests.clear();
+            }
+            command
+        };
+
+        let tree = placements(tree);
+        let pack = placements(pack);
+        assert!(!pack.is_empty(), "the pack placed no townsfolk at all");
+        assert_eq!(
+            tree.len(),
+            pack.len(),
+            "the tree places {} townsfolk and the pack places {}",
+            tree.len(),
+            pack.len()
+        );
+        if let Some(i) = (0..tree.len()).find(|&i| bare(&tree[i]) != bare(&pack[i])) {
+            panic!(
+                "townsperson {i} differs\n  tree: {:?}\n  pack: {:?}",
+                bare(&tree[i]),
+                bare(&pack[i])
+            );
+        }
+
+        // Now the rendezvous, played out. A serial per NPC, arbitrary but distinct
+        // — the pack only uses it to address the two commands back.
+        for (i, placement) in tree.iter().enumerate() {
+            let Command::SpawnMobile {
+                position,
+                stock,
+                escort_to,
+                quests: offers,
+                title,
+                ..
+            } = placement
+            else {
+                unreachable!("filtered to placements above");
+            };
+            let raw = 0x4000_0000 + u32::try_from(i).expect("789 townsfolk fit in a u32");
+            let serial = Serial::new(raw).expect("a mobile serial in the pool");
+            openshard_scripting::ScriptEngine::deliver(
+                engine,
+                &openshard_scripting::Event::MobileSpawned {
+                    serial,
+                    x: position.x,
+                    y: position.y,
+                    z: position.z,
+                },
+            )
+            .expect("the pack's onEvent refused a spawn");
+
+            let answered: Vec<Command> = openshard_scripting::ScriptEngine::take_commands(engine)
+                .into_iter()
+                .filter_map(crate::scripting::into_world)
+                .collect();
+            let who = title.as_deref().unwrap_or("someone");
+
+            let pack_stock = answered.iter().find_map(|c| match c {
+                Command::StockVendor { stock, .. } => Some(stock.clone()),
+                _ => None,
+            });
+            assert_eq!(
+                pack_stock.unwrap_or_default(),
+                *stock,
+                "{who} at {position} carries different stock than the pack would have sent"
+            );
+
+            let pack_escort = answered.iter().find_map(|c| match c {
+                Command::MakeEscortable { destination, .. } => Some(destination.clone()),
+                _ => None,
+            });
+            assert_eq!(
+                pack_escort, *escort_to,
+                "{who} at {position} is escortable to somewhere else in the pack"
+            );
+            // The third leg of the rendezvous: the quests an NPC offers. The pack
+            // answers with a `BindQuestGiver` off the same tile table, and adds
+            // `escort` for a traveller. The tree carries the keys on the placement
+            // and the tick appends `escort` for the same reason, so what is
+            // compared here is the pack's binding against the tree's keys plus
+            // that rule.
+            let mut expected = offers.clone();
+            if escort_to.is_some() {
+                expected.push("escort".to_owned());
+            }
+            let bound = answered
+                .iter()
+                .find_map(|c| match c {
+                    Command::BindQuestGiver { keys, .. } => Some(keys.clone()),
+                    _ => None,
+                })
+                .unwrap_or_default();
+            assert_eq!(
+                bound, expected,
+                "{who} at {position} offers different quests than the pack would have bound"
+            );
+        }
     }
 
     /// One `Command::Decorate`'s payload, pulled apart for comparison.

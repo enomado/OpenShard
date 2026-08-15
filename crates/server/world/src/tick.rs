@@ -748,6 +748,40 @@ impl World {
         self.state.bus.update();
     }
 
+    /// Whether a townsperson of this trade is already posted to this tile.
+    ///
+    /// The de-duplication a placed NPC has and a spawner's creature does not.
+    ///
+    /// # Why the trade, and why the *post*
+    ///
+    /// The body is no key: four hundred townsfolk share body 400. And the tile it
+    /// is **standing** on is no key either — a townsperson drifts around its
+    /// counter between beats, and at night walks home — so a check against
+    /// `Position` misses whoever had wandered a step, which on a restored shard
+    /// was half of them. [`Npc::home`](openshard_state::components::Npc) is the
+    /// tile it was *placed* on and does not move, which is the thing the content
+    /// actually names.
+    ///
+    /// **`x` and `y` only.** A spawn is dropped onto the ground, so an NPC placed
+    /// at `z: 0` is posted at whatever height the terrain there turned out to be —
+    /// on Felucca that is `-2` more often than not. Comparing the z would compare
+    /// what the content asked for against what the world decided, which never
+    /// matches, and the whole check would silently pass everybody through.
+    fn townsperson_already_stands(&self, facet: Facet, at: Point, title: &str) -> bool {
+        self.state
+            .registry
+            .query::<openshard_state::components::Npc>()
+            .any(|(entity, npc)| {
+                (npc.home.x, npc.home.y) == (at.x, at.y)
+                    && self.state.facet_of(entity) == facet
+                    && self
+                        .state
+                        .registry
+                        .get::<openshard_state::components::Title>(entity)
+                        .is_some_and(|worn| worn.0 == title)
+            })
+    }
+
     fn apply(&mut self, command: Command, now: Instant) {
         match command {
             Command::Authenticated {
@@ -859,8 +893,24 @@ impl World {
                 healer,
                 equipment,
                 skills,
+                stock,
+                escort_to,
+                quests: offers,
             } => {
-                npc::spawn(
+                // A placed townsperson is skipped if one of its trade already
+                // stands on the tile. Placement is *not* saved as a thing that can
+                // be re-run — the mobiles themselves are — so without this, seeding
+                // `populate:` on a restored shard put a second banker inside the
+                // first, and pressing the button twice did the same. Only titled
+                // mobiles: a spawner's creature has no title, lands on a tile the
+                // rng picked, and two of them sharing one is ordinary.
+                if title
+                    .as_deref()
+                    .is_some_and(|title| self.townsperson_already_stands(facet, position, title))
+                {
+                    return;
+                }
+                let spawned = npc::spawn(
                     &mut self.state,
                     npc::SpawnSpec {
                         body,
@@ -891,6 +941,29 @@ impl World {
                         skills,
                     },
                 );
+                // Both were a second command keyed by serial, and the serial did
+                // not exist until this returned — which is what the tile-keyed
+                // rendezvous in the script pack was working around. See
+                // `Command::SpawnMobile`.
+                if let Some(entity) = spawned {
+                    if let Some(serial) = self.state.registry.serial_of(entity) {
+                        if !stock.is_empty() {
+                            npc::stock(&mut self.state, serial, stock);
+                        }
+                        let mut offers = offers;
+                        if let Some(destination) = escort_to {
+                            quests::make_escortable(&mut self.state, serial, destination);
+                            // An escort *is* a quest: the offer, the log entry and
+                            // the reward all come from one. Without this it would
+                            // follow whoever double-clicked it, with nothing to
+                            // accept or refuse.
+                            offers.push("escort".to_owned());
+                        }
+                        if !offers.is_empty() {
+                            quests::bind_giver(&mut self.state, serial, offers);
+                        }
+                    }
+                }
             }
             Command::Damage {
                 serial,

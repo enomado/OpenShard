@@ -2637,6 +2637,9 @@ fn spawn_mobile_full(
         healer: false,
         equipment: Vec::new(),
         skills: Vec::new(),
+        stock: Vec::new(),
+        escort_to: None,
+        quests: Vec::new(),
     });
     world.tick(now);
     // The newest mobile that no client drives — the creature just made.
@@ -2999,6 +3002,9 @@ fn spawn_healer(world: &mut World, at: Point, now: Instant) -> (EntityId, Serial
         healer: true,
         equipment: Vec::new(),
         skills: Vec::new(),
+        stock: Vec::new(),
+        escort_to: None,
+        quests: Vec::new(),
     });
     world.tick(now);
     let healer = world
@@ -3475,6 +3481,9 @@ fn a_creature_dies_with_its_own_voice() {
         healer: false,
         equipment: Vec::new(),
         skills: Vec::new(),
+        stock: Vec::new(),
+        escort_to: None,
+        quests: Vec::new(),
     });
     world.tick(now);
     let orc = world
@@ -4166,6 +4175,9 @@ fn a_creature_can_be_given_combat_skills() {
         healer: false,
         equipment: Vec::new(),
         skills: vec![(WRESTLING_SKILL, 700), (TACTICS_SKILL, 500)],
+        stock: Vec::new(),
+        escort_to: None,
+        quests: Vec::new(),
     });
     world.tick(now);
     let creature = world
@@ -7663,6 +7675,9 @@ fn spawn_creature(world: &mut World, point: Point, sight: u8, wander: bool, now:
         healer: false,
         equipment: Vec::new(),
         skills: Vec::new(),
+        stock: Vec::new(),
+        escort_to: None,
+        quests: Vec::new(),
     });
     world.tick(now);
     world
@@ -8455,6 +8470,134 @@ fn decorating_twice_does_not_lay_a_second_britain() {
 }
 
 #[test]
+fn placing_the_townsfolk_twice_does_not_double_the_town() {
+    use openshard_state::components::Title;
+    let now = Instant::now();
+    let mut world = world();
+    let _gm = enter_gm(&mut world, now);
+
+    // Two shopkeepers, one of them stocked: the stocking is additive, so a
+    // second placement would both duplicate the vendor and refill its crate.
+    let blacksmith = |title: &str, x: u16| Command::SpawnMobile {
+        body: openshard_protocol::wire::Graphic(400),
+        hue: openshard_protocol::wire::Hue(0),
+        hits: 100,
+        notoriety: Notoriety::from_bits(1),
+        damage: 0,
+        resistance: openshard_protocol::world::PhysicalResistance::new(0),
+        swing: 0,
+        sight: openshard_protocol::world::Sight(0),
+        aggression: openshard_protocol::world::Aggression::Passive,
+        beat: 0,
+        ranged: None,
+        ranged_kind: DamageType::Physical,
+        wander: false,
+        position: Point::new(x, START.1 + 2, 0),
+        facet: Facet(0),
+        name: None,
+        title: Some(title.to_owned()),
+        shoe: 1,
+        fame: 0,
+        karma: 0,
+        night_home: None,
+        banker: false,
+        vendor: true,
+        healer: false,
+        equipment: Vec::new(),
+        skills: Vec::new(),
+        stock: vec![openshard_npc::StockLine {
+            graphic: openshard_protocol::wire::Graphic(0x1BEF),
+            hue: openshard_protocol::wire::Hue(0),
+            amount: 16,
+            price: 5,
+            name: "iron ingot".to_owned(),
+        }],
+        escort_to: None,
+        quests: Vec::new(),
+    };
+
+    for command in [
+        blacksmith("the blacksmith", START.0 + 1),
+        blacksmith("the baker", START.0 + 3),
+    ] {
+        world.queue(command);
+    }
+    world.tick(now);
+    let placed = world.registry().query::<Title>().count();
+    assert_eq!(placed, 2, "the two townsfolk were not placed");
+
+    // The second press. Before this, a restored shard seeded with `populate:`
+    // grew a second banker inside the first — and half of them were missed by a
+    // check against where they were *standing*, because a townsperson drifts
+    // around its post between beats.
+    for command in [
+        blacksmith("the blacksmith", START.0 + 1),
+        blacksmith("the baker", START.0 + 3),
+    ] {
+        world.queue(command);
+    }
+    world.tick(now);
+    assert_eq!(
+        world.registry().query::<Title>().count(),
+        placed,
+        "placing the townsfolk twice doubled the town"
+    );
+}
+
+#[test]
+fn a_townsperson_of_another_trade_may_share_a_post() {
+    use openshard_state::components::Title;
+    let now = Instant::now();
+    let mut world = world();
+    let _gm = enter_gm(&mut world, now);
+
+    // The key is the post *and* the trade. Two trades on one tile is not what the
+    // shipped data does — `build.rs` rejects it — but the guard must not be a
+    // blanket "something already stands here", or a future dataset that stacks a
+    // guard beside a banker would silently lose one of them.
+    let at = Point::new(START.0 + 1, START.1 + 2, 0);
+    let person = |title: &str| Command::SpawnMobile {
+        body: openshard_protocol::wire::Graphic(400),
+        hue: openshard_protocol::wire::Hue(0),
+        hits: 100,
+        notoriety: Notoriety::from_bits(1),
+        damage: 0,
+        resistance: openshard_protocol::world::PhysicalResistance::new(0),
+        swing: 0,
+        sight: openshard_protocol::world::Sight(0),
+        aggression: openshard_protocol::world::Aggression::Passive,
+        beat: 0,
+        ranged: None,
+        ranged_kind: DamageType::Physical,
+        wander: false,
+        position: at,
+        facet: Facet(0),
+        name: None,
+        title: Some(title.to_owned()),
+        shoe: 1,
+        fame: 0,
+        karma: 0,
+        night_home: None,
+        banker: false,
+        vendor: false,
+        healer: false,
+        equipment: Vec::new(),
+        skills: Vec::new(),
+        stock: Vec::new(),
+        escort_to: None,
+        quests: Vec::new(),
+    };
+    world.queue(person("the banker"));
+    world.queue(person("the guard"));
+    world.tick(now);
+    assert_eq!(
+        world.registry().query::<Title>().count(),
+        2,
+        "the second trade on the tile was mistaken for a duplicate"
+    );
+}
+
+#[test]
 fn a_batch_may_repeat_itself_and_both_copies_are_placed() {
     use openshard_state::components::Decoration;
     let now = Instant::now();
@@ -8937,6 +9080,9 @@ fn clear_also_removes_placed_npcs_and_their_gear_but_not_players() {
         healer: false,
         equipment: Vec::new(),
         skills: Vec::new(),
+        stock: Vec::new(),
+        escort_to: None,
+        quests: Vec::new(),
     });
     world.tick(now);
     let vendor = world
@@ -9518,6 +9664,9 @@ fn a_vendor_and_its_priced_stock_survive_a_restart() {
         healer: false,
         equipment: Vec::new(),
         skills: Vec::new(),
+        stock: Vec::new(),
+        escort_to: None,
+        quests: Vec::new(),
     });
     home.tick(now);
     let vendor = home
@@ -9897,6 +10046,9 @@ fn spawn_banker(world: &mut World, at: Point, now: Instant) {
         healer: false,
         equipment: Vec::new(),
         skills: Vec::new(),
+        stock: Vec::new(),
+        escort_to: None,
+        quests: Vec::new(),
     });
     world.tick(now);
 }
@@ -10000,6 +10152,9 @@ pub(super) fn spawn_townsperson(world: &mut World, trade: &str, at: Point, now: 
         healer: false,
         equipment: Vec::new(),
         skills: Vec::new(),
+        stock: Vec::new(),
+        escort_to: None,
+        quests: Vec::new(),
     });
     world.tick(now);
     world
@@ -10170,6 +10325,9 @@ fn spawn_creature_with_standing(world: &mut World, fame: i32, karma: i32, now: I
         healer: false,
         equipment: Vec::new(),
         skills: Vec::new(),
+        stock: Vec::new(),
+        escort_to: None,
+        quests: Vec::new(),
     });
     world.tick(now);
     world
@@ -10438,6 +10596,9 @@ fn a_non_human_townsperson_keeps_its_own_body() {
         healer: false,
         equipment: Vec::new(),
         skills: Vec::new(),
+        stock: Vec::new(),
+        escort_to: None,
+        quests: Vec::new(),
     });
     world.tick(now);
     let dryad = world
@@ -10777,6 +10938,9 @@ fn a_criminal_is_refused_at_every_door_into_a_shop() {
         healer: false,
         equipment: Vec::new(),
         skills: Vec::new(),
+        stock: Vec::new(),
+        escort_to: None,
+        quests: Vec::new(),
     });
     world.tick(now);
     let keeper = world
@@ -10867,6 +11031,9 @@ fn spawn_shopkeeper(world: &mut World, now: Instant) -> (EntityId, Serial) {
         healer: false,
         equipment: Vec::new(),
         skills: Vec::new(),
+        stock: Vec::new(),
+        escort_to: None,
+        quests: Vec::new(),
     });
     world.tick(now);
     let keeper = world
@@ -11083,6 +11250,9 @@ fn a_townsperson_walks_home_at_night_when_the_shard_asks_for_it() {
         healer: false,
         equipment: Vec::new(),
         skills: Vec::new(),
+        stock: Vec::new(),
+        escort_to: None,
+        quests: Vec::new(),
     });
     world.tick(now);
     let peasant = world
@@ -11394,6 +11564,9 @@ fn a_spawn_stands_on_the_floor_not_under_it() {
         healer: false,
         equipment: Vec::new(),
         skills: Vec::new(),
+        stock: Vec::new(),
+        escort_to: None,
+        quests: Vec::new(),
     });
     world.tick(now);
 
@@ -11443,6 +11616,9 @@ fn an_unnamed_creature_takes_its_body_default_name() {
         healer: false,
         equipment: Vec::new(),
         skills: Vec::new(),
+        stock: Vec::new(),
+        escort_to: None,
+        quests: Vec::new(),
     });
     world.tick(now);
     let chicken = world
@@ -11624,6 +11800,9 @@ pub(super) fn spawn_stocked_vendor(world: &mut World, point: Point, now: Instant
         healer: false,
         equipment: Vec::new(),
         skills: Vec::new(),
+        stock: Vec::new(),
+        escort_to: None,
+        quests: Vec::new(),
     });
     world.tick(now);
     let vendor = world
@@ -12609,6 +12788,9 @@ fn a_creature_does_not_notice_prey_through_a_shut_door() {
         healer: false,
         equipment: Vec::new(),
         skills: Vec::new(),
+        stock: Vec::new(),
+        escort_to: None,
+        quests: Vec::new(),
     });
     world.tick(now);
     let creature = world
@@ -12678,6 +12860,9 @@ fn spawn_brained(world: &mut World, body: u16, at: Point, sight: u8, now: Instan
         healer: false,
         equipment: Vec::new(),
         skills: Vec::new(),
+        stock: Vec::new(),
+        escort_to: None,
+        quests: Vec::new(),
     });
     world.tick(now);
     world
@@ -12865,6 +13050,9 @@ fn spawn_postured(world: &mut World, at: Point, sight: u8, aggression: u8, now: 
         healer: false,
         equipment: Vec::new(),
         skills: Vec::new(),
+        stock: Vec::new(),
+        escort_to: None,
+        quests: Vec::new(),
     });
     world.tick(now);
     world
@@ -13038,6 +13226,9 @@ fn spawn_horse(world: &mut World, at: Point, now: Instant) -> (EntityId, Serial)
         healer: false,
         equipment: Vec::new(),
         skills: Vec::new(),
+        stock: Vec::new(),
+        escort_to: None,
+        quests: Vec::new(),
     });
     world.tick(now);
     let horse = world
@@ -13376,6 +13567,9 @@ fn a_shop_sells_goods_and_buys_them_back() {
         healer: false,
         equipment: Vec::new(),
         skills: Vec::new(),
+        stock: Vec::new(),
+        escort_to: None,
+        quests: Vec::new(),
     });
     world.tick(now);
     let vendor = world
@@ -13543,6 +13737,9 @@ fn a_shop_keyword_needs_the_vendor_named_and_an_empty_sell_answers_overhead() {
         healer: false,
         equipment: Vec::new(),
         skills: Vec::new(),
+        stock: Vec::new(),
+        escort_to: None,
+        quests: Vec::new(),
     });
     world.tick(now);
     let vendor = world
@@ -13689,6 +13886,9 @@ fn a_bought_out_shelf_refills_when_its_hour_is_up() {
         healer: false,
         equipment: Vec::new(),
         skills: Vec::new(),
+        stock: Vec::new(),
+        escort_to: None,
+        quests: Vec::new(),
     });
     world.tick(now);
     let vendor = world
@@ -13809,6 +14009,9 @@ fn spawn_archer_bodied(world: &mut World, body: u16, at: Point, now: Instant) ->
         healer: false,
         equipment: Vec::new(),
         skills: Vec::new(),
+        stock: Vec::new(),
+        escort_to: None,
+        quests: Vec::new(),
     });
     world.tick(now);
     world

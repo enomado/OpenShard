@@ -122,6 +122,9 @@ fn populate(gameplay: Gameplay, creatures: u32, players: u32) -> (World, u32) {
                 healer: false,
                 equipment: Vec::new(),
                 skills: Vec::new(),
+                stock: Vec::new(),
+                escort_to: None,
+                quests: Vec::new(),
             });
             placed += 1;
         }

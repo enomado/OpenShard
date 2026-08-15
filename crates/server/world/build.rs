@@ -685,13 +685,346 @@ fn deco(text: &str) -> String {
     out
 }
 
+/// The doc over the generated `townsfolk::shipped`.
+const TOWNSFOLK_DOC: &str = "\
+/// The named townsfolk the shard places, built fresh from `data/townsfolk.json`.
+///
+/// The bankers, shopkeepers, guildmasters and waiting travellers a town is made
+/// of — placed once, at a fixed tile, rather than maintained by a spawn region.
+/// Ported from ServUO's own vendor placements, with each one's stock read off the
+/// `SB*.cs` its class names.
+///
+/// **Each row carries its whole self**: where it stands, what it wears, what it
+/// sells, and where it wants to be escorted to. That is the point of the file.
+/// The same content used to be three tables joined on the tile an NPC stands on —
+/// a placement here, a shelf there, an escort destination in a third — because
+/// nothing outside the world could name a mobile until the world had answered
+/// with its serial. Content in the tree is handed to the world as one command and
+/// needs no such rendezvous.
+";
+
+/// One worn item in `data/townsfolk.json`'s outfit table.
+///
+/// The creature-table shape from `spawns.json`, twice over: 789 townsfolk wear
+/// **fourteen** distinct outfits between them, and 443 shopkeepers sell
+/// **twenty-six** distinct shelves — 10,192 stock lines that are twenty-six
+/// lists. Named once, referred to by name, resolved here.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Worn {
+    /// The item graphic.
+    graphic: u16,
+    /// Which paperdoll layer it goes on.
+    layer: u8,
+    /// Its hue, or 0.
+    #[serde(default)]
+    hue: u16,
+}
+
+/// One line of a shelf in `data/townsfolk.json`.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Stock {
+    /// The goods' graphic.
+    graphic: u16,
+    /// Their hue.
+    #[serde(default)]
+    hue: u16,
+    /// How many the vendor holds.
+    amount: u16,
+    /// What one unit costs.
+    price: u32,
+    /// The label the client shows.
+    name: String,
+}
+
+/// One placed townsperson in `data/townsfolk.json`.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Townsperson {
+    x: u16,
+    y: u16,
+    z: i8,
+    /// The body graphic. Four hundred of them share body 400, which is why the
+    /// de-duplication in `tick.rs` is keyed by the trade and not by this.
+    body: u16,
+    /// The trade it plies, ServUO-style ("the blacksmith").
+    #[serde(default)]
+    title: Option<String>,
+    #[serde(default = "one")]
+    hits: u16,
+    /// The health-bar colour, as the wire value.
+    #[serde(default = "innocent")]
+    notoriety: u8,
+    /// What it wears on its feet, `ShoeType`'s wire byte.
+    #[serde(default)]
+    shoe: u8,
+    /// Whether it answers "bank".
+    #[serde(default)]
+    banker: bool,
+    /// Whether double-clicking it opens a shop.
+    #[serde(default)]
+    vendor: bool,
+    /// Where it sleeps, for the optional daily routine.
+    #[serde(default)]
+    night_home: Option<(u16, u16, i8)>,
+    /// Which outfit it wears, by name into `outfits`.
+    #[serde(default)]
+    outfit: Option<String>,
+    /// Which shelf it sells, by name into `shelves`.
+    #[serde(default)]
+    shelf: Option<String>,
+    /// Where it wants to be escorted. **An empty string is not nothing**: it means
+    /// "wherever the quest picks", ServUO's `PickRandomDestination`, while the
+    /// field being absent means it is not escortable at all.
+    #[serde(default)]
+    escort_to: Option<String>,
+    /// The quests it offers, by key.
+    #[serde(default)]
+    quests: Vec<String>,
+}
+
+/// `data/townsfolk.json`.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TownsfolkFile {
+    verb: String,
+    facet: u8,
+    outfits: BTreeMap<String, Vec<Worn>>,
+    shelves: BTreeMap<String, Vec<Stock>>,
+    townsfolk: Vec<Townsperson>,
+}
+
+/// `data/townsfolk.json` into the `shipped` constructor.
+fn townsfolk(text: &str) -> String {
+    let file: TownsfolkFile = serde_json::from_str(text).expect("townsfolk.json");
+
+    assert!(
+        !file.verb.is_empty(),
+        "a townsfolk set with no verb can never be laid"
+    );
+    assert!(!file.townsfolk.is_empty(), "the set places nobody");
+
+    // A tile holding two townsfolk would make the de-duplication in `tick.rs`
+    // ambiguous, and it is the shape ServUO's own placements have: nobody stands
+    // on anybody.
+    let mut tiles: BTreeMap<(u16, u16), &str> = BTreeMap::new();
+    for person in &file.townsfolk {
+        let title = person.title.as_deref().unwrap_or("");
+        if let Some(first) = tiles.insert((person.x, person.y), title) {
+            panic!(
+                "two townsfolk stand on {},{}: {first} and {title}",
+                person.x, person.y
+            );
+        }
+        assert!(
+            person.shelf.is_none() || person.vendor,
+            "the {title} at {},{} has a shelf but is not a vendor, so nothing can be bought",
+            person.x,
+            person.y
+        );
+    }
+
+    let mut out = String::from("// @generated by build.rs from data/townsfolk.json.\n\n");
+
+    // The two tables, once each, as functions rather than consts: both hold
+    // `String`s and `Vec`s the command takes ownership of.
+    out.push_str("/// The distinct outfits, in the file's order.\n");
+    out.push_str(
+        "fn outfit_table() -> Vec<Vec<(openshard_protocol::wire::Graphic, \
+         openshard_protocol::wire::Layer, openshard_protocol::wire::Hue)>> {\n    vec![\n",
+    );
+    for (name, items) in &file.outfits {
+        writeln!(out, "        // {name}").unwrap();
+        let worn: Vec<String> = items
+            .iter()
+            .map(|w| {
+                format!(
+                    "(openshard_protocol::wire::Graphic({}), openshard_protocol::wire::Layer({}), \
+                     openshard_protocol::wire::Hue({}))",
+                    w.graphic, w.layer, w.hue
+                )
+            })
+            .collect();
+        writeln!(out, "        vec![{}],", worn.join(", ")).unwrap();
+    }
+    out.push_str("    ]\n}\n\n");
+
+    out.push_str("/// The distinct shelves, in the file's order.\n");
+    out.push_str("fn shelf_table() -> Vec<Vec<openshard_npc::StockLine>> {\n    vec![\n");
+    for (name, lines) in &file.shelves {
+        writeln!(out, "        // {name}").unwrap();
+        out.push_str("        vec![\n");
+        for line in lines {
+            assert!(
+                line.amount > 0,
+                "the {name} shelf stocks none of {:?}, so it is a listing nobody can buy",
+                line.name
+            );
+            writeln!(
+                out,
+                "            openshard_npc::StockLine {{ graphic: openshard_protocol::wire::Graphic({}), \
+                 hue: openshard_protocol::wire::Hue({}), amount: {}, price: {}, name: {:?}.to_owned() }},",
+                line.graphic, line.hue, line.amount, line.price, line.name
+            )
+            .unwrap();
+        }
+        out.push_str("        ],\n");
+    }
+    out.push_str("    ]\n}\n\n");
+
+    let outfit_at: BTreeMap<&str, usize> = file
+        .outfits
+        .keys()
+        .enumerate()
+        .map(|(i, name)| (name.as_str(), i))
+        .collect();
+    let shelf_at: BTreeMap<&str, usize> = file
+        .shelves
+        .keys()
+        .enumerate()
+        .map(|(i, name)| (name.as_str(), i))
+        .collect();
+
+    out.push_str(TOWNSFOLK_DOC);
+    out.push_str("#[must_use]\npub fn shipped() -> Vec<TownsfolkSet> {\n");
+    out.push_str("    let outfits = outfit_table();\n    let shelves = shelf_table();\n");
+    out.push_str("    vec![TownsfolkSet {\n");
+    writeln!(out, "        verb: {:?}.to_owned(),", file.verb).unwrap();
+    out.push_str("        townsfolk: vec![\n");
+    for person in &file.townsfolk {
+        let title = person.title.as_deref().unwrap_or("");
+        let equipment = match &person.outfit {
+            Some(name) => {
+                let at = outfit_at.get(name.as_str()).unwrap_or_else(|| {
+                    panic!(
+                        "the {title} at {},{} wears {name:?}, which no outfit is called",
+                        person.x, person.y
+                    )
+                });
+                format!("outfits[{at}].clone()")
+            }
+            None => "Vec::new()".to_owned(),
+        };
+        let stock = match &person.shelf {
+            Some(name) => {
+                let at = shelf_at.get(name.as_str()).unwrap_or_else(|| {
+                    panic!(
+                        "the {title} at {},{} sells {name:?}, which no shelf is called",
+                        person.x, person.y
+                    )
+                });
+                format!("shelves[{at}].clone()")
+            }
+            None => "Vec::new()".to_owned(),
+        };
+        let night_home = match person.night_home {
+            Some((x, y, z)) => format!("Some(openshard_protocol::world::Point::new({x}, {y}, {z}))"),
+            None => "None".to_owned(),
+        };
+        let title_expr = match &person.title {
+            Some(title) => format!("Some({title:?}.to_owned())"),
+            None => "None".to_owned(),
+        };
+        let escort = match &person.escort_to {
+            Some(to) => format!("Some({to:?}.to_owned())"),
+            None => "None".to_owned(),
+        };
+
+        out.push_str("            crate::Command::SpawnMobile {\n");
+        writeln!(
+            out,
+            "                body: openshard_protocol::wire::Graphic({}),",
+            person.body
+        )
+        .unwrap();
+        out.push_str("                hue: openshard_protocol::wire::Hue(0),\n");
+        writeln!(out, "                hits: {},", person.hits).unwrap();
+        writeln!(
+            out,
+            "                notoriety: openshard_protocol::mobile::Notoriety::from_bits({}),",
+            person.notoriety
+        )
+        .unwrap();
+        out.push_str("                damage: 0,\n");
+        out.push_str("                resistance: openshard_protocol::world::PhysicalResistance::new(0),\n");
+        out.push_str("                swing: 0,\n");
+        out.push_str("                sight: openshard_protocol::world::Sight(0),\n");
+        // The same rule the creature templates get, and for the migration's
+        // reason rather than a gameplay one: this is what the script bridge's
+        // `default_aggression` gave a townsperson, so it is what the world has
+        // always received. It never shows — a mobile with `sight: 0` notices
+        // nobody, so a shopkeeper's aggressive posture has no one to act on.
+        writeln!(
+            out,
+            "                aggression: openshard_protocol::world::Aggression::from_bits({}),",
+            natural_aggression(person.body)
+        )
+        .unwrap();
+        out.push_str("                beat: 0,\n");
+        out.push_str("                ranged: None,\n");
+        out.push_str("                ranged_kind: openshard_protocol::world::DamageType::Physical,\n");
+        out.push_str("                wander: false,\n");
+        writeln!(
+            out,
+            "                position: openshard_protocol::world::Point::new({}, {}, {}),",
+            person.x, person.y, person.z
+        )
+        .unwrap();
+        writeln!(
+            out,
+            "                facet: openshard_protocol::world::Facet({}),",
+            file.facet
+        )
+        .unwrap();
+        // The personal name is generated at spawn on the world's seeded rng, from
+        // the title — see `npc::names`. Nothing here names anybody.
+        out.push_str("                name: None,\n");
+        writeln!(out, "                title: {title_expr},").unwrap();
+        writeln!(out, "                shoe: {},", person.shoe).unwrap();
+        out.push_str("                fame: 0,\n                karma: 0,\n");
+        writeln!(out, "                night_home: {night_home},").unwrap();
+        writeln!(out, "                banker: {},", person.banker).unwrap();
+        writeln!(out, "                vendor: {},", person.vendor).unwrap();
+        out.push_str("                healer: false,\n");
+        writeln!(out, "                equipment: {equipment},").unwrap();
+        out.push_str("                skills: Vec::new(),\n");
+        writeln!(out, "                stock: {stock},").unwrap();
+        writeln!(out, "                escort_to: {escort},").unwrap();
+        let offers: Vec<String> = person
+            .quests
+            .iter()
+            .map(|key| {
+                assert!(
+                    !key.is_empty(),
+                    "the {title} at {},{} offers a quest with no key",
+                    person.x,
+                    person.y
+                );
+                format!("{key:?}.to_owned()")
+            })
+            .collect();
+        match offers.is_empty() {
+            true => out.push_str("                quests: Vec::new(),\n"),
+            false => writeln!(out, "                quests: vec![{}],", offers.join(", ")).unwrap(),
+        }
+        out.push_str("            },\n");
+    }
+    out.push_str("        ],\n    }]\n}\n");
+    out
+}
+
 fn main() {
     let out_dir = std::env::var("OUT_DIR").expect("cargo sets OUT_DIR");
     let out_dir = Path::new(&out_dir);
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=data");
 
-    for (name, render) in [("spawns", spawns as fn(&str) -> String), ("deco", deco)] {
+    for (name, render) in [
+        ("spawns", spawns as fn(&str) -> String),
+        ("deco", deco),
+        ("townsfolk", townsfolk),
+    ] {
         let path = Path::new("data").join(format!("{name}.json"));
         let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
         std::fs::write(out_dir.join(format!("{name}.rs")), render(&text))

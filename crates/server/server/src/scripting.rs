@@ -428,6 +428,13 @@ pub(crate) fn into_world(command: ScriptCommand) -> Option<Command> {
                 .into_iter()
                 .filter_map(|(id, value)| Skill::from_id(id).map(|skill| (skill, value)))
                 .collect(),
+            // A pack has neither on the spawn: it keeps a table keyed by the tile
+            // an NPC stands on and answers a `MobileSpawned` with `op_stock` and
+            // `op_make_escortable`. In-tree content puts both on the placement,
+            // because it knows them there — see `Command::SpawnMobile`.
+            stock: Vec::new(),
+            escort_to: None,
+            quests: Vec::new(),
         },
         ScriptCommand::Damage {
             serial,
@@ -1099,6 +1106,9 @@ mod tests {
             healer: false,
             equipment: Vec::new(),
             skills: Vec::new(),
+            stock: Vec::new(),
+            escort_to: None,
+            quests: Vec::new(),
         });
         world.tick(now);
         let mob = world
@@ -1174,6 +1184,9 @@ mod tests {
             healer: false,
             equipment: Vec::new(),
             skills: Vec::new(),
+            stock: Vec::new(),
+            escort_to: None,
+            quests: Vec::new(),
         });
         world.tick(now); // the mobile spawns, MobileSpawned emitted
 

@@ -38,6 +38,7 @@ pub mod gm;
 pub mod spawner;
 pub mod terrain;
 pub mod tick;
+pub mod townsfolk;
 
 // Components, the spatial index and the generator moved down into
 // `openshard-state` so the gameplay systems can live in their own crates above
