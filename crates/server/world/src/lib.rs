@@ -60,7 +60,7 @@ pub use openshard_state::components;
 pub use openshard_state::{
     Account, Amount, Body, Brain, Client, Combat, Contained, Container, CriminalUntil, DamageType, Decays,
     Drawn, Equipped, Heading, Hitpoints, Mana, MeleeDamage, Movement, MurderDecay, Murders, Name, Position,
-    Resistance, Scripted, Skills, Stackable, Stats, SwingSpeed,
+    Resistance, Skills, Stackable, Stats, SwingSpeed,
 };
 pub use openshard_state::{CastStyle, Gameplay, StatLock, TooltipMode};
 pub use openshard_state::{Dialogue, SpeechEntry, SpeechTable};

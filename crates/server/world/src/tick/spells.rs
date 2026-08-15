@@ -11,10 +11,10 @@
 //!   runs `spell_disturb`. Only when the delay runs out does it resolve, and only
 //!   then does a targeted spell raise its cursor.
 //!
-//! The *effect* is the core's default (damage, heal, teleport for the spells the
-//! engine can run today; the rest are `Scripted` and left to the pack, which
-//! reads the same [`SpellCast`] event). This module never decides what a spell
-//! *does* beyond dispatching on the table's archetype.
+//! The *effect* is the engine's own: damage, heal and teleport for the spells it
+//! runs today, and `Unimplemented` for the rest — those still cast, and then
+//! nothing happens. This module never decides what a spell *does* beyond
+//! dispatching on the table's archetype.
 
 use super::*;
 use openshard_magic::{MAGERY_SKILL, SpellEffect, SpellTarget};
@@ -213,8 +213,8 @@ impl World {
     }
 
     /// Run a spell's core effect on its aim. Called immediately for a self-cast,
-    /// and from the target cursor's answer for a targeted one. `Scripted`
-    /// archetypes do nothing here — the pack owns them off the `SpellCast` event.
+    /// and from the target cursor's answer for a targeted one. `Unimplemented`
+    /// archetypes do nothing here: they cast, and the effect is not built yet.
     pub(super) fn apply_spell_effect(
         &mut self,
         caster: EntityId,
@@ -380,7 +380,7 @@ impl World {
                     magic::apply_paralyze(&mut self.state, target, until);
                 }
             }
-            SpellEffect::Scripted => {} // the pack's, off SpellCast
+            SpellEffect::Unimplemented => {} // casts, and then nothing happens
         }
     }
 
@@ -391,7 +391,7 @@ impl World {
     /// at the aimed spot for an area blast. Not per-spell exact — that waits on
     /// the spell table carrying its own art — but a cast is no longer silent and
     /// invisible, which was the most visible gap against a real client. A
-    /// `Scripted` spell voices itself in the pack, off `SpellCast`, so this holds
+    /// `Unimplemented` spell has no effect to voice, so this holds
     /// its tongue for one. Broadcast to everyone who can see the caster.
     fn spell_feedback(
         &mut self,
@@ -458,7 +458,7 @@ impl World {
             // And a gate voices itself at both ends as the pair opens; the gates
             // themselves are the visual, as a field's tiles are.
             SpellEffect::GateTravel => return,
-            SpellEffect::Scripted => return, // the pack's to voice
+            SpellEffect::Unimplemented => return, // nothing to voice
         };
 
         let caster_serial = self.state.registry.serial_of(caster);

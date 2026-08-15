@@ -23,16 +23,6 @@ const ALLOWLIST: &[(&str, usize, &str)] = &[
         "the Command queue: CastSpell/SetSkill/UseSkill cross it unchecked (N3's \"the queue is a delivery, not a checkpoint\"); the function that first reads it (cast_spell, set_skill, set_skill_cap, use_skill) promotes with Skill::from_id",
     ),
     (
-        "crates/server/scripting/src/lib.rs",
-        5,
-        "the scripting boundary: Event/Command variants a script reads or writes, the same shape as the Command queue",
-    ),
-    (
-        "crates/server/scripting/src/engine/ops.rs",
-        1,
-        "CastSpec: a #[serde] deserialize boundary from the embedded script engine",
-    ),
-    (
         "crates/server/skills/src/lib.rs",
         3,
         "set_skill/set_skill_cap/use_skill: the public doors the Command queue's bare skill first reaches; each promotes with Skill::from_id, the same shape as set_skill_lock",

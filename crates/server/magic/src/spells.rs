@@ -3,14 +3,13 @@
 //! All 64 first-through-eighth-circle spells, ported from ServUO's `SpellInfo`
 //! and the classic reagent lists: each spell's circle (which sets its mana, cast
 //! delay and difficulty), the reagents it consumes, what it targets, and the
-//! *default* effect the core applies. The effect is the core's to run, and a
-//! scriptpack may override any spell by reacting to [`SpellCast`](crate::SpellCast)
-//! — the same "default in core, customise in the pack" split skills has.
+//! effect it applies. [`SpellCast`](crate::SpellCast) is still emitted for
+//! anything that wants to watch a cast.
 //!
-//! Effects that need systems the engine does not have yet — poison, timed
-//! buffs, persistent fields, summons with a lifetime, travel — are tagged
-//! [`SpellEffect::Scripted`]: the spell still *casts* (mana, reagents, skill,
-//! delay, target all resolve), but its effect is left to the pack until the
+//! Effects that need systems the engine does not have yet — poison, timed buffs,
+//! persistent fields, summons with a lifetime, travel — are tagged
+//! [`SpellEffect::Unimplemented`]: the spell still *casts* (mana, reagents,
+//! skill, delay and target all resolve) and then nothing happens, until the
 //! subsystem lands.
 
 use openshard_protocol::casting::SpellId;
@@ -131,9 +130,14 @@ pub enum SpellEffect {
     /// Open a pair of gates: one where the caster stands and one at the rune's
     /// destination, each leading to the other, both closing together.
     GateTravel,
-    /// The core does not run this one yet — the pack owns it (fields, summons,
-    /// travel, and the rest).
-    Scripted,
+    /// The engine does not run this one yet.
+    ///
+    /// It still *casts* — mana, reagents, the skill roll, the words and the
+    /// gesture all happen — and then nothing occurs. That was the seam a script
+    /// pack filled; with the pack gone it is simply a spell that is not built,
+    /// and the name says so rather than pointing at a layer that no longer
+    /// exists. Summons, fields and the rest of the unbuilt list are here.
+    Unimplemented,
 }
 
 /// How far an area spell reaches from its centre, in tiles.
@@ -156,8 +160,8 @@ pub struct SpellInfo {
 
 use DamageType::{Cold, Energy, Fire, Physical};
 use SpellEffect::{
-    AreaCure, AreaDamage, BehaviourBuff, Cure, Damage, Field, Heal, Paralyze, Poison, Scripted, StatMod,
-    Teleport,
+    AreaCure, AreaDamage, BehaviourBuff, Cure, Damage, Field, Heal, Paralyze, Poison, StatMod, Teleport,
+    Unimplemented,
 };
 use SpellTarget::{Item, Location, Mobile, SelfCast};
 use openshard_protocol::wire::Graphic;
@@ -200,7 +204,7 @@ pub static MAGERY: [SpellInfo; 64] = [
         1,
         &[GARLIC, GINSENG, MANDRAKE_ROOT],
         SelfCast,
-        Scripted,
+        Unimplemented,
     ),
     spell(
         "Feeblemind",
@@ -254,14 +258,14 @@ pub static MAGERY: [SpellInfo; 64] = [
         2,
         &[SULFUROUS_ASH, SPIDERS_SILK],
         Location,
-        Scripted,
+        Unimplemented,
     ),
     spell(
         "Magic Untrap",
         2,
         &[BLOOD_MOSS, SULFUROUS_ASH],
         Location,
-        Scripted,
+        Unimplemented,
     ),
     spell(
         "Protection",
@@ -291,12 +295,18 @@ pub static MAGERY: [SpellInfo; 64] = [
         3,
         &[BLOOD_MOSS, GARLIC, SULFUROUS_ASH],
         Location,
-        Scripted,
+        Unimplemented,
     ),
     spell("Poison", 3, &[NIGHTSHADE], Mobile, Poison),
-    spell("Telekinesis", 3, &[BLOOD_MOSS, MANDRAKE_ROOT], Location, Scripted),
+    spell(
+        "Telekinesis",
+        3,
+        &[BLOOD_MOSS, MANDRAKE_ROOT],
+        Location,
+        Unimplemented,
+    ),
     spell("Teleport", 3, &[BLOOD_MOSS, MANDRAKE_ROOT], Location, Teleport),
-    spell("Unlock", 3, &[BLOOD_MOSS, SULFUROUS_ASH], Location, Scripted),
+    spell("Unlock", 3, &[BLOOD_MOSS, SULFUROUS_ASH], Location, Unimplemented),
     spell(
         "Wall of Stone",
         3,
@@ -317,7 +327,7 @@ pub static MAGERY: [SpellInfo; 64] = [
         4,
         &[GARLIC, GINSENG, MANDRAKE_ROOT, SULFUROUS_ASH, SPIDERS_SILK],
         Location,
-        Scripted,
+        Unimplemented,
     ),
     spell(
         "Curse",
@@ -352,7 +362,7 @@ pub static MAGERY: [SpellInfo; 64] = [
         4,
         &[BLOOD_MOSS, MANDRAKE_ROOT, SULFUROUS_ASH, SPIDERS_SILK],
         Mobile,
-        Scripted,
+        Unimplemented,
     ),
     spell(
         "Recall",
@@ -367,21 +377,21 @@ pub static MAGERY: [SpellInfo; 64] = [
         5,
         &[BLACK_PEARL, MANDRAKE_ROOT, NIGHTSHADE],
         Location,
-        Scripted,
+        Unimplemented,
     ),
     spell(
         "Dispel Field",
         5,
         &[BLACK_PEARL, GARLIC, SULFUROUS_ASH, SPIDERS_SILK],
         Location,
-        Scripted,
+        Unimplemented,
     ),
     spell(
         "Incognito",
         5,
         &[BLOOD_MOSS, GARLIC, NIGHTSHADE],
         SelfCast,
-        Scripted,
+        Unimplemented,
     ),
     spell(
         "Magic Reflection",
@@ -416,7 +426,7 @@ pub static MAGERY: [SpellInfo; 64] = [
         5,
         &[BLOOD_MOSS, MANDRAKE_ROOT, SPIDERS_SILK],
         Location,
-        Scripted,
+        Unimplemented,
     ),
     // -- Sixth circle --------------------------------------------------------
     spell(
@@ -424,7 +434,7 @@ pub static MAGERY: [SpellInfo; 64] = [
         6,
         &[GARLIC, MANDRAKE_ROOT, SPIDERS_SILK],
         Mobile,
-        Scripted,
+        Unimplemented,
     ),
     spell(
         "Energy Bolt",
@@ -440,7 +450,13 @@ pub static MAGERY: [SpellInfo; 64] = [
         Mobile,
         Damage(Fire, 20),
     ),
-    spell("Invisibility", 6, &[BLOOD_MOSS, NIGHTSHADE], Mobile, Scripted),
+    spell(
+        "Invisibility",
+        6,
+        &[BLOOD_MOSS, NIGHTSHADE],
+        Mobile,
+        Unimplemented,
+    ),
     spell(
         "Mark",
         6,
@@ -453,7 +469,7 @@ pub static MAGERY: [SpellInfo; 64] = [
         6,
         &[GARLIC, MANDRAKE_ROOT, NIGHTSHADE, SPIDERS_SILK],
         Location,
-        Scripted,
+        Unimplemented,
     ),
     spell(
         "Paralyze Field",
@@ -462,7 +478,7 @@ pub static MAGERY: [SpellInfo; 64] = [
         Location,
         Field(FieldKind::Paralyze),
     ),
-    spell("Reveal", 6, &[BLOOD_MOSS, SULFUROUS_ASH], Location, Scripted),
+    spell("Reveal", 6, &[BLOOD_MOSS, SULFUROUS_ASH], Location, Unimplemented),
     // -- Seventh circle ------------------------------------------------------
     spell(
         "Chain Lightning",
@@ -500,14 +516,14 @@ pub static MAGERY: [SpellInfo; 64] = [
         7,
         &[BLOOD_MOSS, BLACK_PEARL, MANDRAKE_ROOT, SPIDERS_SILK],
         Mobile,
-        Scripted,
+        Unimplemented,
     ),
     spell(
         "Mass Dispel",
         7,
         &[BLACK_PEARL, GARLIC, MANDRAKE_ROOT, SPIDERS_SILK],
         Location,
-        Scripted,
+        Unimplemented,
     ),
     spell(
         "Meteor Swarm",
@@ -521,7 +537,7 @@ pub static MAGERY: [SpellInfo; 64] = [
         7,
         &[BLOOD_MOSS, MANDRAKE_ROOT, SPIDERS_SILK],
         SelfCast,
-        Scripted,
+        Unimplemented,
     ),
     // -- Eighth circle -------------------------------------------------------
     spell(
@@ -536,7 +552,7 @@ pub static MAGERY: [SpellInfo; 64] = [
         8,
         &[BLOOD_MOSS, MANDRAKE_ROOT, NIGHTSHADE, SPIDERS_SILK],
         Location,
-        Scripted,
+        Unimplemented,
     ),
     spell(
         "Resurrection",
@@ -550,35 +566,35 @@ pub static MAGERY: [SpellInfo; 64] = [
         8,
         &[BLOOD_MOSS, MANDRAKE_ROOT, SPIDERS_SILK],
         SelfCast,
-        Scripted,
+        Unimplemented,
     ),
     spell(
         "Summon Daemon",
         8,
         &[BLOOD_MOSS, MANDRAKE_ROOT, SPIDERS_SILK],
         SelfCast,
-        Scripted,
+        Unimplemented,
     ),
     spell(
         "Earth Elemental",
         8,
         &[BLOOD_MOSS, MANDRAKE_ROOT, SPIDERS_SILK],
         SelfCast,
-        Scripted,
+        Unimplemented,
     ),
     spell(
         "Fire Elemental",
         8,
         &[BLOOD_MOSS, MANDRAKE_ROOT, SPIDERS_SILK, SULFUROUS_ASH],
         SelfCast,
-        Scripted,
+        Unimplemented,
     ),
     spell(
         "Water Elemental",
         8,
         &[BLOOD_MOSS, MANDRAKE_ROOT, SPIDERS_SILK],
         SelfCast,
-        Scripted,
+        Unimplemented,
     ),
 ];
 

@@ -61,8 +61,8 @@ pub use components::{
     LastStatGain, Lock, MOONGATE_GRAPHIC, MOONGATE_REACH, Mana, Meditating, MeleeDamage, Moongate, Movement,
     MurderDecay, Murders, Name, NightHome, Npc, POISON_POTION_GRAPHIC, Pacified, PoisonCharges, Poisoned,
     Position, RECALL_RUNE_GRAPHIC, RUNEBOOK_ENTRIES, RUNEBOOK_GRAPHIC, Resistance, RuneMark, Runebook,
-    RunebookEntry, Scripted, SkillCooldown, Skills, SpawnedBy, Stackable, Stamina, StatEffectKind, StatLock,
-    StatLocks, StatMod, StatMods, Stats, Stealthing, SwingSpeed, Title, Tool, TradeWindow, Trap, TrapKind,
+    RunebookEntry, SkillCooldown, Skills, SpawnedBy, Stackable, Stamina, StatEffectKind, StatLock, StatLocks,
+    StatMod, StatMods, Stats, Stealthing, SwingSpeed, Title, Tool, TradeWindow, Trap, TrapKind,
     WrestlingAmbushCooldown, WrestlingCombo, WrestlingInterceptCooldown, WrestlingOpener, WrestlingStride,
     effect, is_debuff, stat_shift,
 };
