@@ -8398,6 +8398,94 @@ fn decorate_places_statics_and_clear_removes_them() {
 }
 
 #[test]
+fn decorating_twice_does_not_lay_a_second_britain() {
+    use openshard_state::components::Decoration;
+    let now = Instant::now();
+    let mut world = world();
+    let _gm = enter_gm(&mut world, now);
+
+    // Two statics on two tiles, one door, one container — one of each kind that
+    // `decorate` places, because each was its own loop and each needed the guard.
+    let batch = || Command::Decorate {
+        facet: Facet(0),
+        statics: vec![
+            (
+                openshard_protocol::wire::Graphic(0x07C1),
+                openshard_protocol::wire::Hue(0),
+                Point::new(START.0 + 1, START.1, 0),
+            ),
+            (
+                openshard_protocol::wire::Graphic(0x08DA),
+                openshard_protocol::wire::Hue(0),
+                Point::new(START.0 + 2, START.1, 0),
+            ),
+        ],
+        doors: vec![DecorDoor {
+            key_value: 0,
+            closed: openshard_protocol::wire::Graphic(0x06A5),
+            open: openshard_protocol::wire::Graphic(0x06A6),
+            offset_x: -1,
+            offset_y: 1,
+            position: Point::new(START.0 + 3, START.1, 0),
+        }],
+        containers: vec![DecorContainer {
+            key_value: 0,
+            graphic: openshard_protocol::wire::Graphic(0x0E77),
+            gump: openshard_protocol::wire::Graphic(0x003E),
+            hue: openshard_protocol::wire::Hue(0),
+            position: Point::new(START.0 + 4, START.1, 0),
+        }],
+    };
+
+    world.queue(batch());
+    world.tick(now);
+    let after_first = world.registry().query::<Decoration>().count();
+    assert_eq!(after_first, 4, "the batch did not lay what it was given");
+
+    // The case this guards: a staff member pressing the button again, or a boot
+    // that seeds `decorate:` on a shard whose decoration was restored. Before,
+    // this left two of every sign and a door opening into its own twin.
+    world.queue(batch());
+    world.tick(now);
+    assert_eq!(
+        world.registry().query::<Decoration>().count(),
+        after_first,
+        "decorating twice laid a second copy of everything"
+    );
+}
+
+#[test]
+fn a_batch_may_repeat_itself_and_both_copies_are_placed() {
+    use openshard_state::components::Decoration;
+    let now = Instant::now();
+    let mut world = world();
+    let _gm = enter_gm(&mut world, now);
+
+    // Thirty-nine of the shipped statics repeat an exact graphic and position, and
+    // that is ordinary in UO decoration. The de-duplication is against the world as
+    // it stood when the batch began, so a batch that repeats itself still lays both
+    // — otherwise moving the data in-tree would have quietly deleted thirty-nine
+    // pieces of Britain.
+    let same = (
+        openshard_protocol::wire::Graphic(0x07C1),
+        openshard_protocol::wire::Hue(0),
+        Point::new(START.0 + 1, START.1, 0),
+    );
+    world.queue(Command::Decorate {
+        facet: Facet(0),
+        statics: vec![same, same],
+        doors: Vec::new(),
+        containers: Vec::new(),
+    });
+    world.tick(now);
+    assert_eq!(
+        world.registry().query::<Decoration>().count(),
+        2,
+        "a batch that repeats a row had one of them dropped"
+    );
+}
+
+#[test]
 fn decoration_cannot_be_picked_up() {
     use openshard_state::components::Decoration;
     let now = Instant::now();

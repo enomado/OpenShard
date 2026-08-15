@@ -21,15 +21,16 @@ struct Cli {
     /// Admin verbs to send at boot, as if a game master had pressed the buttons:
     /// `--seed regions:felucca,decorate:felucca,populate:felucca`.
     ///
-    /// `regions:` and `populate:` are answered from the tree's own data;
-    /// `decorate:` is still a script pack's, which is why this is a string rather
-    /// than a list this binary can check. Repeat the flag or comma-separate;
-    /// either way the verbs are sent in the order given, which is the order that
-    /// matters: regions before what stands in them.
+    /// `regions:`, `decorate:` and `populate:` are answered from the tree's own
+    /// data; a script pack may answer these or others, which is why this is a
+    /// string rather than a list this binary can check. Repeat the flag or
+    /// comma-separate; either way the verbs are sent in the order given, which is
+    /// the order that matters: regions before what stands in them.
     ///
     /// Sent every run it is passed, with no look at whether the world is already
-    /// laid. Seeding a shard that persists to a database twice lays everything
-    /// twice.
+    /// laid — but the three verbs above are each idempotent now, so seeding a
+    /// persisted shard re-lays nothing: regions replace, spawn regions
+    /// de-duplicate by their box, and decoration skips what is already standing.
     #[arg(long, env = "OPENSHARD_SEED", value_delimiter = ',', value_name = "VERB")]
     seed: Vec<String>,
 }

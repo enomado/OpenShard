@@ -1,10 +1,16 @@
-//! Turns `data/spawns.json` into the spawn regions this crate ships.
+//! Turns `data/*.json` into the spawn regions and the decoration this crate
+//! ships — between them, everything on a facet that the map itself does not draw.
 //!
-//! The first `build.rs` in `world`, and it follows the conventions
-//! `state/build.rs` sets out: serde structs live here rather than in the crate,
-//! every one `deny_unknown_fields`, the doc comments for generated items are
-//! `const`s in this file, and the invariants are checked here so a failure names
-//! the JSON rather than surfacing as a quiet oddity in a running shard.
+//! The `build.rs` in `world`, following the conventions `state/build.rs` sets
+//! out: serde structs live here rather than in the crate, every one
+//! `deny_unknown_fields`, the doc comments for generated items are `const`s in
+//! this file, and the invariants are checked here so a failure names the JSON
+//! rather than surfacing as a quiet oddity in a running shard.
+//!
+//! Both files factor their repetition into a named table and refer to it —
+//! creatures by name, door hinges by graphic — and this script expands the
+//! references. What the runtime sees is unchanged; what a person reads is a file
+//! that says each thing once.
 //!
 //! # Why the creatures are a named table and not written where they are used
 //!
@@ -450,13 +456,245 @@ fn spawns(text: &str) -> String {
     out
 }
 
+/// The doc over the generated `decoration::shipped`.
+const DECO_DOC: &str = "\
+/// Everything the shard lays on a facet that is not terrain: the statics a
+/// building needs beyond its map art, the doors that open, the containers that
+/// hold something, and the boxes `doorgen` scans for the shop doors the art only
+/// implies.
+///
+/// Ported from ServUO's `Decorate.cs` output, the same `Static`/`Door`/`Container`
+/// rows it places on a `[decorate`.
+///
+/// **`const` slices, unlike the other three datasets here.** Quests, speech,
+/// regions and spawns are all replaced wholesale in something that owns them, so
+/// each is built fresh. Decoration is read once and copied into a command, and it
+/// is twenty-five thousand rows — so it stays static data and the copy happens at
+/// the one call site, where it is a `to_vec` rather than twenty-five thousand
+/// allocations at every build of the table.
+";
+
+/// One `[graphic, x, y, z]` row of `data/deco.json`'s statics.
+///
+/// A tuple rather than an object, alone among the data files here, because there
+/// are 18,832 of them and four keys repeated 18,832 times is three quarters of
+/// the file's bytes spent saying `graphic` again. The order is the one the
+/// `Command::Decorate` payload uses.
+type StaticRow = (u16, u16, u16, i8);
+
+/// One `[closed, x, y, z]` door row of `data/deco.json`.
+///
+/// **Neither the open graphic nor the hinge offset is written per door**, and the
+/// two are left out for different reasons.
+///
+/// `open` is `closed + 1` for every door ServUO places, because that is the
+/// door-family layout itself: a leaf is followed by its opened twin. Derived, and
+/// so it cannot drift.
+///
+/// The hinge offset comes from `door_hinges`, keyed by the closed graphic —
+/// eighty rows for 638 doors. That the offset is a *function* of the graphic is
+/// an observed fact about this data, not a rule, so it is checked: two doors of
+/// one graphic hanging different ways is a build failure. It is emphatically not
+/// derivable by arithmetic — only sixteen of the eighty match what
+/// [`crate::doorgen`]'s `OFFSETS` computes for their facing, because ServUO keeps
+/// a door's facing on the placed object. `doorgen` derives offsets for the doors
+/// *it* generates from map frames, which is a different population; the two do
+/// not duplicate each other, which is what a reading of this data first suggests.
+type DoorRow = (u16, u16, u16, i8);
+
+/// One container in `data/deco.json` — a town chest or crate that opens onto a
+/// gump.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Container {
+    /// The item graphic.
+    graphic: u16,
+    /// The gump the client opens for it.
+    gump: u16,
+    x: u16,
+    y: u16,
+    z: i8,
+    /// Its hue, or 0.
+    #[serde(default)]
+    hue: u16,
+    /// Which key opens it; `0` is unlocked.
+    #[serde(default)]
+    key_value: u32,
+}
+
+/// One box `doorgen` scans for implied shop doors.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DoorRegion {
+    x: u16,
+    y: u16,
+    width: u16,
+    height: u16,
+}
+
+/// `data/deco.json`.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DecoFile {
+    /// The admin verb that lays it.
+    verb: String,
+    /// Which facet all of it belongs to.
+    facet: u8,
+    /// Which way each door graphic's leaf swings, by closed graphic. See
+    /// [`DoorRow`].
+    door_hinges: BTreeMap<u16, (i16, i16)>,
+    statics: Vec<StaticRow>,
+    doors: Vec<DoorRow>,
+    containers: Vec<Container>,
+    door_regions: Vec<DoorRegion>,
+}
+
+/// `data/deco.json` into four `const` slices and the set that names them.
+///
+/// # What is *not* checked here
+///
+/// Duplicates. Thirty-nine statics repeat an exact graphic and position, and 1,471
+/// tiles hold more than one static — both are ordinary in UO decoration, where a
+/// tile carries a floor, a rug and what stands on the rug. Rejecting either would
+/// reject the data ServUO itself produces. The question a second press of the
+/// button raises is answered in `tick::decor`, against the world rather than
+/// against the file.
+fn deco(text: &str) -> String {
+    let file: DecoFile = serde_json::from_str(text).expect("deco.json");
+
+    assert!(
+        !file.verb.is_empty(),
+        "a decoration set with no verb can never be laid"
+    );
+    assert!(
+        !file.statics.is_empty() || !file.doors.is_empty() || !file.containers.is_empty(),
+        "decoration set {:?} lays nothing",
+        file.verb
+    );
+
+    let mut out = String::from("// @generated by build.rs from data/deco.json.\n\n");
+
+    out.push_str(
+        "/// The plain statics, as the `Command::Decorate` payload wants them.\n\
+         /// Hueless: no decoration ServUO places carries one.\n",
+    );
+    out.push_str(
+        "const STATICS: &[(openshard_protocol::wire::Graphic, openshard_protocol::wire::Hue, \
+         openshard_protocol::world::Point)] = &[\n",
+    );
+    for &(graphic, x, y, z) in &file.statics {
+        writeln!(
+            out,
+            "    (openshard_protocol::wire::Graphic({graphic}), openshard_protocol::wire::Hue(0), \
+             openshard_protocol::world::Point::new({x}, {y}, {z})),"
+        )
+        .unwrap();
+    }
+    out.push_str("];\n\n");
+
+    // A hinge nothing hangs on is a row that reads as content and is not, the
+    // same check the creature table gets.
+    let hung: std::collections::BTreeSet<u16> = file.doors.iter().map(|&(closed, ..)| closed).collect();
+    let unused: Vec<String> = file
+        .door_hinges
+        .keys()
+        .filter(|graphic| !hung.contains(graphic))
+        .map(u16::to_string)
+        .collect();
+    assert!(
+        unused.is_empty(),
+        "deco.json gives a hinge to door graphics it never places: {}",
+        unused.join(", ")
+    );
+
+    out.push_str(
+        "/// The doors, with the open graphic derived as `closed + 1` and the hinge\n\
+         /// looked up by graphic — see `build.rs`'s `DoorRow` for why each is not\n\
+         /// written per door.\n",
+    );
+    out.push_str("const DOORS: &[crate::DecorDoor] = &[\n");
+    for &(closed, x, y, z) in &file.doors {
+        assert!(
+            closed < u16::MAX,
+            "the door at {x},{y} is graphic {closed}, which has no room for an opened twin"
+        );
+        let &(offset_x, offset_y) = file.door_hinges.get(&closed).unwrap_or_else(|| {
+            panic!("the door at {x},{y} is graphic {closed}, which door_hinges does not cover")
+        });
+        writeln!(
+            out,
+            "    crate::DecorDoor {{ key_value: 0, \
+             closed: openshard_protocol::wire::Graphic({closed}), \
+             open: openshard_protocol::wire::Graphic({}), \
+             offset_x: {offset_x}, offset_y: {offset_y}, \
+             position: openshard_protocol::world::Point::new({x}, {y}, {z}) }},",
+            closed + 1
+        )
+        .unwrap();
+    }
+    out.push_str("];\n\n");
+
+    out.push_str("/// The containers.\n");
+    out.push_str("const CONTAINERS: &[crate::DecorContainer] = &[\n");
+    for c in &file.containers {
+        writeln!(
+            out,
+            "    crate::DecorContainer {{ key_value: {}, \
+             graphic: openshard_protocol::wire::Graphic({}), \
+             gump: openshard_protocol::wire::Graphic({}), \
+             hue: openshard_protocol::wire::Hue({}), \
+             position: openshard_protocol::world::Point::new({}, {}, {}) }},",
+            c.key_value, c.graphic, c.gump, c.hue, c.x, c.y, c.z
+        )
+        .unwrap();
+    }
+    out.push_str("];\n\n");
+
+    out.push_str(
+        "/// The boxes `doorgen` scans, as `(x, y, width, height)`. Laid after the\n\
+         /// statics, because a generated door goes in a gap between frames the\n\
+         /// decoration may have just put there.\n",
+    );
+    out.push_str("const DOOR_REGIONS: &[(u16, u16, u16, u16)] = &[\n");
+    for r in &file.door_regions {
+        assert!(
+            r.width > 0 && r.height > 0,
+            "a door-generation box at {},{} is {}x{} and holds no doorway",
+            r.x,
+            r.y,
+            r.width,
+            r.height
+        );
+        writeln!(out, "    ({}, {}, {}, {}),", r.x, r.y, r.width, r.height).unwrap();
+    }
+    out.push_str("];\n\n");
+
+    out.push_str(DECO_DOC);
+    out.push_str("#[must_use]\npub fn shipped() -> Vec<DecorSet> {\n    vec![DecorSet {\n");
+    writeln!(out, "        verb: {:?},", file.verb).unwrap();
+    writeln!(
+        out,
+        "        facet: openshard_protocol::world::Facet({}),",
+        file.facet
+    )
+    .unwrap();
+    out.push_str(
+        "        statics: STATICS,\n        doors: DOORS,\n        containers: CONTAINERS,\n\
+         \x20       door_regions: DOOR_REGIONS,\n    }]\n}\n",
+    );
+    out
+}
+
 fn main() {
     let out_dir = std::env::var("OUT_DIR").expect("cargo sets OUT_DIR");
+    let out_dir = Path::new(&out_dir);
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=data");
 
-    let path = Path::new("data").join("spawns.json");
-    let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
-    std::fs::write(Path::new(&out_dir).join("spawns.rs"), spawns(&text))
-        .unwrap_or_else(|e| panic!("writing spawns.rs: {e}"));
+    for (name, render) in [("spawns", spawns as fn(&str) -> String), ("deco", deco)] {
+        let path = Path::new("data").join(format!("{name}.json"));
+        let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+        std::fs::write(out_dir.join(format!("{name}.rs")), render(&text))
+            .unwrap_or_else(|e| panic!("writing {name}.rs: {e}"));
+    }
 }
