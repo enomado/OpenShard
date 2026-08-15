@@ -41,29 +41,6 @@ impl App {
             self.windows.skills.is_some(),
             self.windows.status,
         );
-        // TEMPORARY PROBE — remove once the admin-menu report is in.
-        {
-            let dialogs = self
-                .windows
-                .own_windows
-                .iter()
-                .filter(|w| matches!(w.subject, crate::windows::WindowSubject::Dialog(_)))
-                .count();
-            let state = (view.gumps.len(), dialogs, self.windows.locally_closed.len());
-            if self.probe_windows != Some(state) {
-                self.probe_windows = Some(state);
-                eprintln!(
-                    "PROBE sync: view.gumps={} dialog windows={} locally_closed={}",
-                    state.0, state.1, state.2
-                );
-                for gump in &view.gumps {
-                    eprintln!("PROBE   view has {:?} at {:?}", gump.gump_id, gump.at);
-                }
-                for window in &self.windows.own_windows {
-                    eprintln!("PROBE   window {:?} at {:?}", window.subject, window.at);
-                }
-            }
-        }
         self.advance_stack_pass();
     }
 }

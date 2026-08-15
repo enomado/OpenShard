@@ -782,7 +782,6 @@ pub fn run<D: Dial + Send + 'static>(
     };
     desk.audio = desk.audio.clamped();
     let mut app = App {
-        probe_windows: None,
         audio: audio::Audio::open(dir, desk.audio.effects, desk.audio.music),
         // Built before `resources` moves `tiledata` and `map` into it: this
         // borrows both.
