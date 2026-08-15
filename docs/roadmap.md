@@ -619,12 +619,12 @@ holds. The engine is `crates/server/scripting`; `engine.rs` explains the seam.
 and [#17](https://github.com/youhide/OpenShard/issues/17) settled on pure Rust:
 gameplay data becomes `data/*.json` in the domain crates, the pack's 414 lines of
 logic become systems, and this crate is deleted — which is also when CI stops
-excluding it and the MSRV comes off 1.88. Quests, townsfolk speech, the named
-regions, the spawn regions and the decoration are in the tree already
-(`crates/server/state/data/{quests,speech,regions}.json` and
-`crates/server/world/data/{spawns,deco}.json`, laid by `server::content` — the
-first two at boot, the rest on their admin verbs); the standing townsfolk and
-vendor stock follow. The checklist below is what the spike
+excluding it and the MSRV comes off 1.88. **Every dataset is in the tree** —
+`crates/server/state/data/{quests,speech,regions}.json` and
+`crates/server/world/data/{spawns,deco,townsfolk}.json`, laid by
+`server::content`, the first two at boot and the rest on their admin verbs. What
+is left in the pack is the 414 lines of logic: loot tables and two item
+behaviours. The checklist below is what the spike
 delivered and stays true until then; the decision is in
 [`architecture.md`](architecture.md) § Scripting.
 

@@ -1388,6 +1388,9 @@ fn spawn_mobile_body(world: &mut World, body: u16, at: Point, now: Instant) -> S
         healer: false,
         equipment: Vec::new(),
         skills: Vec::new(),
+        stock: Vec::new(),
+        escort_to: None,
+        quests: Vec::new(),
     });
     world.tick(now);
     world

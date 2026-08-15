@@ -601,6 +601,32 @@ pub enum Command {
         /// Trained combat skills, `(skill id, value in tenths)` — what turns on the
         /// to-hit roll and damage scaling for the creature.
         skills: Vec<(Skill, u16)>,
+        /// What it sells, if it is a shopkeeper. Applied the moment it exists.
+        ///
+        /// # Why this rides on the spawn
+        ///
+        /// It used to arrive later, in a `StockVendor` keyed by serial — and the
+        /// caller had no serial until the world answered with a `MobileSpawned`,
+        /// so a script kept a table keyed by the *tile* an NPC stands on and
+        /// looked it up when the event came back. Two round trips and a join key
+        /// for something that is simply a fact about this shopkeeper. Content that
+        /// knows the shop knows it at placement time; `Command::StockVendor` stays
+        /// for a shop whose stock changes later.
+        stock: Vec<openshard_npc::StockLine>,
+        /// Where it wants to be escorted to, if it is a traveller waiting for one.
+        ///
+        /// Empty means "wherever the quest picks" — ServUO's
+        /// `PickRandomDestination` — which is not the same as `None`, meaning it
+        /// is not escortable at all. Rides on the spawn for `stock`'s reason.
+        escort_to: Option<String>,
+        /// The quests it offers, by key. Rides on the spawn for `stock`'s reason;
+        /// [`BindQuestGiver`](Command::BindQuestGiver) stays for binding one to an
+        /// NPC that already exists.
+        ///
+        /// An escortable traveller gets `escort` added to whatever is here,
+        /// because an escort *is* a quest — the offer, the log entry and the
+        /// reward all come from one.
+        quests: Vec<String>,
     },
     /// Deal damage to a mobile — a script or another mobile's blow.
     Damage {

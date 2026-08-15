@@ -191,12 +191,13 @@ knowingly. If a third party ever turns up wanting to write content without
 compiling, that is the day a scripting layer comes back, and it will be a better
 one for having been designed against a real user instead of an imagined one.
 
-**Where it stands.** Skills, craft recipes, quests, what the townsfolk say, the
-named regions, what spawns where and everything Britain is furnished with come
-from the tree today. The standing townsfolk, vendor stock and the pack's
-remaining logic follow, one pull request each, each one proved by a test that
-loads the old pack and the new data side by side and compares the `Command`s
-they produce. Nothing is
+**Where it stands.** Every dataset is in the tree: skills, craft recipes, quests,
+what the townsfolk say, the named regions, what spawns where, everything Britain
+is furnished with, and the townsfolk themselves with the stock they sell and the
+escorts they ask for. What is left in the pack is *logic* — loot tables and two
+item behaviours — and the scripting crate that runs it. Each dataset was proved
+by a test that loads the old pack and the new data side by side and compares the
+`Command`s they produce. Nothing is
 deleted until they agree. Until that is finished a shard that wants Britain
 furnished still points `scripting.main` at the
 [Community Pack](https://github.com/youhide/OpenShard-Community-Pack):
