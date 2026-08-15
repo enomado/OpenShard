@@ -46,28 +46,48 @@ pub(super) fn world() -> World {
     World::new(START)
 }
 
-/// The long-distance guide shares a facet's static-terrain lifetime: it is
-/// built exactly where `with_terrain` installs that terrain, and is absent for
-/// a mapless test facet. No AI consumes it yet, but this proves the capability
-/// is reachable rather than a client-only cache.
+/// The long-distance guide shares a facet's static-terrain lifetime, and it is
+/// *handed in* rather than built: sampling a whole facet costs minutes, so the
+/// shard bakes the graph to a file and loads it (`movement::bake`), which is
+/// what `with_facet`'s third argument is for. `with_terrain` is the same door
+/// with no graph, and a facet loaded through it has none — that is a fact worth
+/// pinning, because "the router is absent" and "the router is missing" look
+/// identical from a caller and only one of them is a bug.
+///
+/// No AI consumes it yet. This proves the capability is reachable rather than a
+/// client-only cache.
 #[test]
-fn a_mapped_facet_keeps_its_static_coarse_router() {
-    use openshard_movement::{LandTile, MapTerrain};
+fn a_facet_keeps_the_coarse_router_it_was_given_and_no_other() {
+    use openshard_movement::{LandTile, MapTerrain, NavigationGraph};
     use openshard_protocol::world::Facet;
     use openshard_uofiles::map::{LandCell, Map};
     use openshard_uofiles::tiledata::TileData;
 
-    let map = Map::from_blocks(1, 1, |_, _| LandCell {
-        tile: LandTile(0),
-        z: 0,
-    });
-    let world = World::new(START).with_terrain(MapTerrain::new(map, TileData::empty()));
+    let flat = || {
+        let map = Map::from_blocks(1, 1, |_, _| LandCell {
+            tile: LandTile(0),
+            z: 0,
+        });
+        MapTerrain::new(map, TileData::empty())
+    };
+
+    // Terrain alone: no graph was baked, so the facet reports none.
+    let unbaked = World::new(START).with_terrain(flat());
     assert_eq!(
-        world
+        unbaked.state.facet_state(Facet(0)).coarse_router().map(|_| ()),
+        None,
+        "a facet loaded without a baked graph must not appear to have one"
+    );
+
+    // The same terrain with its graph: kept, and over the map's own extent.
+    let baked = NavigationGraph::build(&flat(), 8, 8).expect("an 8x8 facet has a graph");
+    let loaded = World::new(START).with_facet(Facet(0), flat(), Some(baked));
+    assert_eq!(
+        loaded
             .state
             .facet_state(Facet(0))
             .coarse_router()
-            .map(|router| router.dimensions()),
+            .map(NavigationGraph::dimensions),
         Some((8, 8))
     );
 }
@@ -4827,10 +4847,16 @@ fn a_skill_gain_updates_the_open_window() {
         let packets = packets_for(&mut world, connection);
         saw_update |= packets.iter().any(|p| p[0] == 0x3A && p[3] == 0xDF);
         saw_message |= packets.iter().any(|p| {
+            // The wording and the hue are the subject; the *size* of the gain is
+            // a roll off the world's seeded stream and is deliberately not
+            // pinned. It was once — as "increased by 0.1.  It is now 10.1." —
+            // and the first gain is 0.3 today, so the assertion failed on a
+            // number nothing here is about.
+            let text = String::from_utf8_lossy(p);
             p[0] == 0x1C
                 && p[10..12] == [0x00, 0x58]
-                && String::from_utf8_lossy(p)
-                    .contains("Your skill in Anatomy has increased by 0.1.  It is now 10.1.")
+                && text.contains("Your skill in Anatomy has increased by ")
+                && text.contains(".  It is now 1")
         });
         if saw_update && saw_message {
             break;

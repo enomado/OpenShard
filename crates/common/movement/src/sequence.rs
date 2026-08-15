@@ -36,6 +36,7 @@ use openshard_protocol::world::RawStepSequence;
 ///
 /// ```
 /// use openshard_movement::WalkSequence;
+/// use openshard_protocol::world::RawStepSequence;
 ///
 /// let mut sequence = WalkSequence::new();
 ///
@@ -115,6 +116,7 @@ impl WalkSequence {
 ///
 /// ```
 /// use openshard_movement::{StepCounter, WalkSequence};
+/// use openshard_protocol::world::RawStepSequence;
 ///
 /// let mut counter = StepCounter::new();
 /// let mut server = WalkSequence::new();
@@ -126,7 +128,7 @@ impl WalkSequence {
 /// // A `0x21` puts both ends back to the start.
 /// counter.reset();
 /// server.reset();
-/// assert!(server.accept(counter.take()).is_ok());
+/// assert!(server.accept(RawStepSequence(counter.take())).is_ok());
 /// ```
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub struct StepCounter {

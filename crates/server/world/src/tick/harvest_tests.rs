@@ -414,7 +414,10 @@ fn a_hatchet_asks_what_to_use_it_on_instead_of_where_to_dig() {
     world.tick(now);
 
     let messages = clilocs(&mut world, player);
-    assert!(messages.contains(&1_010_018), "the axe did not ask for an axe target");
+    assert!(
+        messages.contains(&1_010_018),
+        "the axe did not ask for an axe target"
+    );
     assert!(!messages.contains(&503_033), "the axe asked where to dig");
 }
 

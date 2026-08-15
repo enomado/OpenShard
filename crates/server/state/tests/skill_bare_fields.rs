@@ -33,11 +33,6 @@ const ALLOWLIST: &[(&str, usize, &str)] = &[
         "CastSpec: a #[serde] deserialize boundary from the embedded script engine",
     ),
     (
-        "crates/server/magic/src/lib.rs",
-        1,
-        "Cast::skill: the same Command-queue field, one struct further from tick.rs's dispatch; cast_spell promotes it",
-    ),
-    (
         "crates/server/skills/src/lib.rs",
         3,
         "set_skill/set_skill_cap/use_skill: the public doors the Command queue's bare skill first reaches; each promotes with Skill::from_id, the same shape as set_skill_lock",

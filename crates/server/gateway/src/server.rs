@@ -883,13 +883,17 @@ mod tests {
         let _a = TcpStream::connect(address).await.unwrap();
         let _b = TcpStream::connect(address).await.unwrap();
 
+        // Until two ids, not for two events: anything else the gateway says in
+        // between — and it does say other things — used to be consumed by this
+        // `if let` and dropped, leaving one id and an index panic in a test that
+        // is about neither. Failed roughly one run in three.
         let mut ids = Vec::new();
-        for _ in 0..2 {
+        while ids.len() < 2 {
             if let ServerEvent::Connected { id, .. } = events.recv().await.unwrap() {
                 ids.push(id);
             }
         }
-        assert_ne!(ids[0], ids[1]);
+        assert_ne!(ids[0], ids[1], "two connections must not share an id");
     }
 
     #[tokio::test]
