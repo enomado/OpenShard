@@ -67,8 +67,8 @@ use openshard_entities::EntityId;
 use openshard_protocol::serial::Serial;
 
 use crate::record::{
-    CharacterRecord, DecorationRecord, Inventory, ItemRecord, MobileRecord, RegionRecord, SCHEMA_VERSION,
-    SpawnerRecord, WorldRecord,
+    CharacterRecord, DecorationRecord, GuildRecord, Inventory, ItemRecord, MobileRecord, RegionRecord,
+    SCHEMA_VERSION, SpawnerRecord, WorldRecord,
 };
 
 /// A consistent picture of everything that changed, taken at one tick.
@@ -108,6 +108,15 @@ pub struct Snapshot {
     /// again — a snapshot is the whole map of the world, so a partial write would
     /// be worse than none.
     pub regions: Option<Vec<RegionRecord>>,
+    /// Every guild on the shard, when this snapshot swept them. Replace-all, and
+    /// that is what makes a disbanding stick: a guild dissolved since the last
+    /// save is simply absent, the same way a killed creature is.
+    ///
+    /// A member's own membership does **not** ride here — it is a
+    /// [`CharacterRecord`] field, written with the character — so the two halves
+    /// are saved on their own schedules and a roster is only ever the sum of who
+    /// names the guild.
+    pub guilds: Option<Vec<GuildRecord>>,
     /// The world's own scalars — the clock and the roll generator's position — when
     /// this snapshot swept them. `None` in a snapshot that carried only character
     /// changes; the stored row stands.
@@ -131,6 +140,11 @@ impl Snapshot {
     }
 
     /// How many rows this would touch.
+    ///
+    /// Every sweep, including the two that were quietly missing from the count —
+    /// the regions and the guilds. It feeds one debug line and nothing decides on
+    /// it, but a row count that under-reports is a row count nobody can use to
+    /// answer "why is this save slow".
     pub fn len(&self) -> usize {
         self.characters.len()
             + self.removed.len()
@@ -139,6 +153,8 @@ impl Snapshot {
             + self.spawners.as_ref().map_or(0, Vec::len)
             + self.mobiles.as_ref().map_or(0, Vec::len)
             + self.decorations.as_ref().map_or(0, Vec::len)
+            + self.regions.as_ref().map_or(0, Vec::len)
+            + self.guilds.as_ref().map_or(0, Vec::len)
     }
 }
 
@@ -301,6 +317,7 @@ impl Journal {
             mobiles: None,
             decorations: None,
             regions: None,
+            guilds: None,
             world: None,
         })
     }
@@ -337,6 +354,9 @@ mod tests {
             murders: 0,
             quests: Vec::new(),
             done_quests: Vec::new(),
+            guild: None,
+            guild_title: String::new(),
+            guild_candidate: None,
             stat_locks: StatLockRecord::default(),
         }
     }

@@ -73,6 +73,12 @@ pub struct CharacterSheet {
     pub quests: Vec<openshard_persistence::QuestRecord>,
     /// Quests already finished, with the wait before each may be taken again.
     pub done_quests: Vec<openshard_persistence::DoneQuestRecord>,
+    /// The guild it belongs to and the title it wears there, by the guild's own
+    /// id. `None` for the unguilded, which is most characters.
+    pub guild: Option<(u32, String)>,
+    /// A guild that asked it to join while it was away, still waiting on an
+    /// answer.
+    pub guild_candidate: Option<u32>,
 }
 
 impl CharacterSheet {
@@ -97,6 +103,8 @@ impl CharacterSheet {
             murders: 0,
             quests: Vec::new(),
             done_quests: Vec::new(),
+            guild: None,
+            guild_candidate: None,
         }
     }
 }
@@ -120,7 +128,13 @@ pub struct FreshCharacter {
     pub appearance: Option<Appearance>,
     /// The stats and skills chosen there. Absent likewise, and then the world's
     /// flat defaults and no skills apply.
-    pub sheet: Option<CharacterSheet>,
+    ///
+    /// Boxed, and the reason is the enum this sits inside: a `Command` is one
+    /// variant wide, every queued command pays for the widest, and this sheet is
+    /// far and away the biggest thing on any of them — fifty-eight skills, the
+    /// effects, the quest log. Behind a pointer it costs one word on the queue
+    /// and its own allocation once per login, which is the right way round.
+    pub sheet: Option<Box<CharacterSheet>>,
 }
 
 /// A character coming back from the save, exactly as it left.
@@ -199,6 +213,10 @@ impl StoredCharacter {
                 murders: record.murders,
                 quests: record.quests.clone(),
                 done_quests: record.done_quests.clone(),
+                // The two halves ride together: a title with no guild is a title
+                // nothing draws, so the `Option` is over the pair.
+                guild: record.guild.map(|id| (id, record.guild_title.clone())),
+                guild_candidate: record.guild_candidate,
             },
         })
     }

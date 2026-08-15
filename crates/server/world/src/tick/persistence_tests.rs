@@ -307,7 +307,7 @@ fn a_character_that_logged_out_dead_returns_a_ghost() {
                 body: Graphic(0x0190),
                 hue: openshard_protocol::wire::Hue::NONE,
             }),
-            sheet: Some(CharacterSheet {
+            sheet: Some(Box::new(CharacterSheet {
                 strength: 100,
                 dexterity: 100,
                 intelligence: 100,
@@ -320,7 +320,9 @@ fn a_character_that_logged_out_dead_returns_a_ghost() {
                 murders: 0,
                 quests: Vec::new(),
                 done_quests: Vec::new(),
-            }),
+                guild: None,
+                guild_candidate: None,
+            })),
         }),
     }));
     world.tick(now);
@@ -535,4 +537,147 @@ fn a_saved_serial_is_the_one_the_client_was_told() {
     world.take_snapshot();
     let snapshot = only_snapshot(&mut world).expect("a change");
     assert_eq!(snapshot.characters[0].serial, serial);
+}
+
+/// A guild, its wars, its roster and its id counter all come back.
+///
+/// The one that matters most is the counter, and it is the one nothing about the
+/// guilds themselves would reveal: a disbanded guild leaves no row, so the
+/// maximum id in the table is *not* the maximum ever issued. A shard that
+/// re-derived it would hand the next guild founded an id a disbanded one had
+/// used, and every member record still naming it — anyone offline at the time,
+/// and so never swept — would silently join the new guild.
+#[test]
+fn a_guild_survives_a_restart_and_its_ids_are_not_handed_out_again() {
+    use openshard_state::{GuildMember, Relation};
+
+    let mut world = World::new(START).with_save_every(0);
+    let now = Instant::now();
+    let connection = enter(&mut world, now);
+    let player = world.state.players[&connection];
+    let serial = world.state.registry.serial_of(player).expect("a serial");
+
+    let ours =
+        openshard_guilds::found(&mut world.state, player, "The Silver Serpent", "OSS").expect("a guild");
+    openshard_guilds::set_title(&mut world.state, player, player, "Warlord").expect("a title");
+    // A second guild, then a war with it — and a third, disbanded, so the id
+    // counter and the table plainly disagree.
+    let theirs = world
+        .state
+        .guilds
+        .found("The Black Rose".to_owned(), "TBR".to_owned(), serial);
+    world.state.guilds.propose(ours, theirs, Relation::War);
+    world.state.guilds.propose(theirs, ours, Relation::War);
+    let doomed = world
+        .state
+        .guilds
+        .found("The Ash".to_owned(), "ASH".to_owned(), serial);
+    world.state.guilds.disband(doomed);
+    let high = world.state.guilds.high_water();
+    assert!(high > theirs.0, "the disbanded guild took an id with it");
+
+    world.take_snapshot();
+    let snapshot = only_snapshot(&mut world).expect("a character entered");
+    let guilds = snapshot.guilds.expect("a full sweep carries the guilds");
+    assert_eq!(
+        guilds.len(),
+        2,
+        "the disbanded one is absent, which is the delete"
+    );
+    let saved_world = snapshot.world.expect("and the world's own scalars");
+    assert_eq!(saved_world.guild_high_water, high);
+
+    // The membership rides with the character, not with the guild.
+    let character = snapshot
+        .characters
+        .iter()
+        .find(|record| record.serial == serial)
+        .expect("the player was swept");
+    assert_eq!(character.guild, Some(ours.0));
+    assert_eq!(character.guild_title, "Warlord");
+
+    // The shard comes back up on that save.
+    let mut restored = World::new(START);
+    restored.restore_guilds(guilds);
+    let mut restored = restored.with_guild_high_water(saved_world.guild_high_water);
+    assert_eq!(
+        restored.state.guilds.get(ours).map(|g| g.name.as_str()),
+        Some("The Silver Serpent")
+    );
+    assert_eq!(
+        restored.state.guilds.get(ours).and_then(|g| g.toward(theirs)),
+        Some(Relation::War),
+        "the war did not survive the door"
+    );
+    assert!(restored.state.guilds.get(doomed).is_none());
+
+    // And the counter: the next guild founded must not take the disbanded one's
+    // id, which is exactly what re-deriving from the table would have done.
+    let next = restored
+        .state
+        .guilds
+        .found("The Fourth".to_owned(), "FTH".to_owned(), serial);
+    assert!(next.0 > high, "{next:?} re-used an id that was already issued");
+    assert_ne!(next, doomed);
+
+    // And the member comes back a member through the ordinary login path — the
+    // saved sheet, not a component put back by hand. That is the half that was
+    // easy to leave out: the guild table can restore perfectly and still leave
+    // every player unguilded.
+    let connection = ConnectionId::from_raw(77);
+    restored.queue(Command::Enter(Entering {
+        connection,
+        version: ClientVersion::TOL,
+        account: AccountName("admin".to_owned()),
+        name: CharacterName("Wilbur".to_owned()),
+        access: AccessLevel::Player,
+        character: Character::Fresh(FreshCharacter {
+            facet: Facet(0),
+            start: None,
+            appearance: None,
+            sheet: Some(Box::new(CharacterSheet {
+                strength: 100,
+                dexterity: 100,
+                intelligence: 100,
+                skills: Vec::new(),
+                effects: Vec::new(),
+                stat_locks: Default::default(),
+                dead: false,
+                fame: 0,
+                karma: 0,
+                murders: 0,
+                quests: Vec::new(),
+                done_quests: Vec::new(),
+                guild: Some((ours.0, "Warlord".to_owned())),
+                guild_candidate: Some(theirs.0),
+            })),
+        }),
+    }));
+    restored.tick(now);
+    let entity = restored.state.players[&connection];
+    assert_eq!(
+        restored.state.guild_of(entity).map(|g| g.abbreviation.as_str()),
+        Some("OSS"),
+        "a restored membership named a guild that was not there"
+    );
+    assert_eq!(
+        restored
+            .registry()
+            .get::<GuildMember>(entity)
+            .map(|m| m.title.as_str()),
+        Some("Warlord")
+    );
+    // An invitation left for a player who was offline is exactly the invitation
+    // that has to survive a restart.
+    assert_eq!(
+        restored
+            .registry()
+            .get::<openshard_state::GuildCandidate>(entity)
+            .map(|asked| asked.guild),
+        Some(theirs)
+    );
+    assert_eq!(
+        restored.state.guild_label(entity).as_deref(),
+        Some("[Warlord, OSS]")
+    );
 }

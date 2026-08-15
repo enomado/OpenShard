@@ -1077,6 +1077,7 @@ mod tests {
             mobiles: None,
             decorations: None,
             regions: None,
+            guilds: None,
             world: None,
         }
     }

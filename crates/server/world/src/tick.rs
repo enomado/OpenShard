@@ -73,7 +73,6 @@ use openshard_ai as ai;
 use openshard_chat as chat;
 use openshard_combat as combat;
 use openshard_crafting as crafting;
-use openshard_guilds as guilds;
 use openshard_items as items;
 use openshard_magic as magic;
 use openshard_npc as npc;
@@ -97,6 +96,10 @@ mod defaults;
 mod enter;
 mod fields;
 mod gates;
+/// The world's *own* guild code — what crosses the persistence door. The rules
+/// are `openshard_guilds`, spelled out in full at its call sites so the two are
+/// never mistaken for each other.
+mod guilds;
 mod healer;
 mod motion;
 mod persist;
@@ -1246,7 +1249,7 @@ impl World {
                 quests::make_escortable(&mut self.state, serial, destination);
             }
             Command::GuildWindowRequest { connection } => {
-                guilds::open(&mut self.state, connection);
+                openshard_guilds::open(&mut self.state, connection);
             }
             Command::QuestLogRequest { connection } => {
                 quests::open_log(&mut self.state, connection);

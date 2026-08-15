@@ -290,7 +290,15 @@ mod optional_serial {
 ///   v15 (a rule correct in memory and lost at the door) with an exploit attached,
 ///   since the one thing a player can do to a roll they dislike is get the shard
 ///   restarted.
-pub const SCHEMA_VERSION: u32 = 23;
+/// - v24: **guilds**. A guild lived only in memory, so a shard that restarted
+///   dissolved every one of them — the name, the roster, the wars — while every
+///   member's `GuildMember` component pointed at an id nothing answered to. Three
+///   things land together: the guilds themselves ([`GuildRecord`]), each
+///   character's membership and title, and the id counter
+///   ([`WorldRecord::guild_high_water`]), which is the one that is not obvious.
+///   Without the counter a restart hands the next guild founded an id a
+///   disbanded one already used, and every stale member record silently joins it.
+pub const SCHEMA_VERSION: u32 = 24;
 
 /// An account, as saved.
 ///
@@ -396,6 +404,75 @@ pub struct CharacterRecord {
     /// quest has no progress left to save — only a date.
     #[serde(default)]
     pub done_quests: Vec<DoneQuestRecord>,
+    /// Which guild it belongs to, by [`GuildRecord::id`], or `None` for the
+    /// unguilded — which is most characters.
+    ///
+    /// On the character rather than a roster on the guild, the same way
+    /// `GuildMember` is a component: the question asked is "what guild is *this*
+    /// one in", and a roster is the rare direction. An id naming a guild the
+    /// store no longer has reads as no guild — see
+    /// [`WorldState::guild_of`](openshard_state::WorldState::guild_of) — so a
+    /// guild dropped by hand from the database orphans nobody.
+    #[serde(default)]
+    pub guild: Option<u32>,
+    /// The title the guild knows it by — "Warlord". Empty for a plain member and
+    /// for anyone in no guild.
+    #[serde(default)]
+    pub guild_title: String,
+    /// A guild that has asked it to join and is waiting on an answer.
+    ///
+    /// Saved, and worth saying why: an invitation left for a player who was
+    /// offline is exactly the invitation that needs to survive a restart. One at
+    /// a time, because there is one answer.
+    #[serde(default)]
+    pub guild_candidate: Option<u32>,
+}
+
+/// How one guild stands with another, as saved.
+///
+/// A `bool` rather than a three-state, because absence *is* the neutral case:
+/// two guilds with no declared relation are simply not in each other's lists.
+/// The in-memory [`Relation`](openshard_state::Relation) makes the same choice
+/// and for the same reason — a "neutral" variant would be a second way to spell
+/// nothing, and a third state to keep in step.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub struct GuildStanding {
+    /// The other guild, by [`GuildRecord::id`].
+    pub other: u32,
+    /// At war, rather than allied.
+    pub at_war: bool,
+}
+
+/// A guild, as saved.
+///
+/// The relations are written on **both** guilds, which is how they are held in
+/// memory: a war stored on one side only would make the colour a mobile draws in
+/// depend on which of the two a client happened to ask about. Reading them back
+/// is therefore idempotent rather than additive — each side restores its own
+/// list, and the two agree because both were written.
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub struct GuildRecord {
+    /// Its id, which is the key every member record names it by. Never reused —
+    /// see [`WorldRecord::guild_high_water`].
+    pub id: u32,
+    /// What it calls itself.
+    pub name: String,
+    /// The short form drawn in brackets after a member's name.
+    pub abbreviation: String,
+    /// Who leads it, by serial. A serial and not an entity: an entity id does not
+    /// survive a restart, and the leader is the one member a guild cannot lose
+    /// track of.
+    #[serde(with = "serial")]
+    pub leader: Serial,
+    /// Every war and alliance it has declared.
+    #[serde(default)]
+    pub relations: Vec<GuildStanding>,
+    /// Every one it has offered and the other has not yet matched. Saved because
+    /// a declaration is *half* of a war, and losing it at a restart would quietly
+    /// undo it — the other guild's leader would answer a declaration that no
+    /// longer existed and start a fresh one nobody had answered.
+    #[serde(default)]
+    pub proposals: Vec<GuildStanding>,
 }
 
 /// A quest in progress, as saved.
@@ -1046,6 +1123,17 @@ pub struct WorldRecord {
     /// `SqliteStore::save`.
     #[serde(default)]
     pub rng_state: u64,
+    /// The highest guild id ever handed out.
+    ///
+    /// Here rather than derived from the saved guilds at boot, and that is the
+    /// whole point of the field: the maximum id *in the table* is not the maximum
+    /// id ever issued, because a disbanded guild leaves no row. A shard that
+    /// re-derived it would hand the next guild founded an id a disbanded one had
+    /// used, and every character record still naming that id — a member who was
+    /// offline when it disbanded, and so was never swept — would silently find
+    /// itself in the new guild.
+    #[serde(default)]
+    pub guild_high_water: u32,
 }
 
 /// A character's whole carried inventory, replaced as a unit.
@@ -1310,6 +1398,13 @@ mod tests {
                 dexterity_age: 0,
                 intelligence_age: 900,
             },
+            // A member with a title, and an invitation from a second guild that
+            // has not been answered. Both non-default, which is the point of the
+            // test: a field that comes back as its default is a field nobody
+            // saved.
+            guild: Some(7),
+            guild_title: "Warlord".to_owned(),
+            guild_candidate: Some(9),
         };
         let json = serde_json::to_string(&record).expect("a record must serialise");
         let back: CharacterRecord = serde_json::from_str(&json).expect("and come back");
@@ -1343,6 +1438,9 @@ mod tests {
             murders: 0,
             quests: Vec::new(),
             done_quests: Vec::new(),
+            guild: None,
+            guild_title: String::new(),
+            guild_candidate: None,
             stat_locks: StatLockRecord::default(),
         };
         let json = serde_json::to_string(&record).expect("a record must serialise");

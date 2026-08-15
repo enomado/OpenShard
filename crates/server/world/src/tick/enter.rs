@@ -107,7 +107,7 @@ impl World {
                     Some(stored.position),
                     Some(stored.facing),
                     Some(stored.appearance),
-                    Some(stored.sheet),
+                    Some(Box::new(stored.sheet)),
                 ),
                 None => (self.state.default_facet, None, None, None, None, None),
             },
@@ -290,6 +290,28 @@ impl World {
                 self.state
                     .registry
                     .insert(entity, openshard_state::components::Murders(sheet.murders));
+            }
+            // Guild membership, straight back on as the component it was swept
+            // from. Not checked against the guild table here: `guild_of` already
+            // reads a membership naming a guild that is gone as no membership, so
+            // a guild dropped by hand from the database orphans nobody, and a
+            // check here would instead throw the membership away for good.
+            if let Some((guild, title)) = sheet.guild {
+                self.state.registry.insert(
+                    entity,
+                    openshard_state::components::GuildMember {
+                        guild: openshard_state::GuildId(guild),
+                        title,
+                    },
+                );
+            }
+            if let Some(guild) = sheet.guild_candidate {
+                self.state.registry.insert(
+                    entity,
+                    openshard_state::components::GuildCandidate {
+                        guild: openshard_state::GuildId(guild),
+                    },
+                );
             }
             if !sheet.skills.is_empty() {
                 let mut skills = openshard_state::components::Skills::default();

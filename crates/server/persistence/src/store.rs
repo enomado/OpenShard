@@ -27,8 +27,8 @@ use openshard_protocol::world::{Aggression, DamageType};
 
 use crate::journal::Snapshot;
 use crate::record::{
-    AccountRecord, CharacterRecord, DecorationRecord, ItemRecord, MobileRecord, RegionRecord, SCHEMA_VERSION,
-    SpawnerRecord, WorldRecord,
+    AccountRecord, CharacterRecord, DecorationRecord, GuildRecord, ItemRecord, MobileRecord, RegionRecord,
+    SCHEMA_VERSION, SpawnerRecord, WorldRecord,
 };
 
 /// What a store could not do.
@@ -117,6 +117,16 @@ pub trait Store: Send + Sync {
     /// If the store cannot be read.
     async fn regions(&self) -> Result<Vec<RegionRecord>, StoreError>;
 
+    /// Every guild on the shard, for the boot load.
+    ///
+    /// Only the guilds. Who is *in* one comes back with the characters, because
+    /// membership is a character's field — so a roster is the sum of who names
+    /// the guild, and there is no second list to fall out of step with it.
+    ///
+    /// # Errors
+    /// If the store cannot be read.
+    async fn guilds(&self) -> Result<Vec<GuildRecord>, StoreError>;
+
     /// The world's own scalars, as last saved — the clock and where the roll
     /// generator got to. One read for the one row, so a scalar added to
     /// [`WorldRecord`] does not add a method here and a query to every backend.
@@ -159,6 +169,8 @@ pub struct MemoryStore {
     decorations: Mutex<HashMap<Serial, DecorationRecord>>,
     /// Named regions, keyed by `(facet, id)`.
     regions: Mutex<HashMap<(u8, u16), RegionRecord>>,
+    /// Guilds, keyed by id.
+    guilds: Mutex<HashMap<u32, GuildRecord>>,
     /// The world's own scalars: the clock, and where the rolls got to. `None` until
     /// a snapshot carries them.
     world: Mutex<Option<WorldRecord>>,
@@ -261,6 +273,15 @@ impl Store for MemoryStore {
                 decorations.insert(record.serial, record.clone());
             }
         }
+        // And the guilds, replace-all: one disbanded since the last save is
+        // absent, and the clear is what makes that stick.
+        if let Some(records) = &snapshot.guilds {
+            let mut guilds = self.guilds.lock().expect("the mutex is never poisoned");
+            guilds.clear();
+            for record in records {
+                guilds.insert(record.id, record.clone());
+            }
+        }
         // The regions sweep replaces the whole map of the world at once.
         if let Some(records) = &snapshot.regions {
             let mut regions = self.regions.lock().expect("the mutex is never poisoned");
@@ -334,6 +355,18 @@ impl Store for MemoryStore {
             .collect())
     }
 
+    async fn guilds(&self) -> Result<Vec<GuildRecord>, StoreError> {
+        let mut guilds: Vec<_> = self
+            .guilds
+            .lock()
+            .expect("the mutex is never poisoned")
+            .values()
+            .cloned()
+            .collect();
+        guilds.sort_by_key(|guild| guild.id);
+        Ok(guilds)
+    }
+
     async fn regions(&self) -> Result<Vec<RegionRecord>, StoreError> {
         Ok(self
             .regions
@@ -397,6 +430,9 @@ mod tests {
             murders: 0,
             quests: Vec::new(),
             done_quests: Vec::new(),
+            guild: None,
+            guild_title: String::new(),
+            guild_candidate: None,
             stat_locks: StatLockRecord::default(),
         }
     }
@@ -413,6 +449,7 @@ mod tests {
             mobiles: None,
             decorations: None,
             regions: None,
+            guilds: None,
             world: None,
         }
     }
@@ -494,6 +531,7 @@ mod tests {
             mobiles: None,
             decorations: None,
             regions: None,
+            guilds: None,
             world: None,
         };
         let error = store.save(&future).await.expect_err("must refuse");
@@ -579,6 +617,7 @@ mod tests {
                 mobiles: None,
                 decorations: None,
                 regions: None,
+                guilds: None,
                 world: None,
             })
             .await
@@ -598,6 +637,7 @@ mod tests {
                 mobiles: None,
                 decorations: None,
                 regions: None,
+                guilds: None,
                 world: None,
             })
             .await
@@ -668,6 +708,7 @@ mod tests {
                 mobiles: Some(vec![mobile(2, 30), mobile(3, 30)]),
                 decorations: None,
                 regions: None,
+                guilds: None,
                 world: None,
             })
             .await
@@ -686,6 +727,7 @@ mod tests {
                 mobiles: Some(vec![mobile(3, 7)]),
                 decorations: None,
                 regions: None,
+                guilds: None,
                 world: None,
             })
             .await
@@ -719,6 +761,7 @@ mod tests {
                 mobiles: None,
                 decorations: None,
                 regions: None,
+                guilds: None,
                 world: None,
             })
             .await
@@ -736,6 +779,7 @@ mod tests {
                 mobiles: None,
                 decorations: None,
                 regions: None,
+                guilds: None,
                 world: None,
             })
             .await

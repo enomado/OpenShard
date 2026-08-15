@@ -187,6 +187,9 @@ pub(super) fn on_file(
         murders: 0,
         quests: Vec::new(),
         done_quests: Vec::new(),
+        guild: None,
+        guild_title: String::new(),
+        guild_candidate: None,
     }])
 }
 
@@ -10580,7 +10583,7 @@ fn a_murderer_stays_red_across_a_restart() {
             facet: Facet(0),
             start: None,
             appearance: None,
-            sheet: Some(CharacterSheet {
+            sheet: Some(Box::new(CharacterSheet {
                 strength: record.strength,
                 dexterity: record.dexterity,
                 intelligence: record.intelligence,
@@ -10593,7 +10596,9 @@ fn a_murderer_stays_red_across_a_restart() {
                 murders: record.murders,
                 quests: Vec::new(),
                 done_quests: Vec::new(),
-            }),
+                guild: None,
+                guild_candidate: None,
+            })),
         }),
     }));
     booted.tick(now);

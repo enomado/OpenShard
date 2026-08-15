@@ -124,6 +124,17 @@ impl Guilds {
         id
     }
 
+    /// Put a guild back exactly as it was saved.
+    ///
+    /// Not [`found`](Self::found): that mints the next id, and a restore must
+    /// keep the one already written on every member record. The counter is still
+    /// raised past it, so a store whose world row went missing cannot re-issue an
+    /// id that is plainly in use — the row is the authority, this is the floor.
+    pub fn restore(&mut self, guild: Guild) {
+        self.next_id = self.next_id.max(guild.id.0);
+        self.guilds.insert(guild.id, guild);
+    }
+
     /// The guild that calls itself `name`, case-insensitively.
     ///
     /// A scan, and deliberately: it is asked once when a guild is founded and

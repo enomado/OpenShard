@@ -190,7 +190,7 @@ impl World {
                     },
                     hue: Hue(create.skin_hue.0),
                 }),
-                sheet: Some(Self::chosen_sheet(&create)),
+                sheet: Some(Box::new(Self::chosen_sheet(&create))),
             }),
         });
     }
@@ -229,6 +229,8 @@ impl World {
             murders: 0,
             quests: Vec::new(),
             done_quests: Vec::new(),
+            guild: None,
+            guild_candidate: None,
         }
     }
 

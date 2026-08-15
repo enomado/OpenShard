@@ -29,8 +29,8 @@ use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::journal::Snapshot;
 use crate::record::{
-    AccountRecord, CharacterRecord, DecorationRecord, ItemLocation, ItemRecord, MobileRecord, RegionRecord,
-    SCHEMA_VERSION, SpawnerRecord, StatLockRecord, WorldRecord,
+    AccountRecord, CharacterRecord, DecorationRecord, GuildRecord, ItemLocation, ItemRecord, MobileRecord,
+    RegionRecord, SCHEMA_VERSION, SpawnerRecord, StatLockRecord, WorldRecord,
 };
 use crate::store::{Store, StoreError};
 
@@ -158,7 +158,26 @@ CREATE TABLE IF NOT EXISTS characters (
     done_quests TEXT NOT NULL DEFAULT '[]',
     -- Which way the three stats train, and how long since each last rose. JSON,
     -- like the skills beside it: six small numbers that are only useful together.
-    stat_locks TEXT NOT NULL DEFAULT '{}'
+    stat_locks TEXT NOT NULL DEFAULT '{}',
+    -- Guild membership. Columns rather than a roster table, because the question
+    -- asked is which guild this character is in, and a roster is the rare
+    -- direction. NULL for the unguilded, which is most of them. Deliberately no
+    -- foreign key on `guilds`: an id naming a guild that is gone reads as no
+    -- guild, and a constraint would turn that into a refused write instead.
+    guild         INTEGER,
+    guild_title   TEXT NOT NULL DEFAULT '',
+    guild_candidate INTEGER
+);
+-- Every guild on the shard. The relations and the standing offers are JSON, like
+-- a spawner's creature list: a handful per guild, not a table's worth. Both are
+-- written on both sides, so restoring is idempotent rather than additive.
+CREATE TABLE IF NOT EXISTS guilds (
+    id           INTEGER PRIMARY KEY,
+    name         TEXT NOT NULL,
+    abbreviation TEXT NOT NULL,
+    leader       INTEGER NOT NULL,
+    relations    TEXT NOT NULL DEFAULT '[]',
+    proposals    TEXT NOT NULL DEFAULT '[]'
 );
 CREATE TABLE IF NOT EXISTS items (
     serial    INTEGER PRIMARY KEY,
@@ -240,10 +259,14 @@ CREATE TABLE IF NOT EXISTS regions (
 -- does not deal the previous run's rolls again. `rng_state` is a u64 written as
 -- the signed word with the same bits: SQLite has one integer type and it is
 -- signed, so the sign is reinterpreted on the way in and out, never clamped.
+-- `guild_high_water` is the highest guild id ever issued, and is *not* the
+-- maximum of `guilds.id`: a disbanded guild leaves no row, so re-deriving it
+-- would re-issue an id every stale member record still names.
 CREATE TABLE IF NOT EXISTS world (
     id            INTEGER PRIMARY KEY,
     clock_minutes INTEGER NOT NULL,
-    rng_state     INTEGER NOT NULL
+    rng_state     INTEGER NOT NULL,
+    guild_high_water INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS spawners (
     id            INTEGER PRIMARY KEY,
@@ -347,6 +370,7 @@ impl Store for SqliteStore {
         let mobiles = snapshot.mobiles.clone();
         let decorations = snapshot.decorations.clone();
         let regions = snapshot.regions.clone();
+        let guilds = snapshot.guilds.clone();
         let world = snapshot.world;
         blocking(move || {
             let mut guard = connection
@@ -371,9 +395,9 @@ impl Store for SqliteStore {
                         "INSERT OR REPLACE INTO characters \
                          (serial, account, name, body, hue, facet, x, y, z, facing, \
                           strength, dexterity, intelligence, skills, effects, dead, fame, karma, murders, \
-                           quests, done_quests, stat_locks) \
+                           quests, done_quests, stat_locks, guild, guild_title, guild_candidate) \
                          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, \
-                                 ?19, ?20, ?21, ?22)",
+                                 ?19, ?20, ?21, ?22, ?23, ?24, ?25)",
                         params![
                             record.serial.raw(),
                             record.account.0,
@@ -397,6 +421,9 @@ impl Store for SqliteStore {
                             quests,
                             done_quests,
                             stat_locks,
+                            record.guild,
+                            record.guild_title,
+                            record.guild_candidate,
                         ],
                     )
                     .map_err(database)?;
@@ -588,6 +615,31 @@ impl Store for SqliteStore {
                         .map_err(database)?;
                 }
             }
+            // And a guild sweep, likewise: a guild disbanded since the last save
+            // is absent here, and the delete is what makes that stick.
+            if let Some(guilds) = &guilds {
+                transaction.execute("DELETE FROM guilds", []).map_err(database)?;
+                for guild in guilds {
+                    let relations = serde_json::to_string(&guild.relations)
+                        .map_err(|e| StoreError::Corrupt(e.to_string()))?;
+                    let proposals = serde_json::to_string(&guild.proposals)
+                        .map_err(|e| StoreError::Corrupt(e.to_string()))?;
+                    transaction
+                        .execute(
+                            "INSERT INTO guilds (id, name, abbreviation, leader, relations, proposals) \
+                             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                            params![
+                                guild.id,
+                                guild.name,
+                                guild.abbreviation,
+                                guild.leader.raw(),
+                                relations,
+                                proposals
+                            ],
+                        )
+                        .map_err(database)?;
+                }
+            }
             if let Some(record) = world {
                 // `rng_state` goes in as the signed word with the same bits. A
                 // generator state uses the whole `u64`, the column is signed, and
@@ -596,10 +648,15 @@ impl Store for SqliteStore {
                 // failing after a few hundred rolls.
                 transaction
                     .execute(
-                        "INSERT INTO world (id, clock_minutes, rng_state) VALUES (0, ?1, ?2) \
+                        "INSERT INTO world (id, clock_minutes, rng_state, guild_high_water) VALUES (0, ?1, ?2, ?3) \
                          ON CONFLICT(id) DO UPDATE SET clock_minutes = excluded.clock_minutes, \
-                         rng_state = excluded.rng_state",
-                        params![record.clock_minutes, record.rng_state.cast_signed()],
+                         rng_state = excluded.rng_state, \
+                         guild_high_water = excluded.guild_high_water",
+                        params![
+                            record.clock_minutes,
+                            record.rng_state.cast_signed(),
+                            record.guild_high_water
+                        ],
                     )
                     .map_err(database)?;
             }
@@ -617,7 +674,7 @@ impl Store for SqliteStore {
                 .prepare(
                     "SELECT serial, account, name, body, hue, facet, x, y, z, facing, \
                      strength, dexterity, intelligence, skills, effects, dead, fame, karma, \
-                     murders, quests, done_quests, stat_locks \
+                     murders, quests, done_quests, stat_locks, guild, guild_title, guild_candidate \
                      FROM characters ORDER BY serial",
                 )
                 .map_err(database)?;
@@ -652,6 +709,9 @@ impl Store for SqliteStore {
                             quests: Vec::new(),
                             done_quests: Vec::new(),
                             stat_locks: StatLockRecord::default(),
+                            guild: row.get(22)?,
+                            guild_title: row.get(23)?,
+                            guild_candidate: row.get(24)?,
                         },
                         skills,
                         effects,
@@ -877,25 +937,75 @@ impl Store for SqliteStore {
         .await
     }
 
+    async fn guilds(&self) -> Result<Vec<GuildRecord>, StoreError> {
+        let connection = Arc::clone(&self.connection);
+        blocking(move || {
+            let guard = connection.lock().expect("the sqlite mutex is never poisoned");
+            let mut statement = guard
+                .prepare(
+                    "SELECT id, name, abbreviation, leader, relations, proposals \
+                     FROM guilds ORDER BY id",
+                )
+                .map_err(database)?;
+            let rows = statement
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, u32>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        get_serial(row, 3)?,
+                        row.get::<_, String>(4)?,
+                        row.get::<_, String>(5)?,
+                    ))
+                })
+                .map_err(database)?;
+            let mut guilds = Vec::new();
+            for row in rows {
+                let (id, name, abbreviation, leader, relations, proposals) = row.map_err(database)?;
+                guilds.push(GuildRecord {
+                    id,
+                    name,
+                    abbreviation,
+                    leader,
+                    relations: serde_json::from_str(&relations)
+                        .map_err(|e| StoreError::Corrupt(e.to_string()))?,
+                    proposals: serde_json::from_str(&proposals)
+                        .map_err(|e| StoreError::Corrupt(e.to_string()))?,
+                });
+            }
+            Ok(guilds)
+        })
+        .await
+    }
+
     async fn world(&self) -> Result<Option<WorldRecord>, StoreError> {
         let connection = Arc::clone(&self.connection);
         blocking(move || {
             let guard = connection.lock().expect("the sqlite mutex is never poisoned");
-            let row: Option<(i64, i64)> = guard
+            let row: Option<(i64, i64, u32)> = guard
                 .query_row(
-                    "SELECT clock_minutes, rng_state FROM world WHERE id = 0",
+                    "SELECT clock_minutes, rng_state, guild_high_water FROM world WHERE id = 0",
                     [],
-                    |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
+                    |row| {
+                        Ok((
+                            row.get::<_, i64>(0)?,
+                            row.get::<_, i64>(1)?,
+                            row.get::<_, u32>(2)?,
+                        ))
+                    },
                 )
                 .optional()
                 .map_err(database)?;
             // No row at all is a world nobody has saved yet, which is not a row of
             // zeroes: see `Store::world`.
-            Ok(row.map(|(clock_minutes, rng_state)| WorldRecord {
-                clock_minutes: clock_minutes.max(0) as u64,
-                // Unsigned again, bit for bit — see the write in `save`.
-                rng_state: rng_state.cast_unsigned(),
-            }))
+            Ok(
+                row.map(|(clock_minutes, rng_state, guild_high_water)| WorldRecord {
+                    clock_minutes: clock_minutes.max(0) as u64,
+                    // Unsigned again, bit for bit — see the write in `save`.
+                    rng_state: rng_state.cast_unsigned(),
+                    guild_high_water,
+                }),
+            )
         })
         .await
     }
@@ -1016,6 +1126,9 @@ mod tests {
             murders: 0,
             quests: Vec::new(),
             done_quests: Vec::new(),
+            guild: None,
+            guild_title: String::new(),
+            guild_candidate: None,
             stat_locks: StatLockRecord::default(),
         }
     }
@@ -1032,6 +1145,7 @@ mod tests {
             mobiles: None,
             decorations: None,
             regions: None,
+            guilds: None,
             world: None,
         }
     }
@@ -1199,6 +1313,7 @@ mod tests {
         let record = WorldRecord {
             clock_minutes: 13 * 60,
             rng_state: 0xFEDC_BA98_7654_3210,
+            guild_high_water: 0,
         };
         assert!(record.rng_state > i64::MAX.cast_unsigned(), "the high bit is set");
         store
@@ -1209,6 +1324,94 @@ mod tests {
             .await
             .expect("save");
         assert_eq!(store.world().await.expect("read"), Some(record));
+    }
+
+    #[tokio::test]
+    async fn a_guild_and_its_members_survive_a_reopen() {
+        use crate::record::{GuildRecord, GuildStanding};
+
+        // A guild sweep replaces the set, so a guild disbanded since the last save
+        // is absent from the next one — and the delete is what makes that stick.
+        // The membership does not ride here at all: it is a character column, and
+        // the two are written on their own schedules.
+        let path = temp_db("guilds");
+        let guild = |id: u32, name: &str, at_war_with: Option<u32>| GuildRecord {
+            id,
+            name: name.to_owned(),
+            abbreviation: name[..3].to_owned(),
+            leader: Serial::new(0x0000_0001).expect("a leader serial"),
+            relations: at_war_with
+                .map(|other| vec![GuildStanding { other, at_war: true }])
+                .unwrap_or_default(),
+            proposals: vec![GuildStanding {
+                other: 99,
+                at_war: false,
+            }],
+        };
+
+        let mut member = character(1, 100);
+        member.guild = Some(1);
+        member.guild_title = "Warlord".to_owned();
+        member.guild_candidate = Some(2);
+
+        {
+            let store = SqliteStore::open(&path).expect("open");
+            store
+                .save(&Snapshot {
+                    guilds: Some(vec![
+                        guild(1, "Silverfoot", Some(2)),
+                        guild(2, "Blackrose", Some(1)),
+                    ]),
+                    world: Some(WorldRecord {
+                        clock_minutes: 0,
+                        rng_state: 0,
+                        // Higher than any guild in the table, which is the whole
+                        // reason it is saved rather than derived: guild 3 was
+                        // founded and disbanded, and leaves no row.
+                        guild_high_water: 3,
+                    }),
+                    ..snapshot(vec![member.clone()], vec![])
+                })
+                .await
+                .expect("save");
+        }
+
+        let store = SqliteStore::open(&path).expect("reopen");
+        let guilds = store.guilds().await.expect("read");
+        assert_eq!(guilds.len(), 2);
+        assert_eq!(guilds[0].name, "Silverfoot");
+        assert_eq!(guilds[0].abbreviation, "Sil");
+        assert_eq!(
+            guilds[0].relations,
+            vec![GuildStanding {
+                other: 2,
+                at_war: true
+            }],
+            "the war did not survive the door"
+        );
+        assert_eq!(
+            guilds[0].proposals,
+            vec![GuildStanding {
+                other: 99,
+                at_war: false
+            }],
+            "a standing offer is half a war, and losing it undoes one"
+        );
+        assert_eq!(
+            store.world().await.expect("read").map(|w| w.guild_high_water),
+            Some(3),
+            "the id counter is not the maximum id in the table"
+        );
+
+        let characters = store.characters().await.expect("read");
+        let saved = characters.first().expect("the member");
+        assert_eq!(saved.guild, Some(1));
+        assert_eq!(saved.guild_title, "Warlord");
+        assert_eq!(
+            saved.guild_candidate,
+            Some(2),
+            "an invitation left for an offline player is the one that must survive"
+        );
     }
 
     #[tokio::test]
@@ -1245,6 +1448,7 @@ mod tests {
             mobiles: None,
             decorations: None,
             regions: None,
+            guilds: None,
             world: None,
         };
         let error = store.save(&future).await.expect_err("must refuse");

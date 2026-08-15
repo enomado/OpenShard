@@ -46,8 +46,8 @@ use tokio_postgres::{Client, NoTls, Row};
 
 use crate::journal::Snapshot;
 use crate::record::{
-    AccountRecord, CharacterRecord, DecorationRecord, ItemLocation, ItemRecord, MobileRecord, RegionRecord,
-    SCHEMA_VERSION, SpawnerRecord, WorldRecord,
+    AccountRecord, CharacterRecord, DecorationRecord, GuildRecord, ItemLocation, ItemRecord, MobileRecord,
+    RegionRecord, SCHEMA_VERSION, SpawnerRecord, WorldRecord,
 };
 use crate::store::{Store, StoreError};
 
@@ -91,7 +91,23 @@ CREATE TABLE IF NOT EXISTS characters (
     done_quests TEXT NOT NULL DEFAULT '[]',
     -- Which way the three stats train, and how long since each last rose. JSON,
     -- like the skills beside it: six small numbers only useful together.
-    stat_locks TEXT NOT NULL DEFAULT '{}'
+    stat_locks TEXT NOT NULL DEFAULT '{}',
+    -- Guild membership. Columns rather than a roster table, and no foreign key on
+    -- `guilds`: an id naming a guild that is gone reads as no guild, and a
+    -- constraint would turn that into a refused write instead.
+    guild           INTEGER,
+    guild_title     TEXT NOT NULL DEFAULT '',
+    guild_candidate INTEGER
+);
+-- Every guild. Relations and standing offers are JSON, and both are written on
+-- both sides, so restoring is idempotent rather than additive.
+CREATE TABLE IF NOT EXISTS guilds (
+    id           INTEGER PRIMARY KEY,
+    name         TEXT NOT NULL,
+    abbreviation TEXT NOT NULL,
+    leader       BIGINT NOT NULL,
+    relations    TEXT NOT NULL DEFAULT '[]',
+    proposals    TEXT NOT NULL DEFAULT '[]'
 );
 CREATE TABLE IF NOT EXISTS items (
     serial    BIGINT PRIMARY KEY,
@@ -164,10 +180,14 @@ CREATE TABLE IF NOT EXISTS regions (
 -- does not deal the previous run's rolls again. `rng_state` is a u64 written as the
 -- BIGINT with the same bits: Postgres has no unsigned integer, so the sign is
 -- reinterpreted on the way in and out, never clamped.
+-- `guild_high_water` is the highest guild id ever issued, not the maximum of
+-- `guilds.id`: a disbanded guild leaves no row, so re-deriving it would re-issue
+-- an id every stale member record still names.
 CREATE TABLE IF NOT EXISTS world (
     id            INTEGER PRIMARY KEY,
     clock_minutes BIGINT NOT NULL,
-    rng_state     BIGINT NOT NULL
+    rng_state     BIGINT NOT NULL,
+    guild_high_water INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS spawners (
     id             BIGINT PRIMARY KEY,
@@ -301,9 +321,9 @@ impl Store for PgStore {
                     "INSERT INTO characters \
                      (serial, account, name, body, hue, facet, x, y, z, facing, \
                       strength, dexterity, intelligence, skills, effects, dead, fame, karma, murders, \
-                       quests, done_quests, stat_locks) \
+                       quests, done_quests, stat_locks, guild, guild_title, guild_candidate) \
                      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, \
-                             $17, $18, $19, $20, $21, $22) \
+                             $17, $18, $19, $20, $21, $22, $23, $24, $25) \
                      ON CONFLICT (serial) DO UPDATE SET \
                      account = EXCLUDED.account, name = EXCLUDED.name, \
                      body = EXCLUDED.body, hue = EXCLUDED.hue, facet = EXCLUDED.facet, \
@@ -313,7 +333,9 @@ impl Store for PgStore {
                      effects = EXCLUDED.effects, dead = EXCLUDED.dead, \
                      fame = EXCLUDED.fame, karma = EXCLUDED.karma, murders = EXCLUDED.murders, \
                      quests = EXCLUDED.quests, done_quests = EXCLUDED.done_quests, \
-                     stat_locks = EXCLUDED.stat_locks",
+                     stat_locks = EXCLUDED.stat_locks, guild = EXCLUDED.guild, \
+                     guild_title = EXCLUDED.guild_title, \
+                     guild_candidate = EXCLUDED.guild_candidate",
                     &[
                         &i64::from(record.serial.raw()),
                         &record.account.0,
@@ -337,6 +359,9 @@ impl Store for PgStore {
                         &quests,
                         &done_quests,
                         &stat_locks,
+                        &record.guild.map(u32::cast_signed),
+                        &record.guild_title,
+                        &record.guild_candidate.map(u32::cast_signed),
                     ],
                 )
                 .await
@@ -467,6 +492,35 @@ impl Store for PgStore {
                     .map_err(database)?;
             }
         }
+        // The guild sweep replaces the whole set: one disbanded since the last
+        // save is absent, and the delete is what makes that stick.
+        if let Some(guilds) = &snapshot.guilds {
+            transaction
+                .execute("DELETE FROM guilds", &[])
+                .await
+                .map_err(database)?;
+            for guild in guilds {
+                let relations = serde_json::to_string(&guild.relations)
+                    .map_err(|e| StoreError::Corrupt(e.to_string()))?;
+                let proposals = serde_json::to_string(&guild.proposals)
+                    .map_err(|e| StoreError::Corrupt(e.to_string()))?;
+                transaction
+                    .execute(
+                        "INSERT INTO guilds (id, name, abbreviation, leader, relations, proposals) \
+                         VALUES ($1, $2, $3, $4, $5, $6)",
+                        &[
+                            &guild.id.cast_signed(),
+                            &guild.name,
+                            &guild.abbreviation,
+                            &i64::from(guild.leader.raw()),
+                            &relations,
+                            &proposals,
+                        ],
+                    )
+                    .await
+                    .map_err(database)?;
+            }
+        }
         if let Some(record) = snapshot.world {
             // `rng_state` goes in as the BIGINT with the same bits: a generator
             // state uses the whole `u64`, Postgres has no unsigned type, and the two
@@ -475,10 +529,16 @@ impl Store for PgStore {
             // hundred rolls.
             transaction
                 .execute(
-                    "INSERT INTO world (id, clock_minutes, rng_state) VALUES (0, $1, $2) \
+                    "INSERT INTO world (id, clock_minutes, rng_state, guild_high_water) \
+                     VALUES (0, $1, $2, $3) \
                      ON CONFLICT (id) DO UPDATE SET clock_minutes = EXCLUDED.clock_minutes, \
-                     rng_state = EXCLUDED.rng_state",
-                    &[&(record.clock_minutes as i64), &record.rng_state.cast_signed()],
+                     rng_state = EXCLUDED.rng_state, \
+                     guild_high_water = EXCLUDED.guild_high_water",
+                    &[
+                        &(record.clock_minutes as i64),
+                        &record.rng_state.cast_signed(),
+                        &record.guild_high_water.cast_signed(),
+                    ],
                 )
                 .await
                 .map_err(database)?;
@@ -493,7 +553,7 @@ impl Store for PgStore {
             .query(
                 "SELECT serial, account, name, body, hue, facet, x, y, z, facing, \
                  strength, dexterity, intelligence, skills, effects, dead, fame, karma, murders, \
-                 quests, done_quests, stat_locks \
+                 quests, done_quests, stat_locks, guild, guild_title, guild_candidate \
                  FROM characters ORDER BY serial",
                 &[],
             )
@@ -557,10 +617,38 @@ impl Store for PgStore {
             .collect()
     }
 
+    async fn guilds(&self) -> Result<Vec<GuildRecord>, StoreError> {
+        let client = self.client.lock().await;
+        let rows = client
+            .query(
+                "SELECT id, name, abbreviation, leader, relations, proposals FROM guilds ORDER BY id",
+                &[],
+            )
+            .await
+            .map_err(database)?;
+        rows.iter()
+            .map(|row| {
+                Ok(GuildRecord {
+                    id: row.get::<_, i32>(0).cast_unsigned(),
+                    name: row.get::<_, String>(1),
+                    abbreviation: row.get::<_, String>(2),
+                    leader: serial_from(row.get::<_, i64>(3))?,
+                    relations: serde_json::from_str(row.get::<_, &str>(4))
+                        .map_err(|e| StoreError::Corrupt(e.to_string()))?,
+                    proposals: serde_json::from_str(row.get::<_, &str>(5))
+                        .map_err(|e| StoreError::Corrupt(e.to_string()))?,
+                })
+            })
+            .collect()
+    }
+
     async fn world(&self) -> Result<Option<WorldRecord>, StoreError> {
         let client = self.client.lock().await;
         let rows = client
-            .query("SELECT clock_minutes, rng_state FROM world WHERE id = 0", &[])
+            .query(
+                "SELECT clock_minutes, rng_state, guild_high_water FROM world WHERE id = 0",
+                &[],
+            )
             .await
             .map_err(database)?;
         // No row at all is a world nobody has saved yet, which is not a row of
@@ -569,6 +657,7 @@ impl Store for PgStore {
             clock_minutes: row.get::<_, i64>(0).max(0) as u64,
             // Unsigned again, bit for bit — see the write in `save`.
             rng_state: row.get::<_, i64>(1).cast_unsigned(),
+            guild_high_water: row.get::<_, i32>(2).cast_unsigned(),
         }))
     }
 
@@ -654,7 +743,18 @@ fn character_from_row(row: &Row) -> Result<CharacterRecord, StoreError> {
             .map_err(|e| StoreError::Corrupt(e.to_string()))?,
         stat_locks: serde_json::from_str(row.get::<_, &str>(21))
             .map_err(|e| StoreError::Corrupt(e.to_string()))?,
+        guild: row.get::<_, Option<i32>>(22).map(i32::cast_unsigned),
+        guild_title: row.get::<_, String>(23),
+        guild_candidate: row.get::<_, Option<i32>>(24).map(i32::cast_unsigned),
     })
+}
+
+/// A guild's leader serial, out of the BIGINT it was written as.
+fn serial_from(raw: i64) -> Result<Serial, StoreError> {
+    u32::try_from(raw)
+        .ok()
+        .and_then(Serial::new)
+        .ok_or_else(|| corrupt("guild leader"))
 }
 
 /// Write one item, flattening its location into the union of columns. Shared by
@@ -962,6 +1062,9 @@ mod tests {
             murders: 0,
             quests: Vec::new(),
             done_quests: Vec::new(),
+            guild: None,
+            guild_title: String::new(),
+            guild_candidate: None,
             stat_locks: StatLockRecord::default(),
         }
     }
@@ -978,6 +1081,7 @@ mod tests {
             mobiles: None,
             decorations: None,
             regions: None,
+            guilds: None,
             world: None,
         }
     }
@@ -1071,6 +1175,7 @@ mod tests {
         let record = WorldRecord {
             clock_minutes: 13 * 60,
             rng_state: 0xFEDC_BA98_7654_3210,
+            guild_high_water: 0,
         };
         assert!(record.rng_state > i64::MAX.cast_unsigned(), "the high bit is set");
         store
@@ -1086,6 +1191,7 @@ mod tests {
         let later = WorldRecord {
             clock_minutes: 14 * 60,
             rng_state: 7,
+            guild_high_water: 0,
         };
         store
             .save(&Snapshot {
@@ -1214,6 +1320,7 @@ mod tests {
             mobiles: None,
             decorations: None,
             regions: None,
+            guilds: None,
             world: None,
         };
         let error = store.save(&future).await.expect_err("must refuse");

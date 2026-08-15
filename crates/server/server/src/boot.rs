@@ -256,6 +256,10 @@ pub(crate) struct Restored {
 pub(crate) async fn restore(store: &dyn Store, config: &Config, world: World) -> Restored {
     let accounts = load_accounts(store, config).await;
     let mut world = world;
+    // Before the characters, whose records name a guild by id. Nothing at boot
+    // resolves one — the id is copied onto a component — but the order is the one
+    // that stays correct when something does.
+    restore_guilds(store, &mut world).await;
     let characters = restore_characters(store, &mut world).await;
     seed_configured_characters(config, &mut world);
     let items = restore_items(store, &mut world, &characters).await;
@@ -439,6 +443,16 @@ async fn restore_spawners(store: &dyn Store, world: &mut World) {
     }
 }
 
+/// Bring back the guilds. Only the guilds: who is *in* one rides with the
+/// character records, so a roster is derived from who names the guild and there
+/// is no second list to fall out of step with it.
+async fn restore_guilds(store: &dyn Store, world: &mut World) {
+    match store.guilds().await {
+        Ok(guilds) => world.restore_guilds(guilds),
+        Err(error) => error!(%error, "could not read saved guilds; starting with none"),
+    }
+}
+
 /// Bring back the named regions — towns, dungeons, guarded zones. Saved like
 /// everything else, so a restart keeps its guards, its music and the dark in
 /// its caves without waiting for a staff `.admin`.
@@ -486,6 +500,10 @@ async fn restore_world(store: &dyn Store, world: World, pinned_seed: Option<u64>
             world
                 .with_clock_minutes(record.clock_minutes)
                 .with_rng_state(record.rng_state)
+                // The guild id counter, which is here and not derived from the
+                // guilds themselves: a disbanded guild leaves no row, so the
+                // maximum id in the table is not the maximum ever issued.
+                .with_guild_high_water(record.guild_high_water)
         }
         Ok(None) => world,
         Err(error) => {

@@ -163,6 +163,7 @@ impl World {
             mobiles: None,
             decorations: None,
             regions: None,
+            guilds: None,
             world: None,
         });
 
@@ -212,9 +213,15 @@ impl World {
         // lose: no guards, no music, daylight in the dungeons, every night starting
         // over, and every roll of the previous run dealt again.
         snapshot.regions = Some(self.region_records());
+        // And every guild. Replace-all like the regions, which is what makes a
+        // disbanding stick — and the high-water mark rides in the world row
+        // beside the clock, because the maximum id *in the table* is not the
+        // maximum ever issued: a disbanded guild leaves no row.
+        snapshot.guilds = Some(self.guild_records());
         snapshot.world = Some(WorldRecord {
             clock_minutes: self.clock_minutes(),
             rng_state: self.rng_state(),
+            guild_high_water: self.state.guilds.high_water(),
         });
 
         // Skip only a genuinely empty save, so a quiet, empty shard queues nothing.
@@ -852,6 +859,19 @@ impl World {
                 .map_or(0, |m| m.0),
             quests: Self::quests_of(registry, entity),
             done_quests: Self::done_quests_of(registry, entity, now),
+            // Off the component and not looked up in the guild table: a
+            // membership naming a guild that has been disbanded is *already*
+            // read as no membership by `guild_of`, and writing the id back
+            // unchanged is what lets a guild survive being briefly unreadable.
+            guild: registry
+                .get::<openshard_state::components::GuildMember>(entity)
+                .map(|member| member.guild.0),
+            guild_title: registry
+                .get::<openshard_state::components::GuildMember>(entity)
+                .map_or_else(String::new, |member| member.title.clone()),
+            guild_candidate: registry
+                .get::<openshard_state::components::GuildCandidate>(entity)
+                .map(|invitation| invitation.guild.0),
             stat_locks,
         })
     }
