@@ -2335,9 +2335,31 @@ Roughly in dependency order, each script-first:
 - [ ] `housing` — player houses: a multi placed on the map, a door with a real
   lock, decay unless refreshed, friends/co-owners. Wants multis (the client's
   `multi.mul`/UOP format, unread yet), a region concept and the door locks above.
-- [ ] `guilds` — membership, titles, the guild notoriety rules (green/orange),
-  war declarations. Mostly data plus a notoriety hook; the abstract stub exists
-  so the dependency graph already names it.
+- [x] `guilds` — **built, minus persistence and ranks.** Founding, invitations,
+  leaving, dismissal, titles, leadership, disbanding, and the war and alliance
+  handshake, reached from the paperdoll's Guild button (`0xD7`/`0x28`).
+  - **Notoriety became relative, which is the architectural half.** A `0x78`'s
+    notoriety byte is not a property of the mobile — it is the answer to "what
+    colour does *this client* draw it in". `notoriety_of` stays the mobile's own
+    standing (combat, guards, shopkeepers); `notoriety_toward(viewer, target)` is
+    the wire answer, and `broadcast_move` builds one `0x77` per watcher. ServUO's
+    order is kept: murderer and criminal resolve **before** guild, so a red
+    cannot hide inside a tabard.
+  - **A war takes two declarations** — the guildstone's rule, and an alliance is
+    the same shape, so one `propose` serves both. A guild that declared and was
+    ignored is *not* at war, which is why `proposals` is a separate map from
+    `relations`. Peace, though, is one guild's decision.
+  - **An invitation is a consent**: a guild may not conscript, so `invite` leaves
+    a `GuildCandidate` the player answers.
+  - Every operation that can move a colour re-announces the mobiles it moved.
+    Nothing on a client asks again on its own.
+  - Deferred: **persistence** (`Guilds::high_water` is designed to be saved and
+    nothing writes it yet — a guild does not survive a restart), ServUO's five
+    **ranks** and their flag set (the seam is `may_lead`, one predicate), the
+    guildstone as a placeable item, guild chat, and named multi-guild alliances.
+  - Client-side: the window renders and the health bars take their hue from the
+    byte, but the abbreviation in the **tooltip** shows only on ClassicUO —
+    `0xD6` is framed and skipped here. See `client.md`.
 - [x] `quests` — **a core system now, ServUO's Mondain's Legacy model, with the
   content left to the pack.** It was built pack-first (five thin seams and an
   opaque JSON blob the engine only stored) and that did not survive a client.

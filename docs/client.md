@@ -3988,3 +3988,42 @@ that the ring reaches it. What was found on the way and left undone:
   point Escape adds: with no memory, the *only* place a window can open is the
   cascade — so a bad cascade is not something a player can work around by
   putting the window somewhere sensible once.
+
+## Backlog, found while giving the shard its guilds
+
+The server side of guilds landed with the window it opens (`openshard-guilds`),
+and the audit of what this client does with it turned up one defect it had
+already had and one whole feature it does not have.
+
+- ~~**Only the last line over a head was drawn.**~~ The crowd held one `Speech`
+  per mobile and a second line overwrote the first, so two lines in a row from
+  one NPC lost the first — silently, and only when the pair landed inside the
+  five-second hold. A single click sends *two* `0x1C`s for one mobile (the guild
+  line `[Warlord, OSS]`, then the name — `Mobile.OnSingleClick`'s order), which
+  made it every time. Lines stack now, each with its own clock, newest nearest
+  the head, bounded at `SPEECH_STACK`.
+- 🚩 **This client reads no `0xD6` at all.** A property list is framed and
+  skipped as `Event::Undecoded` — which is the fix that stopped a vendor's window
+  taking the connection down, not a reader. So every tooltip the shard sends
+  lands nowhere: an item's name on hover, an exceptional mark, who crafted it,
+  and now a guild's abbreviation in the name's suffix slot and the
+  "Warlord, The Silver Serpent" line under it. All of it shows on ClassicUO and
+  none of it here.
+
+  It is four things, not one: the `0xD6` decoder (the encoder exists, in
+  `protocol::properties`), a per-serial cache, the `0xD9`/`0xDC` revision
+  handshake (the shard already has three `TooltipMode`s and gates on
+  `Feature::TooltipHash`, so this end has to answer whichever it is told), and
+  the hover itself — which is picking, and `picking_query.rs` already answers
+  "what is under the pointer".
+
+  Worth stating plainly because the shard's half is *done* and has been for
+  a while: `WorldState::object_properties` builds the list, `send_property_list`
+  answers a `0xD6` request, and `tooltip_packet` rides one alongside every draw.
+  Nothing on this end has ever asked for one.
+- **The Guild button was already right.** `DollButton::Guild` sends its `0xD7`
+  subcommand `0x28`, and it had been sending it into a server that named the
+  subcommand and routed it nowhere. Worth remembering as the shape to keep: the
+  client sends what a reference client sends, and the server's stub is the
+  server's problem — a packet that never leaves is a defect nobody would look
+  for the day the stub is filled.
