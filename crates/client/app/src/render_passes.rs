@@ -96,6 +96,19 @@ pub(crate) fn draw_gump_windows(
     // leave an invisible window intercepting clicks (and its labels still
     // eligible for the text pass) after gump assets or their GPU pass were
     // unavailable.
+    // Once each, not once a frame: at sixty frames a second these would drown
+    // the lines that matter.
+    {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        static SAID: AtomicBool = AtomicBool::new(false);
+        if (resources.gumps.is_none() || window.gump_pass.is_none()) && !SAID.swap(true, Ordering::Relaxed) {
+            eprintln!(
+                "PROBE draw: art={} pass={} — no dialog can ever draw",
+                resources.gumps.is_some(),
+                window.gump_pass.is_some()
+            );
+        }
+    }
     if let (Some(files), Some(pass)) = (resources.gumps.as_ref(), window.gump_pass.as_mut()) {
         // Every open dialog's art, packed before anything is laid out.
         //
@@ -226,8 +239,17 @@ pub(crate) fn draw_gump_windows(
                     }
                     WindowSubject::Dialog(gump_id) => {
                         let Some(gump) = view.gumps.iter().find(|gump| gump.gump_id == gump_id) else {
+                            eprintln!("PROBE draw: a window for {gump_id:?} but the view has no such gump");
                             continue;
                         };
+                        // Once per window, not once a frame.
+                        {
+                            use std::sync::atomic::{AtomicU32, Ordering};
+                            static LAST: AtomicU32 = AtomicU32::new(u32::MAX);
+                            if LAST.swap(gump_id.0, Ordering::Relaxed) != gump_id.0 {
+                                eprintln!("PROBE draw: laying out {gump_id:?} at {:?}", open.at);
+                            }
+                        }
                         // The page, the switches and the pressed button are
                         // the three things the wire does not carry, and all
                         // three come out of `Dialogs` — which is also what

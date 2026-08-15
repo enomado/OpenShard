@@ -197,6 +197,8 @@ pub(crate) struct App {
     /// The player's own windows, and what the mouse is doing to them — see
     /// [`windows::Windows`].
     pub(crate) windows: windows::Windows,
+    /// TEMPORARY PROBE state — remove with the probes.
+    pub(crate) probe_windows: Option<(usize, usize, usize)>,
     /// The speech line — see [`Chat`].
     pub(crate) chat: Chat,
     /// The last few seconds of the eye, for the scope in the HUD.
