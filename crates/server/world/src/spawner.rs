@@ -111,6 +111,21 @@ impl Spawner {
     }
 }
 
+/// One facet's spawn regions, and the admin verb that lays them.
+///
+/// The shape [`RegionSet`](openshard_state::region::RegionSet) established: the
+/// verb rides with the data rather than being spelled into a `match` in the
+/// server, so adding a facet is a file and a row in [`crate::admin`]'s menu.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct SpawnSet {
+    /// What the staff menu's button sends: `populate:felucca`.
+    pub verb: String,
+    /// The regions, each with the placeholder id `register_spawner` overwrites.
+    pub spawners: Vec<Spawner>,
+}
+
+include!(concat!(env!("OUT_DIR"), "/spawns.rs"));
+
 #[cfg(test)]
 mod tests {
     use super::*;

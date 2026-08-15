@@ -21,11 +21,11 @@ struct Cli {
     /// Admin verbs to send at boot, as if a game master had pressed the buttons:
     /// `--seed regions:felucca,decorate:felucca,populate:felucca`.
     ///
-    /// What a verb means is the script pack's to decide — the engine ships no
-    /// spawn or decoration data — so the names here are the pack's, not a list
-    /// this binary can check. Repeat the flag or comma-separate; either way the
-    /// verbs are sent in the order given, which is the order that matters:
-    /// regions before what stands in them.
+    /// `regions:` and `populate:` are answered from the tree's own data;
+    /// `decorate:` is still a script pack's, which is why this is a string rather
+    /// than a list this binary can check. Repeat the flag or comma-separate;
+    /// either way the verbs are sent in the order given, which is the order that
+    /// matters: regions before what stands in them.
     ///
     /// Sent every run it is passed, with no look at whether the world is already
     /// laid. Seeding a shard that persists to a database twice lays everything

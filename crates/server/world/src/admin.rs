@@ -7,13 +7,14 @@
 //! static/door/container art, "regions" gives a facet its named areas, and the
 //! three "clear" verbs undo them. One click each lays or clears the world.
 //!
-//! **Who answers a verb is not this module's business.** The verb is a string on
-//! an [`AdminMenuAction`](crate::events::AdminMenuAction); whoever is listening
-//! turns it into commands. Today `server::content` answers `regions:felucca`
-//! from data in the tree, and a configured script pack answers the spawn and
-//! decoration verbs — which are the two datasets still outside the repository.
-//! An unanswered verb lays nothing and says nothing, which is what a shard
-//! without a pack sees for those two.
+//! **Who answers a verb is not this module's business, and more than one may.**
+//! The verb is a string on an
+//! [`AdminMenuAction`](crate::events::AdminMenuAction); everyone listening turns
+//! it into commands, and the world applies all of them. Today `server::content`
+//! answers `regions:felucca` and the spawn regions half of `populate:felucca`
+//! from data in the tree; a configured script pack answers `decorate:felucca` and
+//! the *standing townsfolk* half of `populate:felucca`, which are what is still
+//! outside the repository. A verb nobody answers lays nothing and says nothing.
 
 use openshard_entities::EntityId;
 use openshard_gateway::ConnectionId;

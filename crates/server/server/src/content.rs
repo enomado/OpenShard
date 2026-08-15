@@ -75,22 +75,36 @@ pub fn boot() -> Vec<Command> {
 /// list to keep level with `world::admin`'s `ROWS`, and the failure when they
 /// drifted would be a button that silently does nothing.
 ///
+/// # A verb may have more than one answer, and `populate:` does
+///
+/// The spawn *regions* are here; the 789 standing townsfolk that ride on the
+/// same verb in the pack's data are not, and become in-tree spawn data of their
+/// own later. Both sides answering the same verb is fine — the world applies
+/// what each lays, and `register_spawner` de-duplicates by `SpawnArea`, so the
+/// pack's copy of a region the tree already laid is dropped rather than stacked.
+///
 /// # Laying twice is safe *here*, and will not be everywhere
 ///
-/// `Regions::set` replaces the facet's whole list, so pressing the button twice
-/// leaves one set of regions. Decoration does not have that property — it is
-/// additive and persisted — so the dataset that lands in this function next
-/// brings the idempotency question with it. This one does not answer it.
+/// `Regions::set` replaces the facet's whole list and `register_spawner`
+/// de-duplicates by area, so pressing either button twice leaves one of each.
+/// Decoration does not have that property — it is additive and persisted — so
+/// the dataset that lands in this function next brings the idempotency question
+/// with it. Neither of these answers it.
 #[must_use]
 pub fn verb(action: &str) -> Vec<Command> {
-    region::shipped()
+    let regions = region::shipped()
         .into_iter()
         .filter(|set| set.verb == action)
         .map(|set| Command::RegisterRegions {
             facet: set.facet,
             regions: set.regions,
-        })
-        .collect()
+        });
+    let spawners = openshard_world::spawner::shipped()
+        .into_iter()
+        .filter(|set| set.verb == action)
+        .flat_map(|set| set.spawners)
+        .map(|spawner| Command::RegisterSpawner { spawner });
+    regions.chain(spawners).collect()
 }
 
 #[cfg(test)]
@@ -143,11 +157,34 @@ mod tests {
     }
 
     #[test]
+    fn the_staff_menus_populate_button_lays_every_spawn_region_the_tree_ships() {
+        let commands = verb("populate:felucca");
+        let spawners = only_spawners(commands);
+        assert!(
+            spawners.len() > 1000,
+            "only {} spawn regions on Felucca",
+            spawners.len()
+        );
+        // Every one comes out with the placeholder id and no timer: both belong to
+        // the live spawner, and `register_spawner` sets them. A number written into
+        // the data would be a second source for either.
+        assert!(
+            spawners.iter().all(|s| s.id == 0 && s.next_spawn == 0),
+            "a shipped spawn region arrived with an id or a timer already set"
+        );
+        assert!(
+            spawners
+                .iter()
+                .all(|s| !s.creatures.is_empty() && s.max_count > 0),
+            "a shipped spawn region can never put anything down"
+        );
+    }
+
+    #[test]
     fn a_verb_the_tree_has_no_content_for_lays_nothing() {
         // Not an error and not a panic: the menu still offers the two verbs whose
         // data is in the pack, and a shard with a pack configured is how they get
         // answered until PR4 and PR5.
-        assert!(verb("populate:felucca").is_empty());
         assert!(verb("decorate:felucca").is_empty());
         assert!(verb("").is_empty());
         assert!(verb("regions:trammel").is_empty());
@@ -246,6 +283,97 @@ mod tests {
             tree_regions, pack_regions,
             "in-tree regions and the pack's have diverged; the migration is not done"
         );
+
+        let populate = "populate:felucca";
+        openshard_scripting::ScriptEngine::deliver(
+            &mut engine,
+            &openshard_scripting::Event::AdminAction {
+                serial: None,
+                action: populate.to_owned(),
+            },
+        )
+        .expect("the pack's onEvent refused the populate verb");
+        let pack_populate: Vec<Command> = openshard_scripting::ScriptEngine::take_commands(&mut engine)
+            .into_iter()
+            .filter_map(crate::scripting::into_world)
+            .collect();
+
+        let (tree_spawners, pack_spawners) = (only_spawners(verb(populate)), only_spawners(pack_populate));
+        assert!(
+            !pack_spawners.is_empty(),
+            "the pack at {pack:?} laid no spawn regions for {populate:?}"
+        );
+        compare_spawners(&tree_spawners, &pack_spawners);
+    }
+
+    /// Two spawner lists, reported item by item.
+    ///
+    /// **Not `assert_eq!`.** A thousand spawn regions holding eight thousand
+    /// creatures between them is a five-megabyte `Debug` dump on failure, which is
+    /// not a diff — it is a wall. This says how many differ and shows the first,
+    /// which is what a person actually reads. Decoration is twenty times this and
+    /// will want the same.
+    fn compare_spawners(
+        tree: &[openshard_world::spawner::Spawner],
+        pack: &[openshard_world::spawner::Spawner],
+    ) {
+        assert_eq!(
+            tree.len(),
+            pack.len(),
+            "the tree lays {} spawn regions and the pack lays {}",
+            tree.len(),
+            pack.len()
+        );
+        let differing: Vec<usize> = (0..tree.len()).filter(|&i| tree[i] != pack[i]).collect();
+        let Some(&first) = differing.first() else {
+            return;
+        };
+        let (a, b) = (&tree[first], &pack[first]);
+        assert_eq!(
+            a.area,
+            b.area,
+            "spawn region {first} of {} covers a different box in the tree than in the pack",
+            differing.len()
+        );
+        assert_eq!(
+            a.creatures.len(),
+            b.creatures.len(),
+            "spawn region {first} at {:?} holds {} creatures in the tree and {} in the pack",
+            a.area,
+            a.creatures.len(),
+            b.creatures.len()
+        );
+        let creature = (0..a.creatures.len())
+            .find(|&i| a.creatures[i] != b.creatures[i])
+            .map(|i| format!("\n  tree: {:?}\n  pack: {:?}", a.creatures[i], b.creatures[i]))
+            .unwrap_or_default();
+        panic!(
+            "{} of {} spawn regions differ; the first is {first} at {:?}\
+             \n  max_count {} vs {}, respawn_delay {} vs {}{creature}",
+            differing.len(),
+            tree.len(),
+            a.area,
+            a.max_count,
+            b.max_count,
+            a.respawn_delay,
+            b.respawn_delay,
+        );
+    }
+
+    /// The spawn regions out of a command stream, in the order they were laid.
+    ///
+    /// Order is kept for `only_regions`' reason turned around: it does *not*
+    /// matter — `register_spawner` assigns the id and de-duplicates by
+    /// `SpawnArea` — but the two sources build the list from the same file order
+    /// anyway, so a difference here is a real one rather than noise.
+    fn only_spawners(commands: Vec<Command>) -> Vec<openshard_world::spawner::Spawner> {
+        commands
+            .into_iter()
+            .filter_map(|command| match command {
+                Command::RegisterSpawner { spawner } => Some(spawner),
+                _ => None,
+            })
+            .collect()
     }
 
     /// The region registrations out of a command stream, by facet.
