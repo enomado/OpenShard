@@ -60,7 +60,7 @@ use tracing::{debug, info, warn};
 use openshard_state::components::{
     Access, Account, Amount, Body, Brain, Client, Combat, Contained, Container, DamageType, Decoration, Door,
     Drawn, Equipped, Ghost, Heading, Hitpoints, Mana, MeleeDamage, Movement, Name, Position, Resistance,
-    Ridden, Riding, Scripted, SpawnedBy, Spellbook, Stackable, Stamina, Stats, Vendor,
+    Ridden, Riding, SpawnedBy, Spellbook, Stackable, Stamina, Stats, Vendor,
 };
 use openshard_state::harvest::Banks;
 use openshard_state::rng::Rng;
@@ -1220,7 +1220,6 @@ impl World {
             } => items::cancel_by_container(&mut self.state, connection, container),
             Command::Disconnect { connection } => self.disconnect(connection),
             Command::DeleteCharacter { connection, slot } => self.delete_character_at(connection, slot),
-            Command::Control { serial } => self.control(serial),
             Command::ShowGump {
                 serial,
                 gump_id,
@@ -1319,11 +1318,6 @@ impl World {
             .map(|(entity, _)| entity)
             .collect();
         for creature in thinkers {
-            // A script-controlled mobile is driven by its `onTick`, not here; the
-            // built-in brain stays out of its way.
-            if self.state.registry.has::<Scripted>(creature) {
-                continue;
-            }
             // A ridden mount is out of the world; its legs are the rider's.
             if self.state.registry.has::<Ridden>(creature) {
                 continue;
@@ -1406,25 +1400,6 @@ impl World {
             own
         } else {
             self.state.gameplay.creature_step_ticks.max(1)
-        }
-    }
-
-    /// The wire serials of every mobile a script has taken control of. The server
-    /// reads this each tick and calls each one's `onTick`.
-    #[must_use]
-    pub fn scripted(&self) -> Vec<Serial> {
-        self.state
-            .registry
-            .query::<Scripted>()
-            .filter_map(|(entity, _)| self.state.registry.serial_of(entity))
-            .collect()
-    }
-
-    /// Hand a mobile's brain to the script: it stops thinking on its own and its
-    /// `onTick` drives it instead. See [`Command::Control`].
-    fn control(&mut self, serial: Serial) {
-        if let Some(entity) = self.state.registry.entity_of(serial) {
-            self.state.registry.insert(entity, Scripted);
         }
     }
 

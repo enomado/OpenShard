@@ -317,8 +317,6 @@ struct Shard {
     /// Credentials, keys and the relay. Everything after the `0x91` is the
     /// world's.
     login: LoginServer<DevAccounts>,
-    /// The gameplay script, if one is configured.
-    scripts: Option<Scripts>,
     /// Where the shard's own content reads the staff menu's buttons from — the
     /// tree's half of what a pack answers in `onEvent`. See [`content::verb`].
     verbs: Cursor<AdminMenuAction>,
@@ -348,16 +346,6 @@ impl Shard {
             let _ = self.saves.send(snapshot);
         }
         self.answer_verbs();
-        // Feed the script this tick's events and queue its commands for
-        // the next one. After the drains, so a command a script emits is
-        // applied by a tick and leaves through this same path.
-        //
-        // After `answer_verbs`, so that a configured pack answering the same verb
-        // queues *behind* the tree and wins — the same "the pack still wins while
-        // there is one" the boot content follows.
-        if let Some(scripts) = self.scripts.as_mut() {
-            scripts.pump(&mut self.world);
-        }
     }
 
     /// Lay down whatever the tree has for the admin verbs pressed this tick.
@@ -483,9 +471,6 @@ pub async fn run_shard(
     let save_task = tokio::spawn(save_loop(store, snapshots, failed));
 
     let mut shard = Shard {
-        // The gameplay script, if one is configured. Loaded after the world is
-        // built and restored, before the first tick, so its cursors start clean.
-        scripts: Scripts::load(&config.scripting.main, &world),
         // Taken here, beside the script's cursors and for the same reason: before
         // the first tick, so a `--seed` verb sent below is read exactly once.
         verbs: world.bus().cursor(),
@@ -514,27 +499,25 @@ pub async fn run_shard(
         shard.world.queue(command);
     }
 
-    // The verbs this run was told to send itself, after `Scripts::load` and the
-    // `verbs` cursor above have been taken and before the first tick retires
-    // anything — the one window where an event sent from outside a tick is read
-    // exactly once.
+    // The verbs this run was told to send itself, after the `verbs` cursor above
+    // has been taken and before the first tick retires anything — the one window
+    // where an event sent from outside a tick is read exactly once.
     for action in seed {
         info!(action, "seeding from the command line");
         shard.world.seed(action);
     }
-    // Only the verbs *nobody* will answer are worth a warning now. The tree
-    // answers some of them itself (`content::verb`), so "no pack is configured"
-    // stopped being the same statement as "nothing will happen".
+    // A verb the tree has no content for lays nothing, and nothing else is
+    // listening now, so it is worth saying out loud rather than leaving an
+    // operator to wonder why the world is empty.
     let unanswered: Vec<&str> = seed
         .iter()
         .map(String::as_str)
         .filter(|action| content::verb(action).is_empty())
         .collect();
-    if !unanswered.is_empty() && config.scripting.main.is_empty() {
+    if !unanswered.is_empty() {
         warn!(
             verbs = unanswered.join(", "),
-            "--seed named verbs the tree has no content for, and scripting.main is empty; \
-             nothing will answer them"
+            "--seed named verbs this shard has no content for; nothing will answer them"
         );
     }
 

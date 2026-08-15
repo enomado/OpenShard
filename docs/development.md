@@ -135,14 +135,13 @@ for d in *.deb; do dpkg -x "$d" /tmp/r88; done
 export PATH=/tmp/r88/usr/lib/rust-1.88/bin:$PATH
 export LD_LIBRARY_PATH=/tmp/r88/usr/lib/x86_64-linux-gnu:/tmp/r88/usr/lib:$LD_LIBRARY_PATH
 export CARGO_HOME=/tmp/cargohome CARGO_TARGET_DIR=/tmp/os-target
-cargo test --workspace --exclude openshard-scripting
+cargo test --workspace
 ```
 
 crates.io itself is reachable, so dependencies download fine. Only `rustup`'s
-host is blocked. `openshard-scripting` is excluded because `deno_core` pulls a
-prebuilt V8 from GitHub release assets, which such a sandbox blocks (`403`) — that
-crate builds on a normal dev machine, not there. It is also what holds the
-workspace MSRV at 1.88: `deno_core`'s tree does not build below it.
+host is blocked. Nothing is excluded from the test run any more: `openshard-scripting`
+used to be, because `deno_core` pulled a prebuilt V8 from GitHub release assets
+that such a sandbox blocks (`403`), and that crate is gone.
 
 ## Building in a small sandbox? Watch `target/`
 
@@ -160,17 +159,30 @@ du -sh "$CARGO_TARGET_DIR"            # check it before it checks you
 
 ## `Cargo.lock` is committed and that is load-bearing
 
-`rust-version = "1.88"` only holds because the lock pins dependency versions that
-respect it — a bare `cargo update` will happily pull a transitive dep that wants a
-newer MSRV or a newer edition and break the build on the stated one. If that
-happens, pin it: `cargo update -p <crate> --precise <older>`.
+`rust-version` only holds because the lock pins dependency versions that respect
+it — a bare `cargo update` will happily pull a transitive dep that wants a newer
+MSRV or a newer edition and break the build on the stated one. If that happens,
+pin it: `cargo update -p <crate> --precise <older>`.
 
 There is no live pin today. There was one — `tokio-postgres` held at 0.7.12,
 because from 0.7.13 it pulls a crypto stack (RustCrypto 0.11, `rand` 0.10) that
-wanted Rust 1.85, above the old 1.82 MSRV. The scripting spike raised the MSRV to
-1.88, which dissolved the reason for the pin, so it was dropped: the crate floats
-on its declared `"0.7"` again (currently 0.7.18, `postgres-protocol` 0.6.12). The
-mechanism above is what to reach for if a future update pulls something past 1.88.
+wanted Rust 1.85, above the then-current 1.82 MSRV. A later raise dissolved the
+reason for the pin, so it was dropped: the crate floats on its declared `"0.7"`
+again (currently 0.7.18, `postgres-protocol` 0.6.12).
+
+## What holds the MSRV, measured
+
+`rust-version = "1.96"`, and **the client is what sets it**. Measured rather than
+assumed, by reading `rust_version` off every package in `cargo metadata`: the
+highest demand in the tree is `wesl` 0.4.2 at **1.96.0**, a build-dependency of
+`crates/client/render` (`puffin` and `egui` follow at 1.92, also the client). The
+server crates build on **1.95**, the oldest toolchain to hand; the true server
+floor is at or below that and was not bisected further.
+
+It used to say 1.88, and `deno_core` was the reason. That reason is gone, and it
+did not free anything — the client's shader toolchain had quietly overtaken it, so
+the declared 1.88 had already stopped being true. Whoever wants the workspace back
+below 1.96 should start at `wesl`.
 
 **A live instance of exactly this, found 2026-08-07 and not yet pinned.**
 `crates/client/render`'s build-dependency `wesl = "0.4"` (the WESL-to-WGSL

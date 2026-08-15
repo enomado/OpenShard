@@ -952,12 +952,6 @@ pub enum Command {
         /// Which slot of the list it was last sent.
         slot: RawCharacterSlot,
     },
-    /// Hand a mobile's brain to the script: the built-in `ai` stops driving it and
-    /// its `onTick` takes over. A script controls a creature it spawned.
-    Control {
-        /// The mobile.
-        serial: Serial,
-    },
     /// Show a gump to a mobile's client — a pack-built dialog (a quest offer). The
     /// reply comes back as a [`GumpAnswered`](crate::events::GumpAnswered) event.
     ShowGump {

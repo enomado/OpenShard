@@ -1647,16 +1647,6 @@ pub struct ChasePath {
     pub planned_at: u64,
 }
 
-/// Marks a mobile whose brain is a script's `onTick`, not the built-in one.
-///
-/// The richer path [`Brain`] leaves room for, now real: the tick's built-in
-/// thinking skips a mobile carrying this, and the server calls its `onTick`
-/// every tick instead — the per-mobile hook the scripting benchmark sized. A
-/// script takes control of a mobile it spawned, then drives it from JavaScript;
-/// the built-in `ai` stays out of its way.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub struct Scripted;
-
 /// Marks a player who has died and walks as a ghost: greyed, silent to the
 /// living, waiting on resurrection.
 ///

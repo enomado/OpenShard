@@ -472,20 +472,24 @@ debugging tractable. Randomness inside a tick comes only from the world's seeded
 `Rng`, and every timer is a tick count, never a wall clock — a world constructed
 twice rolls and expires identically.
 
-## Scripting (spike done, being retired)
+## Scripting (spiked, then deleted)
 
-**Content is moving into the tree, and the rest of this section is the record of
-an answer being replaced.** Settled on
-[#7](https://github.com/youhide/OpenShard/issues/7) and
+**The rest of this section is the record of an answer that was replaced.**
+Settled on [#7](https://github.com/youhide/OpenShard/issues/7) and
 [#17](https://github.com/youhide/OpenShard/issues/17): this project has no
 scripting language. Gameplay *data* is `data/*.json` compiled by a `build.rs` —
 what § "A big table is data" already required of the craft recipes and the skill
 table — and gameplay *logic* is systems in the domain crates, as
-`fn(&mut WorldState)`. Skills, craft recipes and quests are in the tree today;
-regions, spawns, decoration, vendor stock and the pack's 414 lines of logic
-follow, and `crates/server/scripting` is deleted last. Two costs were accepted in
-the open when it was decided: writing content requires Rust, and hot reload of
-logic goes away.
+`fn(&mut WorldState)`. All of it is in the tree, and `crates/server/scripting` is
+gone. Two costs were accepted in the open when it was decided: writing content
+requires Rust, and hot reload of logic goes away.
+
+**What replaced the seam.** `server::content` is the one place content reaches
+the world: `boot()` for what is simply true of the shard, `verb()` for what an
+operator lays from the staff menu. Both return `Vec<Command>` and queue nothing,
+which is what let every dataset be moved under a test comparing its commands
+against the pack's — the migration's whole method, and the reason none of it
+had to be taken on trust.
 
 The reason the pack was 98.6% data is the reason it went: a spawn table and a
 decoration table are the same kind of thing as a recipe table, and one of the two

@@ -21,7 +21,6 @@ use openshard_protocol::world::{Facet, Point, Sight};
 use openshard_state::WorldState;
 use openshard_state::components::{
     Aggression, Brain, ChasePath, Client, Combat, Heading, Hitpoints, Pet, PetOrder, Position, RangedAttack,
-    Scripted,
 };
 use openshard_state::sectors::{distance, in_range};
 
@@ -458,9 +457,6 @@ pub fn retaliate(state: &mut WorldState, blows: &[MobileDamaged]) {
         let Some(&brain) = state.registry.get::<Brain>(victim) else {
             continue;
         };
-        if state.registry.has::<Scripted>(victim) {
-            continue;
-        }
         // Being struck ends any standing watch on the spot.
         if let Some(b) = state.registry.get_mut::<Brain>(victim) {
             b.guard_until = 0;

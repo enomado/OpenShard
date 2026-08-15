@@ -59,11 +59,6 @@ const ALLOWLIST: &[(&str, usize, &str)] = &[
         "the shard reader's SQL fixture row mirrors a database column and is intentionally raw at that test boundary",
     ),
     (
-        "crates/server/scripting/src/engine/ops.rs",
-        1,
-        "F4: op_clear_regions binds facet as a direct #[op2(fast)] argument, which cannot take a tuple struct — the Serial precedent",
-    ),
-    (
         "crates/server/state/build.rs",
         1,
         "the RegionSet that data/regions.json deserializes into: a build script cannot depend on the protocol crate, so the number is widened to Facet in the expression it emits",

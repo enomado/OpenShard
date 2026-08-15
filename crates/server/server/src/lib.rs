@@ -81,7 +81,6 @@ pub mod stop;
 
 mod content;
 mod dispatch;
-mod scripting;
 mod session;
 #[cfg(test)]
 mod testing;
@@ -89,7 +88,6 @@ mod verify;
 
 use boot::{load_config, load_world, open_store};
 use dispatch::{dispatch_world_packet, start_cities};
-use scripting::Scripts;
 use session::{PhaseSync, Session, Sessions};
 use shard::{Reins, run_shard};
 use verify::{Verdict, Verifier};

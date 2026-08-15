@@ -109,7 +109,6 @@ crates/
     quests        quest model, objectives, the gump
     world         the tick, client map/tiledata formats, the journal
     persistence   journal, snapshots, SQLite and PostgreSQL stores
-    scripting     the TypeScript runtime (deno_core)      being deleted
     server        the binary — glue only
     housing guilds plugins                              stubs, future
   client/       our own client, beside the stock one — see docs/client.md
@@ -179,10 +178,10 @@ on [#7](https://github.com/youhide/OpenShard/issues/7) and
   file and the line.
 - **One rng stream.** Pack loot drew from `Math.random` and documented itself as
   exempt from the engine's replayable-tick guarantee. That exemption is gone.
-- **The seam the engine could not test.** `crates/server/scripting` is excluded
+- **The seam the engine could not test.** `crates/server/scripting` was excluded
   from CI because `deno_core` downloads a prebuilt V8, so the one boundary
   between the world and its content was the one thing no automated test ran. The
-  same dependency pins the workspace MSRV and drags MPL-2.0 into the tree.
+  same dependency dragged MPL-2.0 into the tree.
 
 **What it costs, stated as plainly as the benefits.** Writing content requires
 Rust and a rebuild. Hot reload of logic goes away — today you edit a spawn and
@@ -191,23 +190,19 @@ knowingly. If a third party ever turns up wanting to write content without
 compiling, that is the day a scripting layer comes back, and it will be a better
 one for having been designed against a real user instead of an imagined one.
 
-**Where it stands.** Everything the pack held is in the tree: skills, craft
-recipes, quests, what the townsfolk say, the named regions, what spawns where,
-everything Britain is furnished with, the townsfolk themselves with the stock
-they sell and the escorts they ask for, the loot a corpse holds, and what the two
-shipped items do. Each dataset was proved by a test that loads the old pack and
-the new data side by side and compares the `Command`s they produce. What remains
-is deleting the scripting crate itself. Nothing is
-deleted until they agree. Until that is finished a shard that wants Britain
-furnished still points `scripting.main` at the
-[Community Pack](https://github.com/youhide/OpenShard-Community-Pack):
+**It is done.** Everything the pack held is in the tree: skills, craft recipes,
+quests, what the townsfolk say, the named regions, what spawns where, everything
+Britain is furnished with, the townsfolk themselves with the stock they sell and
+the escorts they ask for, the loot a corpse holds, and what the two shipped items
+do. Each dataset moved in its own pull request, and each was proved by a test
+that loaded the old pack and the new data side by side and compared the
+`Command`s they produced. When the last one agreed, the runtime was deleted:
+`crates/server/scripting`, the bridge beside it, `deno_core` and the
+`[scripting]` config section are all gone, and `cargo test --workspace` runs the
+whole workspace with nothing excluded for the first time.
 
-```toml
-[scripting]
-main = "/path/to/OpenShard-Community-Pack"
-```
-
-Running without it works too, and works better every time a dataset moves.
+A shard needs no second repository now. Point it at a client install and it comes
+up furnished.
 
 ## A client of our own
 

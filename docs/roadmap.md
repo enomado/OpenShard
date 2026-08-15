@@ -610,22 +610,30 @@ and on logout, through the same journal the tick already feeds.
   the crate floats on `"0.7"` again. See the `Cargo.lock` note in
   [`development.md`](development.md).
 
-## 5. Scripting — spike done, and being retired
+## 5. Scripting — spiked, proven, and deleted
 
-The largest open technical risk. Proven before building gameplay on top, and it
-holds. The engine is `crates/server/scripting`; `engine.rs` explains the seam.
+It was the largest open technical risk, and it was answered twice: first that an
+embedded V8 *works*, then that this project does not want one.
 
-**And it is on its way out.** Issues [#7](https://github.com/youhide/OpenShard/issues/7)
-and [#17](https://github.com/youhide/OpenShard/issues/17) settled on pure Rust:
-gameplay data becomes `data/*.json` in the domain crates, the pack's 414 lines of
-logic become systems, and this crate is deleted — which is also when CI stops
-excluding it and the MSRV comes off 1.88. **Everything the pack held is in the
-tree** — `crates/server/state/data/{quests,speech,regions}.json` and
+Issues [#7](https://github.com/youhide/OpenShard/issues/7) and
+[#17](https://github.com/youhide/OpenShard/issues/17) settled on pure Rust.
+Everything the pack held is in the tree —
+`crates/server/state/data/{quests,speech,regions}.json` and
 `crates/server/world/data/{spawns,deco,townsfolk,loot}.json`, laid by
 `server::content` (the first two at boot, the rest on their admin verbs), plus
-the two item behaviours as `world::tick::shipped_items`. Nothing in the pack is
-load-bearing any more; what is left is deleting this crate. The checklist below is what the spike
-delivered and stays true until then; the decision is in
+the two item behaviours as `world::tick::shipped_items` — and each dataset moved
+under a test that compared its `Command`s against the pack's. When the last one
+agreed, `crates/server/scripting`, the bridge beside it, `deno_core` and the
+`[scripting]` config section were deleted, and `cargo test --workspace` began
+running the whole workspace with nothing excluded.
+
+Removing `deno_core` did **not** lower the MSRV. It was measured rather than
+assumed: the highest demand in the tree is now `wesl` 0.4.2 at 1.96, a
+build-dependency of the client's renderer, so the declared 1.88 had already
+stopped being true. See [`development.md`](development.md) § What holds the MSRV.
+
+The checklist below is what the spike delivered, kept as the record of what was
+built and thrown away; the decision is in
 [`architecture.md`](architecture.md) § Scripting.
 
 - [x] `deno_core` embedded, one V8 isolate — `DenoEngine`, one `JsRuntime`

@@ -19,7 +19,7 @@ wgpu = { git = "https://github.com/gfx-rs/wgpu.git", rev = "e904d2eac09a9494fb8a
 [workspace.package]
 version = "0.0.1"
 edition = "2021"
-rust-version = "1.88"
+rust-version = "1.96"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/hideOut/OpenShard"
 authors = ["OpenShard contributors"]
@@ -114,7 +114,6 @@ openshard-persistence = { path = "crates/server/persistence", version = "0.0.1" 
 openshard-plugins = { path = "crates/server/plugins", version = "0.0.1" }
 openshard-protocol = { path = "crates/common/protocol", version = "0.0.1" }
 openshard-quests = { path = "crates/server/quests", version = "0.0.1" }
-openshard-scripting = { path = "crates/server/scripting", version = "0.0.1" }
 openshard-server = { path = "crates/server/server", version = "0.0.1" }
 openshard-skills = { path = "crates/server/skills", version = "0.0.1" }
 openshard-state = { path = "crates/server/state", version = "0.0.1" }
@@ -123,7 +122,6 @@ openshard-world = { path = "crates/server/world", version = "0.0.1" }
 
 # External
 anyhow = "1"
-deno_core = "0.408"
 async-trait = "0.1"
 bytes = "1"
 # The binaries' command lines. `env` is the feature that matters here: every

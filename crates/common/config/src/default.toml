@@ -70,17 +70,6 @@ database = ""
 #   save_seconds = 120
 save_seconds = 180
 
-[scripting]
-# The gameplay script the shard loads and hot-reloads. A path to a .js/.ts file.
-#
-# Leave empty and nothing reacts on its own: mobiles move when clients ask and
-# no more. Point it at a script and the shard delivers domain events to it every
-# tick and applies the commands it enqueues. The file is watched — save it and
-# the hooks reload without a restart.
-#
-#   main = "scripts/main.js"
-main = ""
-
 [gameplay]
 # The rules knobs — the SphereServer sphere.ini equivalents. Every value here has
 # a working default; uncomment one only to change the shard's feel.
