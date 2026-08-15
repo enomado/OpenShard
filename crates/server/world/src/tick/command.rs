@@ -438,10 +438,14 @@ pub enum Command {
     /// Remove every spawn region and despawn the creatures they were maintaining —
     /// what the admin menu's "Clear spawns" does.
     ClearSpawners,
-    /// The script pack registers a facet's named areas — towns, dungeons, guarded
-    /// zones. Replaces whatever that facet had, the same replace-all the
-    /// decoration and spawner sweeps use, so registering twice cannot leave half
-    /// an old set behind. See [`openshard_state::Region`].
+    /// Give a facet its named areas — towns, dungeons, guarded zones. Sent by
+    /// whoever answers the `regions:` admin verb: `server::content`, from
+    /// `state/data/regions.json`, or a script pack.
+    ///
+    /// Replaces whatever that facet had, the same replace-all the decoration and
+    /// spawner sweeps use, so registering twice cannot leave half an old set
+    /// behind — which is also what makes the button safe to press twice. See
+    /// [`openshard_state::Region`].
     RegisterRegions {
         /// Which facet the areas belong to.
         facet: Facet,

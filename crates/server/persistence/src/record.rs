@@ -984,10 +984,11 @@ pub struct DecorationRecord {
 
 /// One named area of a facet, as saved.
 ///
-/// Regions are pure data the pack registers, so saving them looks redundant —
-/// until a restart, when nothing re-registers them until a game master clicks
-/// `.admin` again, and a shard silently loses its guards, its music and the dark
-/// in its dungeons. The save is the truth here as everywhere else.
+/// Regions are pure data, registered from `state/data/regions.json` when the
+/// `regions:` verb is pressed — so saving them looks redundant, until a restart,
+/// when nothing re-registers them until a game master clicks `.admin` again and
+/// a shard silently loses its guards, its music and the dark in its dungeons.
+/// The save is the truth here as everywhere else.
 ///
 /// The rectangles ride as JSON for the same reason a spawner's creature list
 /// does: a region holds a handful, and a table of them would be a join for no

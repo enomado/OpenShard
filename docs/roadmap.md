@@ -525,8 +525,8 @@ connection takes the mobile off every screen that had it.
   not a tick count (which resets at boot) or a wall-clock time (the tick reads no
   clock) — so downtime pauses the timer rather than eating it, the semantics chosen
   for a rare spawn. Registering a region twice replaces it rather than stacking a
-  second, and after a restart the regions come from the store, not the pack, so a
-  re-populate is not needed and the timers hold.
+  second, and after a restart the regions come from the store rather than being
+  re-laid, so a re-populate is not needed and the timers hold.
 - [x] **The save is the whole world (schema v5), the Sphere/ServUO model.** Every
   live NPC mobile — townsfolk, vendors with their priced stock, spawner creatures
   with their current wounds and `SpawnedBy` link (`MobileRecord`) — and every
@@ -619,9 +619,10 @@ holds. The engine is `crates/server/scripting`; `engine.rs` explains the seam.
 and [#17](https://github.com/youhide/OpenShard/issues/17) settled on pure Rust:
 gameplay data becomes `data/*.json` in the domain crates, the pack's 414 lines of
 logic become systems, and this crate is deleted — which is also when CI stops
-excluding it and the MSRV comes off 1.88. Quests and townsfolk speech are in the
-tree already (`crates/server/state/data/{quests,speech}.json`, laid by
-`server::content`); regions, spawns, decoration and vendor stock follow. The checklist below is what the spike
+excluding it and the MSRV comes off 1.88. Quests, townsfolk speech and the named
+regions are in the tree already (`crates/server/state/data/{quests,speech,regions}.json`,
+laid by `server::content` — the first two at boot, regions on the admin verb);
+spawns, decoration and vendor stock follow. The checklist below is what the spike
 delivered and stays true until then; the decision is in
 [`architecture.md`](architecture.md) § Scripting.
 

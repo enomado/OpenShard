@@ -63,6 +63,11 @@ const ALLOWLIST: &[(&str, usize, &str)] = &[
         1,
         "F4: op_clear_regions binds facet as a direct #[op2(fast)] argument, which cannot take a tuple struct — the Serial precedent",
     ),
+    (
+        "crates/server/state/build.rs",
+        1,
+        "the RegionSet that data/regions.json deserializes into: a build script cannot depend on the protocol crate, so the number is widened to Facet in the expression it emits",
+    ),
 ];
 
 /// How many times `facet: u8` or `facet:u8` appears in `text`, counting

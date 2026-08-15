@@ -1,5 +1,7 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+use openshard_events::Cursor;
+
 use super::*;
 
 /// What the save task has been handed and has not finished writing.
@@ -317,6 +319,9 @@ struct Shard {
     login: LoginServer<DevAccounts>,
     /// The gameplay script, if one is configured.
     scripts: Option<Scripts>,
+    /// Where the shard's own content reads the staff menu's buttons from — the
+    /// tree's half of what a pack answers in `onEvent`. See [`content::verb`].
+    verbs: Cursor<AdminMenuAction>,
     /// Where a login's argon2 goes, so that it is not here. See `verify`.
     verifier: Verifier,
     saves: SnapshotTx,
@@ -342,11 +347,44 @@ impl Shard {
         for snapshot in self.world.drain_saves() {
             let _ = self.saves.send(snapshot);
         }
+        self.answer_verbs();
         // Feed the script this tick's events and queue its commands for
         // the next one. After the drains, so a command a script emits is
         // applied by a tick and leaves through this same path.
+        //
+        // After `answer_verbs`, so that a configured pack answering the same verb
+        // queues *behind* the tree and wins — the same "the pack still wins while
+        // there is one" the boot content follows.
         if let Some(scripts) = self.scripts.as_mut() {
             scripts.pump(&mut self.world);
+        }
+    }
+
+    /// Lay down whatever the tree has for the admin verbs pressed this tick.
+    ///
+    /// The counterpart of a pack's `onEvent` switch on the verb string, and the
+    /// reason `world::admin` can stop saying the engine holds no content of its
+    /// own. Collected before queueing because reading the bus borrows the world.
+    fn answer_verbs(&mut self) {
+        let actions: Vec<String> = self
+            .world
+            .bus()
+            .read(&mut self.verbs)
+            .map(|action| action.action.clone())
+            .collect();
+        for action in actions {
+            let commands = content::verb(&action);
+            if commands.is_empty() {
+                continue;
+            }
+            debug!(
+                action,
+                commands = commands.len(),
+                "laying the shard's own content"
+            );
+            for command in commands {
+                self.world.queue(command);
+            }
         }
     }
 
@@ -448,6 +486,9 @@ pub async fn run_shard(
         // The gameplay script, if one is configured. Loaded after the world is
         // built and restored, before the first tick, so its cursors start clean.
         scripts: Scripts::load(&config.scripting.main, &world),
+        // Taken here, beside the script's cursors and for the same reason: before
+        // the first tick, so a `--seed` verb sent below is read exactly once.
+        verbs: world.bus().cursor(),
         // Built after the world is restored for the same reason: the arrivals and
         // departures of the restore are not phase changes for connections that do
         // not exist yet.
@@ -473,18 +514,28 @@ pub async fn run_shard(
         shard.world.queue(command);
     }
 
-    // The verbs this run was told to send itself, after `Scripts::load` above has
-    // taken its cursors and before the first tick retires anything — the one
-    // window where an event sent from outside a tick is read exactly once. Sent
-    // even with no script loaded: the bus does not care, and a shard configured
-    // without a pack and asked to seed has an operator to tell, not a silent
-    // no-op to perform.
+    // The verbs this run was told to send itself, after `Scripts::load` and the
+    // `verbs` cursor above have been taken and before the first tick retires
+    // anything — the one window where an event sent from outside a tick is read
+    // exactly once.
     for action in seed {
         info!(action, "seeding from the command line");
         shard.world.seed(action);
     }
-    if !seed.is_empty() && config.scripting.main.is_empty() {
-        warn!("--seed was given but scripting.main is empty; no pack will answer these verbs");
+    // Only the verbs *nobody* will answer are worth a warning now. The tree
+    // answers some of them itself (`content::verb`), so "no pack is configured"
+    // stopped being the same statement as "nothing will happen".
+    let unanswered: Vec<&str> = seed
+        .iter()
+        .map(String::as_str)
+        .filter(|action| content::verb(action).is_empty())
+        .collect();
+    if !unanswered.is_empty() && config.scripting.main.is_empty() {
+        warn!(
+            verbs = unanswered.join(", "),
+            "--seed named verbs the tree has no content for, and scripting.main is empty; \
+             nothing will answer them"
+        );
     }
 
     let mut ticker = tokio::time::interval(TICK_INTERVAL);
