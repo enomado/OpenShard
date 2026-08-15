@@ -2523,13 +2523,23 @@ The balance data comes from the SphereServer scriptpack (`Scripts-X`): `items/`,
 `skills/`, `spells/`, `npcs/`, `crafting/`. Numbers taken, arithmetic audited —
 the same bargain as everywhere else Sphere is read.
 
-## 7. Scriptpack conversion
+## 7. Scriptpack conversion — dropped with §5
 
-- [ ] `tools/cli`: one-shot `.scp` → TS/TOML converter
-- [ ] Run it over a scriptpack, review the output by hand
+It was a one-shot `.scp` → TS/TOML converter: read a SphereServer scriptpack once,
+emit content a shard could edit as normal source. It made sense while the
+destination was TypeScript on an embedded V8.
 
-A build-time tool that runs once, not an engine feature. The output is committed
-and edited as normal source afterwards — there is no ongoing `.scp` dependency.
+There is no TypeScript now. The destination for ported content is `data/*.json`
+compiled by a `build.rs`, and the one conversion this project actually did —
+ServUO's tables into `crates/*/data/` — was done with throwaway scripts whose
+output was reviewed by hand and committed, which is what this section was really
+asking for.
+
+If a `.scp` pack is ever converted, the shape to copy is the migration's:
+convert into JSON, put it behind a `build.rs` that rejects what the data cannot
+say about itself, and prove it against the source with a test that compares
+`Command`s. **`crates/server/server/src/content.rs` was that test's home**, and
+`git log` has all eight of them.
 
 ## 8. Operations
 
