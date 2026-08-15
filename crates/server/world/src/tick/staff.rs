@@ -180,9 +180,8 @@ impl World {
         let Some((actor, verb)) = crate::admin::button_action(&self.state, connection, &response) else {
             return;
         };
-        // The engine holds no spawn data: it emits the verb, and the script pack —
-        // where a shard's spawns are edited without a rebuild — decides what it
-        // means, registering regions through `op_register_spawner` or clearing them.
+        // The world publishes the verb and does not know who answers it; a
+        // listener turns it into commands that lay a facet's content or clear it.
         if let Some(serial) = self.state.registry.serial_of(actor) {
             self.state.bus.send(AdminMenuAction {
                 serial: Some(serial),

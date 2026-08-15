@@ -29,9 +29,8 @@ const MUST_WAIT: ClilocId = ClilocId(500_118);
 ///
 /// Emitted only for a skill that *can* be used that way, and only once every gate
 /// has passed — so a reader knows the mobile is alive, off cooldown, and free to
-/// act. The core runs the skills it knows; a script pack overrides any of them, or
-/// adds its own, by reading this — the "default in core, customise in the pack"
-/// split spells and loot already use.
+/// act. The engine runs the skills it knows; anything that wants to add one, or
+/// answer a skill the engine leaves alone, reads this.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct SkillRequested {
     /// Who asked.

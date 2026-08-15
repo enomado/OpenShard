@@ -10,7 +10,7 @@ use super::*;
 /// Guarded like [`crate::add_loot`](super) callers: an unknown serial removes
 /// nothing rather than erroring. Reach is *not* rechecked here — an
 /// [`ItemUsed`](openshard_state) already cleared it server-side before a script
-/// saw the item, and a script command is trusted input like `op_add_loot`.
+/// saw the item, and a queued command is trusted input like `Command::AddLoot`.
 /// Returns whether anything was consumed.
 pub fn consume(state: &mut WorldState, serial: Serial, amount: u16) -> bool {
     let Some(entity) = state.registry.entity_of(serial) else {

@@ -315,7 +315,7 @@ impl World {
         let mut records = Vec::new();
         for (item, Position(at)) in registry.query::<Position>() {
             // A drawable thing on the ground: a graphic, not a mobile (which carries
-            // a Body), not decoration (which the pack owns and re-lays), and not a
+            // a Body), not decoration (which `decorate:` re-lays), and not a
             // field tile (transient like a cast in flight — it does not persist, and
             // restoring one would leave an eternal static that no longer expires or
             // blocks).
@@ -858,7 +858,7 @@ impl World {
 
     /// The quests a character has in progress, as they go to disk.
     ///
-    /// Progress is stored per objective, positionally against the pack's
+    /// Progress is stored per objective, positionally against the
     /// definition — see [`QuestRecord`]. A timed objective's clock is written as
     /// the seconds *remaining*, never as the tick it ends on: the tick counter
     /// starts again from zero at every boot, so a saved deadline would mean a

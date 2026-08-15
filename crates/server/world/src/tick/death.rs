@@ -558,7 +558,7 @@ impl World {
     }
 
     /// The core's default corpse gold, scaled from the creature's toughness — a
-    /// stand-in for the pack's loot tables; a tougher creature carries more. Uses
+    /// baseline beneath `loot::table`; a tougher creature carries more. Uses
     /// the tick's seeded rng, so the drop replays.
     fn corpse_gold(&mut self, max_hits: u16) -> u16 {
         if max_hits == 0 {

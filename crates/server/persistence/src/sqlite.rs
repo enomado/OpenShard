@@ -153,7 +153,7 @@ CREATE TABLE IF NOT EXISTS characters (
     fame     INTEGER NOT NULL DEFAULT 0,
     karma    INTEGER NOT NULL DEFAULT 0,
     murders  INTEGER NOT NULL DEFAULT 0,
-    -- The player's quest log — an opaque JSON blob the pack owns. '' for none.
+    -- The player's quest log — an opaque JSON blob the quest system owns. '' for none.
     quests TEXT NOT NULL DEFAULT '[]',
     done_quests TEXT NOT NULL DEFAULT '[]',
     -- Which way the three stats train, and how long since each last rose. JSON,

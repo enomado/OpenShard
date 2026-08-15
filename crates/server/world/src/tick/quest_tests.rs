@@ -1109,7 +1109,7 @@ fn register_towns(world: &mut World, now: Instant) {
 #[test]
 fn an_escort_pays_on_reaching_its_destination() {
     // The arrival match only ever looked for an objective naming the region
-    // literally, and the pack's one escort quest names none — so not one of its
+    // literally, and the one shipped escort quest names none — so not one of its
     // sixty travellers could ever complete.
     let now = Instant::now();
     let mut world = super::tests::world();

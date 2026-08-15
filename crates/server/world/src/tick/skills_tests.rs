@@ -1406,7 +1406,7 @@ fn spawn_mobile_body(world: &mut World, body: u16, at: Point, now: Instant) -> S
 #[test]
 fn a_shop_bottle_holds_the_poison_its_label_names() {
     // The four strengths share one graphic, so a bought bottle would be inert
-    // glass without this — and the pack's alchemists already stock all four, since
+    // glass without this — and the shipped alchemists already stock all four, since
     // the converter reads ServUO's own shop tables. The label is what says which.
     let now = Instant::now();
     let mut world = world();

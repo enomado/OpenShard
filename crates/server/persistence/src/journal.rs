@@ -105,7 +105,7 @@ pub struct Snapshot {
     /// semantics as the mobiles.
     pub decorations: Option<Vec<DecorationRecord>>,
     /// Every facet's named regions, when this snapshot swept them. Replace-all
-    /// again — the pack owns the whole map of the world, so a partial write would
+    /// again — a snapshot is the whole map of the world, so a partial write would
     /// be worse than none.
     pub regions: Option<Vec<RegionRecord>>,
     /// The world's own scalars — the clock and the roll generator's position — when

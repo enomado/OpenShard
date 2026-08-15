@@ -6,18 +6,17 @@ use openshard_protocol::wire::Graphic;
 ///
 /// Sphere's `@DClick`/`@Use`, reached the way this engine reaches everything: an
 /// event, not a call. The engine handles the interactions it *knows* — a door
-/// toggles, a container opens, a spellbook unfolds, a mount is ridden — and hands
-/// every other item to the pack, keyed by its `graphic`, to give it a meaning: a
-/// potion drunk, a lever pulled, a sign read, a deed placed. Nothing about what
-/// the item *does* lives in the engine; the pack reads this off `onEvent` and
-/// answers with ops, the same "default in core, customise in the pack" split
-/// spells and skills use — except here the core default is *nothing*, because a
-/// bare graphic has no behaviour until a shard gives it one.
+/// toggles, a container opens, a spellbook unfolds, a mount is ridden — and emits
+/// this for every other item, keyed by its `graphic`, so that something can give
+/// it a meaning: a potion drunk, a lever pulled, a sign read, a deed placed.
+/// `world::tick::shipped_items` is what answers it today. The engine's own answer
+/// here is *nothing*, because a bare graphic has no behaviour until a shard gives
+/// it one.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct ItemUsed {
     /// The item that was double-clicked.
     pub item: Serial,
-    /// Its graphic, so a pack matches on the tile with no lookup.
+    /// Its graphic, so a reader matches on the tile with no lookup.
     pub graphic: Graphic,
     /// The mobile that used it.
     pub by: Serial,
@@ -42,7 +41,7 @@ pub struct MobileUsed {
     pub by: Serial,
 }
 
-/// The result of an `op_take_item` — how many of an item were taken from a
+/// The result of a take request — how many of an item were taken from a
 /// player's backpack, so a pack can verify a quest's "collect N" at turn-in.
 ///
 /// The take is all-or-nothing: `taken` is the amount asked for when the player had

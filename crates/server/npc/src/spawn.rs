@@ -31,7 +31,7 @@ const TOWNSFOLK_WANDER: u8 = 2;
 ///
 /// The mobile counterpart of `PlayerEntered`, for the mobiles no client drives
 /// — a spawned creature. A script reads it to learn a fresh mobile's serial, the
-/// name it needs to take control of it (`op_control`) or act on it.
+/// name it needs to act on it.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct MobileSpawned {
     /// The entity.
@@ -367,7 +367,7 @@ pub fn spawn(state: &mut WorldState, spec: SpawnSpec) -> Option<EntityId> {
     state.facet_state_mut(facet).sectors.insert(entity, position);
     state.reveal(entity);
     // Say who and where, so a script can take control of it: the mobile
-    // counterpart of `PlayerEntered`, and how `op_control` learns a serial.
+    // counterpart of `PlayerEntered`: how anything outside the world learns a serial.
     state.bus.send(MobileSpawned {
         entity,
         serial,

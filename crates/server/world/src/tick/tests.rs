@@ -3513,7 +3513,7 @@ fn a_creature_dies_with_its_own_voice() {
 fn a_slain_creature_leaves_a_corpse_with_loot() {
     // Death is no longer a vanishing: a slain creature leaves a corpse at the
     // spot — item 0x2006 whose payload is its body — a container holding a little
-    // gold, the core's default loot until the pack owns real tables.
+    // gold, the engine's baseline beneath whatever `loot::table` adds.
     const CORPSE: u16 = 0x2006;
     const GOLD: u16 = 0x0EED;
     let now = Instant::now();
@@ -4592,7 +4592,7 @@ fn an_attributed_spell_kill_is_a_murder_too() {
 #[test]
 fn unattributed_damage_kills_without_blame() {
     // The other side of it: damage with no dealer named (a script's raw
-    // op_damage, an environmental hazard) kills but pins no murder.
+    // Command::Damage with no `by`, an environmental hazard) kills but pins no murder.
     let now = Instant::now();
     let mut world = world();
     let bystander = enter(&mut world, now);

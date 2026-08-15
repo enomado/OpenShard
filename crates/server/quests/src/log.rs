@@ -74,7 +74,7 @@ pub fn speech_offer(state: &mut WorldState, speaker: Serial, text: &str) {
         return;
     };
     // Found through the spatial index, not by walking every giver on the shard —
-    // the pack's version asked each of ~60 givers for its position on every line
+    // the earlier version asked each of ~60 givers for its position on every line
     // anyone spoke.
     let facet = state.facet_of(player);
     let nearby: Vec<EntityId> = state

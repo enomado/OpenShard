@@ -53,7 +53,7 @@ impl ObjectiveProgress {
 pub struct QuestAccepted {
     /// Who took it.
     pub player: Serial,
-    /// Which quest, by the pack's key.
+    /// Which quest, by its key.
     pub key: String,
 }
 
@@ -62,7 +62,7 @@ pub struct QuestAccepted {
 pub struct QuestRefused {
     /// Who refused.
     pub player: Serial,
-    /// Which quest, by the pack's key.
+    /// Which quest, by its key.
     pub key: String,
 }
 
@@ -71,7 +71,7 @@ pub struct QuestRefused {
 pub struct QuestResigned {
     /// Who resigned.
     pub player: Serial,
-    /// Which quest, by the pack's key.
+    /// Which quest, by its key.
     pub key: String,
 }
 
@@ -80,7 +80,7 @@ pub struct QuestResigned {
 pub struct QuestObjectiveUpdated {
     /// Whose quest.
     pub player: Serial,
-    /// Which quest, by the pack's key.
+    /// Which quest, by its key.
     pub key: String,
     /// Which objective, by its index in the definition.
     pub objective: ObjectiveIndex,
@@ -93,7 +93,7 @@ pub struct QuestObjectiveUpdated {
 pub struct QuestFailed {
     /// Whose quest.
     pub player: Serial,
-    /// Which quest, by the pack's key.
+    /// Which quest, by its key.
     pub key: String,
 }
 
@@ -107,7 +107,7 @@ pub struct QuestFailed {
 pub struct QuestCompleted {
     /// Who finished it.
     pub player: Serial,
-    /// Which quest, by the pack's key.
+    /// Which quest, by its key.
     pub key: String,
     /// Who it was turned in to, if the giver is still around.
     pub giver: Option<Serial>,

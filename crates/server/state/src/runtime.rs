@@ -608,11 +608,11 @@ pub struct WorldState {
     /// whole once a tick to find a trade whose parties have walked apart, which
     /// is cheaper than the region diff it copies, and a player is in at most one.
     pub trades: Vec<Trade>,
-    /// Every quest this shard knows, as the script pack defined them. Replaced
+    /// Every quest this shard knows. Replaced
     /// wholesale on a pack reload, and never persisted — the pack is the truth
     /// about what a quest *is*, every boot; only a player's progress is saved.
     pub quests: QuestDefs,
-    /// What every trade says, as the script pack registered it. Replaced wholesale
+    /// What every trade says. Replaced wholesale
     /// on a reload and never persisted, for the same reason as
     /// [`quests`](Self::quests): the pack is the truth about content.
     pub dialogue: Dialogue,
