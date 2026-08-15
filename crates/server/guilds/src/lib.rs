@@ -1,4 +1,172 @@
-//! Guilds: membership, ranks, alliances, and wars.
+//! Guilds: founding one, who is in it, and how two of them come to be at war.
 //!
-//! Not implemented yet. See `docs/architecture.md` for the intended shape of
-//! this crate and `docs/roadmap.md` for when it lands.
+//! # What is here, and what is [`openshard_state::guild`]
+//!
+//! The substrate below holds what a guild *is* — its name, its roster key, and
+//! the relations the packet path reads to colour a mobile. This crate holds the
+//! rules: who may found a guild, who may invite, what a leader is allowed to do,
+//! and the handshake that turns a declaration into a war. The same split
+//! `openshard-quests` has over [`QuestDef`](openshard_state::QuestDef), and for
+//! the same reason: `0x77` carries a notoriety byte, so state cannot ask a crate
+//! above it what colour to draw.
+//!
+//! # The handshake, and why there is no "accept" function
+//!
+//! A war is two declarations, not a declaration and a consent. Guild A declares
+//! war on B and nothing changes; B declares war on A and both are at war. That
+//! is the guildstone's rule, and an alliance is the same shape, so one
+//! [`propose`] serves both. There is no accept path to keep in step with the
+//! declare path, and no way to be at war with a guild that has not said so.
+//!
+//! Membership is the other shape and deliberately so: an invitation *is* a
+//! consent, because a guild may not conscript a player. [`invite`] leaves a
+//! [`GuildCandidate`](openshard_state::GuildCandidate) and the player answers it.
+//!
+//! # Ranks
+//!
+//! Deferred. ServUO's new guild system has five ranks and a flag set per rank
+//! (`RankFlags::CanInvitePlayer`, `ControlWarStatus`, …); this has a leader and
+//! members, which is the old guildstone's model and what every operation below
+//! gates on. The seam for ranks is [`may_lead`] — one predicate, called by every
+//! operation that needs authority, so growing it into a rank check is one
+//! function rather than nine.
+//!
+//! # What every change does to the screen
+//!
+//! Guild colour is relative — see
+//! [`notoriety_toward`](openshard_state::WorldState::notoriety_toward) — so a
+//! change here is a change to what several clients should be drawing, and none of
+//! them will ask. Every operation that can move a colour ends by re-announcing
+//! the mobiles it moved. That is what [`recolour_guild`] is for, and why joining
+//! a guild re-announces the *whole* guild rather than only the joiner: the new
+//! member's own screen has to turn green too.
+
+mod diplomacy;
+mod membership;
+#[cfg(test)]
+mod tests;
+
+pub use diplomacy::{Outcome, make_peace, propose, withdraw};
+pub use membership::{
+    ABBREVIATION_LIMIT, NAME_LIMIT, TITLE_LIMIT, accept_invitation, decline_invitation, disband, dismiss,
+    found, invite, leave, pass_leadership, set_title,
+};
+
+use openshard_entities::EntityId;
+use openshard_state::{GuildId, WorldState};
+
+/// Why a guild operation was refused.
+///
+/// An enum rather than a message string, so a caller can decide what to do about
+/// it and a test can name the case without matching prose. [`Refusal::message`]
+/// is the wording, in one place.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Refusal {
+    /// The actor is in no guild.
+    NotInAGuild,
+    /// The actor is in a guild but does not lead it.
+    NotTheLeader,
+    /// The actor is already in a guild, and a mobile is in at most one.
+    AlreadyInAGuild,
+    /// The other mobile is already in a guild.
+    TheyAreInAGuild,
+    /// The name is empty once trimmed, or is all whitespace.
+    NoName,
+    /// Another guild already calls itself that.
+    NameTaken,
+    /// Another guild already draws as that abbreviation.
+    AbbreviationTaken,
+    /// The mobile named is not one a guild can hold — no serial, so nothing to
+    /// record and nothing to draw.
+    NotAMobile,
+    /// The mobile named is not in the actor's guild.
+    NotYourMember,
+    /// The operation names the actor, and it is not one that may.
+    Yourself,
+    /// There is no invitation to answer.
+    NotInvited,
+    /// The guild named does not exist, or is the actor's own.
+    NoSuchGuild,
+    /// The leader is not the last member, so the guild would be left without
+    /// one.
+    PassLeadershipFirst,
+}
+
+impl Refusal {
+    /// What to tell the player.
+    #[must_use]
+    pub const fn message(self) -> &'static str {
+        match self {
+            Self::NotInAGuild => "You are not in a guild.",
+            Self::NotTheLeader => "You do not lead your guild.",
+            Self::AlreadyInAGuild => "You are already in a guild.",
+            Self::TheyAreInAGuild => "They are already in a guild.",
+            Self::NoName => "That is not a name.",
+            Self::NameTaken => "Another guild is already called that.",
+            Self::AbbreviationTaken => "Another guild already uses that abbreviation.",
+            Self::NotAMobile => "That cannot join a guild.",
+            Self::NotYourMember => "They are not in your guild.",
+            Self::Yourself => "You cannot do that to yourself.",
+            Self::NotInvited => "Nobody has asked you to join a guild.",
+            Self::NoSuchGuild => "There is no such guild.",
+            Self::PassLeadershipFirst => "Pass leadership on before you leave.",
+        }
+    }
+}
+
+/// The guild `actor` leads, or why it does not lead one.
+///
+/// **The one authority check.** Every operation that a plain member may not do
+/// goes through here, so "what a leader may do" is a list of callers rather than
+/// nine copies of the same two lines — and the day ranks land, this is the
+/// function that grows a flag argument.
+pub fn may_lead(state: &WorldState, actor: EntityId) -> Result<GuildId, Refusal> {
+    let guild = state.guild_of(actor).ok_or(Refusal::NotInAGuild)?;
+    let serial = state.registry.serial_of(actor).ok_or(Refusal::NotAMobile)?;
+    if guild.leader == serial {
+        Ok(guild.id)
+    } else {
+        Err(Refusal::NotTheLeader)
+    }
+}
+
+/// Everyone currently in `guild`.
+///
+/// A scan of the [`GuildMember`](openshard_state::GuildMember) column, which is
+/// the rare direction — see the component's own note. Collected rather than
+/// returned lazily because every caller goes on to change the world with it, and
+/// an iterator borrowing the registry cannot.
+#[must_use]
+pub fn roster(state: &WorldState, guild: GuildId) -> Vec<EntityId> {
+    state
+        .registry
+        .query::<openshard_state::GuildMember>()
+        .filter(|(_, member)| member.guild == guild)
+        .map(|(entity, _)| entity)
+        .collect()
+}
+
+/// Re-announce every member of `guild` to everyone watching them.
+///
+/// The colour a mobile draws in is the *watcher's* answer, and nothing on a
+/// client will ask again on its own: a war declared while two members stand
+/// facing each other would show blue until one of them took a step. This is the
+/// step, sent on the shard's initiative.
+///
+/// Over-sending on purpose. It re-announces to every watcher rather than working
+/// out which ones the change could have moved, because the set that *could* move
+/// is "every member of every guild with a relation to this one, plus everyone who
+/// has ever been in one" — and a `0x77` a client already agrees with costs a
+/// packet and changes nothing on screen.
+pub fn recolour_guild(state: &mut WorldState, guild: GuildId) {
+    for member in roster(state, guild) {
+        state.broadcast_move(member);
+    }
+}
+
+/// Tell every member of `guild` who is online something that happened to it.
+pub fn announce(state: &mut WorldState, guild: GuildId, text: &str) {
+    for member in roster(state, guild) {
+        state.system_message(member, text);
+    }
+}

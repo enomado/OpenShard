@@ -1,6 +1,6 @@
 [package]
 name = "openshard-guilds"
-description = "Guilds: membership, ranks, alliances, and wars."
+description = "Guilds: founding, membership, titles, and the war and alliance handshake."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -12,3 +12,11 @@ authors.workspace = true
 workspace = true
 
 [dependencies]
+openshard-entities.workspace = true
+openshard-protocol.workspace = true
+openshard-state.workspace = true
+
+[dev-dependencies]
+# The tests build a bare `WorldState` — no map, no clients, just a registry and
+# the guild table. Every part of one is in `openshard-state` except the bus.
+openshard-events.workspace = true

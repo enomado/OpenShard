@@ -1718,7 +1718,18 @@ impl WorldState {
             // prefix and a suffix around the name in one string, so it goes in the name
             // slot whole and the other two stay empty.
             let name = crate::title::titled_name(self, entity, name);
-            list.add_args(ClilocId(1_050_045), &format!(" \t{name}\t "));
+            // The guild's abbreviation is the suffix slot the cliloc already has —
+            // ServUO's `PlayerMobile.AddNameProperties` writes "[OSS]" there.
+            let suffix = self
+                .guild_of(entity)
+                .map_or_else(String::new, |guild| format!("[{}]", guild.abbreviation));
+            list.add_args(ClilocId(1_050_045), &format!(" \t{name}\t {suffix}"));
+            // And a line of its own for the title and the guild's full name, which
+            // is where ServUO puts them. Cliloc `1042971` is `~1_NOTHING~`, the
+            // client's own way of showing a line the server wrote.
+            if let Some((title, guild)) = self.guild_title_of(entity) {
+                list.add_args(ClilocId(1_042_971), &format!("{title}, {guild}"));
+            }
         } else if let Some(&Drawn { id, .. }) = self.registry.get::<Drawn>(entity) {
             let cliloc = ClilocId(1_020_000 + u32::from(id.0));
             match self.registry.get::<Amount>(entity) {
@@ -1994,6 +2005,57 @@ impl WorldState {
             .unwrap_or(Notoriety::Innocent)
     }
 
+    /// The guild a mobile belongs to, if it belongs to one that still exists.
+    ///
+    /// The two halves are separate on purpose — the [`GuildMember`] component
+    /// names an id, and the id is looked up here — so this is also where a
+    /// membership naming a disbanded guild reads as no membership rather than as
+    /// a panic. `disband` does not walk the roster stripping components, and a
+    /// player logged out at the time could not be reached if it did.
+    #[must_use]
+    pub fn guild_of(&self, entity: EntityId) -> Option<&crate::guild::Guild> {
+        let member = self.registry.get::<crate::components::GuildMember>(entity)?;
+        self.guilds.get(member.guild)
+    }
+
+    /// A member's guild title and their guild's full name, for the line the
+    /// tooltip draws under the name. `None` for a mobile in no guild, and for one
+    /// the guild has given no title — ServUO draws the line only when there is a
+    /// title to put in it.
+    #[must_use]
+    pub fn guild_title_of(&self, entity: EntityId) -> Option<(String, String)> {
+        let title = self
+            .registry
+            .get::<crate::components::GuildMember>(entity)?
+            .title
+            .clone();
+        if title.is_empty() {
+            return None;
+        }
+        Some((title, self.guild_of(entity)?.name.clone()))
+    }
+
+    /// The bracketed line drawn *above* a mobile's name on a single click:
+    /// `[Warlord, OSS]`, or `[OSS]` for a member with no title.
+    ///
+    /// A separate overhead label rather than part of the name, which is what
+    /// ServUO's `Mobile.OnSingleClick` sends — the name below it keeps its
+    /// notoriety hue, and the guild line is the speech hue, so the two read as
+    /// two different things.
+    #[must_use]
+    pub fn guild_label(&self, entity: EntityId) -> Option<String> {
+        let guild = self.guild_of(entity)?;
+        let title = self
+            .registry
+            .get::<crate::components::GuildMember>(entity)
+            .map_or("", |member| member.title.trim());
+        if title.is_empty() {
+            Some(format!("[{}]", guild.abbreviation))
+        } else {
+            Some(format!("[{title}, {}]", guild.abbreviation))
+        }
+    }
+
     /// What colour `target` draws in on `viewer`'s screen.
     ///
     /// The wire answer, and the only one that is *relative*.
@@ -2024,20 +2086,19 @@ impl WorldState {
         if standing != Notoriety::Innocent {
             return standing;
         }
-        let Some(theirs) = self.registry.get::<crate::components::GuildMember>(target) else {
+        // Through `guild_of` rather than the component, so a membership naming a
+        // disbanded guild is no membership: two players left holding the same
+        // dead id would otherwise read green to each other forever.
+        let Some(theirs) = self.guild_of(target).map(|guild| guild.id) else {
             return standing;
         };
-        let Some(mine) = self.registry.get::<crate::components::GuildMember>(viewer) else {
+        let Some(mine) = self.guild_of(viewer) else {
             return standing;
         };
-        if mine.guild == theirs.guild {
+        if mine.id == theirs {
             return Notoriety::Friend;
         }
-        match self
-            .guilds
-            .get(mine.guild)
-            .and_then(|guild| guild.toward(theirs.guild))
-        {
+        match mine.toward(theirs) {
             Some(crate::guild::Relation::Ally) => Notoriety::Friend,
             Some(crate::guild::Relation::War) => Notoriety::Enemy,
             None => standing,

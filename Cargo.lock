@@ -2708,6 +2708,12 @@ dependencies = [
 [[package]]
 name = "openshard-guilds"
 version = "0.0.1"
+dependencies = [
+ "openshard-entities",
+ "openshard-events",
+ "openshard-protocol",
+ "openshard-state",
+]
 
 [[package]]
 name = "openshard-housing"

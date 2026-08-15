@@ -1,0 +1,256 @@
+//! Founding a guild, joining one, and leaving it.
+//!
+//! The old guildstone's model: a leader, and members. Everything a plain member
+//! may not do goes through [`may_lead`](crate::may_lead), which is the single
+//! seam ranks would grow from.
+
+use openshard_entities::EntityId;
+use openshard_state::{GuildCandidate, GuildId, GuildMember, WorldState};
+
+use crate::{Refusal, announce, may_lead, recolour_guild, roster};
+
+/// The longest a guild's name may be. ServUO's `GuildNamePrompt`.
+pub const NAME_LIMIT: usize = 40;
+/// The longest an abbreviation may be — the client draws it in brackets after
+/// the name, and three letters is what the gump's field takes. ServUO's
+/// `GuildAbbrvPrompt`.
+pub const ABBREVIATION_LIMIT: usize = 3;
+/// The longest a member's guild title may be. ServUO's `GuildTitlePrompt`.
+pub const TITLE_LIMIT: usize = 20;
+
+/// Trim a player's typed text and cut it to length.
+///
+/// Truncation rather than refusal, which is what ServUO's three prompts do: a
+/// player who types forty-one characters gets forty, not an error and a lost
+/// name. Cut on a character boundary — the limits are counts of characters, and
+/// a client may send any UTF-8 it likes.
+fn clip(text: &str, limit: usize) -> String {
+    text.trim().chars().take(limit).collect()
+}
+
+/// Found a guild with `leader` at its head.
+///
+/// The name and abbreviation are clipped, not validated: see [`clip`]. What *is*
+/// refused is an empty one and one another guild already answers to — the
+/// abbreviation is drawn beside a name and two guilds sharing one would make the
+/// bracket a lie.
+pub fn found(
+    state: &mut WorldState,
+    leader: EntityId,
+    name: &str,
+    abbreviation: &str,
+) -> Result<GuildId, Refusal> {
+    let serial = state.registry.serial_of(leader).ok_or(Refusal::NotAMobile)?;
+    if state.guild_of(leader).is_some() {
+        return Err(Refusal::AlreadyInAGuild);
+    }
+    let name = clip(name, NAME_LIMIT);
+    let abbreviation = clip(abbreviation, ABBREVIATION_LIMIT);
+    if name.is_empty() || abbreviation.is_empty() {
+        return Err(Refusal::NoName);
+    }
+    if state.guilds.by_name(&name).is_some() {
+        return Err(Refusal::NameTaken);
+    }
+    if state.guilds.by_abbreviation(&abbreviation).is_some() {
+        return Err(Refusal::AbbreviationTaken);
+    }
+
+    let guild = state.guilds.found(name, abbreviation, serial);
+    // An invitation the founder was still holding is gone: they answered a
+    // different question. Left standing, accepting it later would move the
+    // guild's own leader into somebody else's.
+    state.registry.remove::<GuildCandidate>(leader);
+    state.registry.insert(
+        leader,
+        GuildMember {
+            guild,
+            title: String::new(),
+        },
+    );
+    state.broadcast_move(leader);
+    Ok(guild)
+}
+
+/// Ask `candidate` to join the guild `inviter` leads.
+///
+/// Leaves the question with the candidate, who answers it with
+/// [`accept_invitation`] or [`decline_invitation`]. Nothing is recorded on the
+/// guild: an invitation is one player's to answer, and a guild holding a list of
+/// people it has asked is a list that outlives them.
+pub fn invite(state: &mut WorldState, inviter: EntityId, candidate: EntityId) -> Result<(), Refusal> {
+    let guild = may_lead(state, inviter)?;
+    if candidate == inviter {
+        return Err(Refusal::Yourself);
+    }
+    if state.registry.serial_of(candidate).is_none() {
+        return Err(Refusal::NotAMobile);
+    }
+    if state.guild_of(candidate).is_some() {
+        return Err(Refusal::TheyAreInAGuild);
+    }
+    state.registry.insert(candidate, GuildCandidate { guild });
+    Ok(())
+}
+
+/// Answer an invitation with yes.
+///
+/// Re-announces the whole guild rather than only the joiner, because the colour
+/// moved on two sets of screens: the guild now sees a green newcomer, and the
+/// newcomer now sees a guild.
+pub fn accept_invitation(state: &mut WorldState, candidate: EntityId) -> Result<GuildId, Refusal> {
+    let guild = state
+        .registry
+        .get::<GuildCandidate>(candidate)
+        .map(|invitation| invitation.guild)
+        .ok_or(Refusal::NotInvited)?;
+    // The invitation outlived the guild — disbanded, or the leader gone. Clear it
+    // rather than joining a guild that no longer exists.
+    if state.guilds.get(guild).is_none() {
+        state.registry.remove::<GuildCandidate>(candidate);
+        return Err(Refusal::NoSuchGuild);
+    }
+    if state.guild_of(candidate).is_some() {
+        return Err(Refusal::AlreadyInAGuild);
+    }
+    state.registry.remove::<GuildCandidate>(candidate);
+    state.registry.insert(
+        candidate,
+        GuildMember {
+            guild,
+            title: String::new(),
+        },
+    );
+    recolour_guild(state, guild);
+    Ok(guild)
+}
+
+/// Answer an invitation with no. Silent if there was none to answer.
+pub fn decline_invitation(state: &mut WorldState, candidate: EntityId) {
+    state.registry.remove::<GuildCandidate>(candidate);
+}
+
+/// Leave the guild you are in.
+///
+/// A leader may not walk out on a guild that still has members — the guild would
+/// be left with a leader serial naming nobody, and no way to appoint another. A
+/// leader who *is* the last member disbands it instead, which is the same thing
+/// said honestly.
+pub fn leave(state: &mut WorldState, member: EntityId) -> Result<(), Refusal> {
+    let guild = state.guild_of(member).ok_or(Refusal::NotInAGuild)?.id;
+    if may_lead(state, member).is_ok() {
+        if roster(state, guild).len() > 1 {
+            return Err(Refusal::PassLeadershipFirst);
+        }
+        return disband(state, member);
+    }
+    state.registry.remove::<GuildMember>(member);
+    state.broadcast_move(member);
+    recolour_guild(state, guild);
+    Ok(())
+}
+
+/// Turn a member out of the guild.
+pub fn dismiss(state: &mut WorldState, leader: EntityId, member: EntityId) -> Result<(), Refusal> {
+    let guild = may_lead(state, leader)?;
+    if member == leader {
+        return Err(Refusal::Yourself);
+    }
+    if state.guild_of(member).map(|g| g.id) != Some(guild) {
+        return Err(Refusal::NotYourMember);
+    }
+    state.registry.remove::<GuildMember>(member);
+    state.system_message(member, "You have been dismissed from your guild.");
+    state.broadcast_move(member);
+    recolour_guild(state, guild);
+    Ok(())
+}
+
+/// Give a member the title the guild knows them by — "Warlord", "Emissary".
+///
+/// An empty title is how one is taken away, and is not an error: a leader
+/// clearing a field is saying something, and refusing it would leave no way to
+/// undo a title at all.
+pub fn set_title(
+    state: &mut WorldState,
+    leader: EntityId,
+    member: EntityId,
+    title: &str,
+) -> Result<(), Refusal> {
+    let guild = may_lead(state, leader)?;
+    if state.guild_of(member).map(|g| g.id) != Some(guild) {
+        return Err(Refusal::NotYourMember);
+    }
+    let title = clip(title, TITLE_LIMIT);
+    if let Some(entry) = state.registry.get_mut::<GuildMember>(member) {
+        entry.title = title;
+    }
+    // No `broadcast_move`: a title is not a colour. It is read off the name, and
+    // the name is asked for a click at a time — so the next single-click has it,
+    // and a `0x77` would move nothing.
+    state.system_message(member, "Your guild title has changed.");
+    Ok(())
+}
+
+/// Hand the guild to one of its members.
+pub fn pass_leadership(state: &mut WorldState, leader: EntityId, member: EntityId) -> Result<(), Refusal> {
+    let guild = may_lead(state, leader)?;
+    if member == leader {
+        return Err(Refusal::Yourself);
+    }
+    if state.guild_of(member).map(|g| g.id) != Some(guild) {
+        return Err(Refusal::NotYourMember);
+    }
+    let serial = state.registry.serial_of(member).ok_or(Refusal::NotAMobile)?;
+    if let Some(entry) = state.guilds.get_mut(guild) {
+        entry.leader = serial;
+    }
+    announce(state, guild, "Your guild has a new leader.");
+    Ok(())
+}
+
+/// Disband the guild, and take its roster and its diplomacy with it.
+///
+/// Every member loses the component here rather than discovering it later:
+/// [`guild_of`](WorldState::guild_of) already reads a membership naming a dead
+/// guild as none, so a member who was offline is safe — but a member who is
+/// standing here has watchers to be told about, and they can only be told while
+/// the roster still names them.
+pub fn disband(state: &mut WorldState, leader: EntityId) -> Result<(), Refusal> {
+    let guild = may_lead(state, leader)?;
+    let members = roster(state, guild);
+    let allies: Vec<GuildId> = state
+        .guilds
+        .get(guild)
+        .map(|g| g.relations.keys().copied().collect())
+        .unwrap_or_default();
+
+    state.guilds.disband(guild);
+    for member in &members {
+        state.registry.remove::<GuildMember>(*member);
+        state.system_message(*member, "Your guild has been disbanded.");
+        state.broadcast_move(*member);
+    }
+    // A guild that was at war with this one has members whose screens still show
+    // orange. They are no longer in the roster above — the relation is gone with
+    // the guild — so they are told here or not at all.
+    for other in allies {
+        recolour_guild(state, other);
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ABBREVIATION_LIMIT, clip};
+
+    #[test]
+    fn a_name_is_trimmed_and_cut_on_a_character_boundary() {
+        assert_eq!(clip("  The Silver Serpent  ", 40), "The Silver Serpent");
+        assert_eq!(clip("OSSA", ABBREVIATION_LIMIT), "OSS");
+        // Cut by characters, not bytes: `&str[..3]` on this would panic, and the
+        // client is free to send any UTF-8 it likes.
+        assert_eq!(clip("ÆØÅX", ABBREVIATION_LIMIT), "ÆØÅ");
+        assert_eq!(clip("   ", 40), "");
+    }
+}

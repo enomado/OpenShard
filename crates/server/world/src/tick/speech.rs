@@ -114,6 +114,24 @@ impl World {
         let Some(target) = self.state.registry.entity_of(serial) else {
             return;
         };
+        let asker = self.state.players.get(&connection).copied();
+
+        // The guild line first, above the name: `[Warlord, OSS]` in the speech
+        // hue, ServUO's `Mobile.OnSingleClick`. Its own label rather than part of
+        // the name, so the name below keeps the notoriety hue and the two read as
+        // two different things.
+        if let Some(label) = self.state.guild_label(target) {
+            let packet = ServerPacket::SpokenMessage(SpokenMessage {
+                serial: Some(serial),
+                graphic: self.state.registry.get::<Body>(target).map(|body| body.id),
+                mode: TalkMode::Label,
+                hue: TEXT_HUE,
+                font: Font::DEFAULT,
+                name: String::new(),
+                text: label,
+            });
+            self.state.send_packet(connection, &packet);
+        }
 
         // A mobile carries a `Name` and a `Body`; an item a `Drawn` and no
         // `Name`. The two cases pick a different graphic, hue, and name source.
@@ -124,12 +142,17 @@ impl World {
             let Some(body) = self.state.registry.get::<Body>(target).map(|b| b.id) else {
                 return;
             };
-            let hue = self
-                .state
-                .registry
-                .get::<Notoriety>(target)
-                .copied()
-                .unwrap_or(Notoriety::Innocent)
+            // Relative, like the bar: `Notoriety.Compute(from, this)` is what
+            // ServUO hues this label with, so a guildmate's name reads green to
+            // you and blue to the stranger clicking beside you. Falls back to the
+            // absolute standing when the asker is nobody — a click can only
+            // arrive from a connection, so that is a spectator case, not a
+            // player one.
+            let hue = asker
+                .map_or_else(
+                    || self.state.notoriety_of(target),
+                    |asker| self.state.notoriety_toward(asker, target),
+                )
                 .name_hue();
             (body, hue, name)
         } else {

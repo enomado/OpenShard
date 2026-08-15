@@ -60,6 +60,14 @@ pub struct Guild {
     pub leader: openshard_protocol::serial::Serial,
     /// How it regards other guilds. Only declared relations are here.
     pub relations: BTreeMap<GuildId, Relation>,
+    /// What it has offered another guild and the other has not yet matched.
+    ///
+    /// Separate from [`relations`](Self::relations) because a proposal is not a
+    /// relation: a guild that has declared war and been ignored is not at war,
+    /// and its members must not turn orange on the strength of its own opinion.
+    /// A relation exists once both sides hold the same proposal — see
+    /// [`Guilds::propose`].
+    pub proposals: BTreeMap<GuildId, Relation>,
 }
 
 impl Guild {
@@ -68,6 +76,12 @@ impl Guild {
     #[must_use]
     pub fn toward(&self, other: GuildId) -> Option<Relation> {
         self.relations.get(&other).copied()
+    }
+
+    /// What this guild has offered `other` and is still waiting on.
+    #[must_use]
+    pub fn offered(&self, other: GuildId) -> Option<Relation> {
+        self.proposals.get(&other).copied()
     }
 }
 
@@ -104,9 +118,28 @@ impl Guilds {
                 abbreviation,
                 leader,
                 relations: BTreeMap::new(),
+                proposals: BTreeMap::new(),
             },
         );
         id
+    }
+
+    /// The guild that calls itself `name`, case-insensitively.
+    ///
+    /// A scan, and deliberately: it is asked once when a guild is founded and
+    /// never on a hot path, so an index would be a second thing to keep in step
+    /// for no gain.
+    #[must_use]
+    pub fn by_name(&self, name: &str) -> Option<&Guild> {
+        self.guilds.values().find(|g| g.name.eq_ignore_ascii_case(name))
+    }
+
+    /// The guild that draws as `abbreviation`, case-insensitively.
+    #[must_use]
+    pub fn by_abbreviation(&self, abbreviation: &str) -> Option<&Guild> {
+        self.guilds
+            .values()
+            .find(|g| g.abbreviation.eq_ignore_ascii_case(abbreviation))
     }
 
     /// One guild, if it exists.
@@ -155,13 +188,54 @@ impl Guilds {
         }
     }
 
-    /// Withdraw a declaration, both ways. Silent if there was none.
+    /// Offer `to` a relation, and declare it if they have offered the same back.
+    ///
+    /// Returns whether it took effect. This is the classic guildstone handshake:
+    /// declaring war on a guild that has not declared war on you puts you on
+    /// their list and changes nothing else, and the war begins when they declare
+    /// in return. An alliance is the same shape, which is why one function does
+    /// both rather than a war path and an invitation path that would drift.
+    ///
+    /// A proposal that *matches* is consumed — the relation is the record, and a
+    /// proposal left standing beside it would be a second answer to the same
+    /// question. A proposal that meets a **different** standing offer replaces
+    /// it: a guild that offered an alliance and then declared war means the war.
+    pub fn propose(&mut self, from: GuildId, to: GuildId, relation: Relation) -> bool {
+        if from == to || !self.guilds.contains_key(&from) || !self.guilds.contains_key(&to) {
+            return false;
+        }
+        if self.guilds[&to].offered(from) == Some(relation) {
+            self.withdraw(to, from);
+            self.declare(from, to, relation);
+            return true;
+        }
+        if let Some(guild) = self.guilds.get_mut(&from) {
+            guild.proposals.insert(to, relation);
+        }
+        false
+    }
+
+    /// Take back an offer. Silent if there was none.
+    pub fn withdraw(&mut self, from: GuildId, to: GuildId) {
+        if let Some(guild) = self.guilds.get_mut(&from) {
+            guild.proposals.remove(&to);
+        }
+    }
+
+    /// Withdraw a declaration, both ways, and any offer either side was still
+    /// holding.
+    ///
+    /// Peace clears the offers too: a guild that made peace while the other's
+    /// war declaration still stood would go back to war the moment it declared
+    /// anything, without either side deciding to.
     pub fn undeclare(&mut self, from: GuildId, to: GuildId) {
         if let Some(guild) = self.guilds.get_mut(&from) {
             guild.relations.remove(&to);
+            guild.proposals.remove(&to);
         }
         if let Some(guild) = self.guilds.get_mut(&to) {
             guild.relations.remove(&from);
+            guild.proposals.remove(&from);
         }
     }
 
@@ -176,6 +250,7 @@ impl Guilds {
         let gone = self.guilds.remove(&id)?;
         for guild in self.guilds.values_mut() {
             guild.relations.remove(&id);
+            guild.proposals.remove(&id);
         }
         Some(gone)
     }
@@ -229,6 +304,56 @@ mod tests {
             None,
             "a guild at war with itself"
         );
+    }
+
+    #[test]
+    fn a_declaration_nobody_answered_is_not_a_relation() {
+        // The whole reason proposals are a separate map: a guild that declared war
+        // and was ignored is not at war, and its members must not read orange on
+        // the strength of its own opinion.
+        let mut guilds = Guilds::default();
+        let a = guilds.found("A".to_owned(), "A".to_owned(), leader());
+        let b = guilds.found("B".to_owned(), "B".to_owned(), leader());
+        assert!(!guilds.propose(a, b, Relation::War), "a war with one side");
+        assert_eq!(guilds.get(a).unwrap().toward(b), None);
+        assert_eq!(guilds.get(b).unwrap().toward(a), None);
+        assert_eq!(guilds.get(a).unwrap().offered(b), Some(Relation::War));
+
+        // And the answer is what makes it one, on either side's turn.
+        assert!(guilds.propose(b, a, Relation::War));
+        assert_eq!(guilds.get(a).unwrap().toward(b), Some(Relation::War));
+        assert_eq!(guilds.get(b).unwrap().toward(a), Some(Relation::War));
+        assert_eq!(
+            guilds.get(a).unwrap().offered(b),
+            None,
+            "a proposal still standing beside the relation it became"
+        );
+    }
+
+    #[test]
+    fn an_answer_to_a_different_offer_is_not_an_answer() {
+        // A offers an alliance; B declares war. Neither is agreement, and reading
+        // the *presence* of an offer rather than its kind would make them one.
+        let mut guilds = Guilds::default();
+        let a = guilds.found("A".to_owned(), "A".to_owned(), leader());
+        let b = guilds.found("B".to_owned(), "B".to_owned(), leader());
+        guilds.propose(a, b, Relation::Ally);
+        assert!(!guilds.propose(b, a, Relation::War));
+        assert_eq!(guilds.get(a).unwrap().toward(b), None);
+    }
+
+    #[test]
+    fn peace_takes_the_standing_offer_with_it() {
+        // Otherwise the next thing either side declares silently restores the war
+        // the two of them just ended.
+        let mut guilds = Guilds::default();
+        let a = guilds.found("A".to_owned(), "A".to_owned(), leader());
+        let b = guilds.found("B".to_owned(), "B".to_owned(), leader());
+        guilds.propose(a, b, Relation::War);
+        guilds.propose(b, a, Relation::War);
+        guilds.undeclare(a, b);
+        assert_eq!(guilds.get(a).unwrap().offered(b), None);
+        assert_eq!(guilds.get(b).unwrap().offered(a), None);
     }
 
     #[test]

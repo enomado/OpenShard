@@ -1666,6 +1666,22 @@ pub struct GuildMember {
     pub title: String,
 }
 
+/// A mobile that has been asked to join a guild and has not yet answered.
+///
+/// On the *candidate*, not on the guild, for the same reason [`GuildMember`] is:
+/// the question asked is "has this player been invited", and it is asked of one
+/// player at a time. ServUO keeps a `Candidates` list on the guild and reaches
+/// the same answer by scanning it.
+///
+/// One at a time. A second invitation replaces the first rather than queueing,
+/// because there is one answer — "yes" — and a queue would make it ambiguous
+/// which guild it was to.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct GuildCandidate {
+    /// Which guild asked.
+    pub guild: crate::guild::GuildId,
+}
+
 /// Marks a player who has died and walks as a ghost: greyed, silent to the
 /// living, waiting on resurrection.
 ///
