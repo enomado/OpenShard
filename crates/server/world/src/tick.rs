@@ -102,6 +102,7 @@ mod persist;
 mod regions;
 mod roster;
 pub mod screen;
+mod shipped_items;
 mod skills_wire;
 mod spawners;
 mod speech;
@@ -1174,6 +1175,10 @@ impl World {
                             self.state.registry.entity_of(serial),
                         ) {
                             self.use_item_skill(player, item);
+                            // And the shard's own two item behaviours, last of
+                            // all: the engine has answered, and a configured pack
+                            // has had its `ItemUsed`.
+                            self.use_shipped_item(player, item);
                         }
                     }
                 }

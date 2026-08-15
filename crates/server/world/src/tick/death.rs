@@ -384,6 +384,33 @@ impl World {
     /// target being a real container, so a stray or stale serial adds nothing
     /// rather than conjuring a floating item. A stackable merges (gold, reagents);
     /// a discrete piece (a weapon) is placed whole.
+    /// Roll the shard's own loot table for a body into a corpse.
+    ///
+    /// Every roll is on the world's seeded generator, so a replayed tick fills the
+    /// same corpse the same way — the guarantee the script pack that held these
+    /// tables exempted itself from.
+    ///
+    /// A drop that rolls a range takes its `least` when the two are equal, so a
+    /// fixed count costs no roll: the rng's sequence is part of what replays, and
+    /// spending a draw on a decision with one outcome would move everything after
+    /// it.
+    pub(super) fn roll_shipped_loot(&mut self, corpse: Serial, body: Graphic) {
+        let Some(drops) = crate::loot::table(body) else {
+            return;
+        };
+        for drop in drops {
+            if drop.percent < 100 && self.state.rng.below(100) >= drop.percent {
+                continue;
+            }
+            let amount = if drop.most > drop.least {
+                drop.least + self.state.rng.below(u32::from(drop.most - drop.least) + 1) as u16
+            } else {
+                drop.least
+            };
+            self.add_loot(corpse, drop.graphic, drop.hue, amount, drop.stackable);
+        }
+    }
+
     pub(super) fn add_loot(
         &mut self,
         container: Serial,
@@ -442,12 +469,17 @@ impl World {
         // own loot; every other creature keeps the core's baseline gold.
         self.move_gear_to_corpse(serial, corpse, &[]);
         self.fill_creature_loot(corpse, body.map(|body| body.id), max_hits);
-        // The loot hook: a pack adds the real per-creature table on top of the
-        // baseline, by serial, off this event. Emitted before the creature is
-        // despawned so `body` is still readable if a listener wants it live.
+        // The shard's own table, on top of the baseline. Rolled here rather than
+        // off the event below, because content in the tree is part of the tick
+        // rather than a listener — see `crate::loot`.
+        let dropped_for = body.map_or(Graphic(0), |b| b.id);
+        self.roll_shipped_loot(corpse, dropped_for);
+        // The loot hook: a pack adds its own table on top, by serial, off this
+        // event. Emitted before the creature is despawned so `body` is still
+        // readable if a listener wants it live.
         self.state.bus.send(CorpseCreated {
             corpse,
-            body: body.map_or(Graphic(0), |b| b.id),
+            body: dropped_for,
         });
         self.despawn_creature(entity, serial);
     }
