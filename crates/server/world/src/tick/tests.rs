@@ -3572,6 +3572,104 @@ fn a_slain_creature_leaves_a_corpse_with_loot() {
 }
 
 #[test]
+fn the_shipped_loot_table_rolls_on_the_seeded_generator() {
+    // The loot move in one test. `roll_shipped_loot` is what `die` calls with the
+    // corpse it has just laid; here it is called with a container a test can hold,
+    // because what is under test is the table and the roll, not the fight.
+    //
+    // The rng is the point. The Community Pack owned these tables and rolled them
+    // with `Math.random`, writing itself an exemption from the engine's
+    // replayable-tick guarantee. Two worlds on the same seed loot identically now.
+    const SKELETON: u16 = 0x0032;
+
+    let fill = || -> Vec<(u16, u16)> {
+        let now = Instant::now();
+        let mut world = world();
+        let player = enter(&mut world, now);
+        let serial = serial_of(&world, player);
+        let backpack = world
+            .state
+            .registry
+            .query::<Equipped>()
+            .find(|(_, w)| w.mobile == serial && w.layer == items::BACKPACK_LAYER)
+            .map(|(e, _)| world.registry().serial_of(e).unwrap())
+            .expect("the player wears a backpack");
+
+        world.roll_shipped_loot(backpack, Graphic(SKELETON));
+        let mut held: Vec<(u16, u16)> = world
+            .state
+            .registry
+            .query::<Contained>()
+            .filter(|(_, c)| c.container == backpack)
+            .filter_map(|(entity, _)| {
+                let graphic = world.state.registry.get::<Drawn>(entity)?.id.0;
+                let amount = world.state.registry.get::<Amount>(entity).map_or(1, |a| a.0);
+                Some((graphic, amount))
+            })
+            .collect();
+        held.sort_unstable();
+        held
+    };
+
+    let first = fill();
+    assert!(!first.is_empty(), "the table dropped nothing at all");
+    let table = crate::loot::table(Graphic(SKELETON)).expect("0x0032 has a shipped table");
+    for &(graphic, amount) in &first {
+        let drop = table
+            .iter()
+            .find(|drop| drop.graphic.0 == graphic)
+            .unwrap_or_else(|| panic!("dropped {graphic:#06x}, which the table does not list"));
+        assert!(
+            (drop.least..=drop.most).contains(&amount),
+            "dropped {amount} of {graphic:#06x}, outside {}..{}",
+            drop.least,
+            drop.most
+        );
+    }
+    // Gold has no chance on it, so it is the one drop that must always be there.
+    assert!(
+        first.iter().any(|&(graphic, _)| graphic == 0x0EED),
+        "no gold: {first:?}"
+    );
+    assert_eq!(first, fill(), "two worlds on the same seed looted differently");
+}
+
+#[test]
+fn a_body_with_no_shipped_table_is_left_to_the_baseline() {
+    // Most creatures have no table, and that is not a hole: the engine's own gold
+    // and the gear it wore are what they leave.
+    let now = Instant::now();
+    let mut world = world();
+    let player = enter(&mut world, now);
+    let serial = serial_of(&world, player);
+    let backpack = world
+        .state
+        .registry
+        .query::<Equipped>()
+        .find(|(_, w)| w.mobile == serial && w.layer == items::BACKPACK_LAYER)
+        .map(|(e, _)| world.registry().serial_of(e).unwrap())
+        .expect("the player wears a backpack");
+    let before = world
+        .state
+        .registry
+        .query::<Contained>()
+        .filter(|(_, c)| c.container == backpack)
+        .count();
+
+    world.roll_shipped_loot(backpack, Graphic(0x0190));
+    assert_eq!(
+        world
+            .state
+            .registry
+            .query::<Contained>()
+            .filter(|(_, c)| c.container == backpack)
+            .count(),
+        before,
+        "a human body dropped shipped loot"
+    );
+}
+
+#[test]
 fn a_slain_creature_fires_the_loot_hook() {
     // The seam the pack fills: a corpse laid emits `CorpseCreated` carrying the
     // corpse serial and the body, so a script can add the real per-creature loot

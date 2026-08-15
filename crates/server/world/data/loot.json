@@ -1,0 +1,20 @@
+[
+  {
+    "body": 50,
+    "creature": "an orc",
+    "drops": [
+      { "graphic": 3821, "amount": [20, 60], "stackable": true },
+      { "graphic": 3922, "chance": 0.4 },
+      { "graphic": 5068, "chance": 0.15 },
+      { "graphic": 3903, "amount": [3, 8], "stackable": true, "chance": 0.5 }
+    ]
+  },
+  {
+    "body": 26,
+    "creature": "a spectre",
+    "drops": [
+      { "graphic": 3821, "amount": [10, 40], "stackable": true },
+      { "graphic": 3962, "amount": [1, 4], "stackable": true, "chance": 0.6 }
+    ]
+  }
+]
