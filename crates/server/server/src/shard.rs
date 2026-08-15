@@ -463,6 +463,16 @@ pub async fn run_shard(
         advertised,
     };
 
+    // The shard's own content, queued between the restore above and the first
+    // tick below — the world it lays down is furnished before anybody can walk
+    // into it. Queued rather than applied: the tick is the only thing that writes
+    // the world, and content is not an exception to that.
+    let content = content::boot();
+    debug!(commands = content.len(), "queueing the shard's own content");
+    for command in content {
+        shard.world.queue(command);
+    }
+
     // The verbs this run was told to send itself, after `Scripts::load` above has
     // taken its cursors and before the first tick retires anything — the one
     // window where an event sent from outside a tick is read exactly once. Sent

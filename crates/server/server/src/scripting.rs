@@ -316,7 +316,7 @@ fn script_serial(serial: Serial) -> Option<Serial> {
 /// meet, and the seam where §6 will grow: a new script command lands here.
 ///
 /// Every command is total: invalid raw IDs were discarded at the JS-op boundary.
-fn into_world(command: ScriptCommand) -> Option<Command> {
+pub(crate) fn into_world(command: ScriptCommand) -> Option<Command> {
     Some(match command {
         ScriptCommand::Move { serial, direction } => Command::Step {
             serial: script_serial(serial)?,

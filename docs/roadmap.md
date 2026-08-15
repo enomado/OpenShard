@@ -610,10 +610,20 @@ and on logout, through the same journal the tick already feeds.
   the crate floats on `"0.7"` again. See the `Cargo.lock` note in
   [`development.md`](development.md).
 
-## 5. Scripting — spike done
+## 5. Scripting — spike done, and being retired
 
 The largest open technical risk. Proven before building gameplay on top, and it
 holds. The engine is `crates/server/scripting`; `engine.rs` explains the seam.
+
+**And it is on its way out.** Issues [#7](https://github.com/youhide/OpenShard/issues/7)
+and [#17](https://github.com/youhide/OpenShard/issues/17) settled on pure Rust:
+gameplay data becomes `data/*.json` in the domain crates, the pack's 414 lines of
+logic become systems, and this crate is deleted — which is also when CI stops
+excluding it and the MSRV comes off 1.88. Quests are in the tree already
+(`crates/server/state/data/quests.json`, laid by `server::content`); regions,
+spawns, decoration and vendor stock follow. The checklist below is what the spike
+delivered and stays true until then; the decision is in
+[`architecture.md`](architecture.md) § Scripting.
 
 - [x] `deno_core` embedded, one V8 isolate — `DenoEngine`, one `JsRuntime`
 - [x] `ScriptEngine` trait — four methods, nothing V8-shaped in a signature, so

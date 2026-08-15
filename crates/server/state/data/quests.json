@@ -1,0 +1,41 @@
+[
+  {
+    "key": "rat_cull",
+    "title": "A Plague of Rats",
+    "description": "Rats overrun the sewers beneath Britain. Slay five of them and return to me, and you will be paid.",
+    "refuse": "Then the sewers will keep their tenants a while longer.",
+    "uncomplete": "The rats are still down there, friend. Five of them.",
+    "complete": "The sewers will rest easier tonight. Here — you have earned this.",
+    "objectives": [
+      { "kind": { "slay": { "body": "0x00EE" } }, "count": 5, "name": "sewer rat" }
+    ],
+    "rewards": [{ "kind": { "gold": 250 }, "name": "250 gold" }],
+    "restart_delay_secs": 600
+  },
+  {
+    "key": "escort",
+    "title": "An Escort Request",
+    "description": "I must travel, and the roads are not safe alone. Lead me there and you will be paid for your trouble.",
+    "refuse": "Then I shall wait for a braver soul.",
+    "uncomplete": "We are not there yet. Lead on.",
+    "complete": "We have arrived safely — my thanks, and your pay.",
+    "objectives": [
+      { "kind": { "escort": { "region": "" } }, "count": 1, "name": "escort" }
+    ],
+    "rewards": [{ "kind": { "gold": 750 }, "name": "750 gold" }],
+    "restart_delay_secs": 300
+  },
+  {
+    "key": "silk_gather",
+    "title": "Silk for the Spellwright",
+    "description": "Bring me five skeins of spiders' silk and you'll be paid. The mage by the bank sells it.",
+    "refuse": "As you like. The silk will not gather itself.",
+    "uncomplete": "Five skeins, no fewer. Come back when you have them.",
+    "complete": "Fine silk — my thanks. Here is your pay.",
+    "objectives": [
+      { "kind": { "obtain": { "graphic": "0x0F8D" } }, "count": 5, "name": "spiders' silk" }
+    ],
+    "rewards": [{ "kind": { "gold": 120 }, "name": "120 gold" }],
+    "restart_delay_secs": 600
+  }
+]
