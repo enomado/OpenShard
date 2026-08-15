@@ -616,6 +616,12 @@ pub struct WorldState {
     /// on a reload and never persisted, for the same reason as
     /// [`quests`](Self::quests): the pack is the truth about content.
     pub dialogue: Dialogue,
+    /// Every guild on the shard, and how they regard each other.
+    ///
+    /// Here rather than only in `openshard-guilds` because the `0x78` has a
+    /// notoriety byte and that byte depends on who is looking — see
+    /// [`notoriety_toward`](Self::notoriety_toward).
+    pub guilds: crate::guild::Guilds,
     // The targeting cursor and the four gump contexts used to be maps here, keyed
     // by the *player's entity*. They are fields on the connection's row now —
     // `connection::Connection` — reached through `row_of`/`row_of_mut`. They are
@@ -1606,12 +1612,17 @@ impl WorldState {
     /// a `0x78` from [`show`](Self::show), and a `0x77` for a mobile the client
     /// has never heard of is ignored.
     pub fn broadcast_move(&mut self, entity: EntityId) {
-        let Some(packet) = self.mobile_move(entity) else {
-            return;
-        };
+        // Built inside the loop, not once above it: the notoriety byte is the
+        // *watcher's* answer, and a guildmate is green to one of these clients
+        // and blue to the next. The rest of the packet is the same for everyone,
+        // and rebuilding it is a handful of component reads — see
+        // `notoriety_toward` for where that cost is and is not paid.
         for watcher in self.watchers_of(entity) {
             let Some((connection, version)) = self.client_of(watcher) else {
                 continue;
+            };
+            let Some(packet) = self.mobile_move(watcher, entity) else {
+                return;
             };
             self.outbox.push(Outbound {
                 connection,
@@ -1636,7 +1647,7 @@ impl WorldState {
         if !self.can_see_mobile(watcher, other) {
             return;
         }
-        let Some(packet) = self.draw_packet(other, version) else {
+        let Some(packet) = self.draw_packet(watcher, other, version) else {
             return;
         };
         self.seen.entry(watcher).or_default().insert(other);
@@ -1748,9 +1759,14 @@ impl WorldState {
     /// drawable. A mobile is a `0x78`, an item a `0x1A` — the interest system does
     /// not care which, only that there is one packet per thing on screen.
     #[must_use]
-    pub fn draw_packet(&mut self, entity: EntityId, version: ClientVersion) -> Option<Vec<u8>> {
+    pub fn draw_packet(
+        &mut self,
+        viewer: EntityId,
+        entity: EntityId,
+        version: ClientVersion,
+    ) -> Option<Vec<u8>> {
         if self.registry.has::<Body>(entity) {
-            let incoming = self.mobile_incoming(entity)?;
+            let incoming = self.mobile_incoming(viewer, entity)?;
             Some(ServerPacket::MobileIncoming(incoming).encode(version))
         } else if self.registry.has::<Drawn>(entity) {
             Some(ServerPacket::WorldItem(self.world_item(entity)?).encode(version))
@@ -1978,6 +1994,56 @@ impl WorldState {
             .unwrap_or(Notoriety::Innocent)
     }
 
+    /// What colour `target` draws in on `viewer`'s screen.
+    ///
+    /// The wire answer, and the only one that is *relative*.
+    /// [`notoriety_of`](Self::notoriety_of) is the mobile's own standing — what
+    /// combat, the guards and a shopkeeper ask about, and the same for everyone.
+    /// This is what a particular client is told, which is not the same question:
+    /// a guildmate is green to you and blue to a stranger.
+    ///
+    /// # ServUO's order, and why guild loses
+    ///
+    /// `Scripts/Misc/Notoriety.cs` asks about standing first: a murderer is red
+    /// and a criminal is grey **before** any guild question. Only then does the
+    /// same guild or an ally read green, and a guild at war read orange. So a red
+    /// cannot hide inside a guild tabard, which is the whole reason for the
+    /// order.
+    ///
+    /// # The cost, and where it is not paid
+    ///
+    /// This runs once per watcher per drawn mobile, on the movement path. A
+    /// mobile with no [`GuildMember`] — every creature, every townsperson, every
+    /// unguilded player — costs one failed component lookup and returns the
+    /// absolute answer, so the common case does not touch the guild table at all.
+    #[must_use]
+    pub fn notoriety_toward(&self, viewer: EntityId, target: EntityId) -> Notoriety {
+        let standing = self.notoriety_of(target);
+        // Standing wins. Anything but a plain blue is already the answer, and
+        // asking about guilds would be asking a question that cannot change it.
+        if standing != Notoriety::Innocent {
+            return standing;
+        }
+        let Some(theirs) = self.registry.get::<crate::components::GuildMember>(target) else {
+            return standing;
+        };
+        let Some(mine) = self.registry.get::<crate::components::GuildMember>(viewer) else {
+            return standing;
+        };
+        if mine.guild == theirs.guild {
+            return Notoriety::Friend;
+        }
+        match self
+            .guilds
+            .get(mine.guild)
+            .and_then(|guild| guild.toward(theirs.guild))
+        {
+            Some(crate::guild::Relation::Ally) => Notoriety::Friend,
+            Some(crate::guild::Relation::War) => Notoriety::Enemy,
+            None => standing,
+        }
+    }
+
     /// The flag byte a `0x77`/`0x78` carries about a mobile.
     ///
     /// One bit of the eight is set by this engine, and it is the stance: a
@@ -1998,7 +2064,7 @@ impl WorldState {
 
     /// Build a `0x78` for an entity, if it is a drawable mobile.
     #[must_use]
-    pub fn mobile_incoming(&mut self, entity: EntityId) -> Option<MobileIncoming> {
+    pub fn mobile_incoming(&mut self, viewer: EntityId, entity: EntityId) -> Option<MobileIncoming> {
         let serial = self.registry.serial_of(entity)?;
         let Position(position) = *self.registry.get::<Position>(entity)?;
         let Heading(facing) = *self.registry.get::<Heading>(entity)?;
@@ -2011,7 +2077,7 @@ impl WorldState {
             facing,
             hue: body.hue,
             flags,
-            notoriety: self.notoriety_of(entity),
+            notoriety: self.notoriety_toward(viewer, entity),
             equipment: self.equipment_of(serial),
         })
     }
@@ -2075,7 +2141,7 @@ impl WorldState {
 
     /// Build a `0x77` for an entity.
     #[must_use]
-    pub fn mobile_move(&self, entity: EntityId) -> Option<MobileMove> {
+    pub fn mobile_move(&self, viewer: EntityId, entity: EntityId) -> Option<MobileMove> {
         let serial = self.registry.serial_of(entity)?;
         let Position(position) = *self.registry.get::<Position>(entity)?;
         let Heading(facing) = *self.registry.get::<Heading>(entity)?;
@@ -2090,7 +2156,7 @@ impl WorldState {
             // between two steps says so on the next one, which is how a
             // watcher learns about a stance nobody was there to see start.
             flags: self.stance_of(entity),
-            notoriety: self.notoriety_of(entity),
+            notoriety: self.notoriety_toward(viewer, entity),
         })
     }
 

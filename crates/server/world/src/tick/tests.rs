@@ -8511,6 +8511,109 @@ fn decorate_places_statics_and_clear_removes_them() {
 }
 
 #[test]
+fn a_guildmate_is_green_and_a_guild_at_war_is_orange() {
+    use openshard_state::components::GuildMember;
+    use openshard_state::{Relation, guild::GuildId};
+
+    // The colour a client is told, which is the only notoriety that is relative:
+    // the same mobile is green to a guildmate and blue to a stranger.
+    let now = Instant::now();
+    let mut world = world();
+    let first = enter(&mut world, now);
+    let second = enter_as(&mut world, connection(), now);
+    let one = world.state.players[&first];
+    let two = world.state.players[&second];
+
+    // Strangers first, so what changes is visible.
+    assert_eq!(
+        world.state.notoriety_toward(one, two),
+        Notoriety::Innocent,
+        "an unguilded stranger is not blue"
+    );
+
+    let serial = world.registry().serial_of(one).unwrap();
+    let ours = world
+        .state
+        .guilds
+        .found("The Silver Serpent".to_owned(), "OSS".to_owned(), serial);
+    let member = |guild: GuildId| GuildMember {
+        guild,
+        title: String::new(),
+    };
+    world.state.registry.insert(one, member(ours));
+    world.state.registry.insert(two, member(ours));
+    assert_eq!(
+        world.state.notoriety_toward(one, two),
+        Notoriety::Friend,
+        "a guildmate is not green"
+    );
+
+    // A second guild: unrelated is still blue, allied is green, at war is orange.
+    let theirs = world
+        .state
+        .guilds
+        .found("The Black Rose".to_owned(), "TBR".to_owned(), serial);
+    world.state.registry.insert(two, member(theirs));
+    assert_eq!(
+        world.state.notoriety_toward(one, two),
+        Notoriety::Innocent,
+        "an undeclared guild is not blue"
+    );
+
+    world.state.guilds.declare(ours, theirs, Relation::Ally);
+    assert_eq!(world.state.notoriety_toward(one, two), Notoriety::Friend);
+    // Both ways: the colour must not depend on which one is asked about.
+    assert_eq!(world.state.notoriety_toward(two, one), Notoriety::Friend);
+
+    world.state.guilds.declare(ours, theirs, Relation::War);
+    assert_eq!(world.state.notoriety_toward(one, two), Notoriety::Enemy);
+    assert_eq!(world.state.notoriety_toward(two, one), Notoriety::Enemy);
+}
+
+#[test]
+fn a_murderer_stays_red_inside_a_guild_tabard() {
+    use openshard_state::components::GuildMember;
+
+    // ServUO's order, and the reason for it: standing is asked before any guild
+    // question, so a red cannot hide behind a guildmate's green.
+    let now = Instant::now();
+    let mut world = world();
+    let first = enter(&mut world, now);
+    let second = enter_as(&mut world, connection(), now);
+    let one = world.state.players[&first];
+    let two = world.state.players[&second];
+
+    let serial = world.registry().serial_of(one).unwrap();
+    let ours = world
+        .state
+        .guilds
+        .found("The Silver Serpent".to_owned(), "OSS".to_owned(), serial);
+    for who in [one, two] {
+        world.state.registry.insert(
+            who,
+            GuildMember {
+                guild: ours,
+                title: String::new(),
+            },
+        );
+    }
+    assert_eq!(world.state.notoriety_toward(one, two), Notoriety::Friend);
+
+    world.state.registry.insert(two, Notoriety::Murderer);
+    assert_eq!(
+        world.state.notoriety_toward(one, two),
+        Notoriety::Murderer,
+        "a murderer read green to its own guild"
+    );
+    world.state.registry.insert(two, Notoriety::Criminal);
+    assert_eq!(
+        world.state.notoriety_toward(one, two),
+        Notoriety::Criminal,
+        "a criminal read green to its own guild"
+    );
+}
+
+#[test]
 fn decorating_twice_does_not_lay_a_second_britain() {
     use openshard_state::components::Decoration;
     let now = Instant::now();

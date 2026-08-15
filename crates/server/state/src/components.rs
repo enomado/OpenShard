@@ -1647,6 +1647,25 @@ pub struct ChasePath {
     pub planned_at: u64,
 }
 
+/// Which guild a mobile belongs to, and the title it wears inside it.
+///
+/// A component rather than a list on the [`Guild`](crate::Guild), because the
+/// question asked most often is "what guild is *this* mobile in", once per
+/// watcher per drawn mobile — see
+/// [`notoriety_toward`](crate::WorldState::notoriety_toward). A roster is the
+/// rarer direction and is a scan.
+///
+/// Saved with the mobile: a guild that survived a restart with no members would
+/// be a guild nobody could leave.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct GuildMember {
+    /// Which guild.
+    pub guild: crate::guild::GuildId,
+    /// The rank shown before the name, if the guild gave it one — "Warlord".
+    /// Empty for a plain member.
+    pub title: String,
+}
+
 /// Marks a player who has died and walks as a ghost: greyed, silent to the
 /// living, waiting on resurrection.
 ///

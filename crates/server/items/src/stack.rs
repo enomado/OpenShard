@@ -134,7 +134,7 @@ pub fn redraw_ground_item(state: &mut WorldState, item: EntityId) {
         let Some((connection, version)) = state.client_of(watcher) else {
             continue;
         };
-        if let Some(packet) = state.draw_packet(item, version) {
+        if let Some(packet) = state.draw_packet(watcher, item, version) {
             state.outbox.push(Outbound { connection, packet });
         }
     }

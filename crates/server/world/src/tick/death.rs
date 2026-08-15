@@ -227,7 +227,7 @@ impl World {
                 }),
             );
         }
-        if let Some(mine) = self.state.mobile_incoming(entity) {
+        if let Some(mine) = self.state.mobile_incoming(entity, entity) {
             self.state
                 .send_packet(connection, &ServerPacket::MobileIncoming(mine));
         }

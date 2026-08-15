@@ -517,7 +517,7 @@ impl World {
         // draws its body from `0x1B`, but its worn items come from here; `reveal`
         // sends this mobile to *others*, never to itself, so this is the one place
         // it hears about its own paperdoll.
-        if let Some(mine) = self.state.mobile_incoming(entity) {
+        if let Some(mine) = self.state.mobile_incoming(entity, entity) {
             self.state
                 .send_packet(connection, &ServerPacket::MobileIncoming(mine));
         }

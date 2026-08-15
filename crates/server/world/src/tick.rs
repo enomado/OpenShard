@@ -244,6 +244,7 @@ impl World {
         );
         Self {
             state: WorldState {
+                guilds: openshard_state::Guilds::default(),
                 registry: Registry::new(),
                 bus: EventBus::new(),
                 facets,
