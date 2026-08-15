@@ -187,7 +187,7 @@ pub struct World {
     crossed: Cursor<RegionChanged>,
     /// Commands waiting for the next tick.
     inbox: Vec<Command>,
-    /// The spawn regions the tick keeps populated. Registered by the script pack,
+    /// The spawn regions the tick keeps populated. Laid by the `populate:` verb,
     /// maintained here, and persisted — a populated area stays populated across a
     /// restart, and a rare spawn keeps its remaining respawn wait.
     spawners: Vec<crate::spawner::Spawner>,
@@ -413,7 +413,7 @@ impl World {
         &self.state.bus
     }
 
-    /// Ask the script pack for an admin verb nobody clicked — see [`crate::admin::seed`].
+    /// Send an admin verb nobody clicked — see [`crate::admin::seed`].
     ///
     /// Called between the script host being loaded and the first tick, which is
     /// the one window where the cursors exist and no tick has retired anything
@@ -944,7 +944,7 @@ impl World {
                 );
                 // Both were a second command keyed by serial, and the serial did
                 // not exist until this returned — which is what the tile-keyed
-                // rendezvous in the script pack was working around. See
+                // rendezvous the script pack was working around. See
                 // `Command::SpawnMobile`.
                 if let Some(entity) = spawned {
                     if let Some(serial) = self.state.registry.serial_of(entity) {
@@ -1403,7 +1403,7 @@ impl World {
         }
     }
 
-    /// Send a pack-built gump to a mobile's client — the pack-facing counterpart
+    /// Send a content-built gump to a mobile's client — the counterpart
     /// of the admin menu's own `GumpDisplay`. Silent if the serial names
     /// no mobile, or it has no client to draw on.
     fn show_gump(&mut self, serial: Serial, gump_id: GumpId, at: GumpPoint, layout: &str, lines: &[String]) {

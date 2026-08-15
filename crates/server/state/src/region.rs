@@ -209,7 +209,7 @@ impl Regions {
     /// position and rebuilding the grid.
     ///
     /// Replace-all rather than add-one, like the decoration and spawner sweeps:
-    /// the pack owns the whole set, so registering twice cannot leave a stale
+    /// a registration carries the whole set, so registering twice cannot leave a stale
     /// half behind.
     pub fn set(&mut self, regions: Vec<Region>) {
         self.regions = regions;

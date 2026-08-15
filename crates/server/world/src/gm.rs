@@ -107,7 +107,7 @@ fn make_key(state: &mut WorldState, actor: EntityId, args: &[&str]) {
 ///
 /// The four strengths are the same bottle on the wire (`0x0F0A`), so which poison
 /// one holds is on the item and something has to put it there. On a live shard that
-/// is the pack's alchemist through `op_set_poison`; this is how the Poisoning skill
+/// is the staff command; this is how the Poisoning skill
 /// is tested on a shard with no pack at all.
 fn make_poison(state: &mut WorldState, actor: EntityId, args: &[&str]) {
     let level: u8 = match args.first().map(|v| v.parse::<u8>()) {

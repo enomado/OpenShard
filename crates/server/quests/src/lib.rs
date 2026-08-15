@@ -1,12 +1,12 @@
 //! Quests: offering them, tracking them, turning them in, and the window that
 //! shows them.
 //!
-//! # What is here and what is the pack's
+//! # What is here and what is content's
 //!
 //! The *model* is here — what an objective is, how progress moves, when a quest
 //! may be offered again, what the log looks like on a client. The *content* is
-//! the script pack's: a quest is registered as data (`op_register_quests`) and
-//! bound to an NPC as data (`op_bind_quest_giver`), and the engine does the rest.
+//! content's: a quest is data (`state/data/quests.json`) and a giver is bound by
+//! the placement that spawns it, and the engine does the rest.
 //! That is the same split `magic::spells` and `combat::weapons` use, and it is
 //! why this crate exists at all rather than the pack owning everything.
 //!

@@ -16,9 +16,9 @@
 //! # Rolled where the corpse is made
 //!
 //! Not off the [`CorpseCreated`](crate::events::CorpseCreated) event. That event
-//! remains, and a configured script pack still answers it — but content in the
-//! tree is not a listener, it is part of the tick, and a round trip through the
-//! bus would only put a frame between the corpse and what is in it.
+//! remains for anything that wants to watch a death — but content in the tree is
+//! not a listener, it is part of the tick, and a round trip through the bus would
+//! only put a frame between the corpse and what is in it.
 
 use openshard_protocol::wire::{Graphic, Hue};
 

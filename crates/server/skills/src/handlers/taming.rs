@@ -61,7 +61,7 @@ pub(super) fn taming(state: &mut WorldState, tamer: EntityId, target: EntityId) 
         return None;
     }
     // The creature's own numbers if a spawn pinned them, else the core table's for
-    // its body — the same "default in core, customise in the pack" precedence a
+    // its body — the same "the engine's answer first" precedence a
     // weapon's damage has.
     let Some(what) = state
         .registry

@@ -11,8 +11,7 @@
 //! The verb is a string on an
 //! [`AdminMenuAction`](crate::events::AdminMenuAction); everyone listening turns
 //! it into commands, and the world applies all of them. `server::content` answers
-//! all three lay verbs from data in the tree, and a configured script pack may
-//! answer the same ones or others of its own. A verb nobody answers lays nothing
+//! all three lay verbs from data in the tree. A verb nobody answers lays nothing
 //! and says nothing.
 
 use openshard_entities::EntityId;
@@ -49,7 +48,7 @@ struct Row {
     hue: u32,
     label: &'static str,
     /// What a listener switches on — `server::content` for the datasets in the
-    /// tree, a script pack for the rest. This string is the whole of what a
+    /// tree. This string is the whole of what a
     /// click means.
     verb: &'static str,
 }
@@ -171,8 +170,7 @@ pub fn open_menu(state: &mut WorldState, actor: EntityId) {
 ///
 /// The verb is not validated here, and cannot be: the world publishes the string
 /// and does not know who is listening. An unknown one is read by
-/// `server::content` and by any script pack, matches nothing in either, and lays
-/// nothing — exactly as a pack that dropped a set would.
+/// `server::content`, matches nothing there, and lays nothing.
 pub fn seed(state: &mut WorldState, action: &str) {
     state.bus.send(crate::events::AdminMenuAction {
         serial: None,
@@ -182,8 +180,8 @@ pub fn seed(state: &mut WorldState, action: &str) {
 
 /// Interpret a `0xB1` for the admin gump: the acting mobile and the *verb* its
 /// button asked for, or `None` if it is not our gump, the close box, or a forgery.
-/// The verb is a plain string the script pack switches on — the engine holds no
-/// spawn data of its own, so a shard's spawns are edited in the pack, not here.
+/// The verb is a plain string a listener switches on; `server::content` is what
+/// answers it, from `data/*.json` in the domain crates.
 ///
 /// Re-checks the authority here, not only on the `.admin` that opened the gump:
 /// the gump id is not a secret, so a non-staff client could send this packet. This

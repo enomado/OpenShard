@@ -22,8 +22,8 @@ struct Cli {
     /// `--seed regions:felucca,decorate:felucca,populate:felucca`.
     ///
     /// `regions:`, `decorate:` and `populate:` are answered from the tree's own
-    /// data; a script pack may answer these or others, which is why this is a
-    /// string rather than a list this binary can check. Repeat the flag or
+    /// data. It stays a free string rather than a list this binary can check,
+    /// because the world publishes the verb and does not know who answers it. Repeat the flag or
     /// comma-separate; either way the verbs are sent in the order given, which is
     /// the order that matters: regions before what stands in them.
     ///

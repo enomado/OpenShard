@@ -293,7 +293,7 @@ pub struct Account(pub AccountName);
 ///
 /// It sets the item apart from loose clutter: decoration never decays and cannot
 /// be picked up (a town's fittings are not loot), and clearing decoration finds
-/// its items by this. Placed through `op_decorate`; the client draws it as an
+/// its items by this. Placed through `Command::Decorate`; the client draws it as an
 /// ordinary `0x1A` item.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct Decoration;

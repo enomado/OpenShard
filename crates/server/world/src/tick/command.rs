@@ -429,7 +429,7 @@ pub enum Command {
         /// The decoded response: what was clicked, or a cancel.
         response: openshard_protocol::target::TargetResponse,
     },
-    /// The script pack registers a spawn region — an area the tick then keeps
+    /// Register a spawn region — an area the tick then keeps
     /// populated. See [`crate::spawner`].
     RegisterSpawner {
         /// The region to add.
@@ -440,7 +440,7 @@ pub enum Command {
     ClearSpawners,
     /// Give a facet its named areas — towns, dungeons, guarded zones. Sent by
     /// whoever answers the `regions:` admin verb: `server::content`, from
-    /// `state/data/regions.json`, or a script pack.
+    /// `state/data/regions.json`.
     ///
     /// Replaces whatever that facet had, the same replace-all the decoration and
     /// spawner sweeps use, so registering twice cannot leave half an old set
@@ -698,7 +698,7 @@ pub enum Command {
         /// The value in tenths.
         value: u16,
     },
-    /// Override a weapon item's speed and damage — the pack's magic sword.
+    /// Override a weapon item's speed and damage — a shard's magic sword.
     SetWeapon {
         /// The weapon item.
         serial: Serial,
@@ -952,7 +952,7 @@ pub enum Command {
         /// Which slot of the list it was last sent.
         slot: RawCharacterSlot,
     },
-    /// Show a gump to a mobile's client — a pack-built dialog (a quest offer). The
+    /// Show a gump to a mobile's client — a content-built dialog (a quest offer). The
     /// reply comes back as a [`GumpAnswered`](crate::events::GumpAnswered) event.
     ShowGump {
         /// Who sees it.
@@ -968,14 +968,13 @@ pub enum Command {
         /// The text lines the layout indexes into.
         lines: Vec<String>,
     },
-    /// Replace every trade's speech and the personal names in use with the pack's.
-    /// From a script, at load time.
+    /// Replace every trade's speech.
+    /// Queued at load time.
     RegisterNpcSpeech {
         /// Each trade's table, keyed by the title its NPCs wear.
         trades: Vec<(String, openshard_state::SpeechTable)>,
     },
-    /// Replace every quest this shard knows with the pack's list. From a script,
-    /// at load time.
+    /// Replace every quest this shard knows. Queued at load time.
     RegisterQuests {
         /// The quests.
         quests: Vec<openshard_state::quest::QuestDef>,
@@ -988,7 +987,7 @@ pub enum Command {
         /// Which quests, by key. Empty un-binds it.
         keys: Vec<String>,
     },
-    /// Mark an NPC as escortable, and save that with it. From a script.
+    /// Mark an NPC as escortable, and save that with it.
     MakeEscortable {
         /// Which NPC.
         serial: Serial,
@@ -1002,21 +1001,21 @@ pub enum Command {
         connection: ConnectionId,
     },
     /// Close an open gump on a player's client — the dialog a page chain is
-    /// replacing. From a script.
+    /// replacing.
     CloseGump {
         /// Whose client.
         serial: Serial,
         /// Which dialog, by the id it was opened under.
         gump_id: openshard_protocol::gump::GumpId,
     },
-    /// Send a player a private system line. From a script.
+    /// Send a player a private system line.
     Message {
         /// Who reads it.
         serial: Serial,
         /// The words.
         text: String,
     },
-    /// Play a sound for one player. From a script.
+    /// Play a sound for one player.
     PlaySound {
         /// Who hears it.
         serial: Serial,
@@ -1024,7 +1023,7 @@ pub enum Command {
         /// this type — the same seam `Command::Speak` crosses for its `Hue`.
         sound: openshard_protocol::wire::SoundId,
     },
-    /// Put an item into a player's backpack — a quest reward. From a script.
+    /// Put an item into a player's backpack — a quest reward.
     GiveItem {
         /// Whose backpack.
         serial: Serial,
@@ -1039,7 +1038,7 @@ pub enum Command {
     },
     /// Take up to `amount` of a graphic from a player's backpack — a quest
     /// collect turn-in. All-or-nothing; reports back with an
-    /// [`ItemsTaken`](crate::ItemsTaken) event. From a script.
+    /// [`ItemsTaken`](crate::ItemsTaken) event.
     TakeItem {
         /// Whose backpack.
         serial: Serial,
@@ -1056,7 +1055,7 @@ pub enum Command {
         /// Which spell, zero-based.
         spell: SpellId,
     },
-    /// Fill a vendor's stock crate with priced goods. From a script.
+    /// Fill a vendor's stock crate with priced goods.
     StockVendor {
         /// The vendor mobile.
         serial: Serial,
@@ -1064,7 +1063,7 @@ pub enum Command {
         stock: Vec<npc::StockLine>,
     },
     /// Put an item into a container — a pack filling a corpse with loot off a
-    /// [`CorpseCreated`](crate::events::CorpseCreated) event. From a script.
+    /// [`CorpseCreated`](crate::events::CorpseCreated) event.
     AddLoot {
         /// The container — a corpse, a chest.
         container: Serial,
@@ -1079,7 +1078,7 @@ pub enum Command {
         stackable: bool,
     },
     /// Remove an item by serial, wherever it lives — a used item vanishing (a
-    /// drunk potion, a read-once scroll). From a script.
+    /// drunk potion, a read-once scroll).
     ConsumeItem {
         /// The item.
         serial: Serial,

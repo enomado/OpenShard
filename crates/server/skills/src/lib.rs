@@ -106,7 +106,7 @@ pub fn set_stats(state: &mut WorldState, serial: Serial, strength: u16, dexterit
 /// Set a mobile's stats and re-cap its hit points, mana and stamina.
 ///
 /// The one door stats change through, so the three derived pools can never drift
-/// from them — a stat gain and a script's `op_set_stats` both land here.
+/// from them — a stat gain and a `Command::SetStats` both land here.
 pub fn apply_stats(
     state: &mut WorldState,
     entity: EntityId,

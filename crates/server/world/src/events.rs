@@ -231,10 +231,10 @@ pub struct PlayerLeft {
 ///
 /// The tick's `reap` emits this the instant a slain creature's corpse hits the
 /// ground, carrying the corpse's serial and the body it was, so a script can fill
-/// it with per-creature loot: the "default in core, customise in the pack" split
+/// it with per-creature loot: the baseline in the engine and the table beside it
 /// combat and magic already use. The core drops a flat baseline of gold first
 /// (so a bare shard still loots); the pack *adds* the real table — items, rares,
-/// a richer gold roll — off this event, by serial, through `op_add_loot`. Only a
+/// a richer gold roll — off this event, by serial, through `Command::AddLoot`. Only a
 /// creature corpse fires it; a player corpse holds the player's own gear, not
 /// generated loot.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -279,7 +279,7 @@ pub struct RegionChanged {
 /// A game master pressed a button in the `.admin` menu — or the shard was asked
 /// to seed itself on the command line.
 ///
-/// The engine carries the verb across; the script pack decides what it does —
+/// The engine carries the verb across; whoever is listening decides what it does —
 /// which spawn set to register, what to clear. Emitted on the bus so a script
 /// reads it like any other domain event, which is how a staff tool reaches the
 /// pack. Carries an owned `String`, so it is `Clone`, not `Copy`.
@@ -294,12 +294,10 @@ pub struct AdminMenuAction {
     pub action: String,
 }
 
-/// A player answered a pack-built gump (a `0xB1` for a gump that is *not* the
-/// engine's own admin menu) — the reply seam for [`op_gump`]. The pack that
-/// opened the dialog matches on `gump_id` and reads the `button` (and any text or
-/// switches) to know what was chosen. Carries owned `String`s, so `Clone`.
-///
-/// [`op_gump`]: the `op_gump` scripting op.
+/// A player answered a gump that is *not* the engine's own admin menu — the reply
+/// seam for [`Command::ShowGump`](crate::Command::ShowGump). Whoever opened the
+/// dialog matches on `gump_id` and reads the `button` (and any text or switches)
+/// to know what was chosen. Carries owned `String`s, so `Clone`.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct GumpAnswered {
     /// Who answered, by wire identity.

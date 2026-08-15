@@ -52,7 +52,7 @@ pub fn combat_skill_id(state: &WorldState, mobile: EntityId) -> Skill {
 /// one-handed slot takes priority when both are occupied, so a weapon and a
 /// shield work naturally and a shard-issued secondary item cannot make combat
 /// depend on registry iteration order. Its stats are the core table's for the
-/// item's graphic, unless the item carries a [`Weapon`] override (the pack's
+/// item's graphic, unless the item carries a [`Weapon`] override (a shard's
 /// magic sword), which replaces speed and damage while keeping the graphic's
 /// skill. Read fresh each swing (no mirror on the mobile), so a weapon coming
 /// off reverts the bearer to wrestling with nothing to undo.

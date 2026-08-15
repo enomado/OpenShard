@@ -6,7 +6,7 @@
 //! between a crate that holds the data and a crate that owns the tick, which is
 //! what the server is for. So this module is the counterpart of
 //! [`scripting`](crate::scripting): the same `Command`s, from the tree instead of
-//! from a script.
+//! from a script — which is gone, and this is what took its place.
 //!
 //! # Why the commands are returned rather than applied
 //!
@@ -45,15 +45,12 @@ use openshard_world::Command;
 /// not seen; and before the first tick, so a player entering on tick one finds a
 /// world that is already furnished.
 ///
-/// # The pack still wins, while there is one
+/// # Registered wholesale
 ///
-/// A configured script pack registers its own quests and speech on the tick after
-/// this, and both destinations replace wholesale —
+/// Both destinations replace everything before them —
 /// [`QuestDefs::set`](openshard_state::quest::QuestDefs::set) and
-/// [`Dialogue::set_tables`](openshard_state::Dialogue::set_tables) — so a pack
-/// that defines either silently overrides these for exactly as long as the pack
-/// exists. That is deliberate for the length of the migration: nothing is deleted
-/// until the equivalence test says the two agree.
+/// [`Dialogue::set_tables`](openshard_state::Dialogue::set_tables) — so this is
+/// the shard's whole answer for each, not an addition to one.
 #[must_use]
 pub fn boot() -> Vec<Command> {
     vec![

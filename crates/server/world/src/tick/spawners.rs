@@ -118,14 +118,14 @@ impl World {
 
     /// Drop every spawn region and despawn the creatures they were maintaining —
     /// Register a spawn region, giving it a fresh id and replacing any earlier one
-    /// over the same box. Re-running the pack's "populate" does not stack a second
+    /// over the same box. Re-running "populate" does not stack a second
     /// spawner on a region — it re-places it, with a reset timer — and after a
     /// restart the regions come from the store, not from here, so their timers hold.
     pub(super) fn register_spawner(&mut self, mut spawner: crate::spawner::Spawner) {
         // A region already standing over this box wins, and keeps its timer. That
         // timer may have come from the database with hours still to wait, and the
         // boot re-populate (or a second staff click) must not reset it — a hard
-        // reset is Clear, then Populate. This is also what lets the pack's
+        // reset is Clear, then Populate. This is also what lets the
         // `populate` run on every boot, to re-place the townsfolk it does not save,
         // without stacking a second spawner or resetting the restored ones.
         if self.spawners.iter().any(|s| s.area == spawner.area) {
@@ -257,7 +257,7 @@ impl World {
     /// (players have one), and not a ridden mount (whose rider is a live player we
     /// must not strand on a phantom horse). This is both the spawner-maintained
     /// animals — tagged [`SpawnedBy`] — *and* the named townsfolk, bankers and
-    /// vendors the pack places once via `op_spawn_mobile`, which carry no
+    /// vendors `content::verb` places once via `Command::SpawnMobile`, which carry no
     /// `SpawnedBy` and so used to survive a clear, reading as "clear did nothing".
     /// Each mobile takes its worn gear (and a vendor's stock crate and its wares)
     /// with it, and is taken off every screen before it goes.

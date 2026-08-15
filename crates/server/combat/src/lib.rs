@@ -391,7 +391,7 @@ pub const fn swing_ticks(dex: u16, base: u64, era: u8, scale: u64) -> u64 {
 /// script names on a spell's damage. It is the whole of murder attribution: a
 /// lethal blow that leaves a blue mobile dead tallies against the attacker, so a
 /// fireball counts the same as a sword. Unattributed damage (a script's raw
-/// `op_damage` with no `by`, an environmental hazard) kills without blame.
+/// `Command::Damage` with no `by`, an environmental hazard) kills without blame.
 pub fn damage(
     state: &mut WorldState,
     serial: Serial,

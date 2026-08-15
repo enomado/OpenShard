@@ -197,7 +197,7 @@ fn finish_swing(world: &mut World, connection: ConnectionId, mut now: Instant) -
 #[test]
 fn a_pickaxe_swung_at_a_mountain_yields_ore_and_empties_the_vein() {
     // The whole chain, because every link has somewhere to go wrong: a
-    // double-click that has to reach the tool table rather than the pack's
+    // double-click that has to reach the tool table rather than a content
     // `ItemUsed`, a *location* cursor (an object cursor would refuse bare rock),
     // a land tile the client never sent, a band roll, and a bank that goes down.
     let now = Instant::now();
