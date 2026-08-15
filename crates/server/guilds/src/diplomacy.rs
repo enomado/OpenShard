@@ -68,20 +68,8 @@ pub fn propose(
     Ok(Outcome::Declared)
 }
 
-/// Take back an offer the other guild has not answered.
-///
-/// Only an offer. A relation both guilds declared is ended by [`make_peace`],
-/// which says so to both of them.
-pub fn withdraw(state: &mut WorldState, leader: EntityId, other: GuildId) -> Result<(), Refusal> {
-    let own = may_lead(state, leader)?;
-    if own == other || state.guilds.get(other).is_none() {
-        return Err(Refusal::NoSuchGuild);
-    }
-    state.guilds.withdraw(own, other);
-    Ok(())
-}
-
-/// End a war or an alliance, both ways.
+/// End a war or an alliance, both ways — and take back an offer nobody
+/// answered, which is the same button on the same row.
 ///
 /// One guild's decision, not a second handshake. A war that took two guilds to
 /// start but only one to end is the guildstone's rule and the right one: the

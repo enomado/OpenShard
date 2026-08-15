@@ -1000,6 +1000,12 @@ pub enum Command {
         /// Whose.
         connection: ConnectionId,
     },
+    /// A client pressed the paperdoll's Guild button (`0xD7`/`0x28`) — open the
+    /// guild window.
+    GuildWindowRequest {
+        /// Whose.
+        connection: ConnectionId,
+    },
     /// Close an open gump on a player's client — the dialog a page chain is
     /// replacing.
     CloseGump {

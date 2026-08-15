@@ -73,6 +73,7 @@ use openshard_ai as ai;
 use openshard_chat as chat;
 use openshard_combat as combat;
 use openshard_crafting as crafting;
+use openshard_guilds as guilds;
 use openshard_items as items;
 use openshard_magic as magic;
 use openshard_npc as npc;
@@ -1243,6 +1244,9 @@ impl World {
             }
             Command::MakeEscortable { serial, destination } => {
                 quests::make_escortable(&mut self.state, serial, destination);
+            }
+            Command::GuildWindowRequest { connection } => {
+                guilds::open(&mut self.state, connection);
             }
             Command::QuestLogRequest { connection } => {
                 quests::open_log(&mut self.state, connection);

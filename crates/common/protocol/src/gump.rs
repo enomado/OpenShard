@@ -32,6 +32,60 @@ use crate::wire::{ClilocId, Graphic, Hue};
 #[serde(transparent)]
 pub struct GumpId(pub u32);
 
+/// Every dialog this engine draws, in one table.
+///
+/// # Why they are not each declared where they are drawn
+///
+/// They were, and two of them collided: the guild window and the craft window
+/// were both `0x0052_0001`, and the only thing that noticed was the craft tests
+/// going red — because the router asks each handler in turn, and the first one
+/// to claim a reply wins. Nothing on the wire or in the type system says an id
+/// is taken. Nine constants across five crates is nine chances to pick one
+/// already in use, and no place to look first.
+///
+/// So the ids live here, below every crate that draws a window, and
+/// [`all_gump_ids_are_distinct`] is the check that could not exist while they
+/// were scattered. A window still names its own — `pub const CRAFT_GUMP: GumpId
+/// = id::CRAFT;` — so the constant is still where the code that draws it is.
+///
+/// [`all_gump_ids_are_distinct`]: self#tests
+pub mod id {
+    use super::GumpId;
+
+    /// The staff menu behind `.admin`. High byte `0xAD` for "admin".
+    pub const ADMIN: GumpId = GumpId(0x00AD_0001);
+    /// The quest log, offer and turn-in — one window, many pages.
+    pub const QUEST: GumpId = GumpId(0x0051_0001);
+    /// "Give this quest up?"
+    pub const QUEST_RESIGN: GumpId = GumpId(0x0051_0002);
+    /// The craft window.
+    pub const CRAFT: GumpId = GumpId(0x0052_0001);
+    /// A runebook's entries.
+    pub const RUNEBOOK: GumpId = GumpId(0x0053_0001);
+    /// A moongate's destination list.
+    pub const MOONGATE: GumpId = GumpId(0x0053_0002);
+    /// A healer's "wouldst thou like to be resurrected?".
+    pub const HEALER: GumpId = GumpId(0x0054_0001);
+    /// The guild window: founding, the roster, wars and alliances.
+    pub const GUILD: GumpId = GumpId(0x0055_0001);
+    /// What Animal Lore draws about a creature.
+    pub const ANIMAL_LORE: GumpId = GumpId(0x0A11);
+
+    /// The table, for the distinctness check and for anything that wants to ask
+    /// whether an id belongs to the engine at all.
+    pub const ALL: [GumpId; 9] = [
+        ADMIN,
+        QUEST,
+        QUEST_RESIGN,
+        CRAFT,
+        RUNEBOOK,
+        MOONGATE,
+        HEALER,
+        GUILD,
+        ANIMAL_LORE,
+    ];
+}
+
 /// A dialog id exactly as a client's `0xB1` echoed it.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Debug, Default)]
 pub struct RawGumpId(pub u32);
@@ -820,11 +874,13 @@ pub struct GumpResponse {
     pub switches: Vec<RawSwitchId>,
     /// Text fields, as `(field id, contents)`.
     ///
-    /// Both halves stay untyped, and the reason is that nothing in the engine
-    /// reads them: every window it draws answers with buttons and switches, and
-    /// a text field only ever appears in a *pack* gump, so the id is one the
-    /// pack chose and the check "is this a field I drew" is the pack's to make,
-    /// above the script bridge. The engine types what the engine reads —
+    /// Both halves stay untyped, and the reason is that a field id means nothing
+    /// on its own: it is whatever number the *layout* gave it, so the check "is
+    /// this a field I drew" belongs to whoever drew the window and cannot be made
+    /// here. The guild window is the first that reads one — it names its two
+    /// founding fields and gives each roster row its own index — and it resolves
+    /// them against the context it remembers drawing, which is the same rule its
+    /// buttons follow. The engine types what the engine can check —
     /// `docs/protocol_newtypes.md`, N5's amendments.
     pub text_entries: Vec<(u16, String)>,
 }
@@ -906,6 +962,22 @@ impl GumpResponse {
 
 #[cfg(test)]
 mod tests {
+    /// The check that could not exist while the ids were declared in five
+    /// different crates.
+    ///
+    /// A duplicate is not a compile error and nothing on the wire notices one:
+    /// the router asks each handler in turn and the first to claim a reply wins,
+    /// so the *other* window silently stops answering. That is how the guild
+    /// window took the craft window's `0x0052_0001` — caught by the craft tests
+    /// going red, which is luck, not a check.
+    #[test]
+    fn all_gump_ids_are_distinct() {
+        for (i, id) in super::id::ALL.iter().enumerate() {
+            let clash = super::id::ALL[..i].iter().position(|other| other == id);
+            assert!(clash.is_none(), "{id:?} appears twice in the table");
+        }
+    }
+
     use super::*;
     use crate::packet::{decode_packet, encode_packet};
 

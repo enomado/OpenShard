@@ -96,6 +96,25 @@ impl World {
                     skills::begin_harvest(&mut self.state, actor, tool, target);
                 }
             }
+            openshard_state::TargetPurpose::GuildInvite => {
+                // Re-checked here: the cursor outlives the click that raised it,
+                // and a leader who disbanded or was deposed while it was up
+                // invites nobody.
+                let target = response
+                    .object
+                    .and_then(|serial| self.state.registry.entity_of(serial));
+                match target {
+                    Some(target) => match openshard_guilds::invite(&mut self.state, actor, target) {
+                        Ok(()) => {
+                            self.notify_self(actor, "They have been asked.");
+                            self.state
+                                .system_message(target, "You have been asked to join a guild.");
+                        }
+                        Err(refusal) => self.notify_self(actor, refusal.message()),
+                    },
+                    None => self.notify_self(actor, "That cannot join a guild."),
+                }
+            }
             openshard_state::TargetPurpose::TurnKey { key } => {
                 // The key may have gone while the cursor was up, and the target may be
                 // nothing at all — a key turned on the sky opens nothing and says so.
@@ -138,6 +157,11 @@ impl World {
         // The quest dialogs answer themselves — the core owns that window, the
         // way it owns the container and vendor ones.
         if openshard_quests::handle(&mut self.state, connection, &response) {
+            return;
+        }
+        // And the guild window, whose rows are only ever what this side
+        // remembers drawing — see `openshard_guilds::gump`.
+        if openshard_guilds::handle(&mut self.state, connection, &response) {
             return;
         }
         // And so does the craft window, for the same reason and by the same

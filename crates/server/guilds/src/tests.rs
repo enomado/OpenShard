@@ -1,23 +1,29 @@
 //! The rules, over a world with nothing in it but mobiles.
 //!
-//! A bare [`WorldState`]: no map, no clients, no packets going anywhere. That is
-//! enough to test every rule here, because none of them look at the ground —
-//! and it means the assertions are about guilds rather than about a world that
-//! had to be stood up first. What the packets *do* is
-//! `world/src/tick/tests.rs`' business, next to the notoriety tests they change.
+//! A bare [`WorldState`]: no map, no terrain, no gateway. That is enough for
+//! every rule here, because none of them look at the ground — and it keeps the
+//! assertions about guilds rather than about a world that had to be stood up
+//! first. The window's tests add a session row and a `Client`, which is all a
+//! gump needs; where those packets end up is the tick's business.
 
 use std::collections::{BTreeMap, HashMap};
 
 use openshard_entities::{EntityId, Registry};
 use openshard_events::EventBus;
+use openshard_gateway::ConnectionId;
+use openshard_protocol::access::AccessLevel;
+use openshard_protocol::gump::{ButtonId, GumpResponse, RawButtonId, RawGumpId, RawGumpKey};
+use openshard_protocol::identity::AccountName;
 use openshard_protocol::serial::SerialKind;
+use openshard_protocol::version::ClientVersion;
 use openshard_protocol::world::Facet;
+use openshard_state::connection::Connection;
 use openshard_state::harvest::Banks;
 use openshard_state::rng::Rng;
 use openshard_state::sectors::Sectors;
 use openshard_state::{
-    Dialogue, FacetState, Gameplay, GuildCandidate, GuildId, GuildMember, Obstructions, QuestDefs, Regions,
-    Relation, WorldState,
+    Client, Dialogue, FacetState, Gameplay, GuildCandidate, GuildGumpContext, GuildId, GuildMember,
+    GuildPage, Obstructions, QuestDefs, Regions, Relation, TargetPurpose, WorldState,
 };
 
 use crate::{Outcome, Refusal, may_lead, roster};
@@ -78,6 +84,42 @@ fn a_guild(state: &mut WorldState) -> (EntityId, GuildId) {
     let leader = mobile(state);
     let guild = crate::found(state, leader, "The Silver Serpent", "OSS").expect("a first guild");
     (leader, guild)
+}
+
+/// A mobile with a client behind it, which is what a window needs: a `Client`
+/// component, a session row to hang the context on, and a `players` entry so a
+/// reply can find who sent it.
+fn player(state: &mut WorldState, id: u64) -> (EntityId, ConnectionId) {
+    let entity = mobile(state);
+    let connection = ConnectionId::from_raw(id);
+    state.connections.insert(
+        connection,
+        Connection::new(
+            ClientVersion::new(7, 0, 0, 0),
+            AccountName::new("tester"),
+            AccessLevel::Player,
+        ),
+    );
+    state.players.insert(connection, entity);
+    state.registry.insert(entity, Client { connection });
+    (entity, connection)
+}
+
+/// The `0xB1` a client would send back: our gump, one button, and whatever was
+/// typed into the fields.
+fn reply(button: ButtonId, fields: &[(u16, &str)]) -> GumpResponse {
+    GumpResponse {
+        serial: RawGumpKey(0),
+        gump_id: RawGumpId(crate::GUILD_GUMP.0),
+        button: RawButtonId(button.0),
+        switches: Vec::new(),
+        text_entries: fields.iter().map(|&(id, text)| (id, text.to_owned())).collect(),
+    }
+}
+
+/// What the window last drew for this player.
+fn context(state: &WorldState, player: EntityId) -> Option<GuildGumpContext> {
+    state.row_of(player).and_then(|row| row.guild_gump.clone())
 }
 
 #[test]
@@ -312,4 +354,159 @@ fn disbanding_clears_the_membership_it_leaves_behind() {
     assert!(!state.registry.has::<GuildMember>(member));
     assert!(!state.registry.has::<GuildMember>(leader));
     assert_eq!(roster(&state, guild), Vec::<EntityId>::new());
+}
+
+#[test]
+fn the_window_a_player_with_no_guild_gets_is_the_founding_form() {
+    // And it is the only page they get: a stale button from a window drawn before
+    // they left lands here rather than on an empty roster.
+    let mut state = world();
+    let (player, connection) = player(&mut state, 1);
+    crate::open(&mut state, connection);
+    let drawn = context(&state, player).expect("a window");
+    assert_eq!(drawn.page, GuildPage::Main);
+
+    crate::gump::show(&mut state, player, GuildPage::Diplomacy);
+    assert_eq!(context(&state, player).expect("a window").page, GuildPage::Main);
+}
+
+#[test]
+fn the_founding_form_founds_what_was_typed_into_it() {
+    let mut state = world();
+    let (player, connection) = player(&mut state, 1);
+    crate::open(&mut state, connection);
+
+    let typed = reply(
+        crate::gump::button::FOUND,
+        &[
+            (crate::gump::FIELD_NAME as u16, "The Silver Serpent"),
+            (crate::gump::FIELD_ABBREVIATION as u16, "OSS"),
+        ],
+    );
+    assert!(crate::handle(&mut state, connection, &typed));
+    let guild = state.guild_of(player).expect("a guild");
+    assert_eq!(guild.name, "The Silver Serpent");
+    assert_eq!(guild.abbreviation, "OSS");
+}
+
+#[test]
+fn a_reply_to_a_window_this_side_never_opened_does_nothing() {
+    // The gump id is not a secret and the button is whatever the client says. The
+    // context is what makes the difference, and it is taken rather than read — so
+    // the same reply twice is one action.
+    let mut state = world();
+    let (player, connection) = player(&mut state, 1);
+    let typed = reply(
+        crate::gump::button::FOUND,
+        &[
+            (crate::gump::FIELD_NAME as u16, "The Silver Serpent"),
+            (crate::gump::FIELD_ABBREVIATION as u16, "OSS"),
+        ],
+    );
+    assert!(
+        crate::handle(&mut state, connection, &typed),
+        "the reply is still ours to have refused"
+    );
+    assert!(state.guild_of(player).is_none(), "a guild from no window");
+
+    crate::open(&mut state, connection);
+    crate::handle(&mut state, connection, &typed);
+    assert!(state.guild_of(player).is_some());
+    // The second press finds no context. Without that, a name already taken would
+    // be the only thing stopping it.
+    crate::handle(&mut state, connection, &typed);
+    assert_eq!(state.guilds.len(), 1);
+}
+
+#[test]
+fn a_diplomacy_row_declares_on_the_guild_that_row_drew() {
+    let mut state = world();
+    let (leader, connection) = player(&mut state, 1);
+    let own = crate::found(&mut state, leader, "The Silver Serpent", "OSS").unwrap();
+    let other = mobile(&mut state);
+    let theirs = crate::found(&mut state, other, "The Black Rose", "TBR").unwrap();
+
+    crate::gump::show(&mut state, leader, GuildPage::Diplomacy);
+    let drawn = context(&state, leader).expect("a window");
+    assert_eq!(drawn.guilds, vec![theirs], "the page listed its own guild");
+
+    let war = reply(crate::gump::row_button(crate::gump::DIPLOMACY_BASE, 0, 0), &[]);
+    crate::handle(&mut state, connection, &war);
+    assert_eq!(
+        state.guilds.get(own).unwrap().offered(theirs),
+        Some(Relation::War),
+        "row zero declared on nobody"
+    );
+}
+
+#[test]
+fn a_row_the_window_never_drew_names_nobody() {
+    let mut state = world();
+    let (leader, connection) = player(&mut state, 1);
+    crate::found(&mut state, leader, "The Silver Serpent", "OSS").unwrap();
+    let other = mobile(&mut state);
+    crate::found(&mut state, other, "The Black Rose", "TBR").unwrap();
+
+    crate::gump::show(&mut state, leader, GuildPage::Diplomacy);
+    // One guild was listed; row four is a number the client made up.
+    let forged = reply(crate::gump::row_button(crate::gump::DIPLOMACY_BASE, 4, 0), &[]);
+    crate::handle(&mut state, connection, &forged);
+    assert!(
+        state.guilds.iter().all(|guild| guild.proposals.is_empty()),
+        "a forged row declared a war"
+    );
+}
+
+#[test]
+fn a_roster_row_sets_the_title_typed_beside_it() {
+    let mut state = world();
+    let (leader, connection) = player(&mut state, 1);
+    crate::found(&mut state, leader, "The Silver Serpent", "OSS").unwrap();
+    let member = mobile(&mut state);
+    crate::invite(&mut state, leader, member).unwrap();
+    crate::accept_invitation(&mut state, member).unwrap();
+
+    crate::gump::show(&mut state, leader, GuildPage::Roster);
+    let drawn = context(&state, leader).expect("a window");
+    let row = drawn
+        .members
+        .iter()
+        .position(|&serial| Some(serial) == state.registry.serial_of(member))
+        .expect("the member was drawn");
+
+    let set = reply(
+        crate::gump::row_button(crate::gump::ROSTER_BASE, row, 0),
+        &[(row as u16, "Warlord")],
+    );
+    crate::handle(&mut state, connection, &set);
+    assert_eq!(
+        state
+            .registry
+            .get::<GuildMember>(member)
+            .map(|m| m.title.as_str()),
+        Some("Warlord")
+    );
+}
+
+#[test]
+fn the_invite_button_raises_a_cursor_only_for_a_leader() {
+    let mut state = world();
+    let (leader, connection) = player(&mut state, 1);
+    crate::found(&mut state, leader, "The Silver Serpent", "OSS").unwrap();
+    crate::gump::show(&mut state, leader, GuildPage::Main);
+    crate::handle(&mut state, connection, &reply(crate::gump::button::INVITE, &[]));
+    assert_eq!(state.take_target(leader), Some(TargetPurpose::GuildInvite));
+
+    // A plain member pressing the same button — the window can outlive the rank
+    // that drew it, and hiding a button hides it on one screen only.
+    let (member, member_connection) = player(&mut state, 2);
+    crate::invite(&mut state, leader, member).unwrap();
+    crate::accept_invitation(&mut state, member).unwrap();
+    crate::gump::show(&mut state, member, GuildPage::Main);
+    crate::handle(
+        &mut state,
+        member_connection,
+        &reply(crate::gump::button::INVITE, &[]),
+    );
+    assert_eq!(state.take_target(member), None, "a member raised a cursor");
 }

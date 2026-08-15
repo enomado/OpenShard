@@ -51,10 +51,10 @@ pub(crate) fn dispatch_world_packet(packet: ClientPacket, id: ConnectionId) -> O
             // at all, with nothing anywhere to say why.
             match command.subcommand.interpret() {
                 EncodedSubcommand::QuestGumpRequest => Some(Command::QuestLogRequest { connection: id }),
-                // Named, not routed: combat has no weapon abilities and `guilds`
-                // is a stub. Naming them means the byte layout is not re-derived
-                // the day either lands.
-                EncodedSubcommand::SetAbility | EncodedSubcommand::GuildGumpRequest => None,
+                EncodedSubcommand::GuildGumpRequest => Some(Command::GuildWindowRequest { connection: id }),
+                // Named, not routed: combat has no weapon abilities. Naming it
+                // means the byte layout is not re-derived the day it lands.
+                EncodedSubcommand::SetAbility => None,
                 EncodedSubcommand::Other(other) => {
                     debug!(subcommand = format!("0x{other:02X}"), "unhandled 0xD7");
                     None

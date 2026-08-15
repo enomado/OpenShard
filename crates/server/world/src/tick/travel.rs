@@ -278,7 +278,7 @@ const RECALL_SOUND: SoundId = SoundId(0x01FC);
 /// The gump id the runebook is drawn under — its own, distinct from the quest
 /// log's `0x0051_*`, the craft window's `0x0052_0001` and the moongate list's
 /// `0x0053_0002`.
-pub(super) const RUNEBOOK_GUMP: GumpId = GumpId(0x0053_0001);
+pub(super) const RUNEBOOK_GUMP: GumpId = openshard_protocol::gump::id::RUNEBOOK;
 
 /// ServUO's `RunebookGump` button ids, kept verbatim.
 ///

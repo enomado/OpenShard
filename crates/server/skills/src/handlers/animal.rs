@@ -35,7 +35,7 @@ const NOTHING_OFFHAND: ClilocId = ClilocId(500_334);
 
 /// The gump id the window is drawn under. Its own number, so a reply cannot be
 /// confused with a quest dialog's.
-pub const ANIMAL_LORE_GUMP: GumpId = GumpId(0x0A11);
+pub const ANIMAL_LORE_GUMP: GumpId = openshard_protocol::gump::id::ANIMAL_LORE;
 
 /// The skill below which only a tamed creature can be read, in tenths.
 const TAMED_ONLY_BELOW: u16 = 1000;

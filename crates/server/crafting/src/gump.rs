@@ -37,7 +37,7 @@ use openshard_protocol::wire::{ClilocId, Graphic, Hue};
 
 /// The window's own id. Distinct from the quest log's, so the two claims of a
 /// `0xB1` cannot be confused.
-pub const CRAFT_GUMP: GumpId = GumpId(0x0052_0001);
+pub const CRAFT_GUMP: GumpId = openshard_protocol::gump::id::CRAFT;
 
 /// Where the window sits, ServUO's `base(40, 40)`.
 const WINDOW_X: i32 = 40;

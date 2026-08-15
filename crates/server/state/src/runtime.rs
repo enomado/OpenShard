@@ -680,6 +680,36 @@ pub struct QuestGumpContext {
     pub giver: Option<Serial>,
 }
 
+/// Which page of the guild window a player is looking at.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum GuildPage {
+    /// The front: found a guild, or what yours is and what you may do with it.
+    Main,
+    /// Who is in it, one row each.
+    Roster,
+    /// Every other guild, and where this one stands with it.
+    Diplomacy,
+}
+
+/// What a player's open guild window is showing, and what its rows meant.
+///
+/// The `listed` half is the point. A reply names a *row*, never an id — the
+/// client is free to send any number it likes — so which guild or which member
+/// row three was is the server's memory of what it drew, and a reply to a window
+/// this side never opened resolves to nothing.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct GuildGumpContext {
+    /// Which page.
+    pub page: GuildPage,
+    /// The guilds the diplomacy page drew, in row order.
+    pub guilds: Vec<crate::guild::GuildId>,
+    /// The members the roster drew, by serial, in row order. Serials rather than
+    /// entities because the window outlives a tick and an entity id does not
+    /// survive a despawn — a row naming a logged-out member resolves to nobody
+    /// rather than to whoever took the slot.
+    pub members: Vec<Serial>,
+}
+
 /// Which part of the craft window a player is looking at.
 ///
 /// ServUO keeps this as a `CraftPage` plus a separate `CraftGumpItem` gump; the
@@ -768,6 +798,12 @@ pub enum TargetPurpose {
         /// while the cursor was up mines nothing.
         tool: EntityId,
     },
+    /// A guild leader's cursor, waiting for whoever is to be asked to join.
+    ///
+    /// Carries nothing: the guild is the one the clicker leads, and it is read
+    /// again when the click lands rather than remembered here — a leader who
+    /// disbanded, or was deposed, while the cursor was up invites nobody.
+    GuildInvite,
     /// A key waiting to be turned on something — ServUO's `Key.OnDoubleClick`, which
     /// raises a cursor rather than guessing which of several nearby doors was meant.
     TurnKey {

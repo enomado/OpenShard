@@ -15,6 +15,7 @@ workspace = true
 openshard-config.workspace = true
 openshard-entities.workspace = true
 openshard-gateway.workspace = true
+openshard-guilds.workspace = true
 openshard-events.workspace = true
 openshard-movement.workspace = true
 openshard-ai.workspace = true

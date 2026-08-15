@@ -24,7 +24,7 @@ use openshard_protocol::world::{Light, MusicId};
 
 use openshard_entities::EntityId;
 
-use crate::runtime::{CraftGumpContext, HeldItem, QuestGumpContext, TargetPurpose};
+use crate::runtime::{CraftGumpContext, GuildGumpContext, HeldItem, QuestGumpContext, TargetPurpose};
 
 /// The derived half of a player's status bar, kept to compare against next time.
 ///
@@ -131,6 +131,9 @@ pub struct Connection {
     /// window this side never drew is a reply to nothing — which is the whole
     /// reason the context is kept rather than trusted off the packet.
     pub quest_gump: Option<QuestGumpContext>,
+    /// The guild window this client has open, on which page, and what its rows
+    /// meant. See [`GuildGumpContext`] for why the rows are remembered here.
+    pub guild_gump: Option<GuildGumpContext>,
     /// The craft window this client has open, on which category and material.
     ///
     /// Carries more weight than the quest log's: the selected category, the
@@ -163,6 +166,7 @@ impl Connection {
             last_music: None,
             pending_target: None,
             quest_gump: None,
+            guild_gump: None,
             craft_gump: None,
             runebook_gump: None,
             gate_gump: None,

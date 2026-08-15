@@ -15,6 +15,7 @@
 //! line, which is the only way to be sure a page chain is right.
 
 use openshard_entities::EntityId;
+use openshard_protocol::gump::id;
 use openshard_protocol::gump::{
     ButtonId, CloseGump, GUMP_DARK_GREEN, GUMP_LIGHT_GREEN, GUMP_RED, GUMP_WHITE, GumpButton, GumpDisplay,
     GumpId, GumpKey, GumpLayout, GumpPoint, SwitchId,
@@ -28,10 +29,10 @@ use openshard_state::{QuestGumpContext, QuestSection, WorldState};
 
 /// The gump id the quest window answers under. Distinctive, so a reply is never
 /// mistaken for the admin menu's or a pack dialog's.
-pub const QUEST_GUMP: GumpId = GumpId(0x0051_0001);
+pub const QUEST_GUMP: GumpId = id::QUEST;
 
 /// The gump id the resign confirmation answers under.
-pub const QUEST_RESIGN_GUMP: GumpId = GumpId(0x0051_0002);
+pub const QUEST_RESIGN_GUMP: GumpId = id::QUEST_RESIGN;
 
 /// Where the window opens. ServUO's `base(75, 25)`.
 const WINDOW_X: u16 = 75;

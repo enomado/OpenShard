@@ -42,15 +42,19 @@
 //! member's own screen has to turn green too.
 
 mod diplomacy;
+pub mod gump;
 mod membership;
+mod reply;
 #[cfg(test)]
 mod tests;
 
-pub use diplomacy::{Outcome, make_peace, propose, withdraw};
+pub use diplomacy::{Outcome, make_peace, propose};
+pub use gump::GUILD_GUMP;
 pub use membership::{
     ABBREVIATION_LIMIT, NAME_LIMIT, TITLE_LIMIT, accept_invitation, decline_invitation, disband, dismiss,
     found, invite, leave, pass_leadership, set_title,
 };
+pub use reply::{handle, open};
 
 use openshard_entities::EntityId;
 use openshard_state::{GuildId, WorldState};

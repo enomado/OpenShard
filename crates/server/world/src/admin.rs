@@ -26,7 +26,7 @@ use openshard_state::components::Client;
 
 /// The id the admin gump answers under. High byte `0xAD` for "admin", so a stray
 /// `0xB1` for some other dialog never lands in the admin handler by accident.
-pub const ADMIN_GUMP: GumpId = GumpId(0x00AD_0001);
+pub const ADMIN_GUMP: GumpId = openshard_protocol::gump::id::ADMIN;
 
 /// One row of the menu: a reply button and the verb its id means.
 ///

@@ -18,7 +18,7 @@ use super::*;
 
 /// The healer's confirm dialog. Its own number, distinct from every other
 /// window's — see `gates.rs`'s `MOONGATE_GUMP` for the scheme.
-pub(super) const HEALER_GUMP: GumpId = GumpId(0x0054_0001);
+pub(super) const HEALER_GUMP: GumpId = openshard_protocol::gump::id::HEALER;
 
 /// "Wouldst thou like to be resurrected?" — ServUO's CONTINUE. Anything else
 /// (CANCEL, or the close box) is `GumpAnswer::Closed`, both `ButtonId(0)`.

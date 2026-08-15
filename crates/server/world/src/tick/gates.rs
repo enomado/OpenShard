@@ -31,7 +31,7 @@ use super::*;
 /// The id is an opaque token the client echoes back and nothing on its side
 /// depends on the value — unlike the *button* encoding, which has to be
 /// ServUO's exactly.
-pub(super) const MOONGATE_GUMP: GumpId = GumpId(0x0053_0002);
+pub(super) const MOONGATE_GUMP: GumpId = openshard_protocol::gump::id::MOONGATE;
 
 /// The one button that means "go" — ServUO's `MoongateGump` OKAY. Zero is the
 /// close box and means cancel, as it does everywhere.
