@@ -2335,7 +2335,7 @@ Roughly in dependency order, each script-first:
 - [ ] `housing` — player houses: a multi placed on the map, a door with a real
   lock, decay unless refreshed, friends/co-owners. Wants multis (the client's
   `multi.mul`/UOP format, unread yet), a region concept and the door locks above.
-- [x] `guilds` — **built, minus persistence and ranks.** Founding, invitations,
+- [x] `guilds` — **built, minus ranks.** Founding, invitations,
   leaving, dismissal, titles, leadership, disbanding, and the war and alliance
   handshake, reached from the paperdoll's Guild button (`0xD7`/`0x28`).
   - **Notoriety became relative, which is the architectural half.** A `0x78`'s
@@ -2353,10 +2353,14 @@ Roughly in dependency order, each script-first:
     a `GuildCandidate` the player answers.
   - Every operation that can move a colour re-announces the mobiles it moved.
     Nothing on a client asks again on its own.
-  - Deferred: **persistence** (`Guilds::high_water` is designed to be saved and
-    nothing writes it yet — a guild does not survive a restart), ServUO's five
-    **ranks** and their flag set (the seam is `may_lead`, one predicate), the
-    guildstone as a placeable item, guild chat, and named multi-guild alliances.
+  - **Saved, schema v24.** The guilds replace-all like the regions; membership is
+    a character column, so the roster is derived from who names the guild; and the
+    id counter is in the world row rather than re-derived, because a disbanded
+    guild leaves no row and the maximum id in the table is not the maximum ever
+    issued.
+  - Deferred: ServUO's five **ranks** and their flag set (the seam is `may_lead`,
+    one predicate), the guildstone as a placeable item, guild chat, and named
+    multi-guild alliances.
   - Client-side: the window renders and the health bars take their hue from the
     byte, but the abbreviation in the **tooltip** shows only on ClassicUO —
     `0xD6` is framed and skipped here. See `client.md`.
