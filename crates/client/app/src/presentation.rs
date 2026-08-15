@@ -56,7 +56,9 @@ use crate::profile;
 use crate::render_passes::{WorldPassAudit, draw_gump_windows, encode_world_passes};
 use crate::window::{prepare_composite_job, ready_atlases};
 use crate::windows::{Drawn, WindowSubject};
-use crate::world::{DAMAGE_NUMBER_HOLD, DAMAGE_NUMBER_RISE, PlayerMotion, advance_presentation_to};
+use crate::world::{
+    DAMAGE_NUMBER_HOLD, DAMAGE_NUMBER_RISE, PlayerMotion, SPEECH_LINE_HEIGHT, advance_presentation_to,
+};
 
 mod composite_producer;
 
@@ -1914,10 +1916,25 @@ impl App {
         let mut overhead: Vec<(ViewPixel, String, Font, Hue)> = drawn
             .iter()
             .filter_map(|(who, mobile)| {
-                let (text, font, hue) = self.world.presentation.crowd.speaking(*who)?;
+                let lines: Vec<_> = self.world.presentation.crowd.speaking(*who).collect();
                 let anchor = mobiles::head_anchor(mobile, &camera, &window.atlases.mobiles)?;
-                Some((anchor, text.to_string(), font, hue))
+                // Newest nearest the head, older ones pushed up — which is the
+                // way a line arriving reads as *arriving* rather than as the
+                // stack shifting under it. `speaking` yields oldest first, so
+                // the walk is reversed.
+                Some(
+                    lines
+                        .into_iter()
+                        .rev()
+                        .enumerate()
+                        .map(move |(above, (text, font, hue))| {
+                            let mut at = anchor;
+                            at.y -= (above as i32) * SPEECH_LINE_HEIGHT;
+                            (at, text.to_string(), font, hue)
+                        }),
+                )
             })
+            .flatten()
             .collect();
         // A combat number follows the same mobile anchor as speech, but its
         // y-coordinate is aged every frame so it rises smoothly rather than

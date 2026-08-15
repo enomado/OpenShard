@@ -85,6 +85,20 @@ pub fn worn(equipment: &[Equipment], tiledata: &TileData) -> Vec<EquipmentLayer>
 /// expiry exists.
 pub const SPEECH_HOLD: Duration = Duration::from_secs(5);
 
+/// How many lines one mobile may have stacked above it at once.
+///
+/// The reference client stacks and this one did not, which is what made the
+/// bug: a single click sends the guild line and then the name as two `0x1C`s,
+/// and a map holding one line per speaker showed only the second. Two lines in a
+/// row from one NPC had always been losing the first, silently — the click is
+/// what made it every time rather than sometimes.
+///
+/// Bounded because a shard can talk faster than [`SPEECH_HOLD`] retires lines,
+/// and a body under thirty of them is a wall of text with a mobile somewhere
+/// behind it. The oldest is dropped, so what a player sees is the most recent
+/// few.
+pub const SPEECH_STACK: usize = 4;
+
 /// One line, and when [`Crowd::hear`] recorded it.
 #[derive(Clone, Debug)]
 struct Speech {
@@ -385,11 +399,13 @@ pub enum CommandedMove {
 #[derive(Clone, Debug)]
 pub struct Crowd {
     tracked: HashMap<Who, Tracked>,
-    /// The last line each serial was heard saying, if it is still within
+    /// The lines each serial was heard saying, oldest first, each still within
     /// [`SPEECH_HOLD`]. Separate from `tracked`: the system talks (`who` is
     /// `None` for it too, same as the offline placeholder) and a body nobody
     /// has otherwise seen can still say something the moment it is heard from.
-    speech: HashMap<Who, Speech>,
+    ///
+    /// A stack and not one line: see [`SPEECH_STACK`].
+    speech: HashMap<Who, Vec<Speech>>,
     /// Real time since this crowd was built. Its own clock rather than an
     /// `Instant`, so every rule here can be tested by handing it durations.
     now: Duration,
@@ -1084,38 +1100,43 @@ impl Crowd {
         self.speech.retain(|who, _| present(*who));
     }
 
-    /// Record that `who` said `text`, replacing whatever they were saying
-    /// before.
+    /// Record that `who` said `text`, above whatever they were already saying.
     ///
     /// Not folded into [`Crowd::see`]: a `0x1C` and a `0x77` are different
     /// packets that arrive on their own schedules, and a speaker does not have
     /// to have moved for a line to be worth showing.
+    ///
+    /// Stacked rather than replaced — a single click alone sends two lines for
+    /// one mobile — and trimmed to [`SPEECH_STACK`] from the front, so the
+    /// newest is what survives a talkative shard.
     pub fn hear(&mut self, who: Who, text: String, font: Font, hue: Hue) {
         let started = self.now;
-        self.speech.insert(
-            who,
-            Speech {
-                text,
-                font,
-                hue,
-                started,
-            },
-        );
+        let lines = self.speech.entry(who).or_default();
+        lines.push(Speech {
+            text,
+            font,
+            hue,
+            started,
+        });
+        if lines.len() > SPEECH_STACK {
+            lines.drain(..lines.len() - SPEECH_STACK);
+        }
     }
 
-    /// What `who` is still saying, or `None` once [`SPEECH_HOLD`] has passed.
+    /// What `who` is still saying, oldest first, and empty once every line has
+    /// passed [`SPEECH_HOLD`].
     ///
     /// Checked against the clock here rather than expired in [`Crowd::advance`]:
     /// nothing downstream needs to know the *moment* a line goes stale, only
     /// whether it still is one, and a lazy check is one fewer place that has to
     /// agree with [`SPEECH_HOLD`].
-    pub fn speaking(&self, who: Who) -> Option<(&str, Font, Hue)> {
-        let speech = self.speech.get(&who)?;
-        (self.now.saturating_sub(speech.started) < SPEECH_HOLD).then_some((
-            speech.text.as_str(),
-            speech.font,
-            speech.hue,
-        ))
+    pub fn speaking(&self, who: Who) -> impl Iterator<Item = (&str, Font, Hue)> {
+        self.speech
+            .get(&who)
+            .into_iter()
+            .flatten()
+            .filter(|line| self.now.saturating_sub(line.started) < SPEECH_HOLD)
+            .map(|line| (line.text.as_str(), line.font, line.hue))
     }
 }
 
@@ -2819,39 +2840,63 @@ mod tests {
         );
     }
 
+    /// What `who` is saying, as plain lines, oldest first.
+    fn said(crowd: &Crowd, who: Who) -> Vec<&str> {
+        crowd.speaking(who).map(|(text, ..)| text).collect()
+    }
+
     /// A line is there the instant it is heard, and gone once the hold runs
     /// out.
     #[test]
     fn a_line_is_spoken_and_then_expires() {
         let mut crowd = Crowd::default();
         crowd.hear(serial(1), "hello".to_string(), Font(0), Hue::NONE);
-        assert_eq!(crowd.speaking(serial(1)).map(|(text, ..)| text), Some("hello"));
+        assert_eq!(said(&crowd, serial(1)), ["hello"]);
         crowd.advance(SPEECH_HOLD - Duration::from_millis(1));
-        assert!(crowd.speaking(serial(1)).is_some(), "not yet");
+        assert_eq!(said(&crowd, serial(1)), ["hello"], "not yet");
         crowd.advance(Duration::from_millis(2));
-        assert!(crowd.speaking(serial(1)).is_none(), "and now it has");
+        assert!(said(&crowd, serial(1)).is_empty(), "and now it has");
     }
 
-    /// A second line replaces the first rather than queuing behind it: only
-    /// one line is ever drawn over a head at a time.
+    /// A second line stacks above the first rather than replacing it, and each
+    /// keeps its own clock.
+    ///
+    /// This is what a single click needs: the shard sends the guild line and
+    /// then the name as two `0x1C`s for one mobile, and a map holding one line
+    /// per speaker showed only the name. Two lines in a row from one NPC had
+    /// always been losing the first — the click just made it every time.
     #[test]
-    fn a_new_line_replaces_the_old_one_and_restarts_the_hold() {
+    fn lines_stack_and_each_keeps_its_own_clock() {
         let mut crowd = Crowd::default();
-        crowd.hear(serial(1), "first".to_string(), Font(0), Hue::NONE);
-        crowd.advance(SPEECH_HOLD - Duration::from_millis(1));
-        crowd.hear(serial(1), "second".to_string(), Font(0), Hue::NONE);
-        assert_eq!(crowd.speaking(serial(1)).map(|(text, ..)| text), Some("second"));
-        // The old line would have expired by now; the new one has its own
-        // clock and has not.
-        crowd.advance(Duration::from_millis(2));
-        assert_eq!(crowd.speaking(serial(1)).map(|(text, ..)| text), Some("second"));
+        crowd.hear(serial(1), "[OSS]".to_string(), Font(0), Hue::NONE);
+        crowd.hear(serial(1), "Wilbur".to_string(), Font(0), Hue::NONE);
+        assert_eq!(said(&crowd, serial(1)), ["[OSS]", "Wilbur"]);
+
+        // The first was heard a moment earlier, so it goes first — and the
+        // second is still there on its own clock.
+        crowd.advance(SPEECH_HOLD);
+        assert!(said(&crowd, serial(1)).is_empty());
+    }
+
+    /// The stack is bounded: a shard can talk faster than the hold retires
+    /// lines, and the oldest is what gives way.
+    #[test]
+    fn a_talkative_mobile_keeps_only_its_most_recent_lines() {
+        let mut crowd = Crowd::default();
+        for line in 0..SPEECH_STACK + 3 {
+            crowd.hear(serial(1), line.to_string(), Font(0), Hue::NONE);
+        }
+        let said = said(&crowd, serial(1));
+        assert_eq!(said.len(), SPEECH_STACK);
+        assert_eq!(said[0], "3", "the oldest lines were not the ones dropped");
+        assert_eq!(said[SPEECH_STACK - 1], (SPEECH_STACK + 2).to_string());
     }
 
     /// Nobody not yet heard from is saying anything.
     #[test]
     fn a_serial_never_heard_is_not_speaking() {
         let crowd = Crowd::default();
-        assert!(crowd.speaking(serial(1)).is_none());
+        assert!(said(&crowd, serial(1)).is_empty());
     }
 
     /// `retain` forgets a stale line along with the rest of what a departed
@@ -2861,6 +2906,6 @@ mod tests {
         let mut crowd = Crowd::default();
         crowd.hear(serial(1), "bye".to_string(), Font(0), Hue::NONE);
         crowd.retain(|who| who != serial(1));
-        assert!(crowd.speaking(serial(1)).is_none());
+        assert!(said(&crowd, serial(1)).is_empty());
     }
 }

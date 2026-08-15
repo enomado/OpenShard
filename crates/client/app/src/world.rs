@@ -34,6 +34,13 @@ use crate::{clutter, link, resources};
 pub const DAMAGE_NUMBER_HOLD: Duration = Duration::from_secs(1);
 /// Vertical distance, in world pixels, a damage number travels during its hold.
 pub const DAMAGE_NUMBER_RISE: i32 = 28;
+/// How far apart stacked overhead lines sit, in world pixels.
+///
+/// A constant rather than the drawn line's own height: the text is measured only
+/// once it reaches the atlas, three stages after the position is decided, and a
+/// spacing that varied with the glyphs would make a mobile's lines jump as one
+/// of them expires.
+pub const SPEECH_LINE_HEIGHT: i32 = 15;
 /// How long a health estimate takes to settle on a newly confirmed value.
 pub const HEALTH_ESTIMATE_LAG: Duration = Duration::from_millis(450);
 
