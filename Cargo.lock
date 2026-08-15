@@ -3504,6 +3504,8 @@ dependencies = [
  "openshard-skills",
  "openshard-state",
  "openshard-uofiles",
+ "serde",
+ "serde_json",
  "tracing",
 ]
 

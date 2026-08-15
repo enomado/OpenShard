@@ -152,7 +152,7 @@ few hundred lines around it that a person actually reads.
 
 **A table of more than a hundred rows belongs in `crates/<group>/<crate>/data/`
 as JSON, with a `build.rs` that emits the `const` before the crate compiles.**
-The three that exist — `crafting`, `state`, `npc` — are the pattern:
+Four exist — `crafting`, `state`, `npc`, `world` — and are the pattern:
 
 - **A table is not always spelled as a `const`.** `creature_name` was 91 lines
   of `match` arms and is data by every test that matters: a key, a value, and no
@@ -180,6 +180,13 @@ The three that exist — `crafting`, `state`, `npc` — are the pattern:
 - **Prose stays in the source.** The doc comments for the generated items live
   in `build.rs`, not in the JSON: a data file is a poor place to explain why
   ServUO's `StatTotal` sums the *undivided* scales.
+- **Repetition is factored in the data, not in the emitted source.**
+  `world/data/spawns.json` names its 193 distinct creatures once and lets 1,430
+  spawn regions refer to them by name; `build.rs` resolves the references, so
+  the emitted code has one table and 8,338 indices into it rather than 8,338
+  struct literals. A name with no definition is a build failure that says which
+  region asked for it. What the *runtime* sees is unchanged — the resolution
+  happens at build time, and `Spawner` never learns the names exist.
 - **Converting is verified by round-tripping, or by behaviour.** Every table
   that could be was dumped out of the *compiled* tables rather than parsed out
   of the source text, and the regenerated `const`s dump back to byte-identical

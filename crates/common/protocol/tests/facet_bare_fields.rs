@@ -68,6 +68,11 @@ const ALLOWLIST: &[(&str, usize, &str)] = &[
         1,
         "the RegionSet that data/regions.json deserializes into: a build script cannot depend on the protocol crate, so the number is widened to Facet in the expression it emits",
     ),
+    (
+        "crates/server/world/build.rs",
+        1,
+        "data/spawns.json's set-level facet, the state/build.rs shape for the same reason: a build script has no protocol dependency, and the emitted SpawnArea carries a Facet",
+    ),
 ];
 
 /// How many times `facet: u8` or `facet:u8` appears in `text`, counting
