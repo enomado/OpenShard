@@ -104,7 +104,32 @@ pub fn verb(action: &str) -> Vec<Command> {
         .filter(|set| set.verb == action)
         .flat_map(|set| set.spawners)
         .map(|spawner| Command::RegisterSpawner { spawner });
-    regions.chain(spawners).collect()
+    // Decoration, then the door generation that reads it. The order is the pack's
+    // and it is load-bearing: a generated door goes in the gap between two static
+    // frames, and some of those frames are laid by the batch above.
+    let decor = openshard_world::decoration::shipped()
+        .into_iter()
+        .filter(|set| set.verb == action)
+        .flat_map(|set| {
+            let batch = Command::Decorate {
+                facet: set.facet,
+                statics: set.statics.to_vec(),
+                doors: set.doors.to_vec(),
+                containers: set.containers.to_vec(),
+            };
+            let scans = set
+                .door_regions
+                .iter()
+                .map(move |&(x, y, width, height)| Command::GenerateDoors {
+                    facet: set.facet,
+                    x,
+                    y,
+                    width,
+                    height,
+                });
+            std::iter::once(batch).chain(scans)
+        });
+    regions.chain(spawners).chain(decor).collect()
 }
 
 #[cfg(test)]
@@ -181,13 +206,42 @@ mod tests {
     }
 
     #[test]
+    fn the_staff_menus_decorate_button_lays_the_art_then_scans_for_doors() {
+        // The order is the whole of it. A generated door goes in the gap between
+        // two static frames, and some of those frames are in the batch above it —
+        // so a scan that ran first would find a doorway that is not there yet.
+        let commands = verb("decorate:felucca");
+        let Some(Command::Decorate {
+            statics,
+            doors,
+            containers,
+            ..
+        }) = commands.first()
+        else {
+            panic!(
+                "the decorate verb does not lay decoration first: {:?}",
+                commands.first()
+            );
+        };
+        assert!(statics.len() > 10_000, "only {} statics", statics.len());
+        assert!(!doors.is_empty() && !containers.is_empty());
+        assert!(
+            commands[1..]
+                .iter()
+                .all(|c| matches!(c, Command::GenerateDoors { .. })),
+            "something other than a door scan followed the decoration"
+        );
+        assert!(commands.len() > 1, "no region is scanned for implied doors");
+    }
+
+    #[test]
     fn a_verb_the_tree_has_no_content_for_lays_nothing() {
-        // Not an error and not a panic: the menu still offers the two verbs whose
-        // data is in the pack, and a shard with a pack configured is how they get
-        // answered until PR4 and PR5.
-        assert!(verb("decorate:felucca").is_empty());
+        // Not an error and not a panic: an unknown verb is what a pack that
+        // dropped a set would produce, and the engine has never treated it as a
+        // failure.
         assert!(verb("").is_empty());
         assert!(verb("regions:trammel").is_empty());
+        assert!(verb("populate:trammel").is_empty());
     }
 
     /// The migration's one load-bearing test: what the tree lays down and what
@@ -304,6 +358,99 @@ mod tests {
             "the pack at {pack:?} laid no spawn regions for {populate:?}"
         );
         compare_spawners(&tree_spawners, &pack_spawners);
+
+        let decorate = "decorate:felucca";
+        openshard_scripting::ScriptEngine::deliver(
+            &mut engine,
+            &openshard_scripting::Event::AdminAction {
+                serial: None,
+                action: decorate.to_owned(),
+            },
+        )
+        .expect("the pack's onEvent refused the decorate verb");
+        let pack_decorate: Vec<Command> = openshard_scripting::ScriptEngine::take_commands(&mut engine)
+            .into_iter()
+            .filter_map(crate::scripting::into_world)
+            .collect();
+        compare_decoration(&verb(decorate), &pack_decorate);
+    }
+
+    /// One `Command::Decorate`'s payload, pulled apart for comparison.
+    type DecorBatch = (
+        openshard_protocol::world::Facet,
+        Vec<(
+            openshard_protocol::wire::Graphic,
+            openshard_protocol::wire::Hue,
+            openshard_protocol::world::Point,
+        )>,
+        Vec<openshard_world::DecorDoor>,
+        Vec<openshard_world::DecorContainer>,
+    );
+
+    /// Two decoration command streams, reported piece by piece.
+    ///
+    /// [`compare_spawners`]' argument one order of magnitude further along: this
+    /// is twenty-five thousand rows, and an `assert_eq!` over it is a `Debug`
+    /// string no terminal will show and no person will read.
+    fn compare_decoration(tree: &[Command], pack: &[Command]) {
+        fn batch(commands: &[Command]) -> DecorBatch {
+            commands
+                .iter()
+                .find_map(|c| match c {
+                    Command::Decorate {
+                        facet,
+                        statics,
+                        doors,
+                        containers,
+                    } => Some((*facet, statics.clone(), doors.clone(), containers.clone())),
+                    _ => None,
+                })
+                .expect("no decoration in the stream")
+        }
+        fn scans(commands: &[Command]) -> Vec<Command> {
+            commands
+                .iter()
+                .filter(|c| matches!(c, Command::GenerateDoors { .. }))
+                .cloned()
+                .collect()
+        }
+
+        let (tree_facet, tree_statics, tree_doors, tree_containers) = batch(tree);
+        let (pack_facet, pack_statics, pack_doors, pack_containers) = batch(pack);
+        assert_eq!(tree_facet, pack_facet, "the two decorate different facets");
+        assert_eq!(
+            (tree_statics.len(), tree_doors.len(), tree_containers.len()),
+            (pack_statics.len(), pack_doors.len(), pack_containers.len()),
+            "the tree lays {} statics, {} doors and {} containers; the pack lays {}, {} and {}",
+            tree_statics.len(),
+            tree_doors.len(),
+            tree_containers.len(),
+            pack_statics.len(),
+            pack_doors.len(),
+            pack_containers.len(),
+        );
+
+        if let Some(i) = (0..tree_statics.len()).find(|&i| tree_statics[i] != pack_statics[i]) {
+            panic!(
+                "static {i} differs\n  tree: {:?}\n  pack: {:?}",
+                tree_statics[i], pack_statics[i]
+            );
+        }
+        if let Some(i) = (0..tree_doors.len()).find(|&i| tree_doors[i] != pack_doors[i]) {
+            panic!(
+                "door {i} differs\n  tree: {:?}\n  pack: {:?}",
+                tree_doors[i], pack_doors[i]
+            );
+        }
+        if let Some(i) = (0..tree_containers.len()).find(|&i| tree_containers[i] != pack_containers[i]) {
+            panic!(
+                "container {i} differs\n  tree: {:?}\n  pack: {:?}",
+                tree_containers[i], pack_containers[i]
+            );
+        }
+        // Small enough to compare whole, and worth it: a missing scan box is a
+        // district's worth of shop doors that never appear.
+        assert_eq!(scans(tree), scans(pack), "the door-generation boxes differ");
     }
 
     /// Two spawner lists, reported item by item.

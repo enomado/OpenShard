@@ -9,6 +9,22 @@ impl World {
     /// decays and cannot be picked up. A door also carries [`Door`] (toggled by
     /// double-click) and a container [`Container`] (opened by double-click). See
     /// [`crate::gm`] and `items::pick_up`.
+    ///
+    /// # Laying the same batch twice
+    ///
+    /// A row already standing — same graphic, same tile, same facet — is skipped.
+    /// Decoration is additive and **persisted**, so without this a second press of
+    /// the staff button, or a boot that seeds `decorate:` on a restored shard, laid
+    /// a second Britain inside the first: two of every sign, two of every chest,
+    /// and a door that opened into its own twin.
+    ///
+    /// **Against the world as it stood when the batch began, not against the batch.**
+    /// Thirty-nine of the shipped statics repeat an exact graphic and position, and
+    /// 1,471 tiles hold several — an ordinary thing in UO decoration, where a tile
+    /// carries a floor, a rug, and what stands on the rug. Skipping a row because an
+    /// *earlier row of the same batch* placed it would quietly drop those, so the
+    /// snapshot is taken once, up front, and never added to. A first lay is
+    /// therefore byte for byte what it always was.
     pub(super) fn decorate(
         &mut self,
         facet: Facet,
@@ -21,15 +37,22 @@ impl World {
         } else {
             self.state.default_facet
         };
+        let standing = self.decoration_already_placed(facet);
         // A closure that spawns one decoration item at a tile and reveals it,
         // returning the entity so the caller can hang a `Door` or `Container` on
         // it. `None` when the serial pool is empty.
         for &(graphic, hue, position) in statics {
+            if standing.contains(&(graphic, position)) {
+                continue;
+            }
             if self.place_decoration(facet, graphic, hue, position).is_none() {
                 return;
             }
         }
         for door in doors {
+            if standing.contains(&(door.closed, door.position)) {
+                continue;
+            }
             let Some(entity) = self.place_decoration(facet, door.closed, Hue(0), door.position) else {
                 return;
             };
@@ -63,6 +86,9 @@ impl World {
             );
         }
         for container in containers {
+            if standing.contains(&(container.graphic, container.position)) {
+                continue;
+            }
             let Some(entity) =
                 self.place_decoration(facet, container.graphic, container.hue, container.position)
             else {
@@ -81,6 +107,30 @@ impl World {
                 );
             }
         }
+    }
+
+    /// Every decoration standing on `facet` right now, as the `(graphic, tile)`
+    /// pair [`decorate`](World::decorate) de-duplicates by.
+    ///
+    /// Built once per batch rather than queried per row: twenty-five thousand rows
+    /// against a growing world is a quadratic scan, and this is one pass.
+    ///
+    /// The key is deliberately narrow. Hue is not in it — a hued copy of a static
+    /// on the same tile is the same decoration recoloured, not a second one — and
+    /// neither is the door or container hanging off it, because a door and a static
+    /// never share a graphic.
+    fn decoration_already_placed(&self, facet: Facet) -> std::collections::HashSet<(Graphic, Point)> {
+        self.state
+            .registry
+            .query::<Decoration>()
+            .filter_map(|(entity, _)| {
+                (self.state.facet_of(entity) == facet).then(|| {
+                    let drawn = self.state.registry.get::<Drawn>(entity)?;
+                    let &Position(at) = self.state.registry.get::<Position>(entity)?;
+                    Some((drawn.id, at))
+                })?
+            })
+            .collect()
     }
 
     /// Spawn one decoration item — a `Drawn`, `Position`, `Facet` and the

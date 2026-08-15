@@ -11,9 +11,9 @@
 //! The verb is a string on an
 //! [`AdminMenuAction`](crate::events::AdminMenuAction); everyone listening turns
 //! it into commands, and the world applies all of them. Today `server::content`
-//! answers `regions:felucca` and the spawn regions half of `populate:felucca`
-//! from data in the tree; a configured script pack answers `decorate:felucca` and
-//! the *standing townsfolk* half of `populate:felucca`, which are what is still
+//! answers `regions:felucca`, `decorate:felucca` and the spawn-regions half of
+//! `populate:felucca` from data in the tree; a configured script pack answers the
+//! *standing townsfolk* half of `populate:felucca`, which is what is still
 //! outside the repository. A verb nobody answers lays nothing and says nothing.
 
 use openshard_entities::EntityId;
