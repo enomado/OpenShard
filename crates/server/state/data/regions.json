@@ -1,0 +1,1361 @@
+[
+  {
+    "verb": "regions:felucca",
+    "facet": 0,
+    "regions": [
+      {
+        "name": "Moongates",
+        "priority": 50,
+        "guarded": true,
+        "rects": [
+          { "x": 1330, "y": 1991, "width": 13, "height": 13 },
+          { "x": 1494, "y": 3767, "width": 12, "height": 11 },
+          { "x": 2694, "y": 685, "width": 15, "height": 16 },
+          { "x": 1823, "y": 2943, "width": 11, "height": 11 },
+          { "x": 761, "y": 741, "width": 19, "height": 21 },
+          { "x": 638, "y": 2062, "width": 12, "height": 11 },
+          { "x": 4459, "y": 1276, "width": 16, "height": 16 },
+          { "x": 3554, "y": 2132, "width": 18, "height": 18 }
+        ]
+      },
+      {
+        "name": "Heartwood",
+        "priority": 50,
+        "guarded": true,
+        "music": 54,
+        "rects": [
+          { "x": 6911, "y": 255, "width": 257, "height": 257 }
+        ]
+      },
+      {
+        "name": "Sanctuary",
+        "priority": 50,
+        "no_housing": true,
+        "music": 26,
+        "light": 26,
+        "rects": [
+          { "x": 6157, "y": 4, "width": 242, "height": 251 }
+        ]
+      },
+      {
+        "name": "Painted Caves",
+        "priority": 50,
+        "no_housing": true,
+        "music": 26,
+        "light": 26,
+        "rects": [
+          { "x": 6240, "y": 860, "width": 70, "height": 60 }
+        ]
+      },
+      {
+        "name": "Prism of Light",
+        "priority": 50,
+        "no_housing": true,
+        "music": 26,
+        "light": 26,
+        "rects": [
+          { "x": 6400, "y": 0, "width": 221, "height": 255 }
+        ]
+      },
+      {
+        "name": "Prism of Light",
+        "priority": 51,
+        "rects": [
+          { "x": 6506, "y": 83, "width": 7, "height": 7, "z_min": -4 }
+        ]
+      },
+      {
+        "name": "Prism of Light",
+        "priority": 51,
+        "rects": [
+          { "x": 6576, "y": 73, "width": 10, "height": 31, "z_min": 0 },
+          { "x": 6572, "y": 83, "width": 4, "height": 21, "z_min": 0 },
+          { "x": 6567, "y": 90, "width": 5, "height": 16, "z_min": 0 },
+          { "x": 6563, "y": 94, "width": 4, "height": 14, "z_min": 0 },
+          { "x": 6561, "y": 95, "width": 2, "height": 14, "z_min": 0 },
+          { "x": 6558, "y": 98, "width": 7, "height": 12, "z_min": 0 },
+          { "x": 6554, "y": 101, "width": 4, "height": 9, "z_min": 0 }
+        ]
+      },
+      {
+        "name": "Blighted Grove",
+        "priority": 50,
+        "no_housing": true,
+        "music": 56,
+        "light": 26,
+        "rects": [
+          { "x": 6440, "y": 820, "width": 160, "height": 150 }
+        ]
+      },
+      {
+        "name": "Blighted Grove",
+        "priority": 51,
+        "rects": [
+          { "x": 6570, "y": 860, "width": 30, "height": 30, "z_min": 0 }
+        ]
+      },
+      {
+        "name": "Palace of Paroxysmus",
+        "priority": 50,
+        "no_housing": true,
+        "music": 57,
+        "light": 26,
+        "rects": [
+          { "x": 6191, "y": 311, "width": 370, "height": 360 }
+        ]
+      },
+      {
+        "name": "Palace of Paroxysmus",
+        "priority": 51,
+        "rects": [
+          { "x": 6214, "y": 340, "width": 11, "height": 4, "z_min": -50 },
+          { "x": 6215, "y": 337, "width": 5, "height": 10, "z_min": -50 },
+          { "x": 6216, "y": 335, "width": 3, "height": 13, "z_min": -50 },
+          { "x": 6222, "y": 340, "width": 3, "height": 8, "z_min": -50 },
+          { "x": 6226, "y": 342, "width": 1, "height": 7, "z_min": -50 },
+          { "x": 6228, "y": 345, "width": 2, "height": 5, "z_min": -50 },
+          { "x": 6231, "y": 346, "width": 1, "height": 4, "z_min": -50 },
+          { "x": 6232, "y": 347, "width": 3, "height": 5, "z_min": -50 },
+          { "x": 6234, "y": 349, "width": 2, "height": 4, "z_min": -50 },
+          { "x": 6238, "y": 353, "width": 2, "height": 3, "z_min": -50 },
+          { "x": 6241, "y": 354, "width": 2, "height": 4, "z_min": -50 },
+          { "x": 6244, "y": 355, "width": 3, "height": 3, "z_min": -50 },
+          { "x": 6248, "y": 356, "width": 3, "height": 2, "z_min": -50 },
+          { "x": 6252, "y": 355, "width": 1, "height": 3, "z_min": -50 },
+          { "x": 6254, "y": 354, "width": 10, "height": 2, "z_min": -50 },
+          { "x": 6265, "y": 353, "width": 3, "height": 4, "z_min": -50 },
+          { "x": 6269, "y": 354, "width": 2, "height": 1, "z_min": -50 },
+          { "x": 6272, "y": 353, "width": 9, "height": 3, "z_min": -50 },
+          { "x": 6282, "y": 354, "width": 2, "height": 4, "z_min": -50 },
+          { "x": 6283, "y": 355, "width": 2, "height": 4, "z_min": -50 },
+          { "x": 6284, "y": 357, "width": 3, "height": 3, "z_min": -50 },
+          { "x": 6285, "y": 359, "width": 3, "height": 2, "z_min": -50 },
+          { "x": 6286, "y": 360, "width": 3, "height": 2, "z_min": -50 },
+          { "x": 6288, "y": 361, "width": 2, "height": 5, "z_min": -50 },
+          { "x": 6290, "y": 362, "width": 2, "height": 5, "z_min": -50 },
+          { "x": 6291, "y": 363, "width": 2, "height": 5, "z_min": -50 },
+          { "x": 6293, "y": 365, "width": 1, "height": 4, "z_min": -50 },
+          { "x": 6294, "y": 366, "width": 1, "height": 4, "z_min": -50 },
+          { "x": 6296, "y": 367, "width": 1, "height": 3, "z_min": -50 },
+          { "x": 6297, "y": 369, "width": 3, "height": 3, "z_min": -50 },
+          { "x": 6301, "y": 370, "width": 3, "height": 3, "z_min": -50 },
+          { "x": 6302, "y": 371, "width": 8, "height": 3, "z_min": -50 },
+          { "x": 6309, "y": 369, "width": 5, "height": 1, "z_min": -50 },
+          { "x": 6313, "y": 366, "width": 2, "height": 2, "z_min": -50 },
+          { "x": 6314, "y": 364, "width": 5, "height": 2, "z_min": -50 },
+          { "x": 6316, "y": 362, "width": 3, "height": 2, "z_min": -50 },
+          { "x": 6319, "y": 361, "width": 11, "height": 5, "z_min": -50 },
+          { "x": 6321, "y": 360, "width": 7, "height": 1, "z_min": -50 },
+          { "x": 6331, "y": 363, "width": 4, "height": 3, "z_min": -50 },
+          { "x": 6335, "y": 364, "width": 13, "height": 4, "z_min": -50 },
+          { "x": 6345, "y": 362, "width": 5, "height": 2, "z_min": -50 },
+          { "x": 6353, "y": 358, "width": 7, "height": 3, "z_min": -50 },
+          { "x": 6361, "y": 359, "width": 16, "height": 3, "z_min": -50 },
+          { "x": 6378, "y": 357, "width": 14, "height": 6, "z_min": -50 },
+          { "x": 6399, "y": 352, "width": 14, "height": 10, "z_min": -50 },
+          { "x": 6405, "y": 363, "width": 9, "height": 1, "z_min": -50 },
+          { "x": 6408, "y": 365, "width": 7, "height": 1, "z_min": -50 },
+          { "x": 6411, "y": 367, "width": 3, "height": 8, "z_min": -50 },
+          { "x": 6413, "y": 375, "width": 5, "height": 8, "z_min": -50 },
+          { "x": 6411, "y": 383, "width": 6, "height": 2, "z_min": -50 },
+          { "x": 6411, "y": 386, "width": 5, "height": 1, "z_min": -50 },
+          { "x": 6411, "y": 388, "width": 3, "height": 1, "z_min": -50 },
+          { "x": 6409, "y": 390, "width": 3, "height": 4, "z_min": -50 },
+          { "x": 6408, "y": 395, "width": 4, "height": 3, "z_min": -50 },
+          { "x": 6409, "y": 398, "width": 5, "height": 3, "z_min": -50 },
+          { "x": 6412, "y": 401, "width": 4, "height": 2, "z_min": -50 },
+          { "x": 6414, "y": 402, "width": 3, "height": 3, "z_min": -50 },
+          { "x": 6414, "y": 406, "width": 2, "height": 2, "z_min": -50 },
+          { "x": 6416, "y": 410, "width": 6, "height": 4, "z_min": -50 },
+          { "x": 6418, "y": 407, "width": 1, "height": 2, "z_min": -50 },
+          { "x": 6416, "y": 415, "width": 4, "height": 8, "z_min": -50 },
+          { "x": 6417, "y": 422, "width": 4, "height": 5, "z_min": -50 },
+          { "x": 6419, "y": 426, "width": 3, "height": 6, "z_min": -50 },
+          { "x": 6420, "y": 432, "width": 4, "height": 6, "z_min": -50 },
+          { "x": 6418, "y": 439, "width": 3, "height": 6, "z_min": -50 },
+          { "x": 6416, "y": 444, "width": 3, "height": 2, "z_min": -50 },
+          { "x": 6414, "y": 447, "width": 5, "height": 6, "z_min": -50 },
+          { "x": 6411, "y": 454, "width": 7, "height": 21, "z_min": -50 },
+          { "x": 6400, "y": 474, "width": 15, "height": 5, "z_min": -50 },
+          { "x": 6398, "y": 470, "width": 4, "height": 6, "z_min": -50 },
+          { "x": 6396, "y": 468, "width": 1, "height": 6, "z_min": -50 },
+          { "x": 6394, "y": 463, "width": 1, "height": 8, "z_min": -50 },
+          { "x": 6392, "y": 462, "width": 1, "height": 4, "z_min": -50 },
+          { "x": 6391, "y": 452, "width": 2, "height": 9, "z_min": -50 },
+          { "x": 6389, "y": 454, "width": 2, "height": 5, "z_min": -50 },
+          { "x": 6387, "y": 456, "width": 2, "height": 3, "z_min": -50 },
+          { "x": 6386, "y": 445, "width": 1, "height": 9, "z_min": -50 },
+          { "x": 6387, "y": 444, "width": 2, "height": 8, "z_min": -50 },
+          { "x": 6390, "y": 445, "width": 2, "height": 5, "z_min": -50 },
+          { "x": 6383, "y": 445, "width": 4, "height": 6, "z_min": -50 },
+          { "x": 6372, "y": 444, "width": 10, "height": 4, "z_min": -50 },
+          { "x": 6364, "y": 443, "width": 9, "height": 4, "z_min": -50 },
+          { "x": 6362, "y": 446, "width": 4, "height": 3, "z_min": -50 },
+          { "x": 6359, "y": 448, "width": 4, "height": 3, "z_min": -50 },
+          { "x": 6351, "y": 449, "width": 10, "height": 3, "z_min": -50 },
+          { "x": 6349, "y": 453, "width": 7, "height": 1, "z_min": -50 },
+          { "x": 6348, "y": 454, "width": 3, "height": 3, "z_min": -50 },
+          { "x": 6346, "y": 458, "width": 2, "height": 2, "z_min": -50 },
+          { "x": 6345, "y": 460, "width": 2, "height": 4, "z_min": -50 },
+          { "x": 6340, "y": 461, "width": 3, "height": 3, "z_min": -50 },
+          { "x": 6338, "y": 463, "width": 1, "height": 3, "z_min": -50 },
+          { "x": 6336, "y": 465, "width": 2, "height": 2, "z_min": -50 },
+          { "x": 6333, "y": 466, "width": 4, "height": 4, "z_min": -50 },
+          { "x": 6330, "y": 469, "width": 2, "height": 4, "z_min": -50 },
+          { "x": 6328, "y": 473, "width": 5, "height": 10, "z_min": -50 },
+          { "x": 6329, "y": 484, "width": 5, "height": 33, "z_min": -50 },
+          { "x": 6331, "y": 518, "width": 4, "height": 5, "z_min": -50 },
+          { "x": 6333, "y": 522, "width": 5, "height": 5, "z_min": -50 },
+          { "x": 6335, "y": 528, "width": 3, "height": 3, "z_min": -50 },
+          { "x": 6336, "y": 531, "width": 4, "height": 4, "z_min": -50 },
+          { "x": 6338, "y": 536, "width": 4, "height": 2, "z_min": -50 },
+          { "x": 6340, "y": 539, "width": 4, "height": 2, "z_min": -50 },
+          { "x": 6342, "y": 542, "width": 4, "height": 3, "z_min": -50 },
+          { "x": 6344, "y": 546, "width": 4, "height": 1, "z_min": -50 },
+          { "x": 6345, "y": 547, "width": 4, "height": 2, "z_min": -50 },
+          { "x": 6347, "y": 549, "width": 5, "height": 5, "z_min": -50 },
+          { "x": 6349, "y": 555, "width": 4, "height": 2, "z_min": -50 },
+          { "x": 6351, "y": 558, "width": 4, "height": 3, "z_min": -50 },
+          { "x": 6353, "y": 562, "width": 3, "height": 3, "z_min": -50 },
+          { "x": 6355, "y": 564, "width": 3, "height": 5, "z_min": -50 },
+          { "x": 6358, "y": 568, "width": 4, "height": 7, "z_min": -50 },
+          { "x": 6363, "y": 568, "width": 2, "height": 4, "z_min": -50 },
+          { "x": 6366, "y": 567, "width": 10, "height": 4, "z_min": -50 },
+          { "x": 6377, "y": 569, "width": 3, "height": 3, "z_min": -50 },
+          { "x": 6378, "y": 570, "width": 5, "height": 3, "z_min": -50 },
+          { "x": 6383, "y": 569, "width": 3, "height": 3, "z_min": -50 },
+          { "x": 6387, "y": 569, "width": 8, "height": 4, "z_min": -50 },
+          { "x": 6396, "y": 569, "width": 7, "height": 3, "z_min": -50 },
+          { "x": 6403, "y": 571, "width": 2, "height": 3, "z_min": -50 },
+          { "x": 6405, "y": 573, "width": 2, "height": 2, "z_min": -50 },
+          { "x": 6409, "y": 576, "width": 1, "height": 3, "z_min": -50 },
+          { "x": 6410, "y": 577, "width": 2, "height": 3, "z_min": -50 },
+          { "x": 6413, "y": 578, "width": 2, "height": 3, "z_min": -50 },
+          { "x": 6416, "y": 579, "width": 1, "height": 2, "z_min": -50 },
+          { "x": 6418, "y": 578, "width": 16, "height": 3, "z_min": -50 },
+          { "x": 6430, "y": 576, "width": 4, "height": 1, "z_min": -50 },
+          { "x": 6433, "y": 565, "width": 2, "height": 10, "z_min": -50 },
+          { "x": 6434, "y": 564, "width": 13, "height": 2, "z_min": -50 },
+          { "x": 6444, "y": 563, "width": 3, "height": 2, "z_min": -50 },
+          { "x": 6447, "y": 562, "width": 4, "height": 2, "z_min": -50 },
+          { "x": 6452, "y": 561, "width": 12, "height": 3, "z_min": -50 },
+          { "x": 6458, "y": 559, "width": 6, "height": 1, "z_min": -50 },
+          { "x": 6461, "y": 555, "width": 3, "height": 3, "z_min": -50 },
+          { "x": 6462, "y": 551, "width": 2, "height": 3, "z_min": -50 },
+          { "x": 6464, "y": 548, "width": 2, "height": 2, "z_min": -50 },
+          { "x": 6466, "y": 546, "width": 16, "height": 3, "z_min": -50 },
+          { "x": 6475, "y": 544, "width": 1, "height": 1, "z_min": -50 },
+          { "x": 6480, "y": 540, "width": 6, "height": 5, "z_min": -50 },
+          { "x": 6484, "y": 538, "width": 6, "height": 1, "z_min": -50 },
+          { "x": 6487, "y": 536, "width": 3, "height": 1, "z_min": -50 },
+          { "x": 6489, "y": 534, "width": 2, "height": 1, "z_min": -50 },
+          { "x": 6490, "y": 532, "width": 2, "height": 1, "z_min": -50 },
+          { "x": 6491, "y": 530, "width": 7, "height": 2, "z_min": -50 },
+          { "x": 6496, "y": 527, "width": 4, "height": 1, "z_min": -50 },
+          { "x": 6499, "y": 524, "width": 3, "height": 2, "z_min": -50 },
+          { "x": 6500, "y": 522, "width": 3, "height": 2, "z_min": -50 },
+          { "x": 6501, "y": 520, "width": 3, "height": 2, "z_min": -50 },
+          { "x": 6499, "y": 514, "width": 3, "height": 4, "z_min": -50 },
+          { "x": 6498, "y": 510, "width": 5, "height": 3, "z_min": -50 },
+          { "x": 6497, "y": 500, "width": 8, "height": 8, "z_min": -50 },
+          { "x": 6484, "y": 448, "width": 65, "height": 51, "z_min": -50 },
+          { "x": 6508, "y": 500, "width": 5, "height": 3, "z_min": -50 },
+          { "x": 6523, "y": 500, "width": 17, "height": 3, "z_min": -50 },
+          { "x": 6528, "y": 504, "width": 4, "height": 1, "z_min": -50 }
+        ]
+      },
+      {
+        "name": "Palace of Paroxysmus",
+        "priority": 51,
+        "rects": [
+          { "x": 6316, "y": 472, "width": 8, "height": 8 },
+          { "x": 6303, "y": 509, "width": 11, "height": 7 }
+        ]
+      },
+      {
+        "name": "Palace of Paroxysmus",
+        "priority": 51,
+        "rects": [
+          { "x": 6516, "y": 493, "width": 5, "height": 7 }
+        ]
+      },
+      {
+        "name": "Huntsman's Forest",
+        "priority": 50,
+        "rects": [
+          { "x": 1595, "y": 550, "width": 120, "height": 120 }
+        ]
+      },
+      {
+        "name": "Cove",
+        "priority": 50,
+        "guarded": true,
+        "music": 48,
+        "rects": [
+          { "x": 2200, "y": 1110, "width": 50, "height": 50 },
+          { "x": 2200, "y": 1160, "width": 86, "height": 86 }
+        ]
+      },
+      {
+        "name": "Britain",
+        "priority": 50,
+        "guarded": true,
+        "music": 9,
+        "rects": [
+          { "x": 1416, "y": 1498, "width": 324, "height": 279, "z_min": -10 },
+          { "x": 1385, "y": 1538, "width": 31, "height": 239, "z_min": -10 },
+          { "x": 1416, "y": 1777, "width": 324, "height": 60, "z_min": 0 },
+          { "x": 1385, "y": 1777, "width": 31, "height": 130, "z_min": 0 },
+          { "x": 1093, "y": 1538, "width": 292, "height": 369, "z_min": 0 }
+        ]
+      },
+      {
+        "name": "Blackthorn Castle",
+        "priority": 50,
+        "guarded": true,
+        "music": 13,
+        "rects": [
+          { "x": 1500, "y": 1408, "width": 46, "height": 90 }
+        ]
+      },
+      {
+        "name": "Britain",
+        "priority": 51,
+        "guarded": true,
+        "rects": [
+          { "x": 1492, "y": 1602, "width": 8, "height": 19, "z_min": 0 },
+          { "x": 1500, "y": 1610, "width": 8, "height": 16, "z_min": 0 },
+          { "x": 1576, "y": 1584, "width": 24, "height": 16, "z_min": 0 },
+          { "x": 1456, "y": 1512, "width": 16, "height": 16, "z_min": 0 },
+          { "x": 1472, "y": 1512, "width": 8, "height": 8, "z_min": 0 },
+          { "x": 1486, "y": 1684, "width": 8, "height": 8, "z_min": 0 },
+          { "x": 1494, "y": 1676, "width": 8, "height": 24, "z_min": 0 },
+          { "x": 1424, "y": 1712, "width": 8, "height": 24, "z_min": 0 },
+          { "x": 1432, "y": 1712, "width": 8, "height": 12, "z_min": 0 },
+          { "x": 1608, "y": 1584, "width": 24, "height": 8, "z_min": 0 },
+          { "x": 1616, "y": 1576, "width": 8, "height": 8, "z_min": 0 },
+          { "x": 1544, "y": 1760, "width": 16, "height": 16, "z_min": 0 },
+          { "x": 1560, "y": 1760, "width": 8, "height": 8, "z_min": 0 }
+        ]
+      },
+      {
+        "name": "A Wheatfield in Britain 1",
+        "priority": 51,
+        "guarded": true,
+        "rects": [
+          { "x": 1120, "y": 1776, "width": 32, "height": 32 }
+        ]
+      },
+      {
+        "name": "A Wheatfield in Britain 2",
+        "priority": 51,
+        "guarded": true,
+        "rects": [
+          { "x": 1184, "y": 1808, "width": 32, "height": 32 }
+        ]
+      },
+      {
+        "name": "A Wheatfield in Britain 3",
+        "priority": 51,
+        "guarded": true,
+        "rects": [
+          { "x": 1216, "y": 1872, "width": 32, "height": 32 }
+        ]
+      },
+      {
+        "name": "A Carrot Field in Britain 1",
+        "priority": 51,
+        "guarded": true,
+        "rects": [
+          { "x": 1208, "y": 1712, "width": 16, "height": 24 }
+        ]
+      },
+      {
+        "name": "An Onion Field in Britain 1",
+        "priority": 51,
+        "guarded": true,
+        "rects": [
+          { "x": 1224, "y": 1712, "width": 16, "height": 24 }
+        ]
+      },
+      {
+        "name": "A Cabbage Field in Britain 1",
+        "priority": 51,
+        "guarded": true,
+        "rects": [
+          { "x": 1176, "y": 1672, "width": 16, "height": 23 }
+        ]
+      },
+      {
+        "name": "A Turnip Field in Britain 1",
+        "priority": 51,
+        "guarded": true,
+        "rects": [
+          { "x": 1192, "y": 1672, "width": 16, "height": 24 }
+        ]
+      },
+      {
+        "name": "A Wheatfield in Britain 4",
+        "priority": 51,
+        "guarded": true,
+        "rects": [
+          { "x": 1104, "y": 1608, "width": 32, "height": 32 }
+        ]
+      },
+      {
+        "name": "A Wheatfield in Britain 5",
+        "priority": 51,
+        "guarded": true,
+        "rects": [
+          { "x": 1136, "y": 1560, "width": 32, "height": 32 }
+        ]
+      },
+      {
+        "name": "A Turnip Field in Britain 2",
+        "priority": 51,
+        "guarded": true,
+        "rects": [
+          { "x": 1208, "y": 1592, "width": 16, "height": 24 }
+        ]
+      },
+      {
+        "name": "A Carrot Field in Britain 2",
+        "priority": 51,
+        "guarded": true,
+        "rects": [
+          { "x": 1224, "y": 1592, "width": 16, "height": 24 }
+        ]
+      },
+      {
+        "name": "Britain Graveyard",
+        "priority": 50,
+        "rects": [
+          { "x": 1333, "y": 1441, "width": 84, "height": 82 }
+        ]
+      },
+      {
+        "name": "Jhelom Islands",
+        "priority": 50,
+        "music": 12,
+        "rects": [
+          { "x": 1111, "y": 3567, "width": 33, "height": 21 },
+          { "x": 1078, "y": 3588, "width": 124, "height": 121 },
+          { "x": 1224, "y": 3592, "width": 309, "height": 473 }
+        ]
+      },
+      {
+        "name": "Jhelom",
+        "priority": 51,
+        "guarded": true,
+        "music": 12,
+        "rects": [
+          { "x": 1303, "y": 3670, "width": 189, "height": 225, "z_min": -20 },
+          { "x": 1338, "y": 3895, "width": 74, "height": 28, "z_min": -20 },
+          { "x": 1383, "y": 3951, "width": 109, "height": 94, "z_min": -20 }
+        ]
+      },
+      {
+        "name": "Jhelom",
+        "priority": 52,
+        "guarded": true,
+        "rects": [
+          { "x": 1352, "y": 3800, "width": 16, "height": 32, "z_min": -20 },
+          { "x": 1368, "y": 3808, "width": 8, "height": 16, "z_min": -20 },
+          { "x": 1432, "y": 3768, "width": 32, "height": 8, "z_min": -20 },
+          { "x": 1440, "y": 3776, "width": 24, "height": 8, "z_min": -20 }
+        ]
+      },
+      {
+        "name": "Minoc",
+        "priority": 50,
+        "guarded": true,
+        "music": 16,
+        "rects": [
+          { "x": 2411, "y": 366, "width": 135, "height": 241 },
+          { "x": 2548, "y": 495, "width": 72, "height": 55 },
+          { "x": 2564, "y": 585, "width": 3, "height": 42 },
+          { "x": 2567, "y": 585, "width": 61, "height": 61 },
+          { "x": 2499, "y": 627, "width": 68, "height": 63 }
+        ]
+      },
+      {
+        "name": "Minoc",
+        "priority": 51,
+        "guarded": true,
+        "rects": [
+          { "x": 2457, "y": 397, "width": 40, "height": 8 },
+          { "x": 2465, "y": 405, "width": 8, "height": 8 },
+          { "x": 2481, "y": 405, "width": 8, "height": 8 }
+        ]
+      },
+      {
+        "name": "Ocllo",
+        "priority": 50,
+        "guarded": true,
+        "music": 17,
+        "rects": [
+          { "x": 3587, "y": 2456, "width": 119, "height": 99 },
+          { "x": 3706, "y": 2460, "width": 2, "height": 95 },
+          { "x": 3587, "y": 2555, "width": 106, "height": 73 },
+          { "x": 3590, "y": 2628, "width": 103, "height": 58 },
+          { "x": 3693, "y": 2555, "width": 61, "height": 144 },
+          { "x": 3754, "y": 2558, "width": 7, "height": 141 },
+          { "x": 3761, "y": 2555, "width": 7, "height": 144, "z_max": 50 },
+          { "x": 3695, "y": 2699, "width": 66, "height": 13 }
+        ]
+      },
+      {
+        "name": "Ocllo",
+        "priority": 51,
+        "guarded": true,
+        "rects": [
+          { "x": 3664, "y": 2608, "width": 16, "height": 16 },
+          { "x": 3664, "y": 2640, "width": 8, "height": 16 },
+          { "x": 3672, "y": 2648, "width": 8, "height": 8 }
+        ]
+      },
+      {
+        "name": "Trinsic",
+        "priority": 50,
+        "guarded": true,
+        "music": 21,
+        "rects": [
+          { "x": 1856, "y": 2636, "width": 75, "height": 28 },
+          { "x": 1816, "y": 2664, "width": 283, "height": 231 },
+          { "x": 2099, "y": 2782, "width": 18, "height": 25 },
+          { "x": 1970, "y": 2895, "width": 47, "height": 32 },
+          { "x": 1796, "y": 2696, "width": 20, "height": 67, "z_min": 0 },
+          { "x": 1800, "y": 2796, "width": 16, "height": 52, "z_min": 0 }
+        ]
+      },
+      {
+        "name": "Trinsic",
+        "priority": 51,
+        "guarded": true,
+        "rects": [
+          { "x": 1834, "y": 2728, "width": 22, "height": 16 },
+          { "x": 2024, "y": 2784, "width": 16, "height": 20 },
+          { "x": 2026, "y": 2804, "width": 14, "height": 2 },
+          { "x": 2024, "y": 2806, "width": 16, "height": 7 },
+          { "x": 1923, "y": 2786, "width": 12, "height": 22 },
+          { "x": 1935, "y": 2786, "width": 7, "height": 14 }
+        ]
+      },
+      {
+        "name": "Vesper",
+        "priority": 50,
+        "guarded": true,
+        "music": 22,
+        "rects": [
+          { "x": 2893, "y": 598, "width": 121, "height": 50 },
+          { "x": 2816, "y": 648, "width": 249, "height": 365 },
+          { "x": 2734, "y": 944, "width": 82, "height": 4 },
+          { "x": 2728, "y": 948, "width": 88, "height": 53 }
+        ]
+      },
+      {
+        "name": "Vesper",
+        "priority": 51,
+        "guarded": true,
+        "rects": [
+          { "x": 2952, "y": 864, "width": 16, "height": 32 },
+          { "x": 2968, "y": 872, "width": 8, "height": 16 },
+          { "x": 2776, "y": 952, "width": 16, "height": 32 },
+          { "x": 2768, "y": 960, "width": 8, "height": 16 },
+          { "x": 2892, "y": 901, "width": 16, "height": 19 },
+          { "x": 2908, "y": 904, "width": 8, "height": 8 }
+        ]
+      },
+      {
+        "name": "Yew",
+        "priority": 50,
+        "guarded": true,
+        "music": 24,
+        "rects": [
+          { "x": 92, "y": 656, "width": 349, "height": 225, "z_min": 0, "z_max": 39 },
+          { "x": 441, "y": 746, "width": 216, "height": 135, "z_min": 0, "z_max": 39 },
+          { "x": 258, "y": 881, "width": 399, "height": 380, "z_min": 0, "z_max": 39 },
+          { "x": 657, "y": 922, "width": 42, "height": 307, "z_min": 0, "z_max": 39 },
+          { "x": 657, "y": 806, "width": 17, "height": 28, "z_min": 0, "z_max": 39 },
+          { "x": 718, "y": 874, "width": 38, "height": 22, "z_min": 0, "z_max": 39 }
+        ]
+      },
+      {
+        "name": "Yew",
+        "priority": 51,
+        "guarded": true,
+        "rects": [
+          { "x": 600, "y": 808, "width": 24, "height": 24, "z_min": 0, "z_max": 39 }
+        ]
+      },
+      {
+        "name": "A Field of Sheep in Yew 1",
+        "priority": 51,
+        "guarded": true,
+        "rects": [
+          { "x": 664, "y": 928, "width": 22, "height": 22 }
+        ]
+      },
+      {
+        "name": "A Field of Sheep in Yew 2",
+        "priority": 51,
+        "guarded": true,
+        "rects": [
+          { "x": 664, "y": 1168, "width": 22, "height": 22 }
+        ]
+      },
+      {
+        "name": "A Farm in Yew",
+        "priority": 51,
+        "guarded": true,
+        "rects": [
+          { "x": 560, "y": 1088, "width": 22, "height": 22 }
+        ]
+      },
+      {
+        "name": "A Wheatfield in Yew 1",
+        "priority": 51,
+        "guarded": true,
+        "rects": [
+          { "x": 560, "y": 1232, "width": 16, "height": 16 }
+        ]
+      },
+      {
+        "name": "A Wheatfield in Yew 2",
+        "priority": 51,
+        "guarded": true,
+        "rects": [
+          { "x": 368, "y": 1176, "width": 14, "height": 32 }
+        ]
+      },
+      {
+        "name": "Wind",
+        "priority": 50,
+        "guarded": true,
+        "music": 23,
+        "rects": [
+          { "x": 5294, "y": 19, "width": 72, "height": 120 },
+          { "x": 5132, "y": 58, "width": 81, "height": 68 },
+          { "x": 5197, "y": 126, "width": 55, "height": 78 },
+          { "x": 5132, "y": 3, "width": 70, "height": 55 },
+          { "x": 5252, "y": 112, "width": 42, "height": 58 },
+          { "x": 5213, "y": 98, "width": 39, "height": 28 },
+          { "x": 5279, "y": 57, "width": 15, "height": 55 },
+          { "x": 5252, "y": 170, "width": 32, "height": 8 },
+          { "x": 5286, "y": 25, "width": 8, "height": 32 },
+          { "x": 5252, "y": 178, "width": 20, "height": 5 },
+          { "x": 5252, "y": 183, "width": 10, "height": 10 }
+        ]
+      },
+      {
+        "name": "Wind",
+        "priority": 51,
+        "guarded": true,
+        "rects": [
+          { "x": 5159, "y": 15, "width": 25, "height": 9 },
+          { "x": 5159, "y": 24, "width": 9, "height": 16 },
+          { "x": 5175, "y": 24, "width": 9, "height": 8 },
+          { "x": 5212, "y": 159, "width": 9, "height": 24 },
+          { "x": 5221, "y": 171, "width": 7, "height": 12 },
+          { "x": 5206, "y": 164, "width": 6, "height": 15 },
+          { "x": 5303, "y": 28, "width": 16, "height": 14 }
+        ]
+      },
+      {
+        "name": "Serpent's Hold",
+        "priority": 50,
+        "guarded": true,
+        "music": 19,
+        "rects": [
+          { "x": 2868, "y": 3324, "width": 205, "height": 195, "z_min": 0 }
+        ]
+      },
+      {
+        "name": "Serpent's Hold",
+        "priority": 51,
+        "guarded": true,
+        "rects": [
+          { "x": 2960, "y": 3400, "width": 16, "height": 16, "z_min": 0 },
+          { "x": 2968, "y": 3416, "width": 8, "height": 16, "z_min": 0 },
+          { "x": 3008, "y": 3450, "width": 14, "height": 14, "z_min": 0 }
+        ]
+      },
+      {
+        "name": "Skara Brae",
+        "priority": 50,
+        "guarded": true,
+        "music": 20,
+        "rects": [
+          { "x": 538, "y": 2107, "width": 150, "height": 190 }
+        ]
+      },
+      {
+        "name": "Skara Brae",
+        "priority": 51,
+        "guarded": true,
+        "rects": [
+          { "x": 600, "y": 2232, "width": 16, "height": 24 },
+          { "x": 592, "y": 2240, "width": 8, "height": 16 },
+          { "x": 616, "y": 2240, "width": 8, "height": 16 },
+          { "x": 552, "y": 2168, "width": 16, "height": 24 },
+          { "x": 568, "y": 2168, "width": 8, "height": 8 }
+        ]
+      },
+      {
+        "name": "Nujel'm",
+        "priority": 50,
+        "guarded": true,
+        "music": 46,
+        "rects": [
+          { "x": 3475, "y": 1000, "width": 360, "height": 435, "z_min": 0 }
+        ]
+      },
+      {
+        "name": "Nujel'm",
+        "priority": 51,
+        "guarded": true,
+        "rects": [
+          { "x": 3736, "y": 1184, "width": 16, "height": 23, "z_min": 0 },
+          { "x": 3728, "y": 1192, "width": 8, "height": 15, "z_min": 0 },
+          { "x": 3728, "y": 1288, "width": 23, "height": 15, "z_min": 0 },
+          { "x": 3728, "y": 1303, "width": 16, "height": 9, "z_min": 0 },
+          { "x": 3728, "y": 1312, "width": 12, "height": 8, "z_min": 0 },
+          { "x": 3728, "y": 1320, "width": 16, "height": 23, "z_min": 0 },
+          { "x": 3744, "y": 1328, "width": 7, "height": 15, "z_min": 0 },
+          { "x": 3760, "y": 1216, "width": 12, "height": 24, "z_min": 0 },
+          { "x": 3772, "y": 1220, "width": 4, "height": 16, "z_min": 0 },
+          { "x": 3776, "y": 1224, "width": 8, "height": 8, "z_min": 0 },
+          { "x": 3728, "y": 1248, "width": 16, "height": 24, "z_min": 0 },
+          { "x": 3744, "y": 1264, "width": 8, "height": 8, "z_min": 0 },
+          { "x": 3744, "y": 1248, "width": 8, "height": 8, "z_min": 0 }
+        ]
+      },
+      {
+        "name": "Moonglow",
+        "priority": 50,
+        "guarded": true,
+        "music": 49,
+        "rects": [
+          { "x": 4535, "y": 844, "width": 20, "height": 3, "z_min": 0 },
+          { "x": 4530, "y": 847, "width": 31, "height": 61, "z_min": 0 },
+          { "x": 4521, "y": 914, "width": 56, "height": 49, "z_min": 0 },
+          { "x": 4278, "y": 915, "width": 54, "height": 19, "z_min": 0 },
+          { "x": 4283, "y": 944, "width": 53, "height": 73, "z_min": 0 },
+          { "x": 4377, "y": 1015, "width": 59, "height": 37, "z_min": -10 },
+          { "x": 4367, "y": 1050, "width": 142, "height": 145, "z_min": 0 },
+          { "x": 4539, "y": 1036, "width": 27, "height": 18, "z_min": 0 },
+          { "x": 4517, "y": 1053, "width": 23, "height": 22, "z_min": 0 },
+          { "x": 4389, "y": 1198, "width": 47, "height": 39, "z_min": 0 },
+          { "x": 4466, "y": 1211, "width": 32, "height": 25, "z_min": 0 },
+          { "x": 4700, "y": 1108, "width": 17, "height": 18, "z_min": 0 },
+          { "x": 4656, "y": 1127, "width": 26, "height": 13, "z_min": 0 },
+          { "x": 4678, "y": 1162, "width": 25, "height": 25, "z_min": 0 },
+          { "x": 4613, "y": 1196, "width": 23, "height": 22, "z_min": 0 },
+          { "x": 4646, "y": 1212, "width": 14, "height": 17, "z_min": 0 },
+          { "x": 4677, "y": 1214, "width": 26, "height": 22, "z_min": 0 },
+          { "x": 4622, "y": 1316, "width": 22, "height": 24, "z_min": 0 },
+          { "x": 4487, "y": 1353, "width": 59, "height": 21, "z_min": 0 },
+          { "x": 4477, "y": 1374, "width": 69, "height": 35, "z_min": 0 },
+          { "x": 4659, "y": 1387, "width": 40, "height": 40, "z_min": 0 },
+          { "x": 4549, "y": 1482, "width": 29, "height": 27, "z_min": 0 },
+          { "x": 4405, "y": 1451, "width": 23, "height": 23, "z_min": 0 },
+          { "x": 4483, "y": 1468, "width": 21, "height": 13, "z_min": 0 }
+        ]
+      },
+      {
+        "name": "Moonglow",
+        "priority": 51,
+        "guarded": true,
+        "rects": [
+          { "x": 4384, "y": 1152, "width": 8, "height": 24, "z_min": 0 },
+          { "x": 4392, "y": 1160, "width": 16, "height": 8, "z_min": 0 },
+          { "x": 4400, "y": 1152, "width": 8, "height": 8, "z_min": 0 },
+          { "x": 4480, "y": 1056, "width": 8, "height": 16, "z_min": 0 },
+          { "x": 4488, "y": 1060, "width": 4, "height": 8, "z_min": 0 },
+          { "x": 4476, "y": 1060, "width": 4, "height": 8, "z_min": 0 }
+        ]
+      },
+      {
+        "name": "Magincia",
+        "priority": 50,
+        "guarded": true,
+        "music": 15,
+        "rects": [
+          { "x": 3632, "y": 2032, "width": 50, "height": 70 },
+          { "x": 3624, "y": 2162, "width": 95, "height": 70 },
+          { "x": 3752, "y": 2046, "width": 52, "height": 48 },
+          { "x": 3680, "y": 2045, "width": 72, "height": 49 },
+          { "x": 3652, "y": 2094, "width": 160, "height": 180 },
+          { "x": 3649, "y": 2256, "width": 54, "height": 47 }
+        ]
+      },
+      {
+        "name": "Magincia",
+        "priority": 51,
+        "guarded": true,
+        "rects": [
+          { "x": 3687, "y": 2246, "width": 12, "height": 16 }
+        ]
+      },
+      {
+        "name": "Buccaneer's Den",
+        "priority": 50,
+        "music": 61,
+        "rects": [
+          { "x": 2612, "y": 2057, "width": 164, "height": 210 },
+          { "x": 2604, "y": 2065, "width": 8, "height": 189, "z_min": 0 }
+        ]
+      },
+      {
+        "name": "Buccaneer's Den",
+        "priority": 51,
+        "guarded": true,
+        "rects": [
+          { "x": 2712, "y": 2080, "width": 16, "height": 16 },
+          { "x": 2712, "y": 2096, "width": 8, "height": 8 },
+          { "x": 2664, "y": 2232, "width": 24, "height": 8 },
+          { "x": 2672, "y": 2240, "width": 16, "height": 8 }
+        ]
+      },
+      {
+        "name": "Covetous",
+        "priority": 50,
+        "no_housing": true,
+        "music": 26,
+        "light": 26,
+        "rects": [
+          { "x": 5376, "y": 1793, "width": 201, "height": 255 },
+          { "x": 5576, "y": 1791, "width": 57, "height": 257 }
+        ]
+      },
+      {
+        "name": "Deceit",
+        "priority": 50,
+        "no_housing": true,
+        "music": 26,
+        "light": 26,
+        "rects": [
+          { "x": 5122, "y": 518, "width": 248, "height": 252 }
+        ]
+      },
+      {
+        "name": "Despise",
+        "priority": 50,
+        "no_housing": true,
+        "music": 26,
+        "light": 26,
+        "rects": [
+          { "x": 5377, "y": 516, "width": 254, "height": 506 }
+        ]
+      },
+      {
+        "name": "Destard",
+        "priority": 50,
+        "no_housing": true,
+        "music": 26,
+        "light": 26,
+        "rects": [
+          { "x": 5120, "y": 770, "width": 251, "height": 258 }
+        ]
+      },
+      {
+        "name": "Hythloth",
+        "priority": 50,
+        "no_housing": true,
+        "music": 26,
+        "light": 26,
+        "rects": [
+          { "x": 5898, "y": 2, "width": 238, "height": 244 }
+        ]
+      },
+      {
+        "name": "Khaldun",
+        "priority": 50,
+        "no_housing": true,
+        "music": 26,
+        "light": 26,
+        "rects": [
+          { "x": 5381, "y": 1284, "width": 247, "height": 225 }
+        ]
+      },
+      {
+        "name": "Jail",
+        "priority": 50,
+        "no_teleport": true,
+        "no_recall": true,
+        "light": 9,
+        "rects": [
+          { "x": 5271, "y": 1159, "width": 41, "height": 33 }
+        ]
+      },
+      {
+        "name": "Green Acres",
+        "priority": 1,
+        "rects": [
+          { "x": 5376, "y": 512, "width": 767, "height": 767 }
+        ]
+      },
+      {
+        "name": "Shame",
+        "priority": 50,
+        "no_housing": true,
+        "music": 26,
+        "light": 26,
+        "rects": [
+          { "x": 5377, "y": 2, "width": 257, "height": 260 },
+          { "x": 5635, "y": 2, "width": 260, "height": 124 }
+        ]
+      },
+      {
+        "name": "Wrong",
+        "priority": 50,
+        "no_housing": true,
+        "music": 26,
+        "light": 26,
+        "rects": [
+          { "x": 5633, "y": 511, "width": 253, "height": 510 }
+        ]
+      },
+      {
+        "name": "Wrong",
+        "priority": 51,
+        "rects": [
+          { "x": 5687, "y": 623, "width": 33, "height": 44 }
+        ]
+      },
+      {
+        "name": "Wrong",
+        "priority": 52,
+        "no_teleport": true,
+        "no_recall": true,
+        "light": 9,
+        "rects": [
+          { "x": 5700, "y": 636, "width": 7, "height": 7 }
+        ]
+      },
+      {
+        "name": "Cave 1",
+        "priority": 50,
+        "rects": [
+          { "x": 2373, "y": 900, "width": 22, "height": 28 },
+          { "x": 2395, "y": 903, "width": 14, "height": 16 },
+          { "x": 2373, "y": 928, "width": 10, "height": 9 },
+          { "x": 2359, "y": 927, "width": 14, "height": 18 }
+        ]
+      },
+      {
+        "name": "Cave 2",
+        "priority": 50,
+        "rects": [
+          { "x": 1887, "y": 354, "width": 33, "height": 23 }
+        ]
+      },
+      {
+        "name": "Cave 3",
+        "priority": 50,
+        "rects": [
+          { "x": 1925, "y": 307, "width": 18, "height": 18 }
+        ]
+      },
+      {
+        "name": "Cave 4",
+        "priority": 50,
+        "rects": [
+          { "x": 2323, "y": 809, "width": 45, "height": 42 }
+        ]
+      },
+      {
+        "name": "Britain Mine 1",
+        "priority": 50,
+        "rects": [
+          { "x": 1436, "y": 1215, "width": 29, "height": 37 }
+        ]
+      },
+      {
+        "name": "Britain Mine 2",
+        "priority": 50,
+        "rects": [
+          { "x": 1611, "y": 1175, "width": 51, "height": 29 }
+        ]
+      },
+      {
+        "name": "Minoc Cave 1",
+        "priority": 50,
+        "rects": [
+          { "x": 2406, "y": 168, "width": 22, "height": 16 }
+        ]
+      },
+      {
+        "name": "Minoc Cave 2",
+        "priority": 50,
+        "rects": [
+          { "x": 2418, "y": 81, "width": 24, "height": 32 }
+        ]
+      },
+      {
+        "name": "Minoc Cave 3",
+        "priority": 50,
+        "rects": [
+          { "x": 2447, "y": 39, "width": 42, "height": 28 }
+        ]
+      },
+      {
+        "name": "Minoc Mine",
+        "priority": 50,
+        "rects": [
+          { "x": 2556, "y": 501, "width": 6, "height": 3 },
+          { "x": 2556, "y": 474, "width": 26, "height": 27 }
+        ]
+      },
+      {
+        "name": "Avatar Isle Cave",
+        "priority": 50,
+        "rects": [
+          { "x": 4594, "y": 3807, "width": 23, "height": 17 }
+        ]
+      },
+      {
+        "name": "Ice Isle Cave 1",
+        "priority": 50,
+        "rects": [
+          { "x": 4018, "y": 421, "width": 49, "height": 49 }
+        ]
+      },
+      {
+        "name": "Ice Isle Cave 2",
+        "priority": 50,
+        "rects": [
+          { "x": 4002, "y": 310, "width": 43, "height": 41 },
+          { "x": 4005, "y": 298, "width": 22, "height": 12 }
+        ]
+      },
+      {
+        "name": "North Territory Cave",
+        "priority": 50,
+        "rects": [
+          { "x": 1973, "y": 251, "width": 21, "height": 23 }
+        ]
+      },
+      {
+        "name": "Yew Cave",
+        "priority": 50,
+        "rects": [
+          { "x": 766, "y": 1683, "width": 12, "height": 14 }
+        ]
+      },
+      {
+        "name": "North Territory Mine 1",
+        "priority": 50,
+        "rects": [
+          { "x": 1713, "y": 1055, "width": 40, "height": 25 }
+        ]
+      },
+      {
+        "name": "North Territory Mine 2",
+        "priority": 50,
+        "rects": [
+          { "x": 1604, "y": 958, "width": 46, "height": 51 }
+        ]
+      },
+      {
+        "name": "Mt Kendall",
+        "priority": 50,
+        "rects": [
+          { "x": 2552, "y": 448, "width": 71, "height": 59 },
+          { "x": 2547, "y": 380, "width": 43, "height": 68 },
+          { "x": 2590, "y": 413, "width": 33, "height": 35 }
+        ]
+      },
+      {
+        "name": "Covetous Mine",
+        "priority": 50,
+        "rects": [
+          { "x": 2429, "y": 866, "width": 19, "height": 45 },
+          { "x": 2448, "y": 879, "width": 27, "height": 28 },
+          { "x": 2456, "y": 907, "width": 19, "height": 34 }
+        ]
+      },
+      {
+        "name": "Terathan Keep",
+        "priority": 50,
+        "no_housing": true,
+        "music": 26,
+        "light": 26,
+        "rects": [
+          { "x": 5404, "y": 3099, "width": 77, "height": 68 },
+          { "x": 5120, "y": 1530, "width": 254, "height": 258 }
+        ]
+      },
+      {
+        "name": "Fire",
+        "priority": 50,
+        "no_housing": true,
+        "music": 26,
+        "light": 26,
+        "rects": [
+          { "x": 5635, "y": 1285, "width": 245, "height": 235 }
+        ]
+      },
+      {
+        "name": "Ice",
+        "priority": 50,
+        "no_housing": true,
+        "music": 26,
+        "light": 26,
+        "rects": [
+          { "x": 5668, "y": 130, "width": 220, "height": 138 },
+          { "x": 5800, "y": 319, "width": 63, "height": 65 },
+          { "x": 5654, "y": 300, "width": 54, "height": 40 }
+        ]
+      },
+      {
+        "name": "BlackthornDungeon",
+        "priority": 50,
+        "no_housing": true,
+        "music": 26,
+        "light": 26,
+        "rects": [
+          { "x": 6151, "y": 2301, "width": 413, "height": 539 }
+        ]
+      },
+      {
+        "name": "Delucia",
+        "priority": 50,
+        "guarded": true,
+        "rects": [
+          { "x": 5123, "y": 3942, "width": 192, "height": 122 },
+          { "x": 5147, "y": 4064, "width": 125, "height": 20 },
+          { "x": 5235, "y": 3930, "width": 80, "height": 12 }
+        ]
+      },
+      {
+        "name": "Delucia",
+        "priority": 51,
+        "guarded": true,
+        "rects": [
+          { "x": 5194, "y": 4053, "width": 10, "height": 20 }
+        ]
+      },
+      {
+        "name": "Papua",
+        "priority": 50,
+        "guarded": true,
+        "rects": [
+          { "x": 5639, "y": 3095, "width": 192, "height": 223 },
+          { "x": 5831, "y": 3237, "width": 20, "height": 30 }
+        ]
+      },
+      {
+        "name": "Papua",
+        "priority": 51,
+        "guarded": true,
+        "rects": [
+          { "x": 5757, "y": 3150, "width": 24, "height": 24 }
+        ]
+      },
+      {
+        "name": "Wrong Entrance",
+        "priority": 50,
+        "music": 30,
+        "rects": [
+          { "x": 1939, "y": 215, "width": 134, "height": 137 }
+        ]
+      },
+      {
+        "name": "Covetous Entrance",
+        "priority": 50,
+        "music": 22,
+        "rects": [
+          { "x": 2433, "y": 846, "width": 128, "height": 128 }
+        ]
+      },
+      {
+        "name": "Despise Entrance",
+        "priority": 50,
+        "rects": [
+          { "x": 1289, "y": 1064, "width": 32, "height": 37 }
+        ]
+      },
+      {
+        "name": "Despise Passage",
+        "priority": 50,
+        "rects": [
+          { "x": 1338, "y": 1060, "width": 51, "height": 62 },
+          { "x": 1354, "y": 1122, "width": 42, "height": 121 },
+          { "x": 1349, "y": 1122, "width": 5, "height": 102 }
+        ]
+      },
+      {
+        "name": "Misc Dungeons",
+        "priority": 50,
+        "no_housing": true,
+        "music": 26,
+        "light": 26,
+        "rects": [
+          { "x": 5886, "y": 1281, "width": 257, "height": 254 }
+        ]
+      },
+      {
+        "name": "A Cotton Field in Moonglow",
+        "priority": 50,
+        "rects": [
+          { "x": 4557, "y": 1471, "width": 20, "height": 10 }
+        ]
+      },
+      {
+        "name": "A Wheatfield in Skara Brae 1",
+        "priority": 50,
+        "rects": [
+          { "x": 796, "y": 2152, "width": 36, "height": 24 }
+        ]
+      },
+      {
+        "name": "A Carrot Field in Skara Brae",
+        "priority": 50,
+        "rects": [
+          { "x": 816, "y": 2251, "width": 16, "height": 8 }
+        ]
+      },
+      {
+        "name": "An Onion Field in Skara Brae",
+        "priority": 50,
+        "rects": [
+          { "x": 816, "y": 2261, "width": 16, "height": 8 }
+        ]
+      },
+      {
+        "name": "A Cabbage Field in Skara Brae 1",
+        "priority": 50,
+        "rects": [
+          { "x": 816, "y": 2271, "width": 16, "height": 8 }
+        ]
+      },
+      {
+        "name": "A Cabbage Field in Skara Brae 2",
+        "priority": 50,
+        "rects": [
+          { "x": 816, "y": 2281, "width": 16, "height": 8 }
+        ]
+      },
+      {
+        "name": "A Wheatfield in Skara Brae 2",
+        "priority": 50,
+        "rects": [
+          { "x": 835, "y": 2344, "width": 16, "height": 16 }
+        ]
+      },
+      {
+        "name": "A Cotton Field in Skara Brae",
+        "priority": 50,
+        "rects": [
+          { "x": 816, "y": 2344, "width": 16, "height": 24 }
+        ]
+      },
+      {
+        "name": "Shrine of Compassion",
+        "priority": 50,
+        "rects": [
+          { "x": 1851, "y": 867, "width": 14, "height": 14 }
+        ]
+      },
+      {
+        "name": "Chaos Shrine",
+        "priority": 50,
+        "rects": [
+          { "x": 1456, "y": 840, "width": 4, "height": 7 }
+        ]
+      },
+      {
+        "name": "Shrine of Honesty",
+        "priority": 37,
+        "rects": [
+          { "x": 4209, "y": 560, "width": 7, "height": 8 }
+        ]
+      },
+      {
+        "name": "Shrine of Honor",
+        "priority": 50,
+        "rects": [
+          { "x": 1721, "y": 3525, "width": 8, "height": 6 }
+        ]
+      },
+      {
+        "name": "Shrine of Humility",
+        "priority": 50,
+        "rects": [
+          { "x": 4270, "y": 3694, "width": 9, "height": 9 }
+        ]
+      },
+      {
+        "name": "Shrine of Justice",
+        "priority": 50,
+        "rects": [
+          { "x": 1297, "y": 629, "width": 9, "height": 9 }
+        ]
+      },
+      {
+        "name": "Shrine of Sacrifice",
+        "priority": 50,
+        "rects": [
+          { "x": 3352, "y": 286, "width": 6, "height": 7 }
+        ]
+      },
+      {
+        "name": "Shrine of Spirituality",
+        "priority": 50,
+        "rects": [
+          { "x": 1590, "y": 2485, "width": 10, "height": 11 },
+          { "x": 1599, "y": 2488, "width": 10, "height": 5 }
+        ]
+      },
+      {
+        "name": "Shrine of Valor",
+        "priority": 37,
+        "rects": [
+          { "x": 2488, "y": 3928, "width": 9, "height": 11 }
+        ]
+      },
+      {
+        "name": "South Britannian Sea",
+        "priority": 50,
+        "rects": [
+          { "x": 688, "y": 3700, "width": 1412, "height": 380 }
+        ]
+      },
+      {
+        "name": "Paroxysmus Exit",
+        "priority": 50,
+        "no_housing": true,
+        "light": 26,
+        "rects": [
+          { "x": 5620, "y": 3032, "width": 10, "height": 10 }
+        ]
+      },
+      {
+        "name": "Sanctuary Entrance",
+        "priority": 50,
+        "no_housing": true,
+        "light": 26,
+        "rects": [
+          { "x": 759, "y": 1635, "width": 12, "height": 12 }
+        ]
+      },
+      {
+        "name": "Solen Hives",
+        "priority": 50,
+        "no_housing": true,
+        "light": 26,
+        "rects": [
+          { "x": 5640, "y": 1776, "width": 295, "height": 263 }
+        ]
+      },
+      {
+        "name": "Sea Market",
+        "priority": 50,
+        "rects": [
+          { "x": 4529, "y": 2296, "width": 45, "height": 112 }
+        ]
+      }
+    ]
+  }
+]

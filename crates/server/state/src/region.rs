@@ -141,6 +141,23 @@ impl Region {
     }
 }
 
+/// One facet's regions, and the admin verb that lays them.
+///
+/// The verb rides with the data because that is where it stays honest. Regions
+/// are the first dataset the tree ships that is *not* registered at boot — an
+/// operator lays and clears them from the staff menu — so something has to say
+/// which button means this set. A `match` in the server would be a second list
+/// to keep level with `world::admin`'s `ROWS`; a field is one.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct RegionSet {
+    /// What the staff menu's button sends: `regions:felucca`.
+    pub verb: String,
+    /// Which facet these belong to.
+    pub facet: openshard_protocol::world::Facet,
+    /// The areas, in the order [`Regions::set`] will number them.
+    pub regions: Vec<Region>,
+}
+
 /// Every region on one facet, with a coarse grid to find them by.
 ///
 /// Lives on the facet's state beside the interest grid and the obstruction index,
@@ -296,6 +313,8 @@ impl Regions {
         (bx * self.down + by) as usize
     }
 }
+
+include!(concat!(env!("OUT_DIR"), "/regions.rs"));
 
 #[cfg(test)]
 mod tests {

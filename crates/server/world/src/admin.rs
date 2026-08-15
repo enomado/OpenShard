@@ -2,12 +2,18 @@
 //! handler for the buttons it comes back with.
 //!
 //! The menu is engine-owned — it is an operator tool, not gameplay. Its buttons
-//! carry a *verb* the community pack acts on: "populate" registers the spawn
-//! regions (see [`crate::spawner`]) the tick then keeps populated, "decorate"
-//! lays the static/door/container art, and the two "clear" verbs undo them. The
-//! engine holds no spawn or decoration data of its own — a whole facet's worth
-//! comes from the pack, registered through a script op under the verb a button
-//! sends. One click each lays or clears the world.
+//! carry a *verb*: "populate" registers the spawn regions (see
+//! [`crate::spawner`]) the tick then keeps populated, "decorate" lays the
+//! static/door/container art, "regions" gives a facet its named areas, and the
+//! three "clear" verbs undo them. One click each lays or clears the world.
+//!
+//! **Who answers a verb is not this module's business.** The verb is a string on
+//! an [`AdminMenuAction`](crate::events::AdminMenuAction); whoever is listening
+//! turns it into commands. Today `server::content` answers `regions:felucca`
+//! from data in the tree, and a configured script pack answers the spawn and
+//! decoration verbs — which are the two datasets still outside the repository.
+//! An unanswered verb lays nothing and says nothing, which is what a shard
+//! without a pack sees for those two.
 
 use openshard_entities::EntityId;
 use openshard_gateway::ConnectionId;
@@ -42,8 +48,9 @@ struct Row {
     /// down, another for the ones that take it away again.
     hue: u32,
     label: &'static str,
-    /// What the community pack switches on. The engine holds no spawn or
-    /// decoration data, so this string is the whole of what a click means.
+    /// What a listener switches on — `server::content` for the datasets in the
+    /// tree, a script pack for the rest. This string is the whole of what a
+    /// click means.
     verb: &'static str,
 }
 
@@ -162,9 +169,10 @@ pub fn open_menu(state: &mut WorldState, actor: EntityId) {
 /// Laying the same verb twice duplicates what it lays; that is the operator's to
 /// know, and [`ROWS`]' clear verbs are how it is undone.
 ///
-/// The verb is not validated here. The engine holds no spawn data, so it cannot
-/// know which verbs a pack answers to — an unknown one reaches `onEvent` and
-/// falls through it, exactly as a pack that dropped a set would.
+/// The verb is not validated here, and cannot be: the world publishes the string
+/// and does not know who is listening. An unknown one is read by
+/// `server::content` and by any script pack, matches nothing in either, and lays
+/// nothing — exactly as a pack that dropped a set would.
 pub fn seed(state: &mut WorldState, action: &str) {
     state.bus.send(crate::events::AdminMenuAction {
         serial: None,
