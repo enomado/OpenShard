@@ -42,11 +42,11 @@
 //!
 //! The shard reads `openshard.toml` if there is one — `--config` names another —
 //! and falls back to the shipped default when there is not. That is the
-//! difference between a window onto a world and a window onto bare ground: the
-//! engine ships no spawn or decoration data at all, so with the default's empty
-//! `scripting.main` and no saved world, what draws is the map's own statics and
-//! nothing else. No townsfolk, no doors, no shop signs — those are the pack's,
-//! and they arrive over the wire like any other item.
+//! difference between a window onto a world and a window onto bare ground: an
+//! unseeded shard with no saved world draws the map's own statics and nothing
+//! else. No townsfolk, no doors, no shop signs — those are laid by the admin
+//! verbs (`--seed populate:felucca,decorate:felucca`), and they arrive over the
+//! wire like any other item.
 //!
 //! It follows that this *can* now open the world an operator has saved, and
 //! write to it: a config naming a database is that database. Not a second copy.
@@ -113,10 +113,10 @@ struct Cli {
 
     /// The shard config to run, when there is one at that path.
     ///
-    /// The point of reading it is the pack and the database: a shard with
-    /// `scripting.main` empty and no world saved anywhere draws the map and
-    /// nothing else — no townsfolk, no doors, no shop signs, because the engine
-    /// ships none of that. Missing, this falls back to the shipped default,
+    /// The point of reading it is the seed and the database: a shard that was
+    /// never seeded and has no world saved anywhere draws the map and nothing
+    /// else — no townsfolk, no doors, no shop signs, because nothing has laid
+    /// them yet. Missing, this falls back to the shipped default,
     /// which is what a fresh checkout has.
     #[arg(
         long,
