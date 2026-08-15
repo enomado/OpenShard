@@ -129,8 +129,12 @@ fn a_closed_paperdoll_does_not_reopen_on_an_unrelated_world_change() {
         "the overlay survives until the view itself agrees the paperdoll is gone"
     );
 
-    // The link thread has now applied `CloseWindow` and a fresh snapshot
-    // reflects it — the reconciliation this overlay is for.
+    // And now the view itself agrees the paperdoll is gone — the
+    // reconciliation this overlay is for. In the running client that is
+    // `App::apply_close_window` writing the same fact into this thread's copy,
+    // or the shard taking the mobile away with a `0x1D`; the link thread is
+    // never involved, and the `Command::CloseWindow` this comment used to name
+    // has not existed since S2 in `docs/client_window_state.md`.
     view.paperdolls.remove(&serial);
     reconcile_own_windows(&view, &mut own_windows, &mut locally_closed, false, false);
     assert!(

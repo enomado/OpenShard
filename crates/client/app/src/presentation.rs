@@ -1826,6 +1826,10 @@ impl App {
         // Likewise: the cut the solids view is drawn under reads the player, and
         // the pass that uses it runs inside the window's borrow.
         let solid_cut = self.solid_cut();
+        // And likewise the tooltip, for the same reason plus one of its own: it
+        // both reads the view and may put a `0xD6` on the wire, which is exactly
+        // the mixture the drawing half is kept free of.
+        let hover = self.hover_tooltip();
 
         let Some(window) = self.window.as_mut() else {
             return;
@@ -2256,6 +2260,7 @@ impl App {
             &self.world,
             &mut self.windows,
             self.input.pointer_gump,
+            &hover,
             self.shell.as_ref(),
             window,
             &mut encoder,

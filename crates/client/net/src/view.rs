@@ -34,6 +34,7 @@ use openshard_protocol::gump::layout::{Element, parse};
 use openshard_protocol::gump::{GumpId, GumpKey, GumpPoint};
 use openshard_protocol::items::WorldItemPayload;
 use openshard_protocol::mobile::{Equipment, Notoriety, PaperdollFlags, StatusFlags, Vitals};
+use openshard_protocol::properties::PropertyEntry;
 use openshard_protocol::serial::Serial;
 use openshard_protocol::server_packet::ServerPacket;
 use openshard_protocol::speech::{Font, LocalizedMessage, SpokenMessage, TalkMode, UnicodeMessage};
@@ -394,6 +395,57 @@ pub struct WorldView {
     /// [`paperdoll_closed`](Self::paperdoll_closed): closing one is a click,
     /// exactly as it is for a container and a gump.
     pub paperdolls: FxHashMap<Serial, Paperdoll>,
+    /// The AoS tooltip this client knows about each object it has been shown.
+    ///
+    /// Filled by the two halves of the property protocol — a `0xDC` naming a
+    /// revision, a `0xD6` carrying a list — and read by whatever draws a hover.
+    /// Entries go when the object does, in [`forget`](Self::forget): a tooltip
+    /// is about a thing on screen, and a serial the shard has taken away has no
+    /// hover to answer.
+    pub tooltips: FxHashMap<Serial, Tooltip>,
+}
+
+/// What this client knows about one object's tooltip.
+///
+/// Two facts, kept apart because the shard has three tooltip modes and each
+/// sends a different one of them. In `version` mode a revision arrives with the
+/// object and the list only if asked; in `full` mode the list arrives unasked
+/// and no revision ever does; in `off` mode neither comes. Folding them into a
+/// single "do we have it" would make the second mode look permanently stale and
+/// the client would ask, every hover, for a list it already held.
+#[derive(Clone, PartialEq, Eq, Debug, Default)]
+pub struct Tooltip {
+    /// The revision the shard last named as current for this object (`0xDC`).
+    ///
+    /// `None` in `full` mode, where the shard never sends one.
+    pub revision: Option<u32>,
+    /// The revision [`entries`](Self::entries) were built at — the hash the
+    /// `0xD6` that filled them carried. `None` until one arrives.
+    pub held_revision: Option<u32>,
+    /// The lines, newest answer wins, in the order the shard wrote them.
+    ///
+    /// Kept rather than cleared when a newer revision arrives, so a hover during
+    /// the round trip draws the tooltip that is one edit out of date instead of
+    /// a blank. A blank would read as "this has no name".
+    pub entries: Vec<PropertyEntry>,
+}
+
+impl Tooltip {
+    /// Whether this client should ask the shard for the list.
+    ///
+    /// # Why `(None, Some(_))` is not stale
+    ///
+    /// That is `full` mode's steady state: a list arrived unasked and nothing
+    /// has contradicted it. Calling it stale would make every hover send a
+    /// request the shard answers with the same bytes, forever.
+    #[must_use]
+    pub fn stale(&self) -> bool {
+        match (self.revision, self.held_revision) {
+            (Some(revision), held) => held != Some(revision),
+            (None, None) => true,
+            (None, Some(_)) => false,
+        }
+    }
 }
 
 /// A paperdoll window the shard has opened here.
@@ -525,6 +577,7 @@ impl WorldView {
             pending_vendor_buys: FxHashMap::default(),
             vendor_stock: FxHashMap::default(),
             paperdolls: FxHashMap::default(),
+            tooltips: FxHashMap::default(),
         }
     }
 
@@ -563,6 +616,10 @@ impl WorldView {
         self.vendor_sells.clear();
         self.pending_vendor_buys.clear();
         self.vendor_stock.clear();
+        // The tooltips go with the objects they described. Nothing here can be
+        // hovered any more, and a name that outlived the shard that said it is
+        // the same kind of convincing wrong picture as a body left mid-stride.
+        self.tooltips.clear();
         self.target = None;
         self.heard(Heard {
             serial: None,
@@ -1181,7 +1238,31 @@ impl WorldView {
                 // for a mobile that is not the player, which needs no guard
                 // here because a `0x1D` never names our own serial.
                 let had_paperdoll = self.paperdolls.remove(&remove.serial).is_some();
-                had_mobile || had_item || was_held || had_window || had_vendor || had_paperdoll
+                // And its tooltip. A hover cannot land on something that is not
+                // drawn, so the entry has no reader left — and keeping it would
+                // hand a stale name back if the serial were reused.
+                let had_tooltip = self.tooltips.remove(&remove.serial).is_some();
+                had_mobile || had_item || was_held || had_window || had_vendor || had_paperdoll || had_tooltip
+            }
+            // The shard says this object's tooltip has a new revision. It does
+            // not send the list — asking for it is this end's move, and only
+            // when something wants to draw it.
+            ServerPacket::TooltipRevision(revision) => {
+                let entry = self.tooltips.entry(revision.serial).or_default();
+                let changed = entry.revision != Some(revision.hash);
+                entry.revision = Some(revision.hash);
+                changed
+            }
+            // The list. Arrives either as the answer to our `0xD6` or, in the
+            // shard's `full` tooltip mode, unasked and with no revision ever
+            // named — which is why this does not touch `revision`. See
+            // [`Tooltip::stale`].
+            ServerPacket::PropertyListReply(reply) => {
+                let entry = self.tooltips.entry(reply.serial).or_default();
+                let changed = entry.held_revision != Some(reply.hash) || entry.entries != reply.entries;
+                entry.held_revision = Some(reply.hash);
+                entry.entries.clone_from(&reply.entries);
+                changed
             }
             _ => false,
         }
@@ -2211,18 +2292,24 @@ mod tests {
         view.apply(&paperdoll_of(view.player.serial));
         let said = view.journal.len();
 
-        view.shard_lost("unknown packet 0xD6");
+        view.apply(&revision_of(vendor, 0xABCD));
+        // `0x99` and not `0xD6`, which this used to name: the shard does send a
+        // `0xD6` and this client now reads it, so the example has to be an id
+        // the framing table genuinely has no row for — the same correction
+        // `connection.rs`'s own test carries.
+        view.shard_lost("unknown packet 0x99");
 
         assert!(view.mobiles.is_empty(), "nobody is standing there any more");
         assert!(view.containers.is_empty(), "no window offers to send a packet");
         assert!(view.contents.is_empty());
         assert!(view.paperdolls.is_empty());
         assert!(view.items.is_empty());
+        assert!(view.tooltips.is_empty(), "and no name outlived what it named");
         assert!(view.target.is_none());
         assert_eq!(view.journal.len(), said + 1, "and the log gained the reason");
         let last = view.journal.back().expect("the line");
         assert!(last.serial.is_none(), "the system said it, not a mobile");
-        assert!(last.text.contains("unknown packet 0xD6"));
+        assert!(last.text.contains("unknown packet 0x99"));
         assert_eq!(
             view.player.serial,
             start().serial,
@@ -2398,5 +2485,81 @@ mod tests {
             facing: view.player.facing,
         }));
         assert_eq!(view.player.skills.len(), 1, "the step kept the table");
+    }
+
+    fn revision_of(serial: Serial, hash: u32) -> ServerPacket {
+        ServerPacket::TooltipRevision(openshard_protocol::properties::TooltipRevision { serial, hash })
+    }
+
+    fn list_of(serial: Serial, hash: u32, name: &str) -> ServerPacket {
+        ServerPacket::PropertyListReply(openshard_protocol::properties::PropertyListReply {
+            serial,
+            hash,
+            entries: vec![openshard_protocol::properties::PropertyEntry {
+                cliloc: openshard_protocol::wire::ClilocId(1_050_045),
+                arguments: format!(" \t{name}\t "),
+            }],
+        })
+    }
+
+    /// The shard's `version` mode, which is what it ships as: a revision arrives
+    /// with the object and the list only if this end asks. The point of the
+    /// assertion is the *middle* state — told a revision, holding no list — as
+    /// that is the only thing that makes the client ask.
+    #[test]
+    fn a_revision_makes_a_tooltip_stale_and_the_list_settles_it() {
+        let mut view = WorldView::entered(start());
+        assert!(view.apply(&revision_of(other(), 0xABCD)));
+        assert!(
+            view.tooltips[&other()].stale(),
+            "told a revision, holding nothing"
+        );
+
+        assert!(view.apply(&list_of(other(), 0xABCD, "Lord British")));
+        assert!(!view.tooltips[&other()].stale());
+        assert_eq!(view.tooltips[&other()].entries[0].arguments, " \tLord British\t ");
+
+        assert!(
+            !view.apply(&list_of(other(), 0xABCD, "Lord British")),
+            "the same list again changes nothing"
+        );
+    }
+
+    /// The shard's `full` mode sends the list unasked and never sends a `0xDC`
+    /// at all. Modelled as one "do we have it" flag, this would read as
+    /// permanently stale and the client would re-ask on every single hover for
+    /// a list it was already holding.
+    #[test]
+    fn a_list_that_arrives_unasked_is_not_stale() {
+        let mut view = WorldView::entered(start());
+        assert!(view.apply(&list_of(other(), 0x1234, "a dagger")));
+        assert_eq!(view.tooltips[&other()].revision, None, "no 0xDC ever came");
+        assert!(!view.tooltips[&other()].stale());
+    }
+
+    /// The object changed. The old lines stay put until the new ones arrive, so
+    /// a hover mid-round-trip draws a name one edit out of date rather than a
+    /// blank — a blank reads as "this thing has no name".
+    #[test]
+    fn a_newer_revision_keeps_the_lines_it_supersedes() {
+        let mut view = WorldView::entered(start());
+        view.apply(&revision_of(other(), 1));
+        view.apply(&list_of(other(), 1, "a dagger"));
+        assert!(view.apply(&revision_of(other(), 2)));
+
+        assert!(view.tooltips[&other()].stale());
+        assert_eq!(
+            view.tooltips[&other()].entries[0].arguments,
+            " \ta dagger\t ",
+            "still drawable while the new list is in flight"
+        );
+    }
+
+    #[test]
+    fn a_removed_object_takes_its_tooltip_with_it() {
+        let mut view = WorldView::entered(start());
+        view.apply(&revision_of(other(), 1));
+        assert!(view.apply(&ServerPacket::Remove(Remove { serial: other() })));
+        assert!(view.tooltips.is_empty());
     }
 }

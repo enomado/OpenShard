@@ -38,7 +38,7 @@ use crate::net_command::project_motion;
 use crate::window::Screen;
 use crate::{
     GLIDE_INTERVAL, Scenario, desk, frames, graphics, input, picking, replay, resources, shell, steer,
-    windows, world,
+    tooltips, windows, world,
 };
 
 /// State for the injected LOD field scenario.  The input stays in the client
@@ -197,6 +197,13 @@ pub(crate) struct App {
     /// The player's own windows, and what the mouse is doing to them — see
     /// [`windows::Windows`].
     pub(crate) windows: windows::Windows,
+    /// Which tooltips have already been asked for — see [`tooltips::Tooltips`].
+    ///
+    /// The lists themselves are not here: they arrive in packets and live in the
+    /// [`WorldView`](openshard_client_net::view::WorldView) with everything else
+    /// the shard said. This is only the outstanding questions, which is the one
+    /// part of the exchange the wire has no packet for.
+    pub(crate) tooltips: tooltips::Tooltips,
     /// The speech line — see [`Chat`].
     pub(crate) chat: Chat,
     /// The last few seconds of the eye, for the scope in the HUD.

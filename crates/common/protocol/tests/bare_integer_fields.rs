@@ -168,6 +168,13 @@ const ALLOWLIST: &[(&str, &str, &str)] = &[
         "hash",
         "TooltipRevision: server-computed, client-only reader; none of N3's four classes fit",
     ),
+    (
+        "properties.rs",
+        "hash",
+        "PropertyListReply: the same accumulator arriving on the other side — the client only \
+         ever compares it against the one a TooltipRevision carried, and never recomputes it, so \
+         a type that promised meaning would be promising more than the value has",
+    ),
     // -- text field ids the pack script owns, above the engine: N5 ----------
     (
         "gump.rs",

@@ -176,12 +176,41 @@ its own.
   call; still a `HashSet` lookup per entry, not a scan, so this is unchanged
   in shape, just worth re-confirming if either set ever stops being small.
 
+- 🚩 **The direct writes are not gone, and this file said they were.** Found
+  2026-08-15, while chasing five doc comments that named a
+  `link::Command::CloseWindow` no reader could find — the variant is genuinely
+  retired, and those comments were the whole of what was stale about *it*. What
+  they led to is this: `App::apply_close_window`
+  (`crates/client/app/src/net_command.rs`) still exists and still calls
+  `paperdoll_closed` / `container_closed` / `gump_closed` on `App`'s own view,
+  from three call sites in `own_windows.rs`, each one line above the
+  `locally_closed.insert` that was supposed to replace it. So the fact is
+  written twice, in two places, by convention — which is the exact shape S2 was
+  written to end, arrived at from the other direction.
+
+  **It is not currently a bug, and the reason is worth writing down before
+  somebody relies on it.** The reopen this plan exists about needed the link
+  thread's copy to be cloned over `App`'s, and that happens **once**: `snapshot`
+  is called at world entry and nowhere else in the steady state
+  (`crates/client/app/src/link.rs`), everything after being an
+  `Update::Mutation` folded into `App`'s own copy. The two copies therefore no
+  longer race. Whoever makes the link thread publish a second snapshot brings
+  the original bug back with it, and this note is what says so.
+
+  Untangling it is a session: the direct write is load-bearing for three window
+  kinds (it is what lets `reconcile_own_windows` drop the overlay entry) and
+  absent for the fourth — `WindowSubject::Vendor` sets only the overlay — so
+  the two paths are not interchangeable today and cannot simply be deleted.
+
 ## Status
 
-**All of S0 through S3 have landed.** The overlay is built, the
-`CloseWindow`/`CloseTarget` patch's direct writes to `App`'s own `view` are
-gone, and a test exercises the exact scenario the original bug report used.
+**S0 through S3 have landed, and one claim this section made about them was
+wrong** — see the last Backlog entry. The overlay is built and a test exercises
+the exact scenario the original bug report used; what is *not* true, and was
+stated here as though it were, is that the `CloseWindow`/`CloseTarget` patch's
+direct writes to `App`'s own `view` are gone. The `Command` half is gone. The
+writes are still there.
+
 This plan exists because the patch that fixed the visible bug was flagged,
 correctly, as a shape rather than a cause — see [`roadmap.md`](roadmap.md),
 under "The client — planned," which points back here for what to do about it.
-Nothing is left open here beyond the Backlog above.

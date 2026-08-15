@@ -310,14 +310,22 @@ pub enum Command {
     Outgoing(Outgoing),
 }
 
-/// Which of a locally-closed window's state [`Command::CloseWindow`] drops
-/// from this thread's [`WorldView`].
+/// Which of a locally-closed window's state to drop from a [`WorldView`].
 ///
 /// One variant per kind [`WorldView`] itself distinguishes a close for — see
 /// [`WorldView::paperdoll_closed`], [`WorldView::container_closed`] and
 /// [`WorldView::gump_closed`]. Not [`WindowSubject`][crate::WindowSubject]:
 /// that type also names a skills tree, which is this client's own state and
 /// has nothing in the view to forget.
+///
+/// # It is not a command, despite living here
+///
+/// This used to be the payload of a `Command::CloseWindow` that crossed the
+/// channel to the link thread. That variant is gone — S2 in
+/// `docs/client_window_state.md` retired it for the `locally_closed` overlay —
+/// and what is left is a plain argument to `App::apply_close_window`, which
+/// writes the event-loop thread's own view. It stays in this module because it
+/// names the three `WorldView` methods and nothing else does.
 #[derive(Clone, Copy, Debug)]
 pub enum CloseTarget {
     /// A paperdoll, named by the mobile it draws.
@@ -487,6 +495,15 @@ impl Link {
     /// Ask to use a skill — its own button, not the lock arrow.
     pub fn use_skill(&self, skill: openshard_protocol::wire::RawSkillId) {
         self.send(Command::Outgoing(Outgoing::UseSkill(skill)));
+    }
+
+    /// Ask for the tooltips of these objects, in one `0xD6`.
+    ///
+    /// Driven by the hover rather than by everything on screen, and by
+    /// [`Tooltips`](crate::tooltips::Tooltips) rather than by a caller counting
+    /// frames — see that module for why both.
+    pub fn query_properties(&self, serials: Vec<Serial>) {
+        self.send(Command::Outgoing(Outgoing::QueryProperties(serials)));
     }
 }
 

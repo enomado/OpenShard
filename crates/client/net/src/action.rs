@@ -73,6 +73,9 @@ pub enum Outgoing {
         lock: SkillLock,
     },
     UseSkill(RawSkillId),
+    /// Ask for the tooltips of these objects, in one `0xD6`. Driven by the
+    /// hover — see [`crate::properties`] for why not by everything on screen.
+    QueryProperties(Vec<Serial>),
 }
 
 impl Outgoing {
@@ -109,6 +112,7 @@ impl Outgoing {
             Self::Virtue(mobile) => crate::doll::virtue(player, mobile),
             Self::SkillLock { skill, lock } => crate::skill::set_lock(skill, lock),
             Self::UseSkill(skill) => crate::skill::use_skill(skill),
+            Self::QueryProperties(serials) => crate::properties::query(&serials, version),
         }
     }
 }

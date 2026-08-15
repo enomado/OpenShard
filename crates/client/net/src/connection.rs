@@ -397,19 +397,24 @@ mod tests {
         ));
     }
 
-    /// The tooltip a shop sends per stocked item. It has no decoder and is not
-    /// meant to have one yet — but it is framed, and that is the whole
-    /// difference between a packet skipped and a session ended: opening a
-    /// vendor's window used to disconnect the player, which looked from the
-    /// inside like a trade gump that would not draw and a paperdoll that would
-    /// not open afterwards.
+    /// The tooltip a shop sends per stocked item, and the packet behind it.
+    ///
+    /// Two different things have been asserted here, and the second replaced the
+    /// first rather than being added beside it. Originally: a `0xD6` had no
+    /// decoder, so this pinned that it was *skipped* — which was the whole
+    /// difference between a packet ignored and a session ended, since opening a
+    /// vendor's window used to disconnect the player, and from the inside that
+    /// looked like a trade gump that would not draw and a paperdoll that would
+    /// not open afterwards. Now it decodes, so the assertion is that it arrives
+    /// as itself. What survives both is the half that was always the point:
+    /// **the packet behind it still arrives**, because framing is what keeps the
+    /// stream whole and neither a decoder nor the lack of one changes that.
     #[test]
-    fn a_property_list_is_skipped_and_the_packet_behind_it_still_arrives() {
-        let mut list = openshard_protocol::properties::PropertyList::new(
-            openshard_protocol::serial::Serial::new(0x4000_0001).unwrap(),
-        );
+    fn a_property_list_decodes_and_the_packet_behind_it_still_arrives() {
+        let serial = openshard_protocol::serial::Serial::new(0x4000_0001).unwrap();
+        let mut list = openshard_protocol::properties::PropertyList::new(serial);
         list.add(openshard_protocol::wire::ClilocId(1_020_000));
-        let (tooltip, _hash) = list.finish();
+        let (tooltip, hash) = list.finish();
 
         let mut bytes = tooltip.clone();
         bytes.extend(ServerPacket::LoginComplete(LoginComplete).encode(version()));
@@ -418,10 +423,16 @@ mod tests {
 
         assert_eq!(
             connection.poll().unwrap(),
-            Some(Event::Undecoded {
-                id: PacketId(0xD6),
-                body: tooltip,
-            })
+            Some(Event::Packet(ServerPacket::PropertyListReply(
+                openshard_protocol::properties::PropertyListReply {
+                    serial,
+                    hash,
+                    entries: vec![openshard_protocol::properties::PropertyEntry {
+                        cliloc: openshard_protocol::wire::ClilocId(1_020_000),
+                        arguments: String::new(),
+                    }],
+                }
+            )))
         );
         assert_eq!(
             connection.poll().unwrap(),

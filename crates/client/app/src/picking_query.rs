@@ -19,6 +19,7 @@ use openshard_client_render::mobiles::{self, Mobile};
 use openshard_client_render::{light, occlusion};
 use openshard_movement::{Terrain, Tile};
 use openshard_protocol::mobile::Notoriety;
+use openshard_protocol::serial::Serial;
 use openshard_protocol::wire::Graphic;
 use openshard_protocol::world::Point;
 use openshard_uofiles::map::Map;
@@ -34,7 +35,7 @@ use crate::diagnostics::{
 use crate::graphics::HighlightTarget;
 use crate::picking::SelectedIdentity;
 use crate::world::{cluttered, cluttered_with_doors_open, terrain};
-use crate::{desk, frames, shell, steer};
+use crate::{desk, frames, shell, steer, tooltips};
 
 /// The expensive sub-queries performed while assembling the development HUD.
 /// These are diagnostic timings only; they deliberately do not change the HUD
@@ -729,6 +730,62 @@ impl App {
     /// [`shell::Shell::holds_pointer`].
     pub(crate) fn world_owns_pointer(&self) -> bool {
         self.input.pointer_inside && !self.shell.as_ref().is_some_and(shell::Shell::holds_pointer)
+    }
+
+    /// Which object the pointer is asking about, or `None`.
+    ///
+    /// The pick order the rest of this file uses, with the windows in front of
+    /// it: an open container's icon beats anything in the world behind the
+    /// window, and in the world a creature beats an item. The map's own
+    /// furniture is deliberately absent — a static is not the shard's object,
+    /// has no serial, and there is nothing to ask about.
+    fn tooltip_subject(&self) -> Option<Serial> {
+        if let Some(item) = self.windows.hovered_container_item {
+            return Some(item);
+        }
+        if !self.world_owns_pointer() {
+            return None;
+        }
+        let view = self.world.authoritative.view.as_ref()?;
+        // `Who` is `Option<Serial>` and its `None` is the player's own body,
+        // which has a serial like anything else and a tooltip like anything
+        // else — hovering your own character is the ordinary way to read it.
+        if let Some(who) = self.picking.on_mobile {
+            return Some(who.unwrap_or(view.player.serial));
+        }
+        self.picking.on_item
+    }
+
+    /// The tooltip to draw at the cursor this frame, and the request that fills
+    /// it in if this client does not hold one yet.
+    ///
+    /// Asking here rather than when the `0xDC` arrived is the whole shape of it:
+    /// the shard announces a revision for every object it draws, and turning
+    /// each of those into a request would put every tooltip in view back on the
+    /// wire and leave the announcement doing nothing. So the hover is what asks,
+    /// and [`tooltips::Tooltips`] is what stops it asking sixty times a second
+    /// while the answer is in flight.
+    ///
+    /// Empty rather than a placeholder when nothing is held yet: the first hover
+    /// over a fresh object draws no box for one round trip, which is what every
+    /// reference client does too.
+    pub(crate) fn hover_tooltip(&mut self) -> Vec<String> {
+        let Some(serial) = self.tooltip_subject() else {
+            return Vec::new();
+        };
+        let held = self
+            .world
+            .authoritative
+            .view
+            .as_ref()
+            .and_then(|view| view.tooltips.get(&serial));
+        if self.tooltips.should_ask(serial, held) {
+            if let Some(link) = self.world.shard.link() {
+                link.query_properties(vec![serial]);
+            }
+        }
+        held.map(|held| tooltips::lines(&held.entries, self.resources.cliloc.as_ref()))
+            .unwrap_or_default()
     }
 
     /// `pick` is what [`items::pick`], [`mobiles::pick`] and

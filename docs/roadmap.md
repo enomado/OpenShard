@@ -2361,9 +2361,11 @@ Roughly in dependency order, each script-first:
   - Deferred: ServUO's five **ranks** and their flag set (the seam is `may_lead`,
     one predicate), the guildstone as a placeable item, guild chat, and named
     multi-guild alliances.
-  - Client-side: the window renders and the health bars take their hue from the
-    byte, but the abbreviation in the **tooltip** shows only on ClassicUO —
-    `0xD6` is framed and skipped here. See `client.md`.
+  - Client-side: the window renders, the health bars take their hue from the
+    byte, and the **tooltip** now shows here too — the `[ABBR]` suffix and the
+    "Warlord, The Silver Serpent" line both. The `0xD6`/`0xDC` half this client
+    had never had landed with the guild work rather than after it; see
+    "Tooltips, and the half that was never written" in [`client.md`](client.md).
 - [x] `quests` — **a core system now, ServUO's Mondain's Legacy model, with the
   content left to the pack.** It was built pack-first (five thin seams and an
   opaque JSON blob the engine only stored) and that did not survive a client.
@@ -2445,10 +2447,13 @@ started.
   it wanted** in §6 `skills`. Still open from that entry: **stabling** (which
   wants a pet saved with no position, the logged-out-character shape),
   **loyalty** (pointless without feeding) and **Herding**.
-- **CI.** `.github/workflows` holds a release workflow and nothing that runs
-  `cargo test` / `clippy` / `fmt` on a push, though "all three silent" is a stated
-  rule of the project. The one gap here that is about the project rather than the
-  game.
+- ~~**CI.**~~ **Closed, and it had been for a while.** This entry said
+  `.github/workflows` held a release workflow and nothing that ran `cargo test` /
+  `clippy` / `fmt`. There is a `ci.yml`, on every pull request and every push to
+  `main`, running all three with `-D warnings` and `--locked` — so the project's
+  "all three silent" rule is enforced rather than asked for. Recorded as a
+  correction rather than deleted, for the reason the `Text::Cliloc(0)` entry
+  below is: **check a backlog claim against the code before planning around it.**
 - Smaller, and each a slice of an hour or two: dyes and hues on crafted and
   looted items, writable books, the localized text on the signs the converter
   already places, and rate limiting beyond the walk-pace bucket.
@@ -2676,8 +2681,13 @@ oracle):
   tests. The window opened over an empty shelf while every byte of the
   catalogue had arrived. **Worth a sweep**: nothing today asserts that a
   variant this engine *sends* is a variant the client can *read*, and the
-  remaining unread ones (`0x14`, `0xBF`'s subcommands, `0xDC`, `0xD6` itself)
-  should each be a decision rather than an omission.
+  remaining unread ones should each be a decision rather than an omission.
+  `0xDC` and `0xD6` were two of the four named here, and both were exactly this
+  shape — an encoder, a table row, and no arm — for as long as the entry stood;
+  they were read in full on 2026-08-15 (see [`client.md`](client.md)'s
+  "Tooltips, and the half that was never written"), and finding them again by
+  hand rather than by a failing test is the argument for the sweep. `0x14` and
+  `0xBF`'s subcommands are still open.
 
 - **A lost shard is indistinguishable from never having had one, and the one
   thing that hides it is the one thing implemented twice.** `Update::Lost`

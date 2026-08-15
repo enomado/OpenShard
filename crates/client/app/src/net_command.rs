@@ -143,6 +143,12 @@ impl App {
         match update {
             link::Update::World { view, body } => {
                 self.world.motion.reset(body);
+                // A whole fresh view is a `0x1B`, and a `0x1B` restarts the
+                // session: the tooltips it carries are a new table, so the
+                // questions outstanding against the old one would never be
+                // answered and would block the same objects being asked about
+                // again. See `Tooltips::reset`.
+                self.tooltips.reset();
                 self.entered(*view, None);
             }
             link::Update::Mutation { packet } => self.apply_mutation(&packet),
@@ -175,6 +181,7 @@ impl App {
                 self.windows.status = false;
                 self.windows.item_drag = None;
                 self.windows.dragging = None;
+                self.tooltips.reset();
                 self.world.shard = crate::world::Shard::Lost(reason);
                 return false;
             }
@@ -688,15 +695,46 @@ impl App {
 
 /// Fill the numbered slots used by `Cliloc.enu` without making the art-file
 /// reader depend on the packet format that supplies their values.
-fn resolve_cliloc_arguments(template: &str, arguments: &str) -> String {
-    arguments
-        .split('\t')
-        .enumerate()
-        .fold(template.to_owned(), |text, (index, argument)| {
-            let slot = index + 1;
-            text.replace(&format!("~{slot}_val~"), argument)
-                .replace(&format!("~{slot}_VAL~"), argument)
-        })
+///
+/// # The slot name is not part of the key
+///
+/// A slot is `~<index>_<NAME>~` and the name is documentation: `1050045` — the
+/// cliloc every mobile's tooltip is — reads `~1_PREFIX~~2_NAME~~3_SUFFIX~`,
+/// while a skill message reads `~1_val~`. This used to substitute only the two
+/// spellings of `val`, which was enough for the journal lines that were its only
+/// caller and silently wrong for everything else: a tooltip resolved that way
+/// draws the literal text `~1_PREFIX~`. The index alone decides which argument
+/// fills a slot, so the name is read past rather than matched.
+///
+/// A slot whose index names no argument is left verbatim. That is deliberate:
+/// blanking it would turn "the shard sent fewer arguments than this string
+/// wants" into a sentence with a hole in it that reads as authored.
+pub(crate) fn resolve_cliloc_arguments(template: &str, arguments: &str) -> String {
+    let arguments: Vec<&str> = arguments.split('\t').collect();
+    let mut out = String::with_capacity(template.len());
+    let mut rest = template;
+    while let Some(open) = rest.find('~') {
+        out.push_str(&rest[..open]);
+        let after = &rest[open + 1..];
+        let Some(close) = after.find('~') else {
+            // An unpaired `~`. The rest is text, not a slot.
+            out.push_str(&rest[open..]);
+            return out;
+        };
+        let slot = &after[..close];
+        let index = slot.split('_').next().unwrap_or_default().parse::<usize>();
+        match index.ok().and_then(|index| arguments.get(index.wrapping_sub(1))) {
+            Some(argument) => out.push_str(argument),
+            None => {
+                out.push('~');
+                out.push_str(slot);
+                out.push('~');
+            }
+        }
+        rest = &after[close + 1..];
+    }
+    out.push_str(rest);
+    out
 }
 
 /// Resolve a server-selected cliloc, retaining a readable built-in line for
@@ -731,6 +769,34 @@ mod tests {
         assert_eq!(
             resolve_cliloc_arguments("You apply ~1_val~ to ~2_VAL~.", "a bandage\tBob"),
             "You apply a bandage to Bob."
+        );
+    }
+
+    /// The cliloc every mobile's tooltip is. Its slots are not called `val`, and
+    /// substituting only that spelling drew the placeholder text at the player.
+    #[test]
+    fn a_slot_is_matched_by_its_number_and_not_by_its_name() {
+        assert_eq!(
+            resolve_cliloc_arguments("~1_PREFIX~~2_NAME~~3_SUFFIX~", " \tLord British\t [OSS]"),
+            " Lord British [OSS]"
+        );
+    }
+
+    #[test]
+    fn a_slot_with_no_argument_is_left_as_it_was_authored() {
+        // Better a visible placeholder than a sentence with a hole in it that
+        // reads as if the shard meant to say nothing there.
+        assert_eq!(
+            resolve_cliloc_arguments("~1_NAME~ has ~2_AMOUNT~ left", "Bob"),
+            "Bob has ~2_AMOUNT~ left"
+        );
+    }
+
+    #[test]
+    fn a_stray_tilde_is_text() {
+        assert_eq!(
+            resolve_cliloc_arguments("about ~50% done", "x"),
+            "about ~50% done"
         );
     }
 

@@ -86,6 +86,7 @@ mod shell;
 mod steer;
 #[cfg(test)]
 mod tests;
+mod tooltips;
 mod ui_command;
 mod window;
 mod windows;
@@ -995,6 +996,7 @@ pub fn run<D: Dial + Send + 'static>(
             last_scroll: None,
             dialogs: gump::Dialogs::default(),
         },
+        tooltips: tooltips::Tooltips::default(),
         chat: Chat::default(),
         scope: Scope::new(SCOPE_SPAN),
         frames: frames::Frames::new(FRAMES_SPAN),

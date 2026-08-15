@@ -30,6 +30,7 @@ pub mod connection;
 pub mod doll;
 pub mod drag;
 pub mod interact;
+pub mod properties;
 pub mod session;
 pub mod skill;
 pub mod talk;

@@ -76,6 +76,12 @@ use crate::{crowd, graphics, profile, resources, shell, windows, world};
 /// and both are named in the signature rather than reached through
 /// `&mut self`. Does nothing when there is no gump file or no pass to draw
 /// through — an offline run with neither.
+///
+/// `hover` is the shard's tooltip for whatever the pointer is on, first line
+/// first, or empty. Handed in already resolved rather than worked out here:
+/// deciding *what* the pointer is asking about needs the pick order and the
+/// view, and answering it may put a `0xD6` on the wire — see
+/// `App::hover_tooltip`, and this function is the part that only draws.
 // Named individually on purpose — see the doc above: reaching them through
 // `&mut self` is what this function exists to avoid.
 #[allow(clippy::too_many_arguments)]
@@ -84,6 +90,7 @@ pub(crate) fn draw_gump_windows(
     world: &world::WorldState,
     windows: &mut windows::Windows,
     cursor: gump_art::GumpPixel,
+    hover: &[String],
     shell: Option<&shell::Shell>,
     window: &mut Screen,
     encoder: &mut wgpu::CommandEncoder,
@@ -667,9 +674,62 @@ pub(crate) fn draw_gump_windows(
         }
         let dragged = gump_art::collect(&pictures, &resources.gump_atlas);
         pass.render_layer(&window.device, &window.queue, encoder, frame, &dragged);
+        // The shard's tooltip for whatever the pointer is on, last of all so it
+        // stands over every window and over the dragged item both. Its own
+        // layer and not one of the windows': the object it describes may be in
+        // the world behind them, and a tooltip filed under a window would be
+        // cut off with that window's frame.
+        //
+        // Under the cursor and offset down-right by the same step the container
+        // hover uses, so a pointer never sits on top of the first line it is
+        // asking about.
+        if !hover.is_empty() {
+            let step = tooltip_line_step(&resources.font_atlas);
+            let labels: Vec<_> = hover
+                .iter()
+                .enumerate()
+                .map(|(row, line)| openshard_client_render::text::GumpLabel {
+                    at: cursor.offset(gump_art::GumpPixel::new(
+                        TOOLTIP_OFFSET.x,
+                        TOOLTIP_OFFSET.y + step * row as i32,
+                    )),
+                    text: line,
+                    font: TOOLTIP_FONT,
+                    hue: openshard_protocol::wire::Hue::LABEL,
+                    clip: None,
+                })
+                .collect();
+            let text = openshard_client_render::text::collect_gump(&labels, &resources.font_atlas);
+            window
+                .gump_text_pass
+                .render_layer(&window.device, &window.queue, encoder, frame, &text);
+        }
     } else {
         windows.drawn_windows.clear();
     }
+}
+
+/// The face a tooltip is drawn in — `fonts.mul`'s face 1, the same one every
+/// other label in this client uses.
+const TOOLTIP_FONT: openshard_protocol::speech::Font = openshard_protocol::speech::Font(1);
+
+/// Where the first line sits relative to the pointer, in gump pixels. The same
+/// step [`container_hover_text`]'s label uses, so the two hovers read as one
+/// behaviour rather than two that happen to both be near the cursor.
+const TOOLTIP_OFFSET: gump_art::GumpPixel = gump_art::GumpPixel { x: 14, y: 18 };
+
+/// The vertical step between two tooltip lines, in gump pixels.
+///
+/// Read off the face rather than written down: `fonts.mul` holds ten faces of
+/// different heights, and a number fixed here would be wrong the moment a
+/// tooltip was drawn in another one. A capital `M` is the measure — full height
+/// in every face and no descender — plus two pixels so consecutive lines do not
+/// touch. The fallback is only reachable with a font atlas that packed no `M`,
+/// which is a broken `fonts.mul` rather than a case to be right about.
+fn tooltip_line_step(fonts: &openshard_client_render::atlas::FontAtlas) -> i32 {
+    fonts
+        .glyph(TOOLTIP_FONT, b'M')
+        .map_or(16, |sprite| i32::from(sprite.height) + 2)
 }
 
 /// Records every world-space pass into `encoder`, from the ground up to the

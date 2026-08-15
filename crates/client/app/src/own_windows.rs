@@ -1128,13 +1128,14 @@ impl App {
         }
         match subject {
             WindowSubject::Container(serial) => {
-                // The overlay, not `self.world.authoritative.view`, is what says this is closed —
-                // that copy is never authoritative, see D2 in
-                // `docs/client_window_state.md`. The shard thread's own
-                // `WorldView` is what every future snapshot is cloned whole
-                // from, and telling it is what `link::Command::CloseWindow`
-                // is for; the overlay is what keeps this end from drawing the
-                // stale, still-open entry in the meantime.
+                // The overlay is what says this is closed — see D2 in
+                // `docs/client_window_state.md`. The line under it writes the
+                // same fact into this thread's own view, which is redundant
+                // for a container and is not for a vendor (the arm below sets
+                // only the overlay); both are kept until that plan's backlog
+                // settles which one stays. The link thread is told neither:
+                // its `WorldView` is cloned across exactly once, at world
+                // entry, so there is nothing there to go stale.
                 self.windows.locally_closed.insert(subject);
                 self.apply_close_window(link::CloseTarget::Container(serial));
             }
@@ -1234,10 +1235,9 @@ impl App {
         let gump_id = openshard_protocol::gump::GumpId(reply.gump_id.0);
         if let Some(link) = self.world.shard.link() {
             link.answer_gump(reply);
-            // The reply itself leaves on the wire, but nothing about it tells
-            // the shard thread's own `WorldView` — which every future
-            // snapshot is cloned whole from — that this window is done; see
-            // `link::Command::CloseWindow`.
+            // The reply leaves on the wire and says nothing about the window
+            // being done, so this end has to close it itself — here in this
+            // thread's view, and in the overlay below.
             self.apply_close_window(link::CloseTarget::Gump(gump_id));
         }
         if self.world.authoritative.view.is_some() {

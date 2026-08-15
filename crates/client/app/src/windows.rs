@@ -254,13 +254,22 @@ pub struct Windows {
     ///
     /// [`crate::link::Body::predicted`]'s counterpart for a window's
     /// openness rather than a body's tile: `close_window`/`answer_gump`
-    /// insert here and send the [`crate::link::Command::CloseWindow`], the
-    /// same instant, instead of mutating the view directly — that copy is
-    /// never the source of truth, see `docs/client_window_state.md`'s D2.
-    /// `sync_own_windows` treats a subject in this set as closed regardless
-    /// of what the view still says, and drops the entry once a fresh
-    /// `Update::World` agrees — the same reconciliation `Folded::corrected`
-    /// runs for a mispredicted step, one layer down.
+    /// insert here, and [`reconcile_own_windows`] treats a subject in this
+    /// set as closed regardless of what the view still says, dropping the
+    /// entry once the view itself agrees the subject is gone — the same
+    /// reconciliation `Folded::corrected` runs for a mispredicted step, one
+    /// layer down. See `docs/client_window_state.md`'s D2.
+    ///
+    /// # There is no packet and no command behind this
+    ///
+    /// This used to say the two callers "send the `link::Command::CloseWindow`"
+    /// as well. There is no such variant: it was S0's patch in that plan and
+    /// S2 retired it in favour of this overlay. Nothing tells the link thread's
+    /// own `WorldView` that a window closed, and nothing needs to — that copy
+    /// is cloned across exactly once, in the `Update::World` published at world
+    /// entry, and every packet after it is folded into *this* thread's copy
+    /// instead. The comment outlived the mechanism by four months and named a
+    /// symbol a reader could not find.
     pub locally_closed: HashSet<WindowSubject>,
     /// Every open window as the last frame laid it out: its subject, and the
     /// pictures that were drawn for it in painter's order.

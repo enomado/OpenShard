@@ -38,7 +38,7 @@ use crate::login::{
 };
 use crate::mobile::{MobileIncoming, MobileMove, MobileStatus, OpenPaperdoll, Remove, StatLocks};
 use crate::packet::{DecodePacket, EncodePacket, Frame, FrameError, PacketLength, frame_body, frame_packet};
-use crate::properties::TooltipRevision;
+use crate::properties::{PropertyListReply, TooltipRevision};
 use crate::skill::{SkillUpdate, SkillsFull, SkillsPacket};
 use crate::speech::{LocalizedMessage, SpokenMessage, UnicodeMessage};
 use crate::spellbook::SpellbookContent;
@@ -139,6 +139,8 @@ pub enum ServerPacket {
     SellList(SellList),
     /// `0xDC` — the tooltip revision for one object.
     TooltipRevision(TooltipRevision),
+    /// `0xD6` — the property list itself, answering a client's batch query.
+    PropertyListReply(PropertyListReply),
     /// `0x3A` — the whole skill list, to fill the window.
     SkillsFull(SkillsFull),
     /// `0x3A` — one skill's line, following a change.
@@ -208,7 +210,8 @@ impl ServerPacket {
             Self::ContainerContents(_) => <ContainerContents as EncodePacket>::ID,
             Self::BuyList(_) => <BuyList as EncodePacket>::ID,
             Self::SellList(_) => <SellList as EncodePacket>::ID,
-            Self::TooltipRevision(_) => TooltipRevision::ID,
+            Self::TooltipRevision(_) => <TooltipRevision as EncodePacket>::ID,
+            Self::PropertyListReply(_) => <PropertyListReply as EncodePacket>::ID,
             Self::SkillsFull(_) => SkillsFull::ID,
             Self::SkillUpdate(_) => SkillUpdate::ID,
             Self::SpokenMessage(_) => <SpokenMessage as EncodePacket>::ID,
@@ -272,6 +275,7 @@ impl ServerPacket {
             Self::BuyList(_) => BuyList::LENGTH,
             Self::SellList(_) => SellList::LENGTH,
             Self::TooltipRevision(_) => TooltipRevision::LENGTH,
+            Self::PropertyListReply(_) => PropertyListReply::LENGTH,
             Self::SkillsFull(_) => SkillsFull::LENGTH,
             Self::SkillUpdate(_) => SkillUpdate::LENGTH,
             Self::SpokenMessage(_) => SpokenMessage::LENGTH,
@@ -339,6 +343,7 @@ impl ServerPacket {
             Self::BuyList(packet) => packet.encode_body(out, version),
             Self::SellList(packet) => packet.encode_body(out, version),
             Self::TooltipRevision(packet) => packet.encode_body(out, version),
+            Self::PropertyListReply(packet) => packet.encode_body(out, version),
             Self::SkillsFull(packet) => packet.encode_body(out, version),
             Self::SkillUpdate(packet) => packet.encode_body(out, version),
             Self::SpokenMessage(packet) => packet.encode_body(out, version),
@@ -453,6 +458,16 @@ impl ServerPacket {
             <GumpDisplay as DecodePacket>::ID => decode_server(packet, version)
                 .map(Self::GumpDisplay)
                 .map_err(ServerDecodeError::GumpDisplay)?,
+            // The two halves of a tooltip. Both had encoders and neither had an
+            // arm, so every property list this engine has ever sent reached its
+            // own client as an undecoded id and was dropped — the shard's side
+            // has been complete for a long time and nothing on this end asked.
+            <TooltipRevision as DecodePacket>::ID => decode_server(packet, version)
+                .map(Self::TooltipRevision)
+                .map_err(ServerDecodeError::TooltipRevision)?,
+            <PropertyListReply as DecodePacket>::ID => decode_server(packet, version)
+                .map(Self::PropertyListReply)
+                .map_err(ServerDecodeError::PropertyListReply)?,
             <OpenContainer as DecodePacket>::ID => decode_server(packet, version)
                 .map(Self::OpenContainer)
                 .map_err(ServerDecodeError::OpenContainer)?,
@@ -625,6 +640,10 @@ pub enum ServerDecodeError {
     BuyList(DecodeError),
     /// `0x9E` did not decode.
     SellList(DecodeError),
+    /// `0xDC` did not decode.
+    TooltipRevision(DecodeError),
+    /// `0xD6` did not decode.
+    PropertyListReply(DecodeError),
 }
 
 impl fmt::Display for ServerDecodeError {
@@ -647,6 +666,8 @@ impl fmt::Display for ServerDecodeError {
             Self::SpokenMessage(error) => ("0x1C spoken message", error),
             Self::UnicodeMessage(error) => ("0xAE unicode message", error),
             Self::GumpDisplay(error) => ("0xB0 gump display", error),
+            Self::TooltipRevision(error) => ("0xDC tooltip revision", error),
+            Self::PropertyListReply(error) => ("0xD6 property list", error),
             Self::OpenContainer(error) => ("0x24 open container", error),
             Self::AddToContainer(error) => ("0x25 add to container", error),
             Self::ContainerContents(error) => ("0x3C container contents", error),
