@@ -4,23 +4,28 @@
 //! to whom; this is only the data it reads, so it lives below it the way
 //! [`QuestDefs`](crate::QuestDefs) lives below the quest system.
 //!
-//! # Where the content comes from, and why the core still has some
+//! # Where the content comes from
 //!
 //! ServUO gives the *mechanism* — `VendorAI.OnSpeech` matches shop keywords within
 //! four tiles, `HandlesOnSpeech` gates it, and XmlSpawner's `XmlDialog` attachment
 //! is the keyword-and-response engine for talking NPCs — but almost no
 //! per-profession content: a vendor's whole vocabulary is cliloc 500186
 //! ("Greetings.  Have a look around.") and 501522 ("I shall not treat with scum
-//! like thee!"). So the split is the one `magic::spells` and `quests` use: the
-//! mechanism and a working default in the core, the real lines registered as data
-//! by the pack, keyed by the trade.
+//! like thee!"). Two lines for sixty-eight trades, so the rest is written rather
+//! than ported.
+//!
+//! It is `data/speech.json`, compiled by `build.rs` into [`shipped`] — content in
+//! the tree, the way [`quest::shipped`](crate::quest::shipped) is. The engine
+//! keeps a bare default beside it and not instead of it: `npc::speech`'s
+//! `DEFAULT_GREETINGS` is what a trade with no table falls back to, so a shard
+//! that deletes every row here still has townsfolk who answer.
 //!
 //! # Keyed by the trade string, never by an index
 //!
-//! The key is the [`Title`](crate::components::Title) the pack spawns the NPC with
-//! — "the blacksmith". An index would silently move every line in the table the
-//! day someone reorders the pack's list, and unlike a quest there is nothing in a
-//! save to notice it went wrong.
+//! The key is the [`Title`](crate::components::Title) the NPC is spawned with —
+//! "the blacksmith". An index would silently move every line in the table the day
+//! someone reorders the list, and unlike a quest there is nothing in a save to
+//! notice it went wrong.
 
 use std::collections::HashMap;
 
@@ -34,8 +39,8 @@ pub struct SpeechTable {
     /// silence, which is the right default for most trades.
     pub barks: Vec<String>,
     /// Keyword groups and the answers to them. The first group with a match wins,
-    /// so the pack's order is its precedence — a specific keyword goes above a
-    /// general one.
+    /// so the order they are written in is their precedence — a specific keyword
+    /// goes above a general one.
     pub entries: Vec<SpeechEntry>,
     /// What it says when spoken to and nothing matched. `None` stays quiet, which
     /// is better than a shopkeeper answering every passing conversation.
@@ -68,18 +73,28 @@ impl SpeechEntry {
     }
 }
 
-/// Every trade's speech, and the personal names the pack wants used, by key.
+/// Every trade's speech, by key.
 ///
-/// Replaced wholesale by the pack, like [`QuestDefs`](crate::QuestDefs): a hot
-/// reload re-runs registration from the top, and merging would leave lines the pack
-/// has deleted still being spoken.
+/// Replaced wholesale, like [`QuestDefs`](crate::QuestDefs): registration re-runs
+/// from the top, and merging would leave lines that were deleted still being
+/// spoken.
+///
+/// # It used to hold the personal names too, and nothing read them
+///
+/// There were two more fields here, `male_names` and `female_names`, filled by a
+/// `set_names` the script pack called with ServUO's 1,500 and 2,132. Nothing ever
+/// read them. `npc::names` documented `npc::speech::registered_name` as the
+/// function that would, and that function was never written, so every townsperson
+/// in Felucca was named from `npc/data/names.json` throughout — the override was
+/// dead the whole time it looked like policy.
+///
+/// So the names have one home, `npc/data/names.json`, and it is not a default
+/// waiting to be overridden. ServUO's full lists stay out for the reason
+/// `npc::names` gives: they are the operator's `Data/names.xml`, the same rule
+/// that keeps client files out of this repository.
 #[derive(Clone, Default, Debug)]
 pub struct Dialogue {
     tables: HashMap<String, SpeechTable>,
-    /// Personal names the pack registered, male then female. Empty falls back to
-    /// the core's own lists — see `npc::names`.
-    male_names: Vec<String>,
-    female_names: Vec<String>,
 }
 
 impl Dialogue {
@@ -88,35 +103,20 @@ impl Dialogue {
         self.tables = tables;
     }
 
-    /// Replace the personal-name lists. Either being empty leaves the core's own
-    /// list in use for that gender, so a pack may supply one and not the other.
-    pub fn set_names(&mut self, male: Vec<String>, female: Vec<String>) {
-        self.male_names = male;
-        self.female_names = female;
-    }
-
-    /// The table for a trade, if the pack defines one.
+    /// The table for a trade, if one is defined.
     #[must_use]
     pub fn table(&self, title: &str) -> Option<&SpeechTable> {
         self.tables.get(title)
     }
 
-    /// The registered names for a gender, or an empty slice when the pack gave none.
-    #[must_use]
-    pub fn names(&self, female: bool) -> &[String] {
-        if female {
-            &self.female_names
-        } else {
-            &self.male_names
-        }
-    }
-
-    /// Whether the pack registered anything at all.
+    /// Whether any trade has a table.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.tables.is_empty() && self.male_names.is_empty() && self.female_names.is_empty()
+        self.tables.is_empty()
     }
 }
+
+include!(concat!(env!("OUT_DIR"), "/speech.rs"));
 
 #[cfg(test)]
 mod tests {
@@ -151,7 +151,9 @@ mod tests {
 
     #[test]
     fn an_empty_keyword_never_matches() {
-        // A stray comma in the pack's data would otherwise answer everything.
+        // A stray comma in the data would otherwise answer everything. `build.rs`
+        // rejects one in `data/speech.json`; this is the guard for a table that
+        // reached the engine some other way.
         assert!(!entry(&[""]).matches(&["anything"]));
     }
 
@@ -173,13 +175,42 @@ mod tests {
     }
 
     #[test]
-    fn names_fall_back_per_gender() {
-        let mut dialogue = Dialogue::default();
-        dialogue.set_names(vec!["Aaron".to_owned()], Vec::new());
-        assert_eq!(dialogue.names(false).len(), 1);
-        assert!(
-            dialogue.names(true).is_empty(),
-            "an empty list means the core's own is used"
-        );
+    fn the_shipped_trades_are_keyed_by_a_title_an_npc_is_actually_spawned_with() {
+        // The key is a `Title` and the lookup is exact, so a stray capital or a
+        // trailing space is a table that can never be found. `build.rs` cannot
+        // check this one — it is a fact about the other end of the rendezvous.
+        let shipped = shipped();
+        assert!(!shipped.is_empty(), "the shard ships no trade speech at all");
+        for (title, _) in &shipped {
+            assert_eq!(title.trim(), title, "{title:?} is padded");
+            assert!(
+                title.starts_with("the ") || title.starts_with("a "),
+                "{title:?} does not read as a title an NPC wears"
+            );
+        }
+    }
+
+    #[test]
+    fn every_shipped_keyword_can_be_matched_by_something_a_player_could_say() {
+        // The pairing that makes the table work at all: `overhear` splits on
+        // anything that is not alphanumeric or an apostrophe, so a keyword holding
+        // punctuation is unreachable however it is spelled.
+        for (title, table) in shipped() {
+            for entry in &table.entries {
+                for keyword in &entry.keywords {
+                    let words: Vec<&str> = keyword.split_whitespace().collect();
+                    assert!(
+                        words
+                            .iter()
+                            .all(|word| word.chars().all(|c| c.is_alphanumeric() || c == '\'')),
+                        "{title}: keyword {keyword:?} holds what a sentence is split on"
+                    );
+                    assert!(
+                        entry.matches(&words),
+                        "{title}: {keyword:?} does not match itself"
+                    );
+                }
+            }
+        }
     }
 }

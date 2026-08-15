@@ -1,0 +1,1949 @@
+[
+  {
+    "title": "a merchant",
+    "barks": [
+      "Is there no one who will escort me?"
+    ],
+    "entries": [
+      {
+        "keywords": ["escort", "travel", "journey", "guide", "take", "lead"],
+        "lines": [
+          "I am looking for an escort. Wilt thou take me?",
+          "I dare not travel these roads alone. Wilt thou lead me?"
+        ]
+      },
+      {
+        "keywords": ["pay", "payment", "gold", "reward"],
+        "lines": [
+          "Payment will be made when we arrive, and gladly."
+        ]
+      },
+      {
+        "keywords": ["job", "work", "trade", "profession", "occupation"],
+        "lines": [
+          "I am but a traveller, and I seek safe passage."
+        ]
+      }
+    ]
+  },
+  {
+    "title": "a noble",
+    "barks": [
+      "Is there no one who will escort me?"
+    ],
+    "entries": [
+      {
+        "keywords": ["escort", "travel", "journey", "guide", "take", "lead"],
+        "lines": [
+          "I am looking for an escort. Wilt thou take me?",
+          "I dare not travel these roads alone. Wilt thou lead me?"
+        ]
+      },
+      {
+        "keywords": ["pay", "payment", "gold", "reward"],
+        "lines": [
+          "Payment will be made when we arrive, and gladly."
+        ]
+      },
+      {
+        "keywords": ["job", "work", "trade", "profession", "occupation"],
+        "lines": [
+          "I am but a traveller, and I seek safe passage."
+        ]
+      }
+    ]
+  },
+  {
+    "title": "a peasant",
+    "barks": [
+      "Is there no one who will escort me?"
+    ],
+    "entries": [
+      {
+        "keywords": ["escort", "travel", "journey", "guide", "take", "lead"],
+        "lines": [
+          "I am looking for an escort. Wilt thou take me?",
+          "I dare not travel these roads alone. Wilt thou lead me?"
+        ]
+      },
+      {
+        "keywords": ["pay", "payment", "gold", "reward"],
+        "lines": [
+          "Payment will be made when we arrive, and gladly."
+        ]
+      },
+      {
+        "keywords": ["job", "work", "trade", "profession", "occupation"],
+        "lines": [
+          "I am but a traveller, and I seek safe passage."
+        ]
+      }
+    ]
+  },
+  {
+    "title": "a seeker of adventure",
+    "barks": [
+      "Is there no one who will escort me?"
+    ],
+    "entries": [
+      {
+        "keywords": ["escort", "travel", "journey", "guide", "take", "lead"],
+        "lines": [
+          "I am looking for an escort. Wilt thou take me?",
+          "I dare not travel these roads alone. Wilt thou lead me?"
+        ]
+      },
+      {
+        "keywords": ["pay", "payment", "gold", "reward"],
+        "lines": [
+          "Payment will be made when we arrive, and gladly."
+        ]
+      },
+      {
+        "keywords": ["job", "work", "trade", "profession", "occupation"],
+        "lines": [
+          "I am but a traveller, and I seek safe passage."
+        ]
+      }
+    ]
+  },
+  {
+    "title": "a wandering healer",
+    "barks": [
+      "Is there no one who will escort me?"
+    ],
+    "entries": [
+      {
+        "keywords": ["escort", "travel", "journey", "guide", "take", "lead"],
+        "lines": [
+          "I am looking for an escort. Wilt thou take me?",
+          "I dare not travel these roads alone. Wilt thou lead me?"
+        ]
+      },
+      {
+        "keywords": ["pay", "payment", "gold", "reward"],
+        "lines": [
+          "Payment will be made when we arrive, and gladly."
+        ]
+      },
+      {
+        "keywords": ["job", "work", "trade", "profession", "occupation"],
+        "lines": [
+          "I am but a traveller, and I seek safe passage."
+        ]
+      }
+    ]
+  },
+  {
+    "title": "a wandering mage",
+    "barks": [
+      "Is there no one who will escort me?"
+    ],
+    "entries": [
+      {
+        "keywords": ["escort", "travel", "journey", "guide", "take", "lead"],
+        "lines": [
+          "I am looking for an escort. Wilt thou take me?",
+          "I dare not travel these roads alone. Wilt thou lead me?"
+        ]
+      },
+      {
+        "keywords": ["pay", "payment", "gold", "reward"],
+        "lines": [
+          "Payment will be made when we arrive, and gladly."
+        ]
+      },
+      {
+        "keywords": ["job", "work", "trade", "profession", "occupation"],
+        "lines": [
+          "I am but a traveller, and I seek safe passage."
+        ]
+      }
+    ]
+  },
+  {
+    "title": "a wedding traveller",
+    "barks": [
+      "Is there no one who will escort me?"
+    ],
+    "entries": [
+      {
+        "keywords": ["escort", "travel", "journey", "guide", "take", "lead"],
+        "lines": [
+          "I am looking for an escort. Wilt thou take me?",
+          "I dare not travel these roads alone. Wilt thou lead me?"
+        ]
+      },
+      {
+        "keywords": ["pay", "payment", "gold", "reward"],
+        "lines": [
+          "Payment will be made when we arrive, and gladly."
+        ]
+      },
+      {
+        "keywords": ["job", "work", "trade", "profession", "occupation"],
+        "lines": [
+          "I am but a traveller, and I seek safe passage."
+        ]
+      }
+    ]
+  },
+  {
+    "title": "the alchemist",
+    "greetings": [
+      "Greetings, {name}.",
+      "Well met, {name}.",
+      "Good day to thee, {name}."
+    ],
+    "entries": [
+      {
+        "keywords": ["hail", "hello", "greetings", "hi", "good day"],
+        "lines": [
+          "Greetings, {name}.",
+          "Well met, {name}."
+        ]
+      },
+      {
+        "keywords": ["job", "work", "trade", "profession", "occupation"],
+        "lines": [
+          "I am the alchemist.",
+          "I am the alchemist, at thy service."
+        ]
+      }
+    ]
+  },
+  {
+    "title": "the animaltrainer",
+    "greetings": [
+      "Greetings, {name}.",
+      "Well met, {name}.",
+      "Good day to thee, {name}."
+    ],
+    "entries": [
+      {
+        "keywords": ["hail", "hello", "greetings", "hi", "good day"],
+        "lines": [
+          "Greetings, {name}.",
+          "Well met, {name}."
+        ]
+      },
+      {
+        "keywords": ["job", "work", "trade", "profession", "occupation"],
+        "lines": [
+          "I am the animaltrainer.",
+          "I am the animaltrainer, at thy service."
+        ]
+      }
+    ]
+  },
+  {
+    "title": "the architect",
+    "greetings": [
+      "Greetings.  Have a look around."
+    ],
+    "barks": [
+      "stone plaster house deed and interior decorator for sale!",
+      "architect at thy service!",
+      "Wares for sale — come, look them over!"
+    ],
+    "entries": [
+      {
+        "keywords": ["hail", "hello", "greetings", "hi", "good day"],
+        "lines": [
+          "Greetings, {name}.",
+          "Well met, {name}."
+        ]
+      },
+      {
+        "keywords": ["job", "work", "trade", "profession", "occupation"],
+        "lines": [
+          "I am the architect.",
+          "I am the architect, at thy service."
+        ]
+      },
+      {
+        "keywords": ["sell", "wares", "goods", "stock", "shop", "price"],
+        "lines": [
+          "I deal in stone plaster house deed and interior decorator. Say 'vendor buy' to see my wares.",
+          "Say 'vendor buy' and look them over."
+        ]
+      }
+    ]
+  },
+  {
+    "title": "the armorer",
+    "greetings": [
+      "Greetings.  Have a look around."
+    ],
+    "barks": [
+      "leather arms, leather chest and leather gloves for sale!",
+      "armorer at thy service!",
+      "Wares for sale — come, look them over!"
+    ],
+    "entries": [
+      {
+        "keywords": ["hail", "hello", "greetings", "hi", "good day"],
+        "lines": [
+          "Greetings, {name}.",
+          "Well met, {name}."
+        ]
+      },
+      {
+        "keywords": ["job", "work", "trade", "profession", "occupation"],
+        "lines": [
+          "I am the armorer.",
+          "I am the armorer, at thy service."
+        ]
+      },
+      {
+        "keywords": ["sell", "wares", "goods", "stock", "shop", "price"],
+        "lines": [
+          "I deal in leather arms, leather chest, leather gloves and leather gorget. Say 'vendor buy' to see my wares.",
+          "Say 'vendor buy' and look them over."
+        ]
+      }
+    ]
+  },
+  {
+    "title": "the artist",
+    "greetings": [
+      "Greetings, {name}.",
+      "Well met, {name}.",
+      "Good day to thee, {name}."
+    ],
+    "entries": [
+      {
+        "keywords": ["hail", "hello", "greetings", "hi", "good day"],
+        "lines": [
+          "Greetings, {name}.",
+          "Well met, {name}."
+        ]
+      },
+      {
+        "keywords": ["job", "work", "trade", "profession", "occupation"],
+        "lines": [
+          "I am the artist.",
+          "I am the artist, at thy service."
+        ]
+      }
+    ]
+  },
+  {
+    "title": "the baker",
+    "greetings": [
+      "Greetings.  Have a look around."
+    ],
+    "barks": [
+      "fresh ginger, bread loaf and apple pie for sale!",
+      "baker at thy service!",
+      "Wares for sale — come, look them over!"
+    ],
+    "entries": [
+      {
+        "keywords": ["hail", "hello", "greetings", "hi", "good day"],
+        "lines": [
+          "Greetings, {name}.",
+          "Well met, {name}."
+        ]
+      },
+      {
+        "keywords": ["job", "work", "trade", "profession", "occupation"],
+        "lines": [
+          "I am the baker.",
+          "I am the baker, at thy service."
+        ]
+      },
+      {
+        "keywords": ["sell", "wares", "goods", "stock", "shop", "price"],
+        "lines": [
+          "I deal in fresh ginger, bread loaf, apple pie and cake. Say 'vendor buy' to see my wares.",
+          "Say 'vendor buy' and look them over."
+        ]
+      }
+    ]
+  },
+  {
+    "title": "the banker",
+    "greetings": [
+      "Greetings, {name}.",
+      "Well met, {name}.",
+      "Good day to thee, {name}."
+    ],
+    "entries": [
+      {
+        "keywords": ["hail", "hello", "greetings", "hi", "good day"],
+        "lines": [
+          "Greetings, {name}.",
+          "Well met, {name}."
+        ]
+      },
+      {
+        "keywords": ["job", "work", "trade", "profession", "occupation"],
+        "lines": [
+          "I am the banker.",
+          "I am the banker, at thy service."
+        ]
+      },
+      {
+        "keywords": ["bank", "balance", "gold", "account", "box"],
+        "lines": [
+          "Say 'bank' and I shall open thy box, or 'balance' to hear thy total.",
+          "Thy gold is safe with me. Say 'bank'."
+        ]
+      }
+    ]
+  },
+  {
+    "title": "the bard",
+    "greetings": [
+      "Greetings, {name}.",
+      "Well met, {name}.",
+      "Good day to thee, {name}."
+    ],
+    "entries": [
+      {
+        "keywords": ["hail", "hello", "greetings", "hi", "good day"],
+        "lines": [
+          "Greetings, {name}.",
+          "Well met, {name}."
+        ]
+      },
+      {
+        "keywords": ["job", "work", "trade", "profession", "occupation"],
+        "lines": [
+          "I am the bard.",
+          "I am the bard, at thy service."
+        ]
+      }
+    ]
+  },
+  {
+    "title": "the bard guildmaster",
+    "greetings": [
+      "Greetings, {name}.",
+      "Well met, {name}.",
+      "Good day to thee, {name}."
+    ],
+    "entries": [
+      {
+        "keywords": ["hail", "hello", "greetings", "hi", "good day"],
+        "lines": [
+          "Greetings, {name}.",
+          "Well met, {name}."
+        ]
+      },
+      {
+        "keywords": ["job", "work", "trade", "profession", "occupation"],
+        "lines": [
+          "I am the bard guildmaster.",
+          "I am the bard guildmaster, at thy service."
+        ]
+      }
+    ]
+  },
+  {
+    "title": "the barkeeper",
+    "greetings": [
+      "Greetings.  Have a look around."
+    ],
+    "barks": [
+      "bread loaf, cheese wheel and cooked bird for sale!",
+      "barkeeper at thy service!",
+      "Wares for sale — come, look them over!"
+    ],
+    "entries": [
+      {
+        "keywords": ["hail", "hello", "greetings", "hi", "good day"],
+        "lines": [
+          "Greetings, {name}.",
+          "Well met, {name}."
+        ]
+      },
+      {
+        "keywords": ["job", "work", "trade", "profession", "occupation"],
+        "lines": [
+          "I am the barkeeper.",
+          "I am the barkeeper, at thy service."
+        ]
+      },
+      {
+        "keywords": ["sell", "wares", "goods", "stock", "shop", "price"],
+        "lines": [
+          "I deal in bread loaf, cheese wheel, cooked bird and lamb leg. Say 'vendor buy' to see my wares.",
+          "Say 'vendor buy' and look them over."
+        ]
+      }
+    ]
+  },
+  {
+    "title": "the beekeeper",
+    "greetings": [
+      "Greetings.  Have a look around."
+    ],
+    "barks": [
+      "jar honey and beeswax for sale!",
+      "beekeeper at thy service!",
+      "Wares for sale — come, look them over!"
+    ],
+    "entries": [
+      {
+        "keywords": ["hail", "hello", "greetings", "hi", "good day"],
+        "lines": [
+          "Greetings, {name}.",
+          "Well met, {name}."
+        ]
+      },
+      {
+        "keywords": ["job", "work", "trade", "profession", "occupation"],
+        "lines": [
+          "I am the beekeeper.",
+          "I am the beekeeper, at thy service."
+        ]
+      },
+      {
+        "keywords": ["sell", "wares", "goods", "stock", "shop", "price"],
+        "lines": [
+          "I deal in jar honey and beeswax. Say 'vendor buy' to see my wares.",
+          "Say 'vendor buy' and look them over."
+        ]
+      }
+    ]
+  },
+  {
+    "title": "the blacksmith",
+    "greetings": [
+      "Greetings.  Have a look around."
+    ],
+    "barks": [
+      "iron ingot, tongs and bronze shield for sale!",
+      "blacksmith at thy service!",
+      "Wares for sale — come, look them over!"
+    ],
+    "entries": [
+      {
+        "keywords": ["hail", "hello", "greetings", "hi", "good day"],
+        "lines": [
+          "Greetings, {name}.",
+          "Well met, {name}."
+        ]
+      },
+      {
+        "keywords": ["job", "work", "trade", "profession", "occupation"],
+        "lines": [
+          "I am the blacksmith.",
+          "I am the blacksmith, at thy service."
+        ]
+      },
+      {
+        "keywords": ["sell", "wares", "goods", "stock", "shop", "price"],
+        "lines": [
+          "I deal in iron ingot, tongs, bronze shield and buckler. Say 'vendor buy' to see my wares.",
+          "Say 'vendor buy' and look them over."
+        ]
+      }
+    ]
+  },
+  {
+    "title": "the blacksmith guildmaster",
+    "greetings": [
+      "Greetings.  Have a look around."
+    ],
+    "barks": [
+      "iron ingot, tongs and bronze shield for sale!",
+      "blacksmith guildmaster at thy service!",
+      "Wares for sale — come, look them over!"
+    ],
+    "entries": [
+      {
+        "keywords": ["hail", "hello", "greetings", "hi", "good day"],
+        "lines": [
+          "Greetings, {name}.",
+          "Well met, {name}."
+        ]
+      },
+      {
+        "keywords": ["job", "work", "trade", "profession", "occupation"],
+        "lines": [
+          "I am the blacksmith guildmaster.",
+          "I am the blacksmith guildmaster, at thy service."
+        ]
+      },
+      {
+        "keywords": ["sell", "wares", "goods", "stock", "shop", "price"],
+        "lines": [
+          "I deal in iron ingot, tongs, bronze shield and buckler. Say 'vendor buy' to see my wares.",
+          "Say 'vendor buy' and look them over."
+        ]
+      }
+    ]
+  },
+  {
+    "title": "the bowyer",
+    "greetings": [
+      "Greetings.  Have a look around."
+    ],
+    "barks": [
+      "fletcher tools, crossbow and heavy crossbow for sale!",
+      "bowyer at thy service!",
+      "Wares for sale — come, look them over!"
+    ],
+    "entries": [
+      {
+        "keywords": ["hail", "hello", "greetings", "hi", "good day"],
+        "lines": [
+          "Greetings, {name}.",
+          "Well met, {name}."
+        ]
+      },
+      {
+        "keywords": ["job", "work", "trade", "profession", "occupation"],
+        "lines": [
+          "I am the bowyer.",
+          "I am the bowyer, at thy service."
+        ]
+      },
+      {
+        "keywords": ["sell", "wares", "goods", "stock", "shop", "price"],
+        "lines": [
+          "I deal in fletcher tools, crossbow, heavy crossbow and bow. Say 'vendor buy' to see my wares.",
+          "Say 'vendor buy' and look them over."
+        ]
+      }
+    ]
+  },
+  {
+    "title": "the butcher",
+    "greetings": [
+      "Greetings.  Have a look around."
+    ],
+    "barks": [
+      "bacon, ham and sausage for sale!",
+      "butcher at thy service!",
+      "Wares for sale — come, look them over!"
+    ],
+    "entries": [
+      {
+        "keywords": ["hail", "hello", "greetings", "hi", "good day"],
+        "lines": [
+          "Greetings, {name}.",
+          "Well met, {name}."
+        ]
+      },
+      {
+        "keywords": ["job", "work", "trade", "profession", "occupation"],
+        "lines": [
+          "I am the butcher.",
+          "I am the butcher, at thy service."
+        ]
+      },
+      {
+        "keywords": ["sell", "wares", "goods", "stock", "shop", "price"],
+        "lines": [
+          "I deal in bacon, ham, sausage and raw chicken leg. Say 'vendor buy' to see my wares.",
+          "Say 'vendor buy' and look them over."
+        ]
+      }
+    ]
+  },
+  {
+    "title": "the carpenter",
+    "greetings": [
+      "Greetings.  Have a look around."
+    ],
+    "barks": [
+      "black staff, gnarled staff and quarter staff for sale!",
+      "carpenter at thy service!",
+      "Wares for sale — come, look them over!"
+    ],
+    "entries": [
+      {
+        "keywords": ["hail", "hello", "greetings", "hi", "good day"],
+        "lines": [
+          "Greetings, {name}.",
+          "Well met, {name}."
+        ]
+      },
+      {
+        "keywords": ["job", "work", "trade", "profession", "occupation"],
+        "lines": [
+          "I am the carpenter.",
+          "I am the carpenter, at thy service."
+        ]
+      },
+      {
+        "keywords": ["sell", "wares", "goods", "stock", "shop", "price"],
+        "lines": [
+          "I deal in black staff, gnarled staff, quarter staff and shepherds crook. Say 'vendor buy' to see my wares.",
+          "Say 'vendor buy' and look them over."
+        ]
+      }
+    ]
+  },
+  {
+    "title": "the cobbler",
+    "greetings": [
+      "Greetings.  Have a look around."
+    ],
+    "barks": [
+      "thigh boots, shoes and boots for sale!",
+      "cobbler at thy service!",
+      "Wares for sale — come, look them over!"
+    ],
+    "entries": [
+      {
+        "keywords": ["hail", "hello", "greetings", "hi", "good day"],
+        "lines": [
+          "Greetings, {name}.",
+          "Well met, {name}."
+        ]
+      },
+      {
+        "keywords": ["job", "work", "trade", "profession", "occupation"],
+        "lines": [
+          "I am the cobbler.",
+          "I am the cobbler, at thy service."
+        ]
+      },
+      {
+        "keywords": ["sell", "wares", "goods", "stock", "shop", "price"],
+        "lines": [
+          "I deal in thigh boots, shoes, boots and sandals. Say 'vendor buy' to see my wares.",
+          "Say 'vendor buy' and look them over."
+        ]
+      }
+    ]
+  },
+  {
+    "title": "the cook",
+    "greetings": [
+      "Greetings.  Have a look around."
+    ],
+    "barks": [
+      "bread loaf, apple pie and cake for sale!",
+      "cook at thy service!",
+      "Wares for sale — come, look them over!"
+    ],
+    "entries": [
+      {
+        "keywords": ["hail", "hello", "greetings", "hi", "good day"],
+        "lines": [
+          "Greetings, {name}.",
+          "Well met, {name}."
+        ]
+      },
+      {
+        "keywords": ["job", "work", "trade", "profession", "occupation"],
+        "lines": [
+          "I am the cook.",
+          "I am the cook, at thy service."
+        ]
+      },
+      {
+        "keywords": ["sell", "wares", "goods", "stock", "shop", "price"],
+        "lines": [
+          "I deal in bread loaf, apple pie, cake and muffins. Say 'vendor buy' to see my wares.",
+          "Say 'vendor buy' and look them over."
+        ]
+      }
+    ]
+  },
+  {
+    "title": "the customhairstylist",
+    "greetings": [
+      "Greetings, {name}.",
+      "Well met, {name}.",
+      "Good day to thee, {name}."
+    ],
+    "entries": [
+      {
+        "keywords": ["hail", "hello", "greetings", "hi", "good day"],
+        "lines": [
+          "Greetings, {name}.",
+          "Well met, {name}."
+        ]
+      },
+      {
+        "keywords": ["job", "work", "trade", "profession", "occupation"],
+        "lines": [
+          "I am the customhairstylist.",
+          "I am the customhairstylist, at thy service."
+        ]
+      }
+    ]
+  },
+  {
+    "title": "the evilhealer",
+    "greetings": [
+      "Greetings.  Have a look around."
+    ],
+    "barks": [
+      "bandage, lesser heal potion and ginseng for sale!",
+      "evilhealer at thy service!",
+      "Wares for sale — come, look them over!"
+    ],
+    "entries": [
+      {
+        "keywords": ["hail", "hello", "greetings", "hi", "good day"],
+        "lines": [
+          "Greetings, {name}.",
+          "Well met, {name}."
+        ]
+      },
+      {
+        "keywords": ["job", "work", "trade", "profession", "occupation"],
+        "lines": [
+          "I am the evilhealer.",
+          "I am the evilhealer, at thy service."
+        ]
+      },
+      {
+        "keywords": ["sell", "wares", "goods", "stock", "shop", "price"],
+        "lines": [
+          "I deal in bandage, lesser heal potion, ginseng and garlic. Say 'vendor buy' to see my wares.",
+          "Say 'vendor buy' and look them over."
+        ]
+      }
+    ]
+  },
+  {
+    "title": "the farmer",
+    "greetings": [
+      "Greetings.  Have a look around."
+    ],
+    "barks": [
+      "fresh ginger, cabbage and cantaloupe for sale!",
+      "farmer at thy service!",
+      "Wares for sale — come, look them over!"
+    ],
+    "entries": [
+      {
+        "keywords": ["hail", "hello", "greetings", "hi", "good day"],
+        "lines": [
+          "Greetings, {name}.",
+          "Well met, {name}."
+        ]
+      },
+      {
+        "keywords": ["job", "work", "trade", "profession", "occupation"],
+        "lines": [
+          "I am the farmer.",
+          "I am the farmer, at thy service."
+        ]
+      },
+      {
+        "keywords": ["sell", "wares", "goods", "stock", "shop", "price"],
+        "lines": [
+          "I deal in fresh ginger, cabbage, cantaloupe and carrot. Say 'vendor buy' to see my wares.",
+          "Say 'vendor buy' and look them over."
+        ]
+      }
+    ]
+  },
+  {
+    "title": "the fisher guildmaster",
+    "greetings": [
+      "Greetings, {name}.",
+      "Well met, {name}.",
+      "Good day to thee, {name}."
+    ],
+    "entries": [
+      {
+        "keywords": ["hail", "hello", "greetings", "hi", "good day"],
+        "lines": [
+          "Greetings, {name}.",
+          "Well met, {name}."
+        ]
+      },
+      {
+        "keywords": ["job", "work", "trade", "profession", "occupation"],
+        "lines": [
+          "I am the fisher guildmaster.",
+          "I am the fisher guildmaster, at thy service."
+        ]
+      }
+    ]
+  },
+  {
+    "title": "the fisherman",
+    "greetings": [
+      "Greetings.  Have a look around."
+    ],
+    "barks": [
+      "raw fish steak, fish and fishing pole for sale!",
+      "fisherman at thy service!",
+      "Wares for sale — come, look them over!"
+    ],
+    "entries": [
+      {
+        "keywords": ["hail", "hello", "greetings", "hi", "good day"],
+        "lines": [
+          "Greetings, {name}.",
+          "Well met, {name}."
+        ]
+      },
+      {
+        "keywords": ["job", "work", "trade", "profession", "occupation"],
+        "lines": [
+          "I am the fisherman.",
+          "I am the fisherman, at thy service."
+        ]
+      },
+      {
+        "keywords": ["sell", "wares", "goods", "stock", "shop", "price"],
+        "lines": [
+          "I deal in raw fish steak, fish, fishing pole and aquarium fish net. Say 'vendor buy' to see my wares.",
+          "Say 'vendor buy' and look them over."
+        ]
+      }
+    ]
+  },
+  {
+    "title": "the frighteneddryad",
+    "greetings": [
+      "Greetings, {name}.",
+      "Well met, {name}.",
+      "Good day to thee, {name}."
+    ],
+    "entries": [
+      {
+        "keywords": ["hail", "hello", "greetings", "hi", "good day"],
+        "lines": [
+          "Greetings, {name}.",
+          "Well met, {name}."
+        ]
+      },
+      {
+        "keywords": ["job", "work", "trade", "profession", "occupation"],
+        "lines": [
+          "I am the frighteneddryad.",
+          "I am the frighteneddryad, at thy service."
+        ]
+      }
+    ]
+  },
+  {
+    "title": "the furtrader",
+    "greetings": [
+      "Greetings.  Have a look around."
+    ],
+    "barks": [
+      "hides for sale!",
+      "furtrader at thy service!",
+      "Wares for sale — come, look them over!"
+    ],
+    "entries": [
+      {
+        "keywords": ["hail", "hello", "greetings", "hi", "good day"],
+        "lines": [
+          "Greetings, {name}.",
+          "Well met, {name}."
+        ]
+      },
+      {
+        "keywords": ["job", "work", "trade", "profession", "occupation"],
+        "lines": [
+          "I am the furtrader.",
+          "I am the furtrader, at thy service."
+        ]
+      },
+      {
+        "keywords": ["sell", "wares", "goods", "stock", "shop", "price"],
+        "lines": [
+          "I deal in hides. Say 'vendor buy' to see my wares.",
+          "Say 'vendor buy' and look them over."
+        ]
+      }
+    ]
+  },
+  {
+    "title": "the harbormaster",
+    "greetings": [
+      "Greetings, {name}.",
+      "Well met, {name}.",
+      "Good day to thee, {name}."
+    ],
+    "entries": [
+      {
+        "keywords": ["hail", "hello", "greetings", "hi", "good day"],
+        "lines": [
+          "Greetings, {name}.",
+          "Well met, {name}."
+        ]
+      },
+      {
+        "keywords": ["job", "work", "trade", "profession", "occupation"],
+        "lines": [
+          "I am the harbormaster.",
+          "I am the harbormaster, at thy service."
+        ]
+      }
+    ]
+  },
+  {
+    "title": "the healer",
+    "greetings": [
+      "Greetings.  Have a look around."
+    ],
+    "barks": [
+      "bandage, lesser heal potion and ginseng for sale!",
+      "healer at thy service!",
+      "Wares for sale — come, look them over!"
+    ],
+    "entries": [
+      {
+        "keywords": ["hail", "hello", "greetings", "hi", "good day"],
+        "lines": [
+          "Greetings, {name}.",
+          "Well met, {name}."
+        ]
+      },
+      {
+        "keywords": ["job", "work", "trade", "profession", "occupation"],
+        "lines": [
+          "I am the healer.",
+          "I am the healer, at thy service."
+        ]
+      },
+      {
+        "keywords": ["sell", "wares", "goods", "stock", "shop", "price"],
+        "lines": [
+          "I deal in bandage, lesser heal potion, ginseng and garlic. Say 'vendor buy' to see my wares.",
+          "Say 'vendor buy' and look them over."
+        ]
+      }
+    ]
+  },
+  {
+    "title": "the healer guildmaster",
+    "greetings": [
+      "Greetings, {name}.",
+      "Well met, {name}.",
+      "Good day to thee, {name}."
+    ],
+    "entries": [
+      {
+        "keywords": ["hail", "hello", "greetings", "hi", "good day"],
+        "lines": [
+          "Greetings, {name}.",
+          "Well met, {name}."
+        ]
+      },
+      {
+        "keywords": ["job", "work", "trade", "profession", "occupation"],
+        "lines": [
+          "I am the healer guildmaster.",
+          "I am the healer guildmaster, at thy service."
+        ]
+      }
+    ]
+  },
+  {
+    "title": "the herbalist",
+    "greetings": [
+      "Greetings.  Have a look around."
+    ],
+    "barks": [
+      "ginseng, garlic and mandrake root for sale!",
+      "herbalist at thy service!",
+      "Wares for sale — come, look them over!"
+    ],
+    "entries": [
+      {
+        "keywords": ["hail", "hello", "greetings", "hi", "good day"],
+        "lines": [
+          "Greetings, {name}.",
+          "Well met, {name}."
+        ]
+      },
+      {
+        "keywords": ["job", "work", "trade", "profession", "occupation"],
+        "lines": [
+          "I am the herbalist.",
+          "I am the herbalist, at thy service."
+        ]
+      },
+      {
+        "keywords": ["sell", "wares", "goods", "stock", "shop", "price"],
+        "lines": [
+          "I deal in ginseng, garlic, mandrake root and nightshade. Say 'vendor buy' to see my wares.",
+          "Say 'vendor buy' and look them over."
+        ]
+      }
+    ]
+  },
+  {
+    "title": "the hirebard",
+    "greetings": [
+      "Greetings, {name}.",
+      "Well met, {name}.",
+      "Good day to thee, {name}."
+    ],
+    "entries": [
+      {
+        "keywords": ["hail", "hello", "greetings", "hi", "good day"],
+        "lines": [
+          "Greetings, {name}.",
+          "Well met, {name}."
+        ]
+      },
+      {
+        "keywords": ["job", "work", "trade", "profession", "occupation"],
+        "lines": [
+          "I am the hirebard.",
+          "I am the hirebard, at thy service."
+        ]
+      }
+    ]
+  },
+  {
+    "title": "the hirefighter",
+    "greetings": [
+      "Greetings, {name}.",
+      "Well met, {name}.",
+      "Good day to thee, {name}."
+    ],
+    "entries": [
+      {
+        "keywords": ["hail", "hello", "greetings", "hi", "good day"],
+        "lines": [
+          "Greetings, {name}.",
+          "Well met, {name}."
+        ]
+      },
+      {
+        "keywords": ["job", "work", "trade", "profession", "occupation"],
+        "lines": [
+          "I am the hirefighter.",
+          "I am the hirefighter, at thy service."
+        ]
+      }
+    ]
+  },
+  {
+    "title": "the hirepeasant",
+    "greetings": [
+      "Greetings, {name}.",
+      "Well met, {name}.",
+      "Good day to thee, {name}."
+    ],
+    "entries": [
+      {
+        "keywords": ["hail", "hello", "greetings", "hi", "good day"],
+        "lines": [
+          "Greetings, {name}.",
+          "Well met, {name}."
+        ]
+      },
+      {
+        "keywords": ["job", "work", "trade", "profession", "occupation"],
+        "lines": [
+          "I am the hirepeasant.",
+          "I am the hirepeasant, at thy service."
+        ]
+      }
+    ]
+  },
+  {
+    "title": "the hiresailor",
+    "greetings": [
+      "Greetings, {name}.",
+      "Well met, {name}.",
+      "Good day to thee, {name}."
+    ],
+    "entries": [
+      {
+        "keywords": ["hail", "hello", "greetings", "hi", "good day"],
+        "lines": [
+          "Greetings, {name}.",
+          "Well met, {name}."
+        ]
+      },
+      {
+        "keywords": ["job", "work", "trade", "profession", "occupation"],
+        "lines": [
+          "I am the hiresailor.",
+          "I am the hiresailor, at thy service."
+        ]
+      }
+    ]
+  },
+  {
+    "title": "the innkeeper",
+    "greetings": [
+      "Greetings, {name}.",
+      "Well met, {name}.",
+      "Good day to thee, {name}."
+    ],
+    "entries": [
+      {
+        "keywords": ["hail", "hello", "greetings", "hi", "good day"],
+        "lines": [
+          "Greetings, {name}.",
+          "Well met, {name}."
+        ]
+      },
+      {
+        "keywords": ["job", "work", "trade", "profession", "occupation"],
+        "lines": [
+          "I am the innkeeper.",
+          "I am the innkeeper, at thy service."
+        ]
+      }
+    ]
+  },
+  {
+    "title": "the jeweler",
+    "greetings": [
+      "Greetings.  Have a look around."
+    ],
+    "barks": [
+      "gold ring, necklace and gold necklace for sale!",
+      "jeweler at thy service!",
+      "Wares for sale — come, look them over!"
+    ],
+    "entries": [
+      {
+        "keywords": ["hail", "hello", "greetings", "hi", "good day"],
+        "lines": [
+          "Greetings, {name}.",
+          "Well met, {name}."
+        ]
+      },
+      {
+        "keywords": ["job", "work", "trade", "profession", "occupation"],
+        "lines": [
+          "I am the jeweler.",
+          "I am the jeweler, at thy service."
+        ]
+      },
+      {
+        "keywords": ["sell", "wares", "goods", "stock", "shop", "price"],
+        "lines": [
+          "I deal in gold ring, necklace, gold necklace and gold bead necklace. Say 'vendor buy' to see my wares.",
+          "Say 'vendor buy' and look them over."
+        ]
+      }
+    ]
+  },
+  {
+    "title": "the mage",
+    "greetings": [
+      "Greetings.  Have a look around."
+    ],
+    "barks": [
+      "spellbook, scribes pen and blank scroll for sale!",
+      "mage at thy service!",
+      "Wares for sale — come, look them over!"
+    ],
+    "entries": [
+      {
+        "keywords": ["hail", "hello", "greetings", "hi", "good day"],
+        "lines": [
+          "Greetings, {name}.",
+          "Well met, {name}."
+        ]
+      },
+      {
+        "keywords": ["job", "work", "trade", "profession", "occupation"],
+        "lines": [
+          "I am the mage.",
+          "I am the mage, at thy service."
+        ]
+      },
+      {
+        "keywords": ["sell", "wares", "goods", "stock", "shop", "price"],
+        "lines": [
+          "I deal in spellbook, scribes pen, blank scroll and magic wizards hat. Say 'vendor buy' to see my wares.",
+          "Say 'vendor buy' and look them over."
+        ]
+      }
+    ]
+  },
+  {
+    "title": "the mage guildmaster",
+    "greetings": [
+      "Greetings, {name}.",
+      "Well met, {name}.",
+      "Good day to thee, {name}."
+    ],
+    "entries": [
+      {
+        "keywords": ["hail", "hello", "greetings", "hi", "good day"],
+        "lines": [
+          "Greetings, {name}.",
+          "Well met, {name}."
+        ]
+      },
+      {
+        "keywords": ["job", "work", "trade", "profession", "occupation"],
+        "lines": [
+          "I am the mage guildmaster.",
+          "I am the mage guildmaster, at thy service."
+        ]
+      }
+    ]
+  },
+  {
+    "title": "the mapmaker",
+    "greetings": [
+      "Greetings.  Have a look around."
+    ],
+    "barks": [
+      "blank map, mapmakers pen and blank scroll for sale!",
+      "mapmaker at thy service!",
+      "Wares for sale — come, look them over!"
+    ],
+    "entries": [
+      {
+        "keywords": ["hail", "hello", "greetings", "hi", "good day"],
+        "lines": [
+          "Greetings, {name}.",
+          "Well met, {name}."
+        ]
+      },
+      {
+        "keywords": ["job", "work", "trade", "profession", "occupation"],
+        "lines": [
+          "I am the mapmaker.",
+          "I am the mapmaker, at thy service."
+        ]
+      },
+      {
+        "keywords": ["sell", "wares", "goods", "stock", "shop", "price"],
+        "lines": [
+          "I deal in blank map, mapmakers pen and blank scroll. Say 'vendor buy' to see my wares.",
+          "Say 'vendor buy' and look them over."
+        ]
+      }
+    ]
+  },
+  {
+    "title": "the merchant guildmaster",
+    "greetings": [
+      "Greetings, {name}.",
+      "Well met, {name}.",
+      "Good day to thee, {name}."
+    ],
+    "entries": [
+      {
+        "keywords": ["hail", "hello", "greetings", "hi", "good day"],
+        "lines": [
+          "Greetings, {name}.",
+          "Well met, {name}."
+        ]
+      },
+      {
+        "keywords": ["job", "work", "trade", "profession", "occupation"],
+        "lines": [
+          "I am the merchant guildmaster.",
+          "I am the merchant guildmaster, at thy service."
+        ]
+      }
+    ]
+  },
+  {
+    "title": "the miner guildmaster",
+    "greetings": [
+      "Greetings, {name}.",
+      "Well met, {name}.",
+      "Good day to thee, {name}."
+    ],
+    "entries": [
+      {
+        "keywords": ["hail", "hello", "greetings", "hi", "good day"],
+        "lines": [
+          "Greetings, {name}.",
+          "Well met, {name}."
+        ]
+      },
+      {
+        "keywords": ["job", "work", "trade", "profession", "occupation"],
+        "lines": [
+          "I am the miner guildmaster.",
+          "I am the miner guildmaster, at thy service."
+        ]
+      }
+    ]
+  },
+  {
+    "title": "the minter",
+    "greetings": [
+      "Greetings, {name}.",
+      "Well met, {name}.",
+      "Good day to thee, {name}."
+    ],
+    "entries": [
+      {
+        "keywords": ["hail", "hello", "greetings", "hi", "good day"],
+        "lines": [
+          "Greetings, {name}.",
+          "Well met, {name}."
+        ]
+      },
+      {
+        "keywords": ["job", "work", "trade", "profession", "occupation"],
+        "lines": [
+          "I am the minter.",
+          "I am the minter, at thy service."
+        ]
+      },
+      {
+        "keywords": ["bank", "balance", "gold", "account", "box"],
+        "lines": [
+          "Say 'bank' and I shall open thy box, or 'balance' to hear thy total.",
+          "Thy gold is safe with me. Say 'bank'."
+        ]
+      }
+    ]
+  },
+  {
+    "title": "the orderguard",
+    "greetings": [
+      "Greetings, {name}.",
+      "Well met, {name}.",
+      "Good day to thee, {name}."
+    ],
+    "entries": [
+      {
+        "keywords": ["hail", "hello", "greetings", "hi", "good day"],
+        "lines": [
+          "Greetings, {name}.",
+          "Well met, {name}."
+        ]
+      },
+      {
+        "keywords": ["job", "work", "trade", "profession", "occupation"],
+        "lines": [
+          "I am the orderguard.",
+          "I am the orderguard, at thy service."
+        ]
+      }
+    ]
+  },
+  {
+    "title": "the paladin",
+    "greetings": [
+      "Greetings, {name}.",
+      "Well met, {name}.",
+      "Good day to thee, {name}."
+    ],
+    "entries": [
+      {
+        "keywords": ["hail", "hello", "greetings", "hi", "good day"],
+        "lines": [
+          "Greetings, {name}.",
+          "Well met, {name}."
+        ]
+      },
+      {
+        "keywords": ["job", "work", "trade", "profession", "occupation"],
+        "lines": [
+          "I am the paladin.",
+          "I am the paladin, at thy service."
+        ]
+      }
+    ]
+  },
+  {
+    "title": "the provisioner",
+    "greetings": [
+      "Greetings.  Have a look around."
+    ],
+    "barks": [
+      "plant bowl, arrow and bolt for sale!",
+      "provisioner at thy service!",
+      "Wares for sale — come, look them over!"
+    ],
+    "entries": [
+      {
+        "keywords": ["hail", "hello", "greetings", "hi", "good day"],
+        "lines": [
+          "Greetings, {name}.",
+          "Well met, {name}."
+        ]
+      },
+      {
+        "keywords": ["job", "work", "trade", "profession", "occupation"],
+        "lines": [
+          "I am the provisioner.",
+          "I am the provisioner, at thy service."
+        ]
+      },
+      {
+        "keywords": ["sell", "wares", "goods", "stock", "shop", "price"],
+        "lines": [
+          "I deal in plant bowl, arrow, bolt and backpack. Say 'vendor buy' to see my wares.",
+          "Say 'vendor buy' and look them over."
+        ]
+      }
+    ]
+  },
+  {
+    "title": "the rancher",
+    "greetings": [
+      "Greetings, {name}.",
+      "Well met, {name}.",
+      "Good day to thee, {name}."
+    ],
+    "entries": [
+      {
+        "keywords": ["hail", "hello", "greetings", "hi", "good day"],
+        "lines": [
+          "Greetings, {name}.",
+          "Well met, {name}."
+        ]
+      },
+      {
+        "keywords": ["job", "work", "trade", "profession", "occupation"],
+        "lines": [
+          "I am the rancher.",
+          "I am the rancher, at thy service."
+        ]
+      }
+    ]
+  },
+  {
+    "title": "the ranger guildmaster",
+    "greetings": [
+      "Greetings, {name}.",
+      "Well met, {name}.",
+      "Good day to thee, {name}."
+    ],
+    "entries": [
+      {
+        "keywords": ["hail", "hello", "greetings", "hi", "good day"],
+        "lines": [
+          "Greetings, {name}.",
+          "Well met, {name}."
+        ]
+      },
+      {
+        "keywords": ["job", "work", "trade", "profession", "occupation"],
+        "lines": [
+          "I am the ranger guildmaster.",
+          "I am the ranger guildmaster, at thy service."
+        ]
+      }
+    ]
+  },
+  {
+    "title": "the realestatebroker",
+    "greetings": [
+      "Greetings.  Have a look around."
+    ],
+    "barks": [
+      "blank scroll and scribes pen for sale!",
+      "realestatebroker at thy service!",
+      "Wares for sale — come, look them over!"
+    ],
+    "entries": [
+      {
+        "keywords": ["hail", "hello", "greetings", "hi", "good day"],
+        "lines": [
+          "Greetings, {name}.",
+          "Well met, {name}."
+        ]
+      },
+      {
+        "keywords": ["job", "work", "trade", "profession", "occupation"],
+        "lines": [
+          "I am the realestatebroker.",
+          "I am the realestatebroker, at thy service."
+        ]
+      },
+      {
+        "keywords": ["sell", "wares", "goods", "stock", "shop", "price"],
+        "lines": [
+          "I deal in blank scroll and scribes pen. Say 'vendor buy' to see my wares.",
+          "Say 'vendor buy' and look them over."
+        ]
+      }
+    ]
+  },
+  {
+    "title": "the scribe",
+    "greetings": [
+      "Greetings, {name}.",
+      "Well met, {name}.",
+      "Good day to thee, {name}."
+    ],
+    "entries": [
+      {
+        "keywords": ["hail", "hello", "greetings", "hi", "good day"],
+        "lines": [
+          "Greetings, {name}.",
+          "Well met, {name}."
+        ]
+      },
+      {
+        "keywords": ["job", "work", "trade", "profession", "occupation"],
+        "lines": [
+          "I am the scribe.",
+          "I am the scribe, at thy service."
+        ]
+      }
+    ]
+  },
+  {
+    "title": "the shipwright",
+    "greetings": [
+      "Greetings, {name}.",
+      "Well met, {name}.",
+      "Good day to thee, {name}."
+    ],
+    "entries": [
+      {
+        "keywords": ["hail", "hello", "greetings", "hi", "good day"],
+        "lines": [
+          "Greetings, {name}.",
+          "Well met, {name}."
+        ]
+      },
+      {
+        "keywords": ["job", "work", "trade", "profession", "occupation"],
+        "lines": [
+          "I am the shipwright.",
+          "I am the shipwright, at thy service."
+        ]
+      }
+    ]
+  },
+  {
+    "title": "the tailor",
+    "greetings": [
+      "Greetings.  Have a look around."
+    ],
+    "barks": [
+      "sewing kit, scissors and dye tub for sale!",
+      "tailor at thy service!",
+      "Wares for sale — come, look them over!"
+    ],
+    "entries": [
+      {
+        "keywords": ["hail", "hello", "greetings", "hi", "good day"],
+        "lines": [
+          "Greetings, {name}.",
+          "Well met, {name}."
+        ]
+      },
+      {
+        "keywords": ["job", "work", "trade", "profession", "occupation"],
+        "lines": [
+          "I am the tailor.",
+          "I am the tailor, at thy service."
+        ]
+      },
+      {
+        "keywords": ["sell", "wares", "goods", "stock", "shop", "price"],
+        "lines": [
+          "I deal in sewing kit, scissors, dye tub and dyes. Say 'vendor buy' to see my wares.",
+          "Say 'vendor buy' and look them over."
+        ]
+      }
+    ]
+  },
+  {
+    "title": "the tailor guildmaster",
+    "greetings": [
+      "Greetings, {name}.",
+      "Well met, {name}.",
+      "Good day to thee, {name}."
+    ],
+    "entries": [
+      {
+        "keywords": ["hail", "hello", "greetings", "hi", "good day"],
+        "lines": [
+          "Greetings, {name}.",
+          "Well met, {name}."
+        ]
+      },
+      {
+        "keywords": ["job", "work", "trade", "profession", "occupation"],
+        "lines": [
+          "I am the tailor guildmaster.",
+          "I am the tailor guildmaster, at thy service."
+        ]
+      }
+    ]
+  },
+  {
+    "title": "the tanner",
+    "greetings": [
+      "Greetings.  Have a look around."
+    ],
+    "barks": [
+      "leather gorget, leather cap and leather arms for sale!",
+      "tanner at thy service!",
+      "Wares for sale — come, look them over!"
+    ],
+    "entries": [
+      {
+        "keywords": ["hail", "hello", "greetings", "hi", "good day"],
+        "lines": [
+          "Greetings, {name}.",
+          "Well met, {name}."
+        ]
+      },
+      {
+        "keywords": ["job", "work", "trade", "profession", "occupation"],
+        "lines": [
+          "I am the tanner.",
+          "I am the tanner, at thy service."
+        ]
+      },
+      {
+        "keywords": ["sell", "wares", "goods", "stock", "shop", "price"],
+        "lines": [
+          "I deal in leather gorget, leather cap, leather arms and leather chest. Say 'vendor buy' to see my wares.",
+          "Say 'vendor buy' and look them over."
+        ]
+      }
+    ]
+  },
+  {
+    "title": "the tavernkeeper",
+    "greetings": [
+      "Greetings, {name}.",
+      "Well met, {name}.",
+      "Good day to thee, {name}."
+    ],
+    "entries": [
+      {
+        "keywords": ["hail", "hello", "greetings", "hi", "good day"],
+        "lines": [
+          "Greetings, {name}.",
+          "Well met, {name}."
+        ]
+      },
+      {
+        "keywords": ["job", "work", "trade", "profession", "occupation"],
+        "lines": [
+          "I am the tavernkeeper.",
+          "I am the tavernkeeper, at thy service."
+        ]
+      }
+    ]
+  },
+  {
+    "title": "the thief guildmaster",
+    "greetings": [
+      "Greetings, {name}.",
+      "Well met, {name}.",
+      "Good day to thee, {name}."
+    ],
+    "entries": [
+      {
+        "keywords": ["hail", "hello", "greetings", "hi", "good day"],
+        "lines": [
+          "Greetings, {name}.",
+          "Well met, {name}."
+        ]
+      },
+      {
+        "keywords": ["job", "work", "trade", "profession", "occupation"],
+        "lines": [
+          "I am the thief guildmaster.",
+          "I am the thief guildmaster, at thy service."
+        ]
+      }
+    ]
+  },
+  {
+    "title": "the tinker",
+    "greetings": [
+      "Greetings, {name}.",
+      "Well met, {name}.",
+      "Good day to thee, {name}."
+    ],
+    "entries": [
+      {
+        "keywords": ["hail", "hello", "greetings", "hi", "good day"],
+        "lines": [
+          "Greetings, {name}.",
+          "Well met, {name}."
+        ]
+      },
+      {
+        "keywords": ["job", "work", "trade", "profession", "occupation"],
+        "lines": [
+          "I am the tinker.",
+          "I am the tinker, at thy service."
+        ]
+      }
+    ]
+  },
+  {
+    "title": "the tinker guildmaster",
+    "greetings": [
+      "Greetings, {name}.",
+      "Well met, {name}.",
+      "Good day to thee, {name}."
+    ],
+    "entries": [
+      {
+        "keywords": ["hail", "hello", "greetings", "hi", "good day"],
+        "lines": [
+          "Greetings, {name}.",
+          "Well met, {name}."
+        ]
+      },
+      {
+        "keywords": ["job", "work", "trade", "profession", "occupation"],
+        "lines": [
+          "I am the tinker guildmaster.",
+          "I am the tinker guildmaster, at thy service."
+        ]
+      }
+    ]
+  },
+  {
+    "title": "the towncrier",
+    "greetings": [
+      "Greetings, {name}.",
+      "Well met, {name}.",
+      "Good day to thee, {name}."
+    ],
+    "entries": [
+      {
+        "keywords": ["hail", "hello", "greetings", "hi", "good day"],
+        "lines": [
+          "Greetings, {name}.",
+          "Well met, {name}."
+        ]
+      },
+      {
+        "keywords": ["job", "work", "trade", "profession", "occupation"],
+        "lines": [
+          "I am the towncrier.",
+          "I am the towncrier, at thy service."
+        ]
+      }
+    ]
+  },
+  {
+    "title": "the waiter",
+    "greetings": [
+      "Greetings.  Have a look around."
+    ],
+    "barks": [
+      "bread loaf, cheese wheel and cooked bird for sale!",
+      "waiter at thy service!",
+      "Wares for sale — come, look them over!"
+    ],
+    "entries": [
+      {
+        "keywords": ["hail", "hello", "greetings", "hi", "good day"],
+        "lines": [
+          "Greetings, {name}.",
+          "Well met, {name}."
+        ]
+      },
+      {
+        "keywords": ["job", "work", "trade", "profession", "occupation"],
+        "lines": [
+          "I am the waiter.",
+          "I am the waiter, at thy service."
+        ]
+      },
+      {
+        "keywords": ["sell", "wares", "goods", "stock", "shop", "price"],
+        "lines": [
+          "I deal in bread loaf, cheese wheel, cooked bird and lamb leg. Say 'vendor buy' to see my wares.",
+          "Say 'vendor buy' and look them over."
+        ]
+      }
+    ]
+  },
+  {
+    "title": "the warrior guildmaster",
+    "greetings": [
+      "Greetings, {name}.",
+      "Well met, {name}.",
+      "Good day to thee, {name}."
+    ],
+    "entries": [
+      {
+        "keywords": ["hail", "hello", "greetings", "hi", "good day"],
+        "lines": [
+          "Greetings, {name}.",
+          "Well met, {name}."
+        ]
+      },
+      {
+        "keywords": ["job", "work", "trade", "profession", "occupation"],
+        "lines": [
+          "I am the warrior guildmaster.",
+          "I am the warrior guildmaster, at thy service."
+        ]
+      }
+    ]
+  },
+  {
+    "title": "the weaponsmith",
+    "greetings": [
+      "Greetings.  Have a look around."
+    ],
+    "barks": [
+      "black staff, club and gnarled staff for sale!",
+      "weaponsmith at thy service!",
+      "Wares for sale — come, look them over!"
+    ],
+    "entries": [
+      {
+        "keywords": ["hail", "hello", "greetings", "hi", "good day"],
+        "lines": [
+          "Greetings, {name}.",
+          "Well met, {name}."
+        ]
+      },
+      {
+        "keywords": ["job", "work", "trade", "profession", "occupation"],
+        "lines": [
+          "I am the weaponsmith.",
+          "I am the weaponsmith, at thy service."
+        ]
+      },
+      {
+        "keywords": ["sell", "wares", "goods", "stock", "shop", "price"],
+        "lines": [
+          "I deal in black staff, club, gnarled staff and mace. Say 'vendor buy' to see my wares.",
+          "Say 'vendor buy' and look them over."
+        ]
+      }
+    ]
+  },
+  {
+    "title": "the weaver",
+    "greetings": [
+      "Greetings.  Have a look around."
+    ],
+    "barks": [
+      "dyes, dye tub and uncut cloth for sale!",
+      "weaver at thy service!",
+      "Wares for sale — come, look them over!"
+    ],
+    "entries": [
+      {
+        "keywords": ["hail", "hello", "greetings", "hi", "good day"],
+        "lines": [
+          "Greetings, {name}.",
+          "Well met, {name}."
+        ]
+      },
+      {
+        "keywords": ["job", "work", "trade", "profession", "occupation"],
+        "lines": [
+          "I am the weaver.",
+          "I am the weaver, at thy service."
+        ]
+      },
+      {
+        "keywords": ["sell", "wares", "goods", "stock", "shop", "price"],
+        "lines": [
+          "I deal in dyes, dye tub, uncut cloth and bolt of cloth. Say 'vendor buy' to see my wares.",
+          "Say 'vendor buy' and look them over."
+        ]
+      }
+    ]
+  }
+]

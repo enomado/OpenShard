@@ -525,17 +525,19 @@ const fn yes() -> bool {
 }
 
 /// What a script passes to register townsfolk speech.
+///
+/// A pack may still pass `male_names` and `female_names`; they are ignored, and
+/// they always were. The engine names townsfolk from `npc/data/names.json` and
+/// never grew the reader for a registered list — see [`Dialogue`] for the whole
+/// story. Unknown fields are dropped rather than rejected, so a pack written
+/// against the old shape keeps loading.
+///
+/// [`Dialogue`]: openshard_state::Dialogue
 #[derive(serde::Deserialize)]
 struct NpcSpeechSpec {
     /// One entry per trade, keyed by the title its NPCs wear.
     #[serde(default)]
     trades: Vec<TradeSpeechSpec>,
-    /// Personal names for male NPCs; empty keeps the core's list.
-    #[serde(default)]
-    male_names: Vec<String>,
-    /// Personal names for female NPCs; empty keeps the core's list.
-    #[serde(default)]
-    female_names: Vec<String>,
 }
 
 /// One trade's speech in a [`NpcSpeechSpec`].
@@ -560,7 +562,7 @@ struct SpeechEntrySpec {
 }
 
 /// Register what every trade says, replacing whatever was registered before:
-/// `op_register_npc_speech({ trades: [...], male_names: [...], female_names: [...] })`.
+/// `op_register_npc_speech({ trades: [...] })`.
 ///
 /// Called at pack load time, like `op_register_quests`; a hot reload re-registers
 /// cleanly. The keys are the titles NPCs are spawned with.
@@ -587,11 +589,7 @@ fn op_register_npc_speech(state: &mut OpState, #[serde] spec: NpcSpeechSpec) {
     state
         .borrow_mut::<Host>()
         .outbox
-        .push(Command::RegisterNpcSpeech {
-            trades,
-            male_names: spec.male_names,
-            female_names: spec.female_names,
-        });
+        .push(Command::RegisterNpcSpeech { trades });
 }
 
 /// Register the shard's quests, replacing whatever was registered before:

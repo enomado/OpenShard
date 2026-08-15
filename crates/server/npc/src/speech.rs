@@ -1,16 +1,18 @@
 //! What a townsperson answers, and when.
 //!
-//! # The mechanism is ServUO's; the words are the pack's
+//! # The mechanism is ServUO's; the words are data
 //!
 //! `VendorAI.OnSpeech` is the shape: an NPC overhears whatever is said near it,
 //! looks for keywords, and answers — and `HandlesOnSpeech` bounds it to four
 //! tiles, because a shopkeeper across the square has no business replying. That is
 //! ported here whole. What ServUO does *not* have is a line for every trade: a
 //! `BaseVendor`'s entire vocabulary is cliloc 500186 ("Greetings.  Have a look
-//! around.") and 501522 ("I shall not treat with scum like thee!"). So the core
-//! ships those and a generic greeting, and the real per-trade lines are data the
-//! pack registers, keyed by the NPC's [`Title`] — the same split
-//! `magic::spells` and `quests` use.
+//! around.") and 501522 ("I shall not treat with scum like thee!").
+//!
+//! So this file holds those two and a generic greeting — what a trade with no
+//! table falls back to — and the per-trade lines are content, keyed by the NPC's
+//! [`Title`]. They live in `state/data/speech.json` and reach the world through
+//! `server::content`, the same way quests do.
 //!
 //! # Keywords are whole words
 //!
