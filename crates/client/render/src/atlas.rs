@@ -842,6 +842,14 @@ pub trait StaticArt: fmt::Debug {
     fn max_sprite_size(&self) -> (u16, u16);
     /// Total packed graphics across all pages.
     fn len(&self) -> usize;
+    /// Whether the source packed no graphics at all.
+    ///
+    /// Provided, because every implementation answers it the same way from
+    /// [`len`](Self::len) — it exists so a caller asking the question does not
+    /// have to compare a count against zero.
+    fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
 }
 
 /// Maximum retained static pages in the first paged path.

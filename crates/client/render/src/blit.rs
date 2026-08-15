@@ -998,21 +998,6 @@ fn aperture_extent(count: usize, max_dimension: u32) -> (u32, u32) {
     (width, height)
 }
 
-#[cfg(test)]
-mod aperture_texture_tests {
-    use super::aperture_extent;
-
-    #[test]
-    fn folds_a_list_past_the_device_row_limit_into_the_next_row() {
-        assert_eq!(aperture_extent(10_018, 8_192), (8_192, 2));
-    }
-
-    #[test]
-    fn keeps_a_small_list_on_one_row() {
-        assert_eq!(aperture_extent(7, 8_192), (7, 1));
-    }
-}
-
 /// Room for `bytes` of the broad phase — [`Blit::nodes`] and [`Blit::order`].
 ///
 /// One function for both because they are grown by one rule: whatever the frame
@@ -1276,4 +1261,19 @@ pub fn world_texture(device: &wgpu::Device, width: u32, height: u32) -> wgpu::Te
             | wgpu::TextureUsages::COPY_SRC,
         view_formats: &[],
     })
+}
+
+#[cfg(test)]
+mod aperture_texture_tests {
+    use super::aperture_extent;
+
+    #[test]
+    fn folds_a_list_past_the_device_row_limit_into_the_next_row() {
+        assert_eq!(aperture_extent(10_018, 8_192), (8_192, 2));
+    }
+
+    #[test]
+    fn keeps_a_small_list_on_one_row() {
+        assert_eq!(aperture_extent(7, 8_192), (7, 1));
+    }
 }

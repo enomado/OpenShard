@@ -306,9 +306,7 @@ pub(crate) fn prepare_composite_job(
         min_y: i32::from(first_y),
         max_y: i32::from(first_y) + openshard_uofiles::map::BLOCK_SIZE as i32 - 1,
     };
-    let Some((owner_x, owner_y)) = owner.clamp_to(map_width as u32, map_height as u32) else {
-        return None;
-    };
+    let (owner_x, owner_y) = owner.clamp_to(map_width as u32, map_height as u32)?;
     let owner = TileBounds {
         min_x: i32::from(*owner_x.start()),
         max_x: i32::from(*owner_x.end()),

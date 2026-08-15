@@ -808,6 +808,12 @@ pub fn gump_of(
 ///
 /// The backpack is last and outside the order, exactly as the reference draws
 /// it: it hangs off the side of the picture and nothing is ever drawn over it.
+// Eight, and each one arrives from a different place: the wearer from the
+// world, the two hover/held states from the mouse, the preview from a drag in
+// flight, and the conversion table, atlas and origin from the frame. Bundling
+// them into a struct would name a thing that does not exist — there is no
+// caller that has the same subset twice.
+#[allow(clippy::too_many_arguments)]
 pub fn window(
     wearer: Option<&Wearer<'_>>,
     whose: Whose,

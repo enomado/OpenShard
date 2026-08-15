@@ -550,6 +550,10 @@ impl Crowd {
 
     /// `explicit_from` is supplied only for the locally commanded body.  Its
     /// step is a fact from `PlayerMotion`, unlike a remote mobile's snapshot.
+    // One argument per fact the wire carried about the mobile, plus the one
+    // `see` does not have. They arrive from different packets, so there is no
+    // struct here that is not just this list with a name.
+    #[allow(clippy::too_many_arguments)]
     fn see_inner(
         &mut self,
         who: Who,

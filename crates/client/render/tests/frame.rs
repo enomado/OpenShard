@@ -1157,7 +1157,7 @@ fn real_map_block_producer_keeps_every_owned_map_tile_after_restore() {
         block,
         size.width,
         Kind::Land,
-        &read_texture(&device, &queue, &source_gbuffer.ids(), 4),
+        &read_texture(&device, &queue, source_gbuffer.ids(), 4),
         &read_texture(&device, &queue, source_gbuffer.position(), 16),
         &read_texture(&device, &queue, &source_world, 4),
     );
@@ -1173,7 +1173,7 @@ fn real_map_block_producer_keeps_every_owned_map_tile_after_restore() {
         block,
         size.width,
         Kind::Static,
-        &read_texture(&device, &queue, &source_gbuffer.ids(), 4),
+        &read_texture(&device, &queue, source_gbuffer.ids(), 4),
         &read_texture(&device, &queue, source_gbuffer.position(), 16),
         &read_texture(&device, &queue, &source_world, 4),
     );

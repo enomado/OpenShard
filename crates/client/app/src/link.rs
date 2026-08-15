@@ -227,34 +227,30 @@ impl Updates {
             .pending
             .lock()
             .expect("the update mailbox is not poisoned");
-        match update {
-            update => {
-                // Mutations cannot be merged or dropped. Stopping the socket
-                // reader here applies backpressure all the way to TCP instead
-                // of allowing an unfocused or GPU-blocked window to consume
-                // unbounded memory while it falls behind.
-                while pending.ordered == self.mailbox.capacity {
-                    if !pending.backpressure_reported {
-                        tracing::warn!(
-                            capacity = self.mailbox.capacity,
-                            "ordered update mailbox is full; applying socket backpressure"
-                        );
-                        pending.backpressure_reported = true;
-                    }
-                    pending = self
-                        .mailbox
-                        .space
-                        .wait(pending)
-                        .expect("the update mailbox is not poisoned");
-                }
-                pending.ordered += 1;
-                match pending.stages.back_mut() {
-                    Some(UpdateStage::Ordered(updates)) => updates.push_back(update),
-                    _ => pending
-                        .stages
-                        .push_back(UpdateStage::Ordered(VecDeque::from([update]))),
-                }
+        // Mutations cannot be merged or dropped. Stopping the socket
+        // reader here applies backpressure all the way to TCP instead
+        // of allowing an unfocused or GPU-blocked window to consume
+        // unbounded memory while it falls behind.
+        while pending.ordered == self.mailbox.capacity {
+            if !pending.backpressure_reported {
+                tracing::warn!(
+                    capacity = self.mailbox.capacity,
+                    "ordered update mailbox is full; applying socket backpressure"
+                );
+                pending.backpressure_reported = true;
             }
+            pending = self
+                .mailbox
+                .space
+                .wait(pending)
+                .expect("the update mailbox is not poisoned");
+        }
+        pending.ordered += 1;
+        match pending.stages.back_mut() {
+            Some(UpdateStage::Ordered(updates)) => updates.push_back(update),
+            _ => pending
+                .stages
+                .push_back(UpdateStage::Ordered(VecDeque::from([update]))),
         }
         if pending.notified {
             false

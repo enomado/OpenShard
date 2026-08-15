@@ -45,68 +45,6 @@ fn split_amount(total: u16, requested: u16) -> Option<u16> {
     (total > 1).then(|| requested.clamp(1, total - 1))
 }
 
-#[cfg(test)]
-mod stack_tests {
-    use super::*;
-    use openshard_protocol::containers::GridSlot;
-    use openshard_protocol::items::ItemAmount;
-    use openshard_protocol::wire::Hue;
-
-    fn pile(serial: u32, amount: u16) -> ContainedItem {
-        ContainedItem {
-            serial: Serial::new(serial).expect("item serial"),
-            graphic: GOLD_GRAPHIC,
-            amount: ItemAmount(amount),
-            at: GumpPoint::new(0, 0),
-            grid: GridSlot(0),
-            hue: Hue::NONE,
-        }
-    }
-
-    #[test]
-    fn stacking_prefers_a_whole_pile_that_fits() {
-        let items = [
-            pile(0x4000_0001, 50_000),
-            pile(0x4000_0002, 20_000),
-            pile(0x4000_0003, 5_000),
-        ];
-        assert_eq!(
-            next_stack_step(&items),
-            Some(StackStep {
-                source: items[2].serial,
-                target: items[0].serial,
-                amount: 5_000,
-            })
-        );
-    }
-
-    #[test]
-    fn stacking_splits_only_enough_to_fill_sixty_thousand() {
-        let items = [pile(0x4000_0001, 55_000), pile(0x4000_0002, 20_000)];
-        assert_eq!(next_stack_step(&items).expect("one pass").amount, 5_000);
-    }
-
-    #[test]
-    fn full_piles_are_skipped_on_the_way_to_a_remainder() {
-        let items = [
-            pile(0x4000_0001, MAX_STACK),
-            pile(0x4000_0002, 15_000),
-            pile(0x4000_0003, 10_000),
-        ];
-        let step = next_stack_step(&items).expect("the remainder piles merge");
-        assert_eq!(step.target, items[1].serial);
-        assert_eq!(step.amount, 10_000);
-    }
-
-    #[test]
-    fn a_split_never_takes_none_or_the_whole_stack() {
-        assert_eq!(split_amount(10, 0), Some(1));
-        assert_eq!(split_amount(10, 4), Some(4));
-        assert_eq!(split_amount(10, 10), Some(9));
-        assert_eq!(split_amount(1, 1), None);
-    }
-}
-
 /// Pick one safe merge for this pass. Whole donor piles are preferred when
 /// they fit; a partial donor is used only to finish a target at 60,000. That
 /// keeps serial churn low, while recomputing after every server refresh makes
@@ -1305,5 +1243,67 @@ impl App {
         if self.world.authoritative.view.is_some() {
             self.windows.locally_closed.insert(WindowSubject::Dialog(gump_id));
         }
+    }
+}
+
+#[cfg(test)]
+mod stack_tests {
+    use super::*;
+    use openshard_protocol::containers::GridSlot;
+    use openshard_protocol::items::ItemAmount;
+    use openshard_protocol::wire::Hue;
+
+    fn pile(serial: u32, amount: u16) -> ContainedItem {
+        ContainedItem {
+            serial: Serial::new(serial).expect("item serial"),
+            graphic: GOLD_GRAPHIC,
+            amount: ItemAmount(amount),
+            at: GumpPoint::new(0, 0),
+            grid: GridSlot(0),
+            hue: Hue::NONE,
+        }
+    }
+
+    #[test]
+    fn stacking_prefers_a_whole_pile_that_fits() {
+        let items = [
+            pile(0x4000_0001, 50_000),
+            pile(0x4000_0002, 20_000),
+            pile(0x4000_0003, 5_000),
+        ];
+        assert_eq!(
+            next_stack_step(&items),
+            Some(StackStep {
+                source: items[2].serial,
+                target: items[0].serial,
+                amount: 5_000,
+            })
+        );
+    }
+
+    #[test]
+    fn stacking_splits_only_enough_to_fill_sixty_thousand() {
+        let items = [pile(0x4000_0001, 55_000), pile(0x4000_0002, 20_000)];
+        assert_eq!(next_stack_step(&items).expect("one pass").amount, 5_000);
+    }
+
+    #[test]
+    fn full_piles_are_skipped_on_the_way_to_a_remainder() {
+        let items = [
+            pile(0x4000_0001, MAX_STACK),
+            pile(0x4000_0002, 15_000),
+            pile(0x4000_0003, 10_000),
+        ];
+        let step = next_stack_step(&items).expect("the remainder piles merge");
+        assert_eq!(step.target, items[1].serial);
+        assert_eq!(step.amount, 10_000);
+    }
+
+    #[test]
+    fn a_split_never_takes_none_or_the_whole_stack() {
+        assert_eq!(split_amount(10, 0), Some(1));
+        assert_eq!(split_amount(10, 4), Some(4));
+        assert_eq!(split_amount(10, 10), Some(9));
+        assert_eq!(split_amount(1, 1), None);
     }
 }
