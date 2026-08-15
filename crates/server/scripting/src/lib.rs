@@ -641,8 +641,7 @@ pub enum Command {
         /// The text lines the layout's `{ text }`/`{ croppedtext }` index into.
         lines: Vec<String>,
     },
-    /// Replace every trade's speech, and the personal names in use, with the
-    /// pack's.
+    /// Replace every trade's speech with the pack's.
     ///
     /// Wholesale, never additive, for the same reason as
     /// [`RegisterQuests`](Command::RegisterQuests): a hot reload re-runs the pack
@@ -652,10 +651,6 @@ pub enum Command {
         /// Each trade's table, keyed by the title NPCs of that trade are spawned
         /// with ("the blacksmith").
         trades: Vec<ScriptTradeSpeech>,
-        /// Personal names for male NPCs. Empty keeps the core's own list.
-        male_names: Vec<String>,
-        /// Personal names for female NPCs. Empty keeps the core's own list.
-        female_names: Vec<String>,
     },
     /// Replace every quest this shard knows with the pack's list.
     ///

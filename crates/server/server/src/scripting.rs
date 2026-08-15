@@ -714,14 +714,8 @@ pub(crate) fn into_world(command: ScriptCommand) -> Option<Command> {
             layout,
             lines,
         },
-        ScriptCommand::RegisterNpcSpeech {
-            trades,
-            male_names,
-            female_names,
-        } => Command::RegisterNpcSpeech {
+        ScriptCommand::RegisterNpcSpeech { trades } => Command::RegisterNpcSpeech {
             trades: trades.into_iter().map(trade_speech).collect(),
-            male_names,
-            female_names,
         },
         ScriptCommand::RegisterQuests { quests } => Command::RegisterQuests {
             quests: quests.into_iter().filter_map(quest_def).collect(),

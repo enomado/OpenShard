@@ -1150,14 +1150,9 @@ impl World {
                 layout,
                 lines,
             } => self.show_gump(serial, gump_id, at, &layout, &lines),
-            Command::RegisterNpcSpeech {
-                trades,
-                male_names,
-                female_names,
-            } => {
+            Command::RegisterNpcSpeech { trades } => {
                 let count = trades.len();
                 self.state.dialogue.set_tables(trades.into_iter().collect());
-                self.state.dialogue.set_names(male_names, female_names);
                 debug!(count, "townsfolk speech registered");
             }
             Command::RegisterQuests { quests } => {

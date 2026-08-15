@@ -10489,7 +10489,7 @@ fn a_shopkeeper_stands_still_while_a_customer_is_at_the_counter() {
 
 #[test]
 fn a_trade_answers_its_own_keyword_and_only_within_earshot() {
-    // The headline path end to end: the pack registers a table by trade, someone
+    // The headline path end to end: a table is registered by trade, someone
     // speaks nearby, and the NPC of that trade answers. ServUO's
     // `VendorAI.HandlesOnSpeech` bounds it to four tiles, which is what stops a
     // shopkeeper across the square replying to a private conversation.
@@ -10512,8 +10512,6 @@ fn a_trade_answers_its_own_keyword_and_only_within_earshot() {
                 fallback: None,
             },
         )],
-        male_names: Vec::new(),
-        female_names: Vec::new(),
     });
     world.tick(now);
 

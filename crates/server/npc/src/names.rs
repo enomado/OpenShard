@@ -7,18 +7,25 @@
 //! "the banker" — and the client draws the two together. That split is why a town
 //! reads as a town: everybody has a trade *and* a name.
 //!
-//! What the shard had instead was one string, and the pack was sending only the
-//! title, so all thirty-eight bankers in Felucca were called "the banker". The
-//! title is the pack's (it knows the profession); the personal name is the core's,
-//! generated off the world's seeded [`Rng`] so a shard names the same town twice.
+//! What the shard had instead was one string, and only the title was being sent,
+//! so all thirty-eight bankers in Felucca were called "the banker". The title
+//! comes with the spawn (it knows the profession); the personal name is generated
+//! here off the world's seeded [`Rng`], so a shard names the same town twice.
 //!
-//! # Why the list here is a default and not the whole of ServUO's
+//! # This is the list, and it is deliberately not the whole of ServUO's
 //!
 //! `Data/names.xml` holds 1,500 male and 2,132 female names. Those belong to the
 //! operator's own ServUO checkout, not in this repository — the same reason no
-//! client files are here. So the core carries a spread of them wide enough that a
-//! full Felucca does not read as repetitive, and a pack that wants the whole list
-//! registers it (see [`crate::speech`]) and overrides this one.
+//! client files are here. So `data/names.json` carries a spread of them wide
+//! enough that a full Felucca does not read as repetitive.
+//!
+//! It used to say "and a pack that wants the whole list overrides this one",
+//! naming a `speech::registered_name` as what would serve it. **That function was
+//! never written.** The script pack did register its 3,632 names, `Dialogue` did
+//! store them, and nothing ever read them — every townsperson has been named from
+//! this file the entire time. The dead half of `Dialogue` is gone and this is the
+//! one place names come from; a shard that wants ServUO's full lists edits
+//! `data/names.json`.
 
 use openshard_state::rng::Rng;
 
@@ -27,11 +34,9 @@ use openshard_state::rng::Rng;
 // roll indexes into, so a shard names the same town twice.
 include!(concat!(env!("OUT_DIR"), "/names.rs"));
 
-/// A personal name for a townsperson, from the core's default lists.
+/// A personal name for a townsperson, from `data/names.json`.
 ///
-/// The gender picks the list, as `BaseVendor.InitBody` does. A pack that
-/// registered its own names is served by [`crate::speech::registered_name`]
-/// instead; this is the fallback a bare shard runs on.
+/// The gender picks the list, as `BaseVendor.InitBody` does.
 #[must_use]
 pub fn personal_name(rng: &mut Rng, female: bool) -> &'static str {
     let list = if female { FEMALE_NAMES } else { MALE_NAMES };

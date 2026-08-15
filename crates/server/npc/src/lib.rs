@@ -16,13 +16,13 @@
 //!
 //! - [`dress`] — what it looks like. ServUO's `BaseVendor.InitBody`/`InitOutfit`:
 //!   a gender, a skin hue, hair, a beard, a shirt, trousers or a skirt, shoes.
-//! - [`names`] — who it is. A personal name in front of the trade the pack sent,
-//!   so a town is not thirty-eight people called "the banker".
+//! - [`names`] — who it is. A personal name in front of the trade it was spawned
+//!   with, so a town is not thirty-eight people called "the banker".
 //! - [`live`] — the beat. Greet, face a customer, bark, drift near the post.
-//! - [`speech`] — what it answers. ServUO's `VendorAI.OnSpeech`, over a keyword
-//!   table the pack registers per trade.
+//! - [`speech`] — what it answers. ServUO's `VendorAI.OnSpeech`, over the keyword
+//!   table `state/data/speech.json` defines per trade.
 //!
-//! All four are keyed off one thing: the `Title` the pack spawns it with.
+//! All four are keyed off one thing: the `Title` it is spawned with.
 //!
 //! The randomness they spend is the world's seeded [`Rng`], never the OS, so a
 //! shard populates the same town twice — which is what makes a populated Felucca

@@ -949,10 +949,6 @@ pub enum Command {
     RegisterNpcSpeech {
         /// Each trade's table, keyed by the title its NPCs wear.
         trades: Vec<(String, openshard_state::SpeechTable)>,
-        /// Personal names for male NPCs; empty keeps the core's list.
-        male_names: Vec<String>,
-        /// Personal names for female NPCs; empty keeps the core's list.
-        female_names: Vec<String>,
     },
     /// Replace every quest this shard knows with the pack's list. From a script,
     /// at load time.

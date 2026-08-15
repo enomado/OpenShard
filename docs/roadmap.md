@@ -619,9 +619,9 @@ holds. The engine is `crates/server/scripting`; `engine.rs` explains the seam.
 and [#17](https://github.com/youhide/OpenShard/issues/17) settled on pure Rust:
 gameplay data becomes `data/*.json` in the domain crates, the pack's 414 lines of
 logic become systems, and this crate is deleted — which is also when CI stops
-excluding it and the MSRV comes off 1.88. Quests are in the tree already
-(`crates/server/state/data/quests.json`, laid by `server::content`); regions,
-spawns, decoration and vendor stock follow. The checklist below is what the spike
+excluding it and the MSRV comes off 1.88. Quests and townsfolk speech are in the
+tree already (`crates/server/state/data/{quests,speech}.json`, laid by
+`server::content`); regions, spawns, decoration and vendor stock follow. The checklist below is what the spike
 delivered and stays true until then; the decision is in
 [`architecture.md`](architecture.md) § Scripting.
 
@@ -2021,12 +2021,12 @@ Roughly in dependency order, each script-first:
       refused out loud (`CheckVendorAccess`, cliloc 501522) at **all four** doors
       into a shop — the open, the sell offer, the purchase and the sale — because a
       client that already has the window up can still send a `0x3B`, so refusing only
-      at the open leaves the deal reachable. The **lines are the
-      pack's**, registered per trade by `op_register_npc_speech` — and are
-      themselves ServUO-derived rather than invented: the greeting is cliloc 500186,
-      the "what is thy trade" answer is built from the title, and "what dost thou
+      at the open leaves the deal reachable. The **lines are in the tree**,
+      sixty-eight trades in `state/data/speech.json` — and are themselves
+      ServUO-derived rather than invented: the greeting is cliloc 500186, the
+      "what is thy trade" answer is built from the title, and "what dost thou
       sell" lists the trade's actual `SB*.cs` stock. The core default is a plain
-      greeting, so a bare shard still speaks.
+      greeting, so a shard that empties the file still speaks.
   - [x] **Vendor restock timers.** ServUO's `BaseVendor.Restock`: a shelf tops every
     line back up to its original amount, checked when the shop is opened
     (`DelayRestock`, an hour) rather than on a tick pass — the reference's own choice,

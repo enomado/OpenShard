@@ -22,12 +22,13 @@
 //! Three of the datasets still in the pack — regions, spawns, decoration — are
 //! laid by an *admin verb* rather than at boot (`world::admin`'s
 //! `populate:felucca` and friends), because an operator lays and clears them by
-//! hand. Quests are not: the pack registers them at load, unconditionally, and
-//! so do we. The verb-keyed path arrives with the first dataset that needs one,
-//! and not before — an empty dispatch written now would be a guess at a shape
-//! three datasets have not asked for yet.
+//! hand. Quests and speech are not: both are registered at load,
+//! unconditionally, replacing whatever was there. The verb-keyed path arrives
+//! with the first dataset that needs one, and not before — an empty dispatch
+//! written now would be a guess at a shape three datasets have not asked for
+//! yet.
 
-use openshard_state::quest;
+use openshard_state::{dialogue, quest};
 use openshard_world::Command;
 
 /// Every command the shard's own content lays down, before the first tick.
@@ -38,17 +39,23 @@ use openshard_world::Command;
 ///
 /// # The pack still wins, while there is one
 ///
-/// A configured script pack registers its own quests on the tick after this, and
-/// [`QuestDefs::set`](openshard_state::quest::QuestDefs::set) replaces
-/// everything before it — so a pack that defines quests silently overrides these
-/// for exactly as long as the pack exists. That is deliberate for the length of
-/// the migration: nothing is deleted until the equivalence test says the two
-/// agree.
+/// A configured script pack registers its own quests and speech on the tick after
+/// this, and both destinations replace wholesale —
+/// [`QuestDefs::set`](openshard_state::quest::QuestDefs::set) and
+/// [`Dialogue::set_tables`](openshard_state::Dialogue::set_tables) — so a pack
+/// that defines either silently overrides these for exactly as long as the pack
+/// exists. That is deliberate for the length of the migration: nothing is deleted
+/// until the equivalence test says the two agree.
 #[must_use]
 pub fn boot() -> Vec<Command> {
-    vec![Command::RegisterQuests {
-        quests: quest::shipped(),
-    }]
+    vec![
+        Command::RegisterQuests {
+            quests: quest::shipped(),
+        },
+        Command::RegisterNpcSpeech {
+            trades: dialogue::shipped(),
+        },
+    ]
 }
 
 #[cfg(test)]
@@ -66,14 +73,18 @@ mod tests {
     /// does (`tick/quest_tests.rs`); what is unproven anywhere else, and proven
     /// here, is that `boot` emits it and emits all of it.
     #[test]
-    fn boot_hands_the_world_every_quest_the_tree_ships() {
-        let shipped = quest::shipped();
-        assert!(!shipped.is_empty(), "the shard ships no quests at all");
+    fn boot_hands_the_world_every_dataset_the_tree_ships() {
+        let quests = quest::shipped();
+        let trades = dialogue::shipped();
+        assert!(!quests.is_empty(), "the shard ships no quests at all");
+        assert!(!trades.is_empty(), "the shard ships no trade speech at all");
 
-        let commands = boot();
         assert_eq!(
-            commands,
-            vec![Command::RegisterQuests { quests: shipped }],
+            boot(),
+            vec![
+                Command::RegisterQuests { quests },
+                Command::RegisterNpcSpeech { trades },
+            ],
             "the tree's content is not reaching the world intact"
         );
     }
@@ -96,7 +107,7 @@ mod tests {
     /// has one. V8 aborts the process rather than degrading when it posts a
     /// delayed task and finds no runtime, and a pack this size posts one.
     #[tokio::test]
-    async fn the_tree_registers_the_quests_the_pack_did() {
+    async fn the_tree_registers_what_the_pack_did() {
         let Some(pack) = std::env::var_os("OPENSHARD_PACK") else {
             return;
         };
@@ -111,26 +122,58 @@ mod tests {
 
         // Through the same bridge the running shard uses, so this compares the
         // two sources and not two spellings of the conversion.
-        let from_pack = only_quests(
-            openshard_scripting::ScriptEngine::take_commands(&mut engine)
-                .into_iter()
-                .filter_map(crate::scripting::into_world)
-                .collect(),
-        );
-        let from_tree = only_quests(boot());
+        let from_pack: Vec<Command> = openshard_scripting::ScriptEngine::take_commands(&mut engine)
+            .into_iter()
+            .filter_map(crate::scripting::into_world)
+            .collect();
+        let from_tree = boot();
 
-        // Without this the test passes on two empty lists — a pack path that
-        // points somewhere harmless, or a load that registered nothing, would
-        // read as agreement.
+        // A dataset at a time, so a failure names the one that diverged. Each
+        // emptiness check earns its place: a pack path that points somewhere
+        // harmless, or a load that registered nothing, would otherwise pass on two
+        // empty lists and read as agreement. They are separate blocks rather than
+        // a loop because the two comparisons are over different types, and giving
+        // them a common one would mean comparing debug strings.
+        let (tree_quests, pack_quests) = (only_quests(from_tree.clone()), only_quests(from_pack.clone()));
         assert!(
-            !from_pack.is_empty(),
+            !pack_quests.is_empty(),
             "the pack at {pack:?} registered no quests at all; \
              OPENSHARD_PACK should name the pack's directory"
         );
         assert_eq!(
-            from_tree, from_pack,
+            tree_quests, pack_quests,
             "in-tree quests and the pack's have diverged; the migration is not done"
         );
+
+        let (tree_speech, pack_speech) = (only_speech(from_tree), only_speech(from_pack));
+        assert!(
+            !pack_speech.is_empty(),
+            "the pack at {pack:?} registered no trade speech at all"
+        );
+        assert_eq!(
+            tree_speech, pack_speech,
+            "in-tree speech and the pack's have diverged; the migration is not done"
+        );
+    }
+
+    /// The speech registrations out of a command stream, each one's trades sorted
+    /// by title.
+    ///
+    /// Sorted for [`only_quests`]' reason — the destination is a `HashMap` and the
+    /// two sources owe each other no order. **Only the outer list.** A table's
+    /// `entries` are in precedence order, the first match wins, and sorting them
+    /// would hide exactly the difference that changes what an NPC answers.
+    fn only_speech(commands: Vec<Command>) -> Vec<Vec<(String, openshard_state::SpeechTable)>> {
+        commands
+            .into_iter()
+            .filter_map(|command| match command {
+                Command::RegisterNpcSpeech { mut trades } => {
+                    trades.sort_by(|a, b| a.0.cmp(&b.0));
+                    Some(trades)
+                }
+                _ => None,
+            })
+            .collect()
     }
 
     /// The quest registrations out of a command stream, each one's quests sorted

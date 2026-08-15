@@ -18,11 +18,11 @@
 //!   `creature_base_sound`. The compiler turns a dense integer `match` into a
 //!   jump, and a search over a slice could not be `const fn` at all — so the
 //!   generated code keeps the shape the hand-written code had.
-//! - **A constructor returning owned values**, for `quest::shipped`. Alone among
-//!   these, its destination is not a table that is read where it lies:
-//!   `QuestDefs::set` takes ownership of a `Vec<QuestDef>` and replaces
-//!   everything before it, so a `const` here would be a second spelling of three
-//!   types, cloned once at the only call site. The build-time checks are the
+//! - **A constructor returning owned values**, for `quest::shipped` and
+//!   `dialogue::shipped`. Their destinations are not tables read where they lie:
+//!   `QuestDefs::set` and `Dialogue::set_tables` take ownership and replace
+//!   everything before them, so a `const` here would be a second spelling of the
+//!   same types, cloned once at the only call site. The build-time checks are the
 //!   part that carries over, and they are the part that mattered.
 //!
 //! **Invariants are this script's job, not the data's.** It sorts what is
@@ -579,6 +579,194 @@ impl RewardKind {
     }
 }
 
+/// The doc over the generated `shipped`.
+const SPEECH_DOC: &str = "\
+/// What every trade the shard ships says, built fresh from `data/speech.json`.
+///
+/// Ported from ServUO — the shop lists its `SB*.cs` vendors carry, and the
+/// clilocs a `BaseVendor` answers with — because ServUO has the *mechanism* and
+/// almost none of the words: a vendor's entire stock vocabulary is 500186 and
+/// 501522, which is two lines for sixty-eight trades. The rest is written to
+/// ServUO's voice rather than lifted from it.
+///
+/// [`QuestDefs::shipped`](crate::quest::shipped)'s shape, for
+/// [`QuestDefs::shipped`](crate::quest::shipped)'s reason: the destination owns
+/// its strings. `Dialogue::set_tables` takes the map and replaces everything
+/// before it, so a `const` here would be a second spelling of two types cloned
+/// once at the one call site.
+///
+/// Pairs rather than a map, because that is what the command carries and a
+/// `HashMap` would fix an order the data does not have. The order is by title —
+/// nothing reads a table except [`Dialogue::table`], so it cannot change an
+/// answer, and it keeps a trade appended to the JSON from moving every trade
+/// after it in a diff of the generated source.
+";
+
+/// One trade in `data/speech.json`.
+///
+/// Only `title` is required. A trade that greets and says nothing else omits
+/// three fields rather than spelling out three empty lists, and the shape it
+/// leaves is the one the reader cares about.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Trade {
+    /// The [`Title`] its NPCs wear, and the key the table is found by.
+    title: String,
+    /// What it greets an approaching player with.
+    #[serde(default)]
+    greetings: Vec<String>,
+    /// What it says to itself. Empty is silence, and two trades in three are.
+    #[serde(default)]
+    barks: Vec<String>,
+    /// Keyword groups, in precedence order — the first match wins.
+    #[serde(default)]
+    entries: Vec<TradeEntry>,
+    /// What it answers when nothing matched. Blank stays quiet, which is what
+    /// every trade so far does.
+    #[serde(default)]
+    fallback: String,
+}
+
+/// One keyword group of a [`Trade`].
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TradeEntry {
+    /// The words that trigger it.
+    keywords: Vec<String>,
+    /// The answers, one picked at random.
+    lines: Vec<String>,
+}
+
+/// The Rust expression for a list of owned strings.
+fn owned_list(values: &[String], indent: &str) -> String {
+    if values.is_empty() {
+        return "Vec::new()".to_owned();
+    }
+    let mut out = String::from("vec![\n");
+    for value in values {
+        writeln!(out, "{indent}    {value:?}.to_owned(),").unwrap();
+    }
+    write!(out, "{indent}]").unwrap();
+    out
+}
+
+/// `data/speech.json` into the `shipped` constructor.
+///
+/// The checks here are the ones the running shard cannot make. A keyword that is
+/// not lowercase can never match, because [`overhear`](crate::speech) lowercases
+/// the sentence before comparing — so it is silence that looks like content, and
+/// the script bridge's answer (lowercase it quietly) is the wrong one for data
+/// that can simply be corrected. A table with nothing in it is worse than no
+/// table: [`Dialogue::table`] answers `Some`, and every field being empty then
+/// reads as a trade that has been struck dumb.
+fn speech(text: &str) -> String {
+    let mut trades: Vec<Trade> = serde_json::from_str(text).expect("speech.json");
+
+    trades.sort_by(|a, b| a.title.cmp(&b.title));
+    for pair in trades.windows(2) {
+        assert_ne!(
+            pair[0].title, pair[1].title,
+            "speech.json defines {:?} twice, and the map would keep whichever came last",
+            pair[0].title
+        );
+    }
+
+    let mut out = String::from("// @generated by build.rs from data/speech.json.\n\n");
+    out.push_str(SPEECH_DOC);
+    out.push_str("#[must_use]\npub fn shipped() -> Vec<(String, SpeechTable)> {\n    vec![\n");
+    for trade in &trades {
+        assert!(
+            !trade.title.is_empty(),
+            "a trade with no title is keyed by nothing and can never be found"
+        );
+        assert!(
+            !trade.greetings.is_empty()
+                || !trade.barks.is_empty()
+                || !trade.entries.is_empty()
+                || !trade.fallback.is_empty(),
+            "trade {:?} says nothing at all, which is not the same as having no table",
+            trade.title
+        );
+
+        writeln!(out, "        (").unwrap();
+        writeln!(out, "            {:?}.to_owned(),", trade.title).unwrap();
+        out.push_str("            SpeechTable {\n");
+        writeln!(
+            out,
+            "                greetings: {},",
+            owned_list(&trade.greetings, "                ")
+        )
+        .unwrap();
+        writeln!(
+            out,
+            "                barks: {},",
+            owned_list(&trade.barks, "                ")
+        )
+        .unwrap();
+
+        if trade.entries.is_empty() {
+            out.push_str("                entries: Vec::new(),\n");
+        } else {
+            out.push_str("                entries: vec![\n");
+            for entry in &trade.entries {
+                assert!(
+                    !entry.keywords.is_empty(),
+                    "an entry of trade {:?} has no keywords, so it can never be reached",
+                    trade.title
+                );
+                assert!(
+                    !entry.lines.is_empty(),
+                    "an entry of trade {:?} has no answers, so matching it is silence",
+                    trade.title
+                );
+                for keyword in &entry.keywords {
+                    assert!(
+                        !keyword.trim().is_empty(),
+                        "a blank keyword of trade {:?} matches nothing and is dead weight",
+                        trade.title
+                    );
+                    assert_eq!(
+                        *keyword,
+                        keyword.to_lowercase(),
+                        "keyword {keyword:?} of trade {:?} is not lowercase, and the \
+                         sentence it is matched against always is",
+                        trade.title
+                    );
+                }
+                out.push_str("                    SpeechEntry {\n");
+                writeln!(
+                    out,
+                    "                        keywords: {},",
+                    owned_list(&entry.keywords, "                        ")
+                )
+                .unwrap();
+                writeln!(
+                    out,
+                    "                        lines: {},",
+                    owned_list(&entry.lines, "                        ")
+                )
+                .unwrap();
+                out.push_str("                    },\n");
+            }
+            out.push_str("                ],\n");
+        }
+
+        match trade.fallback.is_empty() {
+            true => out.push_str("                fallback: None,\n"),
+            false => writeln!(
+                out,
+                "                fallback: Some({:?}.to_owned()),",
+                trade.fallback
+            )
+            .unwrap(),
+        }
+        out.push_str("            },\n");
+        out.push_str("        ),\n");
+    }
+    out.push_str("    ]\n}\n");
+    out
+}
+
 /// `data/quests.json` into the `shipped` constructor.
 fn quests(text: &str) -> String {
     let mut quests: Vec<Quest> = serde_json::from_str(text).expect("quests.json");
@@ -714,6 +902,7 @@ fn main() {
         ("skills", skills),
         ("harvest_tiles", harvest_tiles),
         ("quests", quests),
+        ("speech", speech),
     ] {
         let path = Path::new("data").join(format!("{name}.json"));
         let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
