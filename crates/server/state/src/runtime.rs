@@ -622,6 +622,8 @@ pub struct WorldState {
     /// notoriety byte and that byte depends on who is looking — see
     /// [`notoriety_toward`](Self::notoriety_toward).
     pub guilds: crate::guild::Guilds,
+    /// Every party. Runtime-only — see [`crate::party`].
+    pub parties: crate::party::Parties,
     // The targeting cursor and the four gump contexts used to be maps here, keyed
     // by the *player's entity*. They are fields on the connection's row now —
     // `connection::Connection` — reached through `row_of`/`row_of_mut`. They are
@@ -804,6 +806,12 @@ pub enum TargetPurpose {
     /// again when the click lands rather than remembered here — a leader who
     /// disbanded, or was deposed, while the cursor was up invites nobody.
     GuildInvite,
+    /// A party leader's cursor, waiting for whoever is to be asked along.
+    ///
+    /// [`GuildInvite`](Self::GuildInvite)'s twin and carries nothing for the
+    /// same reason — with one difference worth naming: a party leader who has no
+    /// party yet is the *ordinary* case, since asking is what creates one.
+    PartyInvite,
     /// A key waiting to be turned on something — ServUO's `Key.OnDoubleClick`, which
     /// raises a cursor rather than guessing which of several nearby doors was meant.
     TurnKey {
@@ -2054,6 +2062,31 @@ impl WorldState {
         self.guilds.get(member.guild)
     }
 
+    /// The party a mobile is in, if it is in one that still exists.
+    ///
+    /// [`guild_of`](Self::guild_of)'s twin, and the same two halves for a
+    /// weaker reason: a disbanded party *does* strip its components, because
+    /// every member of one is online by construction. The lookup is written this
+    /// way anyway so that a component surviving its party — a disconnect racing
+    /// a disband — reads as no party rather than as a panic.
+    #[must_use]
+    pub fn party_of(&self, entity: EntityId) -> Option<&crate::party::Party> {
+        let member = self.registry.get::<crate::components::PartyMember>(entity)?;
+        self.parties.get(member.party)
+    }
+
+    /// Whether the party may take from this mobile's corpse.
+    ///
+    /// `false` for anybody in no party, which is also the default inside one:
+    /// a player has to say so. Read by the corpse rather than by the party, so
+    /// it answers for a mobile rather than needing one looked up first.
+    #[must_use]
+    pub fn party_may_loot(&self, entity: EntityId) -> bool {
+        self.registry
+            .get::<crate::components::PartyMember>(entity)
+            .is_some_and(|member| member.can_loot && self.parties.get(member.party).is_some())
+    }
+
     /// A member's guild title and their guild's full name, for the line the
     /// tooltip draws under the name. `None` for a mobile in no guild, and for one
     /// the guild has given no title — ServUO draws the line only when there is a
@@ -2434,6 +2467,19 @@ impl WorldState {
     /// [`version_of`](Self::version_of).
     /// Encoding for a guessed version instead is how a client silently drops a
     /// packet it cannot parse, which is the failure mode that is hardest to see.
+    /// Send one packet to whoever is playing `entity`, if anybody is.
+    ///
+    /// [`send_packet`](Self::send_packet) addressed by *mobile* rather than by
+    /// connection, which is what almost every caller actually has: an NPC, or a
+    /// player who logged out mid-tick, simply gets nothing. The lookup it wraps
+    /// is written out by hand in a dozen places in this file; new callers should
+    /// reach for this one.
+    pub fn send_to(&mut self, entity: EntityId, packet: &ServerPacket) {
+        if let Some(&Client { connection, .. }) = self.registry.get::<Client>(entity) {
+            self.send_packet(connection, packet);
+        }
+    }
+
     pub fn send_packet(&mut self, connection: ConnectionId, packet: &ServerPacket) {
         let Some(version) = self.version_of(connection) else {
             return;

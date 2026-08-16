@@ -229,6 +229,12 @@ const ALLOWLIST: &[(&str, &str, &str)] = &[
         "ExtendedRequest: the same, a 0xBF subcommand with no handler",
     ),
     (
+        "party.rs",
+        "Unknown.0",
+        "PartyRequest: the same again, one level down — a party sub-subcommand with no handler, \
+         which is a byte inside 0xBF 0x0006's body rather than a subcommand of its own",
+    ),
+    (
         "login.rs",
         "Unknown.0",
         "ClientLoginPacket: the same, an id the login conversation does not act on",

@@ -1,0 +1,23 @@
+[package]
+name = "openshard-party"
+description = "Parties: invitations, membership, the chat and the loot flag."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+openshard-entities.workspace = true
+openshard-gateway.workspace = true
+openshard-protocol.workspace = true
+openshard-state.workspace = true
+
+[dev-dependencies]
+# A bare `WorldState`, as in `openshard-guilds`: everything a party rule needs
+# is in `openshard-state` except the bus.
+openshard-events.workspace = true

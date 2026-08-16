@@ -44,6 +44,7 @@ pub mod guild;
 pub mod harvest;
 pub mod instrument;
 pub mod obstruct;
+pub mod party;
 pub mod quest;
 pub mod region;
 pub mod rng;
@@ -61,16 +62,17 @@ pub use components::{
     Ghost, Guard, GuildCandidate, GuildMember, Harvesting, Heading, HearsGhosts, Hidden, Hitpoints, InRegion,
     Instrument, Karma, KeyValue, LastStatGain, Lock, MOONGATE_GRAPHIC, MOONGATE_REACH, Mana, Meditating,
     MeleeDamage, Moongate, Movement, MurderDecay, Murders, Name, NightHome, Npc, POISON_POTION_GRAPHIC,
-    Pacified, PoisonCharges, Poisoned, Position, RECALL_RUNE_GRAPHIC, RUNEBOOK_ENTRIES, RUNEBOOK_GRAPHIC,
-    Resistance, RuneMark, Runebook, RunebookEntry, SkillCooldown, Skills, SpawnedBy, Stackable, Stamina,
-    StatEffectKind, StatLock, StatLocks, StatMod, StatMods, Stats, Stealthing, SwingSpeed, Title, Tool,
-    TradeWindow, Trap, TrapKind, WrestlingAmbushCooldown, WrestlingCombo, WrestlingInterceptCooldown,
-    WrestlingOpener, WrestlingStride, effect, is_debuff, stat_shift,
+    Pacified, PartyCandidate, PartyMember, PoisonCharges, Poisoned, Position, RECALL_RUNE_GRAPHIC,
+    RUNEBOOK_ENTRIES, RUNEBOOK_GRAPHIC, Resistance, RuneMark, Runebook, RunebookEntry, SkillCooldown, Skills,
+    SpawnedBy, Stackable, Stamina, StatEffectKind, StatLock, StatLocks, StatMod, StatMods, Stats, Stealthing,
+    SwingSpeed, Title, Tool, TradeWindow, Trap, TrapKind, WrestlingAmbushCooldown, WrestlingCombo,
+    WrestlingInterceptCooldown, WrestlingOpener, WrestlingStride, effect, is_debuff, stat_shift,
 };
 pub use dialogue::{Dialogue, SpeechEntry, SpeechTable};
 pub use guild::{Guild, GuildId, Guilds, Rank, Relation};
 pub use obstruct::{DOOR_HEIGHT, LiveTerrain, Obstacle, Obstructions};
 pub use openshard_protocol::world::{DamageType, RangedRange};
+pub use party::{Parties, Party, PartyId};
 pub use quest::{ObjectiveDef, ObjectiveKind, QuestDef, QuestDefs, RewardDef, RewardKind};
 pub use region::{Region, RegionFlags, RegionId, RegionRect, Regions};
 pub use rng::Rng;

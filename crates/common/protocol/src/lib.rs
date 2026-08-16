@@ -75,6 +75,7 @@ pub mod localized;
 pub mod login;
 pub mod mobile;
 pub mod packet;
+pub mod party;
 pub mod properties;
 pub mod seed;
 pub mod serial;

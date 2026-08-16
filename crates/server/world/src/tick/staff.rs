@@ -115,6 +115,24 @@ impl World {
                     None => self.notify_self(actor, "That cannot join a guild."),
                 }
             }
+            openshard_state::TargetPurpose::PartyInvite => {
+                // Re-checked when the click lands, for `GuildInvite`'s reason:
+                // the party can fill, or be disbanded, while the cursor is up.
+                let target = response
+                    .object
+                    .and_then(|serial| self.state.registry.entity_of(serial));
+                match target {
+                    Some(target) => match openshard_party::invite(&mut self.state, actor, target) {
+                        Ok(()) => {
+                            self.notify_self(actor, "They have been asked along.");
+                            self.state
+                                .system_message(target, "You have been invited to join a party.");
+                        }
+                        Err(refusal) => self.notify_self(actor, refusal.message()),
+                    },
+                    None => self.notify_self(actor, "That cannot join a party."),
+                }
+            }
             openshard_state::TargetPurpose::TurnKey { key } => {
                 // The key may have gone while the cursor was up, and the target may be
                 // nothing at all — a key turned on the sky opens nothing and says so.

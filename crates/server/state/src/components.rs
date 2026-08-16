@@ -1695,6 +1695,40 @@ pub struct GuildCandidate {
     pub guild: crate::guild::GuildId,
 }
 
+/// Which party a mobile is in, and whether it may loot their corpse.
+///
+/// The **reverse index**, not the roster: the order is on the wire and lives in
+/// [`Party::members`](crate::Party). This answers "which party is this mobile
+/// in", which is the question asked once per line of party chat and once per
+/// corpse.
+///
+/// Not saved. A party does not survive a restart — see [`crate::party`] for why
+/// that is the reference's behaviour and not an omission — so unlike
+/// [`GuildMember`] this component is built at run time and never restored.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct PartyMember {
+    /// Which party, by its leader's serial.
+    pub party: crate::party::PartyId,
+    /// Whether the rest of the party may take from this member's corpse.
+    ///
+    /// Off by default, which is ServUO's `PartyMemberInfo` — a player has to
+    /// say so, and the packet that says it is `0xBF 0x06 0x06`.
+    pub can_loot: bool,
+}
+
+/// A mobile that has been asked into a party and has not yet answered.
+///
+/// [`GuildCandidate`]'s twin, and it holds the same shape for the same reason:
+/// the question asked is "has this player been invited", of one player at a
+/// time. The difference is that a party also keeps its own list — see
+/// [`Party::candidates`](crate::Party) — because the capacity rule has to count
+/// invitations that are still out.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct PartyCandidate {
+    /// Whose party asked.
+    pub party: crate::party::PartyId,
+}
+
 /// Marks a player who has died and walks as a ghost: greyed, silent to the
 /// living, waiting on resurrection.
 ///

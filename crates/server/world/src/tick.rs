@@ -102,6 +102,7 @@ mod gates;
 mod guilds;
 mod healer;
 mod motion;
+mod party;
 mod persist;
 mod regions;
 mod roster;
@@ -249,6 +250,7 @@ impl World {
         Self {
             state: WorldState {
                 guilds: openshard_state::Guilds::default(),
+                parties: openshard_state::Parties::default(),
                 registry: Registry::new(),
                 bus: EventBus::new(),
                 facets,
@@ -1198,6 +1200,7 @@ impl World {
                 serial,
                 index,
             } => self.context_menu_select(connection, serial, index),
+            Command::Party { connection, request } => self.party_request(connection, &request),
             Command::EquipItem {
                 connection,
                 item,
@@ -1504,6 +1507,11 @@ impl World {
         // and a trade escrow is deliberately not saved, so an item still sitting
         // in one when the sweep runs is an item nobody gets back.
         items::cancel_for(&mut self.state, entity);
+        // And leave any party, while the entity still exists to be removed from
+        // one. A party is not saved and its members are online by construction,
+        // so a serial left in one after the despawn below names nobody — see
+        // `openshard_party::on_logout`.
+        openshard_party::on_logout(&mut self.state, entity);
         let serial = self.state.registry.serial_of(entity);
         let facet = self.state.facet_of(entity);
 

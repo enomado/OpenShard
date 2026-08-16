@@ -2787,6 +2787,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "openshard-party"
+version = "0.0.1"
+dependencies = [
+ "openshard-entities",
+ "openshard-events",
+ "openshard-gateway",
+ "openshard-protocol",
+ "openshard-state",
+]
+
+[[package]]
 name = "openshard-persistence"
 version = "0.0.1"
 dependencies = [
@@ -2911,6 +2922,7 @@ dependencies = [
  "openshard-magic",
  "openshard-movement",
  "openshard-npc",
+ "openshard-party",
  "openshard-persistence",
  "openshard-protocol",
  "openshard-quests",

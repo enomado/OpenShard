@@ -38,6 +38,7 @@ use crate::login::{
 };
 use crate::mobile::{MobileIncoming, MobileMove, MobileStatus, OpenPaperdoll, Remove, StatLocks};
 use crate::packet::{DecodePacket, EncodePacket, Frame, FrameError, PacketLength, frame_body, frame_packet};
+use crate::party::{PartyInvitation, PartyMemberList, PartyRemoveMember, PartyTextMessage};
 use crate::properties::{PropertyListReply, TooltipRevision};
 use crate::skill::{SkillUpdate, SkillsFull, SkillsPacket};
 use crate::speech::{LocalizedMessage, SpokenMessage, UnicodeMessage};
@@ -141,6 +142,14 @@ pub enum ServerPacket {
     TooltipRevision(TooltipRevision),
     /// `0xD6` — the property list itself, answering a client's batch query.
     PropertyListReply(PropertyListReply),
+    /// `0xBF` subcommand `0x06` type `0x01` — the whole party roster.
+    PartyMemberList(PartyMemberList),
+    /// `0xBF` subcommand `0x06` type `0x02` — a member left, and who is left.
+    PartyRemoveMember(PartyRemoveMember),
+    /// `0xBF` subcommand `0x06` type `0x03`/`0x04` — a line of party chat.
+    PartyTextMessage(PartyTextMessage),
+    /// `0xBF` subcommand `0x06` type `0x07` — you are invited to a party.
+    PartyInvitation(PartyInvitation),
     /// `0x3A` — the whole skill list, to fill the window.
     SkillsFull(SkillsFull),
     /// `0x3A` — one skill's line, following a change.
@@ -212,6 +221,10 @@ impl ServerPacket {
             Self::SellList(_) => <SellList as EncodePacket>::ID,
             Self::TooltipRevision(_) => <TooltipRevision as EncodePacket>::ID,
             Self::PropertyListReply(_) => <PropertyListReply as EncodePacket>::ID,
+            Self::PartyMemberList(_) => PartyMemberList::ID,
+            Self::PartyRemoveMember(_) => PartyRemoveMember::ID,
+            Self::PartyTextMessage(_) => PartyTextMessage::ID,
+            Self::PartyInvitation(_) => PartyInvitation::ID,
             Self::SkillsFull(_) => SkillsFull::ID,
             Self::SkillUpdate(_) => SkillUpdate::ID,
             Self::SpokenMessage(_) => <SpokenMessage as EncodePacket>::ID,
@@ -276,6 +289,10 @@ impl ServerPacket {
             Self::SellList(_) => SellList::LENGTH,
             Self::TooltipRevision(_) => TooltipRevision::LENGTH,
             Self::PropertyListReply(_) => PropertyListReply::LENGTH,
+            Self::PartyMemberList(_) => PartyMemberList::LENGTH,
+            Self::PartyRemoveMember(_) => PartyRemoveMember::LENGTH,
+            Self::PartyTextMessage(_) => PartyTextMessage::LENGTH,
+            Self::PartyInvitation(_) => PartyInvitation::LENGTH,
             Self::SkillsFull(_) => SkillsFull::LENGTH,
             Self::SkillUpdate(_) => SkillUpdate::LENGTH,
             Self::SpokenMessage(_) => SpokenMessage::LENGTH,
@@ -344,6 +361,10 @@ impl ServerPacket {
             Self::SellList(packet) => packet.encode_body(out, version),
             Self::TooltipRevision(packet) => packet.encode_body(out, version),
             Self::PropertyListReply(packet) => packet.encode_body(out, version),
+            Self::PartyMemberList(packet) => packet.encode_body(out, version),
+            Self::PartyRemoveMember(packet) => packet.encode_body(out, version),
+            Self::PartyTextMessage(packet) => packet.encode_body(out, version),
+            Self::PartyInvitation(packet) => packet.encode_body(out, version),
             Self::SkillsFull(packet) => packet.encode_body(out, version),
             Self::SkillUpdate(packet) => packet.encode_body(out, version),
             Self::SpokenMessage(packet) => packet.encode_body(out, version),

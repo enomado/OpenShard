@@ -902,6 +902,18 @@ pub enum Command {
         /// delivery, not a checkpoint.
         index: openshard_protocol::context::RawContextMenuIndex,
     },
+    /// A client asked its party to do something (`0xBF` `0x06`).
+    ///
+    /// The whole request travels rather than being split into seven commands:
+    /// which of the seven it is already lives in
+    /// [`PartyRequest`](openshard_protocol::party::PartyRequest), and a second
+    /// enum with the same shape would be two places to add the eighth to.
+    Party {
+        /// Which connection asked.
+        connection: ConnectionId,
+        /// What it asked for.
+        request: openshard_protocol::party::PartyRequest,
+    },
     /// A client asked to wear the item on its cursor (`0x13`).
     EquipItem {
         /// Which connection.

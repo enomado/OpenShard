@@ -2378,14 +2378,57 @@ Roughly in dependency order, each script-first:
     where every existing member, leaders included, reads as a Ronin and no guild
     has a way back out of that.
   - Deferred: the guildstone as a placeable item, guild chat, and named
-    multi-guild alliances. Guild chat is deliberately held for **party** (`0xBF
-    0x06`, `0xB3`/`0xB5`): both are "a line goes to a set of people who are not
-    the ones nearby", and building one alone builds the router twice.
+    multi-guild alliances. Guild chat waited for **party**, which has now landed
+    with the router both need (`openshard_party::tell_party`) — so it is next
+    rather than blocked.
   - Client-side: the window renders, the health bars take their hue from the
     byte, and the **tooltip** now shows here too — the `[ABBR]` suffix and the
     "Warlord, The Silver Serpent" line both. The `0xD6`/`0xDC` half this client
     had never had landed with the guild work rather than after it; see
     "Tooltips, and the half that was never written" in [`client.md`](client.md).
+- [x] `parties` — **built.** Inviting, accepting, leaving, kicking, the chat and
+  the loot flag, all on `0xBF` subcommand `0x06`. Ported from ServUO's
+  `PartyCommands` and `Scripts/Services/Party/`.
+  - **Two numberings under one subcommand.** The byte *after* `0x0006` says which
+    of the seven a packet is, and inbound and outbound do not agree about it:
+    `0x01` is "raise the add cursor" from a client and "here is the whole roster"
+    from the shard, `0x08` is "I accept" and is not an outbound number at all.
+    Only `0x03`/`0x04` — the two chat lines — mean the same thing both ways. A
+    decoder written from one side reads the other's acceptance as a member list.
+  - **The empty list is a removal.** There is no "you are in no party" packet:
+    ServUO's `PartyEmptyList` is a `0x02` with a member count of zero and the
+    recipient's own serial in the removed slot, which is `PartyRemoveMember`'s
+    layout with the list empty. One type serves both.
+  - **The leader is the id.** A leader who leaves disbands the party rather than
+    handing it on, so the leader's serial is fixed for the party's whole life and
+    is the key — no counter, and no high-water mark to save. This is the sharpest
+    difference from a guild: a guild outlives its founder because it is a thing in
+    the world, and a party is only the people in it.
+  - **Asking is what creates one**, so a leader who has asked one person and been
+    ignored is leading a party of one. `decline` closes it again — otherwise the
+    next invitation silently reuses a group with a phantom member in the cap.
+    The cap (10) counts members *and* outstanding invitations, the leader
+    included.
+  - **`tell_party` is the router the whole thing is for.** "A line goes to a set
+    of people who are not the ones standing nearby" is one mechanism, and guild
+    chat is its second tenant — which is why party was built first rather than
+    beside it.
+  - Not saved, and that is the reference's behaviour rather than an omission:
+    ServUO's `Party` has no serialization, and a party of people who are all
+    offline is not a party.
+  - **Logging out leaves the party**, which the reference does not need to do:
+    ServUO's logged-out `PlayerMobile` stays in the world and stays in the group,
+    and this engine despawns the entity. Without `on_logout` a party would hold a
+    serial naming nobody — counted against the cap, drawn on everyone else's
+    roster as a member they cannot see, and keeping the party alive after the
+    last person in it had gone. It follows from what a party is, which is also
+    why none of it is saved.
+  - **The loot flag has no consumer yet.** `WorldState::party_may_loot` answers,
+    and nothing asks: corpses on this shard are open to anybody, because there is
+    no criminal-act rule on looting one to exempt a party from. That rule is the
+    missing half, and it belongs with the criminal system rather than here.
+  - Client-side: untouched. Our own client neither sends a party packet nor draws
+    a party window.
 - [x] `quests` — **a core system now, ServUO's Mondain's Legacy model, with the
   content left to the pack.** It was built pack-first (five thin seams and an
   opaque JSON blob the engine only stored) and that did not survive a client.
@@ -2461,8 +2504,10 @@ started.
   entry: Sacred Journey, the moon-phase gates, red/young restrictions, ship-mark
   runes, and a tooltip that refreshes when a property changes — which travel gave
   its first real consumer, since a marked rune's name changes under the player.
-- **Party (`0xBF 0x06`) and chat channels (`0xB3`/`0xB5`).** Group play has no
-  protocol surface at all.
+- ~~**Party (`0xBF 0x06`).**~~ Landed; see **Parties** in §6 below. Still open
+  from that entry: the loot flag has no consumer, and guild chat is next on the
+  router it built. **Chat channels (`0xB3`/`0xB5`)** are untouched and are a
+  separate thing — the channel window, not the group.
 - ~~**Pets and taming.**~~ Landed with Animal Taming; see **Taming, and the pets
   it wanted** in §6 `skills`. Still open from that entry: **stabling** (which
   wants a pet saved with no position, the logged-out-character shape),

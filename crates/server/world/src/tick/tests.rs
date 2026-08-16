@@ -14743,3 +14743,77 @@ fn a_non_admin_gump_reply_reaches_the_pack_as_gump_answered() {
     assert_eq!(events[0].button, openshard_protocol::gump::RawButtonId(2));
     assert_eq!(events[0].serial, serial);
 }
+
+/// The wire path, end to end: a real `0xBF 0x06` from a real connection, through
+/// the dispatch, into the party system, and back out as packets.
+///
+/// The party crate's own tests call the rules directly, so none of them would
+/// notice the `Command::Party` arm being unwired, the subcommand being decoded
+/// as `Unknown`, or the target cursor never going up. This one would.
+#[test]
+fn a_party_forms_over_the_wire_and_talks_to_itself() {
+    let mut world = world();
+    let now = Instant::now();
+    let leader_connection = enter(&mut world, now);
+    let member_connection = enter_as(&mut world, ConnectionId::from_raw(4242), now + WALK_INTERVAL);
+    world.tick(now + WALK_INTERVAL * 2);
+    let leader = world.state.players[&leader_connection];
+    let member = world.state.players[&member_connection];
+    let _ = world.drain_outbound().count();
+
+    // "Add" raises a cursor rather than acting — the client is asking *who*.
+    world.queue(Command::Party {
+        connection: leader_connection,
+        request: openshard_protocol::party::PartyRequest::Add,
+    });
+    world.tick(now + WALK_INTERVAL * 3);
+    assert_eq!(
+        world.state.take_target(leader),
+        Some(openshard_state::TargetPurpose::PartyInvite)
+    );
+
+    // The invitation, then the acceptance. The serial on the accept is ignored
+    // on purpose — the shard's own `PartyCandidate` is the record.
+    openshard_party::invite(&mut world.state, leader, member).expect("a leader may ask");
+    world.queue(Command::Party {
+        connection: member_connection,
+        request: openshard_protocol::party::PartyRequest::Accept(openshard_protocol::serial::RawSerial(0)),
+    });
+    world.tick(now + WALK_INTERVAL * 4);
+    let party = openshard_party::party_of(&world.state, leader).expect("a party formed");
+    assert_eq!(openshard_party::roster(&world.state, party), vec![leader, member]);
+
+    // And a line of chat reaches both of them as a `0xBF 0x06 0x04`.
+    let _ = world.drain_outbound().count();
+    let mut text = vec![0x04u8];
+    text.extend("regroup".encode_utf16().flat_map(u16::to_be_bytes));
+    text.extend_from_slice(&[0, 0]);
+    let mut packet = vec![0xBF, 0, 0];
+    packet.extend_from_slice(&openshard_protocol::party::SUBCOMMAND.to_be_bytes());
+    packet.extend_from_slice(&text);
+    let length = u16::try_from(packet.len()).unwrap();
+    packet[1..3].copy_from_slice(&length.to_be_bytes());
+    let request = match openshard_protocol::extended::ExtendedRequest::decode(&packet).unwrap() {
+        openshard_protocol::extended::ExtendedRequest::Party(request) => request,
+        other => panic!("decoded as {other:?}"),
+    };
+    world.queue(Command::Party {
+        connection: leader_connection,
+        request,
+    });
+    world.tick(now + WALK_INTERVAL * 5);
+
+    let heard: Vec<_> = world
+        .drain_outbound()
+        .filter(|out| out.packet.first() == Some(&0xBF))
+        .filter(|out| {
+            out.packet.len() > 5
+                && u16::from_be_bytes([out.packet[3], out.packet[4]]) == openshard_protocol::party::SUBCOMMAND
+                && out.packet[5] == 0x04
+        })
+        .map(|out| out.connection)
+        .collect();
+    assert_eq!(heard.len(), 2, "both members heard it, and nobody else did");
+    assert!(heard.contains(&leader_connection));
+    assert!(heard.contains(&member_connection));
+}

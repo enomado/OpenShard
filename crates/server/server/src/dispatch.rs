@@ -200,6 +200,14 @@ pub(crate) fn dispatch_world_packet(packet: ClientPacket, id: ConnectionId) -> O
                     }
                 }
             }
+            // Whole, rather than picked apart here: unlike the stat lock above
+            // there is no wire value to validate into a domain one — every arm
+            // names a serial the world has to look up anyway, so the seam has
+            // nothing to do that the tick is not better placed to do.
+            ExtendedRequest::Party(request) => Some(Command::Party {
+                connection: id,
+                request,
+            }),
             ExtendedRequest::Unknown(subcommand) => {
                 debug!(%id, subcommand = format!("0x{subcommand:02X}"), "unhandled 0xBF");
                 None

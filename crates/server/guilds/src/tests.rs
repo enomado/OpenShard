@@ -65,6 +65,7 @@ fn world() -> WorldState {
         quests: QuestDefs::default(),
         dialogue: Dialogue::default(),
         guilds: openshard_state::Guilds::default(),
+        parties: openshard_state::Parties::default(),
         gameplay: Gameplay::default(),
         save_requested: false,
     }

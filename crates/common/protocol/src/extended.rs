@@ -14,9 +14,14 @@ use crate::casting::CastSpellRequest;
 use crate::context::{ContextMenuRequest, ContextMenuSelect};
 use crate::error::{DecodeError, expect_id};
 use crate::mobile::StatLockRequest;
+use crate::party::PartyRequest;
 
 /// A decoded `0xBF` client request.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+///
+/// Not `Copy` since parties: a line of party chat is a `String`, and every other
+/// variant here is two or three integers. Cloning one is what a caller that used
+/// to copy does instead.
+#[derive(Clone, PartialEq, Eq, Debug)]
 #[non_exhaustive]
 pub enum ExtendedRequest {
     /// Subcommand `0x1C` — cast a spell.
@@ -27,8 +32,12 @@ pub enum ExtendedRequest {
     ContextMenuSelect(ContextMenuSelect),
     /// Subcommand `0x1A` — a stat's lock arrow moved.
     StatLock(StatLockRequest),
-    /// Any subcommand this engine does not act on — screen size, party,
-    /// close-gump and the rest of the family `0xBF` carries. Not an error:
+    /// Subcommand `0x06` — everything a party does. Which of the seven it is
+    /// lives in the body's first byte, not in the subcommand — see
+    /// [`PartyRequest`].
+    Party(PartyRequest),
+    /// Any subcommand this engine does not act on — screen size, close-gump
+    /// and the rest of the family `0xBF` carries. Not an error:
     /// the same "logged fact, not a dropped connection" treatment
     /// [`ClientPacket::Unknown`](crate::client_packet::ClientPacket::Unknown)
     /// gives an unhandled id.
@@ -54,6 +63,7 @@ impl ExtendedRequest {
                 Self::ContextMenuSelect(ContextMenuSelect::decode_body(&mut reader)?)
             }
             StatLockRequest::SUBCOMMAND => Self::StatLock(StatLockRequest::decode_body(&mut reader)?),
+            crate::party::SUBCOMMAND => Self::Party(PartyRequest::decode_body(&mut reader)?),
             other => Self::Unknown(other),
         })
     }
