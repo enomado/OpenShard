@@ -34,9 +34,9 @@ const SPEECH_HUE: RawHue = RawHue(0x0384);
 /// with another mode byte, and they will arrive when there is a UI that can ask
 /// for one — a mode nothing can select would be an untested branch.
 #[must_use]
-pub fn say(text: &str) -> Vec<u8> {
+pub fn say(text: &str, mode: TalkMode) -> Vec<u8> {
     openshard_protocol::speech::UnicodeTalkRequest {
-        mode: RawTalkMode(TalkMode::Regular.to_wire()),
+        mode: RawTalkMode(mode.to_wire()),
         hue: SPEECH_HUE,
         font: RawFont(Font::DEFAULT.0),
         text: text.to_owned(),
@@ -87,7 +87,7 @@ mod tests {
     /// shift the text — so the assertion is on the words.
     #[test]
     fn a_command_typed_here_is_the_command_the_server_hears() {
-        let bytes = say(".admin");
+        let bytes = say(".admin", TalkMode::Regular);
         let ClientPacket::UnicodeTalk(heard) = ClientPacket::decode(&bytes, version()).expect("0xAD decodes")
         else {
             panic!("0xAD decoded as some other packet");

@@ -395,6 +395,12 @@ pub struct WorldView {
     /// [`paperdoll_closed`](Self::paperdoll_closed): closing one is a click,
     /// exactly as it is for a container and a gump.
     pub paperdolls: FxHashMap<Serial, Paperdoll>,
+    /// The party this client is in, and who has asked it into one.
+    ///
+    /// One value, not a table: a mobile is in at most one party, and the shard
+    /// says so with a roster rather than with deltas — every change re-sends the
+    /// whole list, so this is replaced rather than edited.
+    pub party: Party,
     /// The AoS tooltip this client knows about each object it has been shown.
     ///
     /// Filled by the two halves of the property protocol — a `0xDC` naming a
@@ -403,6 +409,43 @@ pub struct WorldView {
     /// is about a thing on screen, and a serial the shard has taken away has no
     /// hover to answer.
     pub tooltips: FxHashMap<Serial, Tooltip>,
+}
+
+/// The party this client is in, if any, and the invitation it is holding.
+///
+/// # Why the roster is the leader plus the rest, and not a set
+///
+/// The order is the shard's and the client draws its rows in it, so a `Vec`
+/// rather than a set — and the first entry is the leader, which is the one thing
+/// the wire never states outright. It does not have to: a party's leader never
+/// changes, the shard writes the roster leader-first, and everything a client
+/// wants the leader *for* (whose invitation this is, who may kick) is the
+/// shard's decision anyway.
+#[derive(Clone, PartialEq, Eq, Debug, Default)]
+pub struct Party {
+    /// Everyone in it, leader first. Empty when this client is in no party.
+    pub members: Vec<Serial>,
+    /// Who has invited this client and is waiting on an answer.
+    ///
+    /// Independent of [`members`](Self::members): an invitation arrives while
+    /// you are in no party, and the shard clears it by sending the roster you
+    /// have just joined — which is what makes this a separate field rather than
+    /// a state the roster could be in.
+    pub invited_by: Option<Serial>,
+}
+
+impl Party {
+    /// Who leads it, or `None` for a client in no party.
+    #[must_use]
+    pub fn leader(&self) -> Option<Serial> {
+        self.members.first().copied()
+    }
+
+    /// Whether this client is in a party at all.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.members.is_empty()
+    }
 }
 
 /// What this client knows about one object's tooltip.
@@ -577,6 +620,7 @@ impl WorldView {
             pending_vendor_buys: FxHashMap::default(),
             vendor_stock: FxHashMap::default(),
             paperdolls: FxHashMap::default(),
+            party: Party::default(),
             tooltips: FxHashMap::default(),
         }
     }
@@ -1243,6 +1287,67 @@ impl WorldView {
                 // hand a stale name back if the serial were reused.
                 let had_tooltip = self.tooltips.remove(&remove.serial).is_some();
                 had_mobile || had_item || was_held || had_window || had_vendor || had_paperdoll || had_tooltip
+            }
+            // The roster, whole. Not merged: the shard re-sends the entire list
+            // on every change rather than sending deltas, so replacing is the
+            // faithful reading — and an accumulated roster would keep anybody
+            // whose removal packet this client happened to miss.
+            ServerPacket::PartyMemberList(list) => {
+                let changed = self.party.members != list.members || self.party.invited_by.is_some();
+                self.party.members.clone_from(&list.members);
+                // Joining answers the question that was asked, so the
+                // invitation goes with it. Nothing on the wire says so — the
+                // shard sends a roster and considers the matter closed.
+                self.party.invited_by = None;
+                changed
+            }
+            // Somebody left. The list is who is *left*, and an empty one is this
+            // client being told it is in no party — the packet has no other way
+            // to say that. See `PartyRemoveMember`.
+            ServerPacket::PartyRemoveMember(removal) => {
+                let changed = self.party.members != removal.members;
+                self.party.members.clone_from(&removal.members);
+                changed
+            }
+            ServerPacket::PartyInvitation(invitation) => {
+                let changed = self.party.invited_by != Some(invitation.leader);
+                self.party.invited_by = Some(invitation.leader);
+                changed
+            }
+            // Party chat goes in the journal beside everything else said to this
+            // client — see `Heard`. It is not speech and draws over nobody's
+            // head, but it is a line somebody said, and a journal that held only
+            // the lines with a position would be missing half a conversation.
+            //
+            // # The channel is in the text, not in the mode
+            //
+            // Party chat has no `TalkMode`: it is not `0xAE` and the wire never
+            // names one. Writing `TalkMode::Other(0x04)` would be putting a
+            // party *packet type* in a field whose whole doc is "the mode byte
+            // the client sent", and the next reader to trust that would be
+            // reading a 4 as a talk mode. So the channel is prefixed the way
+            // ServUO itself formats these for a listener (`"[Party]: {0}"`),
+            // which is honest, needs no type to change, and reads correctly in a
+            // journal that has no column for it.
+            ServerPacket::PartyTextMessage(message) => {
+                let channel = match message.to_all {
+                    true => "[Party]",
+                    false => "[Party tell]",
+                };
+                self.heard(Heard {
+                    serial: Some(message.from),
+                    graphic: None,
+                    mode: TalkMode::Regular,
+                    // The wire carries no name here, only a serial: a client is
+                    // expected to know who its own party is. Left empty rather
+                    // than guessed at — whatever draws this has the roster and
+                    // the mobiles, and this layer has only the number.
+                    name: channel.to_owned(),
+                    font: Font::DEFAULT,
+                    hue: Hue::NONE,
+                    text: message.text.clone(),
+                });
+                true
             }
             // The shard says this object's tooltip has a new revision. It does
             // not send the list — asking for it is this end's move, and only
@@ -2561,5 +2666,79 @@ mod tests {
         view.apply(&revision_of(other(), 1));
         assert!(view.apply(&ServerPacket::Remove(Remove { serial: other() })));
         assert!(view.tooltips.is_empty());
+    }
+
+    fn party_list(members: &[Serial]) -> ServerPacket {
+        ServerPacket::PartyMemberList(openshard_protocol::party::PartyMemberList {
+            members: members.to_vec(),
+        })
+    }
+
+    /// The roster arrives whole on every change, so it is replaced rather than
+    /// merged — and an invitation is answered by the roster that follows it,
+    /// which nothing on the wire says outright.
+    #[test]
+    fn joining_a_party_replaces_the_roster_and_clears_the_invitation() {
+        let mut view = WorldView::entered(start());
+        assert!(view.apply(&ServerPacket::PartyInvitation(
+            openshard_protocol::party::PartyInvitation { leader: other() }
+        )));
+        assert_eq!(view.party.invited_by, Some(other()));
+        assert!(view.party.is_empty());
+
+        assert!(view.apply(&party_list(&[other(), view.player.serial])));
+        assert_eq!(view.party.leader(), Some(other()), "the first row leads");
+        assert_eq!(view.party.invited_by, None, "joining answered the question");
+
+        assert!(
+            !view.apply(&party_list(&[other(), view.player.serial])),
+            "the same roster again changes nothing"
+        );
+    }
+
+    /// The empty list is how a client is told it is in no party — the packet has
+    /// no other way to say it, and reading it as "a removal from a party I am
+    /// still in" would leave the window up over nobody.
+    #[test]
+    fn an_empty_removal_is_the_end_of_the_party() {
+        let mut view = WorldView::entered(start());
+        view.apply(&party_list(&[other(), view.player.serial]));
+        assert!(view.apply(&ServerPacket::PartyRemoveMember(
+            openshard_protocol::party::PartyRemoveMember {
+                removed: view.player.serial,
+                members: Vec::new(),
+            }
+        )));
+        assert!(view.party.is_empty());
+        assert_eq!(view.party.leader(), None);
+    }
+
+    /// Party chat has no `TalkMode`, so the channel is prefixed into the name
+    /// the way ServUO formats these for a listener. Asserted because the
+    /// tempting alternative — a `TalkMode::Other` holding a party packet type —
+    /// would put a 4 in a field documented as the mode byte a client sent.
+    #[test]
+    fn a_party_line_says_which_channel_it_came_on() {
+        let mut view = WorldView::entered(start());
+        assert!(view.apply(&ServerPacket::PartyTextMessage(
+            openshard_protocol::party::PartyTextMessage {
+                to_all: true,
+                from: other(),
+                text: "regroup".to_owned(),
+            }
+        )));
+        let line = view.journal.back().expect("a line");
+        assert_eq!(line.name, "[Party]");
+        assert_eq!(line.text, "regroup");
+        assert_eq!(line.mode, TalkMode::Regular, "it is not a talk mode");
+
+        view.apply(&ServerPacket::PartyTextMessage(
+            openshard_protocol::party::PartyTextMessage {
+                to_all: false,
+                from: other(),
+                text: "you first".to_owned(),
+            },
+        ));
+        assert_eq!(view.journal.back().expect("a line").name, "[Party tell]");
     }
 }

@@ -59,6 +59,15 @@ use crate::diagnostics::{HealthBar, Height, Hud, PickedTile, PriorityZ, Route, S
 use crate::graphics::{HighlightStyle, HighlightTarget};
 use crate::world::{Shard, WorldState};
 
+/// What a player pressed on the party invitation prompt.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum PartyAnswer {
+    /// Join the party.
+    Accept,
+    /// Say no.
+    Decline,
+}
+
 /// What the panels asked for this frame.
 ///
 /// No longer `Copy`: one of these carries what the player typed. A request is
@@ -71,6 +80,17 @@ pub struct Request {
     pub frame_dump: bool,
     /// Result of the modal stack-split prompt, when it closed this frame.
     pub split: Option<SplitDecision>,
+    /// The answer to a party invitation, on the frame a button was pressed.
+    ///
+    /// Edge-triggered, like [`split`](Self::split): the prompt is drawn from
+    /// the view's own `invited_by`, so it goes away when the *shard* says the
+    /// question is settled rather than when this client thinks it answered.
+    pub party_invite: Option<PartyAnswer>,
+    /// Raise a cursor to ask somebody into the party, on the frame the button
+    /// was pressed.
+    pub party_add: bool,
+    /// Leave the party, on the frame the button was pressed.
+    pub party_leave: bool,
     /// Put the eye back on the body and lock it there.
     pub relock: bool,
     /// Let go of the body.
@@ -417,6 +437,66 @@ impl Shell {
         let split_prompt = &mut self.split_prompt;
         let output = self.context.run_ui(input, |ui| {
             request = layout(ui, hud, camera, world, desk);
+            // The party invitation, drawn straight off the view rather than
+            // out of local state: the question exists because the shard said
+            // so, and it stops existing when the shard sends the roster or a
+            // removal. There is nothing here to keep in step, which is what
+            // makes it different from the split prompt below.
+            if let Some(leader) = world.authoritative.view.as_ref().and_then(|v| v.party.invited_by) {
+                // By serial, because that is all there is. A `0x78` carries no
+                // name — a mobile is named by a single click or by a tooltip,
+                // and this client may have done neither to the person inviting
+                // it. Better a number than a guess at whose it is.
+                let who = format!("{:#010X}", leader.raw());
+                egui::Window::new("Party invitation")
+                    .collapsible(false)
+                    .resizable(false)
+                    .anchor(egui::Align2::CENTER_TOP, egui::Vec2::new(0.0, 48.0))
+                    .show(ui.ctx(), |ui| {
+                        ui.label(format!("{who} has invited you to a party."));
+                        ui.horizontal(|ui| {
+                            if ui.button("Join").clicked() {
+                                request.party_invite = Some(PartyAnswer::Accept);
+                            }
+                            if ui.button("Decline").clicked() {
+                                request.party_invite = Some(PartyAnswer::Decline);
+                            }
+                        });
+                    });
+            }
+            // And the party itself, while there is one. Drawn off the view for
+            // the invitation's reason: the roster is the shard's, arrives whole
+            // on every change, and this window is a view of it rather than a
+            // copy that could go stale.
+            let roster: Vec<_> = world
+                .authoritative
+                .view
+                .as_ref()
+                .map(|view| view.party.members.clone())
+                .unwrap_or_default();
+            if !roster.is_empty() {
+                egui::Window::new("Party")
+                    .collapsible(true)
+                    .resizable(false)
+                    .anchor(egui::Align2::RIGHT_TOP, egui::Vec2::new(-8.0, 48.0))
+                    .show(ui.ctx(), |ui| {
+                        for (row, member) in roster.iter().enumerate() {
+                            // The leader is the first row and the wire never
+                            // says so outright — see `view::Party`.
+                            let mark = if row == 0 { " (leader)" } else { "" };
+                            ui.label(format!("{:#010X}{mark}", member.raw()));
+                        }
+                        ui.separator();
+                        ui.horizontal(|ui| {
+                            if ui.button("Add").clicked() {
+                                request.party_add = true;
+                            }
+                            if ui.button("Leave").clicked() {
+                                request.party_leave = true;
+                            }
+                        });
+                    });
+            }
             if let Some(prompt) = split_prompt.as_mut() {
                 let mut decision = None;
                 egui::Window::new("Split stack")

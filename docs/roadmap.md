@@ -2387,6 +2387,11 @@ Roughly in dependency order, each script-first:
     street. `speech_range` answers zero for both, so even a routing failure is
     silence rather than that.
 
+    Our own client can now speak on either: `chat::Channel` is a selector cycled
+    with Tab and drawn in the prompt, rather than a `/` prefix — a channel is a
+    property of the line, not of its first character, and a prefix hides the
+    state it sets. See [`client.md`](client.md).
+
     Alliance chat differs from the reference on purpose. ServUO's alliance is a
     *named* object — several guilds, a leader guild, its own handshake — and this
     engine has only the pairwise `Relation::Ally`. So a line reaches every guild
@@ -2442,8 +2447,13 @@ Roughly in dependency order, each script-first:
     and nothing asks: corpses on this shard are open to anybody, because there is
     no criminal-act rule on looting one to exempt a party from. That rule is the
     missing half, and it belongs with the criminal system rather than here.
-  - Client-side: untouched. Our own client neither sends a party packet nor draws
-    a party window.
+  - Client-side: **built**. Our own client decodes the four outbound packets,
+    holds the roster and the invitation on its `WorldView`, sends five of the
+    seven requests, and draws an invitation prompt and a roster window. It also
+    turned up that `0xBF` had **no decoder at all** on that end — nine variants
+    share the id byte and there was no arm — so the whole family was arriving as
+    `Undecoded`. See "The channel selector, and the whole of `0xBF`" in
+    [`client.md`](client.md).
 - [x] `quests` — **a core system now, ServUO's Mondain's Legacy model, with the
   content left to the pack.** It was built pack-first (five thin seams and an
   opaque JSON blob the engine only stored) and that did not survive a client.

@@ -56,7 +56,10 @@ async fn saying_dot_admin_opens_the_staff_menu_and_its_buttons_answer() {
     // that answered with speech instead of a window would time out below rather
     // than fail here, which is why the journal is printed with the failure.
     socket
-        .send(&talk::say(".admin"))
+        .send(&talk::say(
+            ".admin",
+            openshard_protocol::speech::TalkMode::Regular,
+        ))
         .await
         .expect("the shard is listening");
 

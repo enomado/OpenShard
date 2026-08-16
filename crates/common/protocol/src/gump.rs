@@ -748,15 +748,45 @@ pub struct CloseGump {
     pub button: ButtonId,
 }
 
+impl CloseGump {
+    /// Which `0xBF` this is.
+    pub const SUBCOMMAND: u16 = 0x0004;
+}
+
 impl EncodePacket for CloseGump {
     const ID: u8 = 0xBF;
     const LENGTH: PacketLength = PacketLength::Fixed(13);
 
     fn encode_body(&self, out: &mut PacketWriter, _version: ClientVersion) {
         out.u16(13);
-        out.u16(0x04);
+        out.u16(Self::SUBCOMMAND);
         out.u32(self.gump_id.0);
         out.u32(self.button.0);
+    }
+}
+
+impl DecodePacket for CloseGump {
+    const ID: u8 = 0xBF;
+
+    /// # The reader is past the length either way
+    ///
+    /// `0xBF` is `Variable` in the framing table, so `decode_server` skips the
+    /// two length bytes before this runs — even for the handful of `0xBF`
+    /// payloads (this one, `StatLocks`) that are really fixed and write their own
+    /// length. That is what makes every `0xBF` body start at its subcommand, and
+    /// is why reading it here is uniform rather than a special case.
+    fn decode_body(reader: &mut PacketReader<'_>, _version: ClientVersion) -> Result<Self, DecodeError> {
+        let subcommand = reader.u16()?;
+        if subcommand != Self::SUBCOMMAND {
+            return Err(DecodeError::UnknownValue {
+                field: "0xBF subcommand for a close-gump",
+                value: u32::from(subcommand),
+            });
+        }
+        Ok(Self {
+            gump_id: GumpId(reader.u32()?),
+            button: ButtonId(reader.u32()?),
+        })
     }
 }
 

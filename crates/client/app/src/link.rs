@@ -32,6 +32,7 @@ use openshard_protocol::gump::GumpId;
 use openshard_protocol::gump::GumpPoint;
 use openshard_protocol::items::ItemAmount;
 use openshard_protocol::serial::Serial;
+use openshard_protocol::speech::TalkMode;
 use openshard_protocol::target::TargetResponse;
 use openshard_protocol::version::ClientVersion;
 use openshard_protocol::wire::{Layer, RawLayer};
@@ -370,9 +371,39 @@ impl Link {
         self.send(Command::Step(facing));
     }
 
-    /// Say a line out loud.
-    pub fn say(&self, text: String) {
-        self.send(Command::Outgoing(Outgoing::Say(text)));
+    /// Say a line, on the channel `mode` names.
+    ///
+    /// The mode is not decoration: `TalkMode::Guild` and `TalkMode::Alliance`
+    /// are what make a line reach a roster instead of whoever is standing
+    /// nearby, and the shard branches on the byte before it measures a
+    /// distance. See `chat::Channel`.
+    pub fn say(&self, text: String, mode: TalkMode) {
+        self.send(Command::Outgoing(Outgoing::Say { text, mode }));
+    }
+
+    /// Say a line to the party — which is not speech at all, but `0xBF 0x06`.
+    pub fn say_to_party(&self, text: String) {
+        self.send(Command::Outgoing(Outgoing::PartySay(text)));
+    }
+
+    /// Ask the shard to raise a cursor for adding somebody to the party.
+    pub fn add_to_party(&self) {
+        self.send(Command::Outgoing(Outgoing::PartyAdd));
+    }
+
+    /// Accept the party invitation this client is holding.
+    pub fn accept_party(&self) {
+        self.send(Command::Outgoing(Outgoing::PartyAccept));
+    }
+
+    /// Decline it.
+    pub fn decline_party(&self) {
+        self.send(Command::Outgoing(Outgoing::PartyDecline));
+    }
+
+    /// Leave the party, or turn out the member named.
+    pub fn remove_from_party(&self, member: Serial) {
+        self.send(Command::Outgoing(Outgoing::PartyRemove(member)));
     }
 
     /// Answer an open dialog.

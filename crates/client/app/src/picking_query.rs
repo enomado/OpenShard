@@ -619,6 +619,38 @@ impl App {
         if let Some(decision) = request.split {
             self.finish_stack_split(decision);
         }
+        if request.party_add {
+            if let Some(link) = self.world.shard.link() {
+                link.add_to_party();
+            }
+        }
+        if request.party_leave {
+            // Leaving is `0x02` naming *yourself* — the same packet a leader
+            // kicks with, which is the wire's own shape rather than this
+            // client's shortcut. See `openshard_party::remove`.
+            let me = self
+                .world
+                .authoritative
+                .view
+                .as_ref()
+                .map(|view| view.player.serial);
+            if let (Some(link), Some(me)) = (self.world.shard.link(), me) {
+                link.remove_from_party(me);
+            }
+        }
+        if let Some(answer) = request.party_invite {
+            // Nothing local is cleared: the prompt is drawn from the view's own
+            // `invited_by`, so it goes away when the shard answers rather than
+            // when this end decides it has. A second press before that packet
+            // lands sends a second accept, which the shard reads as one it has
+            // no invitation for and refuses — the harmless direction.
+            if let Some(link) = self.world.shard.link() {
+                match answer {
+                    shell::PartyAnswer::Accept => link.accept_party(),
+                    shell::PartyAnswer::Decline => link.decline_party(),
+                }
+            }
+        }
         if request.frame_dump {
             self.request_frame_dump();
         }

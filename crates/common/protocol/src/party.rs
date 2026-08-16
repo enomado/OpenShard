@@ -35,7 +35,7 @@
 
 use crate::codec::{PacketReader, PacketWriter};
 use crate::error::DecodeError;
-use crate::packet::{EncodePacket, PacketLength};
+use crate::packet::{DecodePacket, EncodePacket, PacketLength};
 use crate::serial::{RawSerial, Serial};
 use crate::version::ClientVersion;
 
@@ -137,6 +137,41 @@ fn open(out: &mut PacketWriter, kind: u8) {
     out.u8(kind);
 }
 
+/// Read past the subcommand and the type byte, refusing a body that is not the
+/// one this decoder is for.
+///
+/// Every packet below is `0xBF` with the same subcommand, so the *type* is what
+/// tells them apart and each has to check it. Getting one wrong is not a
+/// malformed packet but a well-formed one read as the wrong thing — a removal
+/// read as a roster, say — which is exactly the mistake the module doc's table
+/// warns about, so it is checked rather than assumed.
+fn expect(reader: &mut PacketReader<'_>, kind: u8) -> Result<(), DecodeError> {
+    let subcommand = reader.u16()?;
+    if subcommand != SUBCOMMAND {
+        return Err(DecodeError::UnknownValue {
+            field: "0xBF subcommand for a party packet",
+            value: u32::from(subcommand),
+        });
+    }
+    let found = reader.u8()?;
+    if found != kind {
+        return Err(DecodeError::UnknownValue {
+            field: "party packet type",
+            value: u32::from(found),
+        });
+    }
+    Ok(())
+}
+
+/// Read a serial that names a real object.
+fn read_serial(reader: &mut PacketReader<'_>) -> Result<Serial, DecodeError> {
+    let raw = reader.u32()?;
+    Serial::new(raw).ok_or(DecodeError::UnknownValue {
+        field: "party member serial",
+        value: raw,
+    })
+}
+
 /// `0x01` — the whole party, sent to everybody in it whenever it changes.
 ///
 /// There is no "add one member" packet: a join re-sends the list to all of them,
@@ -148,16 +183,35 @@ pub struct PartyMemberList {
     pub members: Vec<Serial>,
 }
 
+impl PartyMemberList {
+    /// Which of the party packets this is.
+    pub const KIND: u8 = 0x01;
+}
+
 impl EncodePacket for PartyMemberList {
     const ID: u8 = 0xBF;
     const LENGTH: PacketLength = PacketLength::Variable;
 
     fn encode_body(&self, out: &mut PacketWriter, _version: ClientVersion) {
-        open(out, 0x01);
+        open(out, Self::KIND);
         out.u8(self.members.len() as u8);
         for member in &self.members {
             out.u32(member.raw());
         }
+    }
+}
+
+impl DecodePacket for PartyMemberList {
+    const ID: u8 = 0xBF;
+
+    fn decode_body(reader: &mut PacketReader<'_>, _version: ClientVersion) -> Result<Self, DecodeError> {
+        expect(reader, Self::KIND)?;
+        let count = usize::from(reader.u8()?);
+        let mut members = Vec::with_capacity(count.min(CAPACITY));
+        for _ in 0..count {
+            members.push(read_serial(reader)?);
+        }
+        Ok(Self { members })
     }
 }
 
@@ -174,17 +228,39 @@ pub struct PartyRemoveMember {
     pub members: Vec<Serial>,
 }
 
+impl PartyRemoveMember {
+    /// Which of the party packets this is.
+    pub const KIND: u8 = 0x02;
+}
+
 impl EncodePacket for PartyRemoveMember {
     const ID: u8 = 0xBF;
     const LENGTH: PacketLength = PacketLength::Variable;
 
     fn encode_body(&self, out: &mut PacketWriter, _version: ClientVersion) {
-        open(out, 0x02);
+        open(out, Self::KIND);
         out.u8(self.members.len() as u8);
         out.u32(self.removed.raw());
         for member in &self.members {
             out.u32(member.raw());
         }
+    }
+}
+
+impl DecodePacket for PartyRemoveMember {
+    const ID: u8 = 0xBF;
+
+    /// The count comes **before** the removed serial, so a zero count still has
+    /// four bytes after it — see the module docs on the empty list.
+    fn decode_body(reader: &mut PacketReader<'_>, _version: ClientVersion) -> Result<Self, DecodeError> {
+        expect(reader, Self::KIND)?;
+        let count = usize::from(reader.u8()?);
+        let removed = read_serial(reader)?;
+        let mut members = Vec::with_capacity(count.min(CAPACITY));
+        for _ in 0..count {
+            members.push(read_serial(reader)?);
+        }
+        Ok(Self { removed, members })
     }
 }
 
@@ -200,14 +276,61 @@ pub struct PartyTextMessage {
     pub text: String,
 }
 
+impl PartyTextMessage {
+    /// A line the whole party heard.
+    pub const KIND_ALL: u8 = 0x04;
+    /// A line for one member.
+    pub const KIND_ONE: u8 = 0x03;
+}
+
 impl EncodePacket for PartyTextMessage {
     const ID: u8 = 0xBF;
     const LENGTH: PacketLength = PacketLength::Variable;
 
     fn encode_body(&self, out: &mut PacketWriter, _version: ClientVersion) {
-        open(out, if self.to_all { 0x04 } else { 0x03 });
+        open(
+            out,
+            if self.to_all {
+                Self::KIND_ALL
+            } else {
+                Self::KIND_ONE
+            },
+        );
         out.u32(self.from.raw());
         out.null_terminated_string_utf16(&self.text);
+    }
+}
+
+impl DecodePacket for PartyTextMessage {
+    const ID: u8 = 0xBF;
+
+    /// The one party packet whose *type* is data rather than a tag: `0x03` and
+    /// `0x04` are the same body and differ only in who heard it, so this reads
+    /// the byte instead of checking it against one expected value.
+    fn decode_body(reader: &mut PacketReader<'_>, _version: ClientVersion) -> Result<Self, DecodeError> {
+        let subcommand = reader.u16()?;
+        if subcommand != SUBCOMMAND {
+            return Err(DecodeError::UnknownValue {
+                field: "0xBF subcommand for a party message",
+                value: u32::from(subcommand),
+            });
+        }
+        let kind = reader.u8()?;
+        let to_all = match kind {
+            Self::KIND_ALL => true,
+            Self::KIND_ONE => false,
+            other => {
+                return Err(DecodeError::UnknownValue {
+                    field: "party message type",
+                    value: u32::from(other),
+                });
+            }
+        };
+        Ok(Self {
+            to_all,
+            from: read_serial(reader)?,
+            text: utf16_be_to_end(reader),
+        })
     }
 }
 
@@ -218,13 +341,29 @@ pub struct PartyInvitation {
     pub leader: Serial,
 }
 
+impl PartyInvitation {
+    /// Which of the party packets this is.
+    pub const KIND: u8 = 0x07;
+}
+
 impl EncodePacket for PartyInvitation {
     const ID: u8 = 0xBF;
     const LENGTH: PacketLength = PacketLength::Variable;
 
     fn encode_body(&self, out: &mut PacketWriter, _version: ClientVersion) {
-        open(out, 0x07);
+        open(out, Self::KIND);
         out.u32(self.leader.raw());
+    }
+}
+
+impl DecodePacket for PartyInvitation {
+    const ID: u8 = 0xBF;
+
+    fn decode_body(reader: &mut PacketReader<'_>, _version: ClientVersion) -> Result<Self, DecodeError> {
+        expect(reader, Self::KIND)?;
+        Ok(Self {
+            leader: read_serial(reader)?,
+        })
     }
 }
 
@@ -233,6 +372,7 @@ mod tests {
     use super::*;
     use crate::extended::ExtendedRequest;
     use crate::packet::encode_packet;
+    use crate::server_packet::ServerPacket;
 
     fn version() -> ClientVersion {
         ClientVersion::new(7, 0, 45, 65)
@@ -350,6 +490,61 @@ mod tests {
         assert_eq!(one[6], 1);
         assert_eq!(&one[7..11], &0x2Bu32.to_be_bytes(), "who went");
         assert_eq!(&one[11..15], &0x2Au32.to_be_bytes(), "who is left");
+    }
+
+    /// Every outbound packet, encoded and read back through the same dispatch a
+    /// client uses. The whole `0xBF` family reached this end as an undecoded id
+    /// before — the id byte is not a key when nine variants share it — so this
+    /// asserts the second and third dispatches as much as the four decoders.
+    #[test]
+    fn every_outbound_packet_round_trips_through_the_dispatch() {
+        let leader = Serial::new(0x2A).unwrap();
+        let member = Serial::new(0x2B).unwrap();
+        for packet in [
+            ServerPacket::PartyMemberList(PartyMemberList {
+                members: vec![leader, member],
+            }),
+            ServerPacket::PartyRemoveMember(PartyRemoveMember {
+                removed: member,
+                members: vec![leader],
+            }),
+            // The empty list, which is the same type saying something else.
+            ServerPacket::PartyRemoveMember(PartyRemoveMember {
+                removed: leader,
+                members: Vec::new(),
+            }),
+            ServerPacket::PartyTextMessage(PartyTextMessage {
+                to_all: true,
+                from: leader,
+                text: "regroup".to_owned(),
+            }),
+            ServerPacket::PartyTextMessage(PartyTextMessage {
+                to_all: false,
+                from: leader,
+                text: "you first".to_owned(),
+            }),
+            ServerPacket::PartyInvitation(PartyInvitation { leader }),
+        ] {
+            let bytes = packet.encode(version());
+            assert_eq!(
+                ServerPacket::decode(&bytes, version()).expect("a party 0xBF decodes"),
+                Some(packet.clone()),
+                "{packet:?} did not survive the round trip"
+            );
+        }
+    }
+
+    /// A type byte this engine does not write reads as no packet rather than as
+    /// the nearest one. The framer sized it, so the stream is intact either way
+    /// — but decoding it as a roster would put a phantom member on screen.
+    #[test]
+    fn an_unknown_party_type_is_no_packet_rather_than_the_wrong_one() {
+        let mut bytes = ServerPacket::PartyInvitation(PartyInvitation {
+            leader: Serial::new(0x2A).unwrap(),
+        })
+        .encode(version());
+        bytes[5] = 0x7F;
+        assert_eq!(ServerPacket::decode(&bytes, version()).unwrap(), None);
     }
 
     #[test]

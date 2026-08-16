@@ -221,10 +221,10 @@ impl ServerPacket {
             Self::SellList(_) => <SellList as EncodePacket>::ID,
             Self::TooltipRevision(_) => <TooltipRevision as EncodePacket>::ID,
             Self::PropertyListReply(_) => <PropertyListReply as EncodePacket>::ID,
-            Self::PartyMemberList(_) => PartyMemberList::ID,
-            Self::PartyRemoveMember(_) => PartyRemoveMember::ID,
-            Self::PartyTextMessage(_) => PartyTextMessage::ID,
-            Self::PartyInvitation(_) => PartyInvitation::ID,
+            Self::PartyMemberList(_) => <PartyMemberList as EncodePacket>::ID,
+            Self::PartyRemoveMember(_) => <PartyRemoveMember as EncodePacket>::ID,
+            Self::PartyTextMessage(_) => <PartyTextMessage as EncodePacket>::ID,
+            Self::PartyInvitation(_) => <PartyInvitation as EncodePacket>::ID,
             Self::SkillsFull(_) => SkillsFull::ID,
             Self::SkillUpdate(_) => SkillUpdate::ID,
             Self::SpokenMessage(_) => <SpokenMessage as EncodePacket>::ID,
@@ -232,7 +232,7 @@ impl ServerPacket {
             Self::UnicodeMessage(_) => <UnicodeMessage as EncodePacket>::ID,
             Self::ContextMenu(_) => ContextMenu::ID,
             Self::SpellbookContent(_) => SpellbookContent::ID,
-            Self::CloseGump(_) => CloseGump::ID,
+            Self::CloseGump(_) => <CloseGump as EncodePacket>::ID,
             Self::GumpDisplay(_) => <GumpDisplay as EncodePacket>::ID,
         }
     }
@@ -386,6 +386,70 @@ impl ServerPacket {
 /// table whether to skip a length field, which is the right question on the
 /// server and the wrong one here: `0xA9` is variable in this direction and
 /// unknown in that one. Same shape, other table.
+/// Decode a `0xBF`, whose subcommand is what says which packet it is.
+///
+/// # Why this is a second dispatch and not nine more arms
+///
+/// The id byte is the whole key everywhere else in [`ServerPacket::decode`], and
+/// for `0xBF` it is not a key at all: nine of this enum's variants share it, and
+/// which one a packet is lives two bytes further in. Every decoder below reads
+/// that subcommand and refuses a body that is not its own, so the check is
+/// written twice on purpose — here to pick, and there to be sure.
+///
+/// # Most of the family is still undecoded, and that is not an oversight
+///
+/// The context menu (`0x14`), the spellbook's contents (`0x1B`), the stat-lock
+/// arrows (`0x19`) and the map change (`0x08`) all have `ServerPacket` variants,
+/// encoders, and no arm here. Each needs a reader on the client that wants it,
+/// and adding a decoder before there is one only moves the packet from
+/// "undecoded" to "decoded and dropped". They are listed so the next person has
+/// the subcommands rather than a search.
+fn decode_extended(packet: &[u8], version: ClientVersion) -> Result<Option<ServerPacket>, ServerDecodeError> {
+    // The id, the length, then the subcommand. A `0xBF` too short to hold one is
+    // not this function's to refuse — the framer sized it, so it is a shard
+    // writing nonsense, and reading it as no packet keeps the stream.
+    let Some(subcommand) = packet
+        .get(3..5)
+        .map(|bytes| u16::from_be_bytes([bytes[0], bytes[1]]))
+    else {
+        return Ok(None);
+    };
+    Ok(Some(match subcommand {
+        crate::gump::CloseGump::SUBCOMMAND => decode_server(packet, version)
+            .map(ServerPacket::CloseGump)
+            .map_err(ServerDecodeError::CloseGump)?,
+        crate::party::SUBCOMMAND => return decode_party(packet, version),
+        _ => return Ok(None),
+    }))
+}
+
+/// And a third dispatch, because every party packet shares a subcommand too.
+///
+/// The byte after it is the type — see [`crate::party`]'s table, and note that
+/// it means different things inbound and outbound.
+fn decode_party(packet: &[u8], version: ClientVersion) -> Result<Option<ServerPacket>, ServerDecodeError> {
+    use crate::party::{PartyInvitation, PartyMemberList, PartyRemoveMember, PartyTextMessage};
+
+    let Some(&kind) = packet.get(5) else {
+        return Ok(None);
+    };
+    Ok(Some(match kind {
+        PartyMemberList::KIND => decode_server(packet, version)
+            .map(ServerPacket::PartyMemberList)
+            .map_err(ServerDecodeError::Party)?,
+        PartyRemoveMember::KIND => decode_server(packet, version)
+            .map(ServerPacket::PartyRemoveMember)
+            .map_err(ServerDecodeError::Party)?,
+        PartyTextMessage::KIND_ALL | PartyTextMessage::KIND_ONE => decode_server(packet, version)
+            .map(ServerPacket::PartyTextMessage)
+            .map_err(ServerDecodeError::Party)?,
+        PartyInvitation::KIND => decode_server(packet, version)
+            .map(ServerPacket::PartyInvitation)
+            .map_err(ServerDecodeError::Party)?,
+        _ => return Ok(None),
+    }))
+}
+
 fn decode_server<P: DecodePacket>(bytes: &[u8], version: ClientVersion) -> Result<P, DecodeError> {
     let mut reader = expect_id(bytes, P::ID)?;
     if server_packet_length(P::ID, version) == Some(PacketLength::Variable) {
@@ -479,6 +543,11 @@ impl ServerPacket {
             <GumpDisplay as DecodePacket>::ID => decode_server(packet, version)
                 .map(Self::GumpDisplay)
                 .map_err(ServerDecodeError::GumpDisplay)?,
+            // The whole `0xBF` family, by its subcommand. One arm and a second
+            // dispatch rather than nine arms: the id byte does not say which
+            // packet this is, and every decoder below would otherwise have to be
+            // tried in turn and asked whether the body was its own.
+            0xBF => return decode_extended(packet, version),
             // The two halves of a tooltip. Both had encoders and neither had an
             // arm, so every property list this engine has ever sent reached its
             // own client as an undecoded id and was dropped — the shard's side
@@ -665,6 +734,12 @@ pub enum ServerDecodeError {
     TooltipRevision(DecodeError),
     /// `0xD6` did not decode.
     PropertyListReply(DecodeError),
+    /// A `0xBF` subcommand `0x06` did not decode. One variant for all four,
+    /// because which of them it was is a fact from inside the body that failed
+    /// to be read — the same reasoning `Skills` has for its shared `0x3A`.
+    Party(DecodeError),
+    /// `0xBF` subcommand `0x04` did not decode.
+    CloseGump(DecodeError),
 }
 
 impl fmt::Display for ServerDecodeError {
@@ -689,6 +764,8 @@ impl fmt::Display for ServerDecodeError {
             Self::GumpDisplay(error) => ("0xB0 gump display", error),
             Self::TooltipRevision(error) => ("0xDC tooltip revision", error),
             Self::PropertyListReply(error) => ("0xD6 property list", error),
+            Self::Party(error) => ("0xBF 0x06 party", error),
+            Self::CloseGump(error) => ("0xBF 0x04 close gump", error),
             Self::OpenContainer(error) => ("0x24 open container", error),
             Self::AddToContainer(error) => ("0x25 add to container", error),
             Self::ContainerContents(error) => ("0x3C container contents", error),

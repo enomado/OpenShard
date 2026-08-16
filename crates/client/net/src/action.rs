@@ -10,6 +10,7 @@ use openshard_protocol::gump::{RawButtonId, RawGumpId, RawGumpKey, RawSwitchId};
 use openshard_protocol::items::ItemAmount;
 use openshard_protocol::serial::Serial;
 use openshard_protocol::skill::SkillLock;
+use openshard_protocol::speech::TalkMode;
 use openshard_protocol::target::TargetResponse;
 use openshard_protocol::version::ClientVersion;
 use openshard_protocol::wire::{RawLayer, RawSkillId};
@@ -28,7 +29,17 @@ pub struct GumpReply {
 /// An outgoing action that has no walk-handshake state of its own.
 #[derive(Clone, Debug)]
 pub enum Outgoing {
-    Say(String),
+    /// A line of speech, and which channel it goes on.
+    ///
+    /// The mode is a field rather than a constant because it decides *who
+    /// hears it*: `Guild` and `Alliance` are routed by membership on the shard
+    /// and never reach anybody by earshot.
+    Say {
+        /// What was typed.
+        text: String,
+        /// Which channel.
+        mode: TalkMode,
+    },
     AnswerGump(GumpReply),
     Use(Serial),
     Paperdoll(Serial),
@@ -76,6 +87,17 @@ pub enum Outgoing {
     /// Ask for the tooltips of these objects, in one `0xD6`. Driven by the
     /// hover — see [`crate::properties`] for why not by everything on screen.
     QueryProperties(Vec<Serial>),
+    /// A line to the party. Not speech: `0xBF 0x06`, and it reaches nobody by
+    /// earshot — see [`crate::party`].
+    PartySay(String),
+    /// Ask the shard to raise a cursor for adding somebody to the party.
+    PartyAdd,
+    /// Accept the invitation this client is holding.
+    PartyAccept,
+    /// Decline it.
+    PartyDecline,
+    /// Leave the party, or turn out the member named.
+    PartyRemove(Serial),
 }
 
 impl Outgoing {
@@ -84,7 +106,7 @@ impl Outgoing {
     #[must_use]
     pub fn encode(self, player: Serial, version: ClientVersion) -> Vec<u8> {
         match self {
-            Self::Say(text) => crate::talk::say(&text),
+            Self::Say { text, mode } => crate::talk::say(&text, mode),
             Self::AnswerGump(reply) => crate::talk::answer_gump(
                 reply.key,
                 reply.gump_id,
@@ -113,6 +135,11 @@ impl Outgoing {
             Self::SkillLock { skill, lock } => crate::skill::set_lock(skill, lock),
             Self::UseSkill(skill) => crate::skill::use_skill(skill),
             Self::QueryProperties(serials) => crate::properties::query(&serials, version),
+            Self::PartySay(text) => crate::party::say(&text),
+            Self::PartyAdd => crate::party::add(),
+            Self::PartyAccept => crate::party::accept(),
+            Self::PartyDecline => crate::party::decline(),
+            Self::PartyRemove(member) => crate::party::remove(member),
         }
     }
 }

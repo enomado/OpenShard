@@ -21,11 +21,12 @@ use openshard_protocol::gump::GumpId;
 use openshard_protocol::gump::GumpPoint;
 use openshard_protocol::mobile::Equipment;
 use openshard_protocol::serial::Serial;
+use openshard_protocol::speech::TalkMode;
 use openshard_protocol::wire::{Graphic, Layer};
 
 use crate::app::App;
 use crate::windows::{Drawn, WindowSubject};
-use crate::{DOUBLE_CLICK, gump, link};
+use crate::{DOUBLE_CLICK, chat, gump, link};
 
 mod paperdoll;
 mod skills;
@@ -1219,9 +1220,19 @@ impl App {
     /// silently: the map viewer has nobody to talk to, and a chat box that
     /// swallowed what was typed would read as a broken connection.
     pub(crate) fn say(&mut self, line: String) {
-        match self.world.shard.link() {
-            Some(link) => link.say(line),
-            None => tracing::info!(%line, "nothing said: no shard is connected"),
+        let Some(link) = self.world.shard.link() else {
+            tracing::info!(%line, "nothing said: no shard is connected");
+            return;
+        };
+        // Which channel decides which *packet*, not only which mode byte: a
+        // guild or alliance line is `0xAD` speech with a different mode, and a
+        // party line is not speech at all — it is `0xBF 0x06`, and putting it
+        // through the speech path would say it out loud to the street.
+        match self.chat.channel {
+            chat::Channel::Say => link.say(line, TalkMode::Regular),
+            chat::Channel::Guild => link.say(line, TalkMode::Guild),
+            chat::Channel::Alliance => link.say(line, TalkMode::Alliance),
+            chat::Channel::Party => link.say_to_party(line),
         }
     }
 

@@ -136,6 +136,11 @@ impl ApplicationHandler<()> for App {
                                 self.chat.cursor = 0;
                                 self.chat.focused = false;
                             }
+                            // The channel selector. Tab, because the line has
+                            // no widgets to move focus between and so nothing
+                            // else wants it — see `chat::Channel` for why this
+                            // is a channel rather than a `/` prefix.
+                            KeyCode::Tab => self.chat.channel = self.chat.channel.next(),
                             KeyCode::Backspace => self.chat.backspace(),
                             KeyCode::Delete => self.chat.delete(),
                             KeyCode::ArrowLeft => self.chat.left(),

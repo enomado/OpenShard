@@ -13,6 +13,57 @@ use crate::{
     CHAT_LINE_HEIGHT, CHAT_LINES, CHAT_MARGIN, desk, profile, resources, scaled_gump_quads, shell, world,
 };
 
+/// Which channel the typed line goes to when Enter is pressed.
+///
+/// # Why a channel and not a prefix
+///
+/// A guild line is not a command with a `/` in front of it — it is ordinary
+/// speech with a different **mode byte**, which is a property of the line rather
+/// than of its first character (`docs/roadmap.md` §6, guild chat). A reference
+/// client puts a dropdown above the entry field for exactly that reason, and
+/// this is that dropdown: the prompt already draws the channel's name, so
+/// cycling it with a key costs no new widget and no new hit test, and a player
+/// can always see which channel they are about to speak on rather than
+/// discovering it after pressing Enter.
+///
+/// The alternative — reserving `/` or `\` at the front of the line — was
+/// rejected because it makes a character unsayable and hides the state it sets.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub(crate) enum Channel {
+    /// Out loud, heard by whoever is nearby. The default and the way back.
+    #[default]
+    Say,
+    /// To everyone in your guild, wherever they are.
+    Guild,
+    /// To every guild yours is allied with.
+    Alliance,
+    /// To everyone in your party.
+    Party,
+}
+
+impl Channel {
+    /// The channels a key cycles through, in order.
+    const ALL: [Self; 4] = [Self::Say, Self::Guild, Self::Alliance, Self::Party];
+
+    /// The next one round, wrapping back to [`Say`](Self::Say).
+    #[must_use]
+    pub(crate) fn next(self) -> Self {
+        let at = Self::ALL.iter().position(|channel| *channel == self).unwrap_or(0);
+        Self::ALL[(at + 1) % Self::ALL.len()]
+    }
+
+    /// What the prompt calls it.
+    #[must_use]
+    pub(crate) const fn label(self) -> &'static str {
+        match self {
+            Self::Say => "say",
+            Self::Guild => "guild",
+            Self::Alliance => "alliance",
+            Self::Party => "party",
+        }
+    }
+}
+
 /// The speech line: what has not been said yet, and whether the keyboard is
 /// listening for it.
 ///
@@ -35,6 +86,11 @@ pub(crate) struct Chat {
     /// there is no mouse hit test for it, so nothing else about picking has
     /// to change for this to work.
     pub(crate) focused: bool,
+    /// Where the next line goes. Cycled with Tab while the line has the
+    /// keyboard, and **kept** across sends — see [`Channel`], and note that a
+    /// channel which reset itself after every line would make a conversation on
+    /// one channel four keystrokes a sentence.
+    pub(crate) channel: Channel,
 }
 
 impl Chat {
@@ -156,12 +212,20 @@ pub(crate) fn draw_chat_and_speech(
         }
     }
     let prompt = match chat.focused {
-        true => format!("say: {}", chat.typed),
+        // The channel's own name, which is the whole of its UI: there is no
+        // widget, and a player has to be able to see what they are about to
+        // speak on *before* they press Enter.
+        true => format!("{}: {}", chat.channel.label(), chat.typed),
         // A hint and not an empty line: there is no mouse click to
         // discover this by any more (see `App::window_event`'s
         // `KeyCode::Enter` arm), so the one thing worth saying here is
-        // the key that opens it.
-        false => "[Enter] say".to_owned(),
+        // the key that opens it. The channel is named even when shut, because
+        // it survives a send and a player who left it on `guild` should not
+        // have to open the line to find that out.
+        false => match chat.channel {
+            Channel::Say => "[Enter] say".to_owned(),
+            other => format!("[Enter] {}", other.label()),
+        },
     };
     let mut labels: Vec<GumpLabel<'_>> = rows
         .iter()
@@ -230,7 +294,11 @@ pub(crate) fn draw_chat_and_speech(
                 ..*label
             })
             .collect();
-        let prefix_width = text::gump_width_ttf("say: ", atlas);
+        // The channel's own prefix, not the constant `"say: "` this used to
+        // measure: the caret would sit under the wrong letter the moment the
+        // prompt said "alliance".
+        let prefix = format!("{}: ", chat.channel.label());
+        let prefix_width = text::gump_width_ttf(&prefix, atlas);
         if chat.focused && blink_on {
             let real_input_at = to_real(input_at);
             let caret_x = prefix_width + text::gump_width_ttf(&chat.typed[..chat.cursor], atlas);
@@ -280,7 +348,9 @@ pub(crate) fn draw_chat_and_speech(
             );
         profile::end(window.gpu.as_ref(), encoder, timed);
     } else {
-        let prefix_width = text::gump_width("say: ", font, &resources.font_atlas);
+        // See the TrueType path above: the prefix is the channel's.
+        let prefix = format!("{}: ", chat.channel.label());
+        let prefix_width = text::gump_width(&prefix, font, &resources.font_atlas);
         if chat.focused && blink_on {
             let caret_x =
                 prefix_width + text::gump_width(&chat.typed[..chat.cursor], font, &resources.font_atlas);
@@ -321,7 +391,7 @@ pub(crate) fn draw_chat_and_speech(
 
 #[cfg(test)]
 mod tests {
-    use super::Chat;
+    use super::{Channel, Chat};
 
     #[test]
     fn submitting_speech_returns_the_keyboard_to_the_game() {
@@ -329,11 +399,41 @@ mod tests {
             typed: "buy".to_owned(),
             cursor: 3,
             focused: true,
+            channel: Channel::Say,
         };
 
         assert_eq!(chat.take().as_deref(), Some("buy"));
         assert!(chat.typed.is_empty());
         assert_eq!(chat.cursor, 0);
         assert!(!chat.focused, "hotkeys must work after a spoken line");
+    }
+
+    /// The channel survives a line, and a send does not put it back to `say`.
+    /// A channel that reset itself would make a conversation on one of them four
+    /// keystrokes a sentence, which is the whole reason it is state rather than
+    /// a prefix typed each time.
+    #[test]
+    fn the_channel_outlives_the_line_it_was_chosen_for() {
+        let mut chat = Chat {
+            typed: "regroup".to_owned(),
+            cursor: 7,
+            focused: true,
+            channel: Channel::Guild,
+        };
+        assert_eq!(chat.take().as_deref(), Some("regroup"));
+        assert_eq!(chat.channel, Channel::Guild);
+    }
+
+    #[test]
+    fn the_channels_cycle_and_come_back_round() {
+        let mut channel = Channel::default();
+        assert_eq!(channel, Channel::Say);
+        let mut seen = vec![channel];
+        for _ in 0..Channel::ALL.len() - 1 {
+            channel = channel.next();
+            seen.push(channel);
+        }
+        assert_eq!(seen, Channel::ALL.to_vec());
+        assert_eq!(channel.next(), Channel::Say, "and wraps back to the default");
     }
 }
