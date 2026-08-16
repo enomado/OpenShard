@@ -660,10 +660,42 @@ already walks every footprint tile for the road and `can_fit` rules; the region
 check walks the same list, and one tile inside a `no_housing` region refuses the
 house.
 
-The cost is the honest one to name: `Regions::at` is a bucket lookup plus a
-linear rectangle test per candidate, run once per footprint tile rather than
-once. A hundred lookups at placement, which happens when somebody clicks, is the
-same bargain `check_yard` already takes.
+There is a third reason and it is the one that would have bitten first: **the
+origin is not reliably part of the house at all.** `place`'s own doc says so —
+`at` is the multi's origin and "is not the corner of its box". A multi whose
+components all sit at positive `dx`/`dy` has an origin outside its own drawn
+area, so an origin test can test a tile no wall ever stands on.
+
+The set walked is **`tiles_of` and not the footprint**. A floor is inside a
+dungeon as surely as a wall is, and `footprint_of` deliberately drops everything
+that does not block. This costs nothing: `place` already calls `tiles_of` (at
+`lib.rs:177`, to size the lockdown allowance), so hoisting that one call above
+the checks gives both readers the same list.
+
+The cost to name: `Regions::at` is a bucket lookup plus a linear rectangle test
+per candidate, run once per covered tile rather than once. A hundred lookups when
+somebody clicks is the bargain `check_yard` already takes.
+
+**D9a — the height tested is the house's own `z`, once, and never the
+component's.** `RegionRect` carries a `z_min`/`z_max` band (`region.rs:52-54`)
+and 247 of the shipped rects use one — that is what keeps the open sky above a
+dungeon open. A villa's roof stands twenty units above its foundation, so
+testing each tile at its component's z would put the roof *outside* a banded
+dungeon region and answer "not in Covetous" for the top half of a house that is
+unambiguously in Covetous. A house is sited at one height.
+
+**None of the 21 `no_housing` regions is banded today**, so this decision changes
+no answer on the shipped data. It is written down because the failure it prevents
+is a player building a tower in a banded dungeon, and that is discovered by the
+player rather than by a reader.
+
+**D9b — the region refusal comes before the ground refusal.** The order of the
+checks is the *message*, not an implementation detail. `BadGround` means "try a
+tile over"; inside Deceit that sentence is a lie, and a player who believes it
+spends ten minutes proving it. So `check_region` sits between `footprint_of` and
+`check_ground`: it needs the covered tiles, so it cannot come earlier, and it is
+the only one of the refusals that is a statement about the *place* rather than
+about this attempt.
 
 **D10 — `place` takes the actor, not just the owner.** It cannot ask `is_staff`
 about a `Serial`, which is why D3's exemption has never existed. The signature
@@ -673,12 +705,23 @@ engine has — `if state.is_staff(actor) { … }` as a first branch, as
 (`travel.rs:82`) both do.
 
 **Which rules the exemption covers is its own decision, and it is not "all of
-them".** ServUO's first branch skips the *placement* rules — road, ground, yard,
-region — because a game master laying out a town has to. It does not skip
-`NoSuchMulti` or `DrawsNothing`, which are not rules but facts about the id, nor
-`NoSerials`, which is a shard in trouble. So the exemption sits above D9's
-region check and D3's five, and below the four refusals that are answers rather
-than policies.
+them".** ServUO's is a single early return — `if (from.AccessLevel >=
+AccessLevel.GameMaster) return Valid;` — and copying that shape literally would
+be wrong here, because this engine's `Refusal` mixes two kinds of answer:
+
+| refusal | what it is | staff-exempt |
+|---|---|---|
+| `Occupied`, `OnARoad`, `BadGround`, `TooCloseToAHouse`, `NoHousingHere` | a judgement about the plot | **yes** |
+| `NoSuchMulti`, `DrawsNothing`, `NeedsCustomisation`, `OffTheMap`, `NoSerials` | there is nothing to place, or the shard is broken | **no** |
+
+Exempting the second row spawns an invisible house out of a treasure-site marker,
+or a foundation with no stairs — which is the exact failure `NeedsCustomisation`
+exists to prevent. **A staff bypass that reopens a hole another decision closed
+is not an exemption; it is a regression with a permission check on it.**
+
+The `staff: bool` is computed once at the top of `place` and threaded, which is
+this crate's own idiom: `trust`, `distrust`, `ban`, `unban` and `standing_of` all
+take it that way rather than each asking `is_staff` again.
 
 Both callers change: `gm::place_house` (`world/src/gm.rs:488`) already has the
 actor in hand, and `houses::place_house_from_deed` (`tick/houses.rs:138`) has it
@@ -720,6 +763,13 @@ Each stands alone. The first is worth having with neither of the others.
   exists at all.
 - **A house whose origin is outside a `no_housing` region and whose footprint
   reaches in.** D9's whole reason, and the one case an origin-only check passes.
+- **A spot that is both inside a dungeon and bad ground reporting the region.**
+  D9b's ordering, which is invisible otherwise.
+- **A banded region refusing a two-storey house placed at its floor.** D9a. No
+  shipped row exercises it, so the test carries a synthetic region — the one
+  place in this phase where a fixture beats the data.
+- **Staff still refused a multi that draws nothing.** D10's other half, and the
+  one a careless "staff bypass everything" breaks silently.
 - A house's region present after placement and gone after `decay::demolish`,
   because a region outliving its house is a permanent no-recall zone in an empty
   field and nothing else would notice.
