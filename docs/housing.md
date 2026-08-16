@@ -351,3 +351,12 @@ is not lost.
   The load-bearing detail is that it answers `None` and not an empty list when
   the client has no multi table. Falling through to the ordinary item path is
   precisely the old bug.
+
+  **`parity.md`'s question was asked and the answer is no divergence.** Changing
+  what a shard view becomes is exactly the class of change that leaves one of the
+  seven frame assemblies behind, so every other `GroundItem` producer was
+  checked: `render/tests/parity.rs` builds its list from the *map's own statics*
+  and `render/src/scene.rs` from a synthetic fixture. Neither sees a shard item,
+  and a placed house is not in the map file — so `net_command` is the only place
+  a multi can arrive, and the only place that has to expand one. Recorded because
+  it is cheaper to read than to re-derive.
