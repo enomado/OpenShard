@@ -2113,6 +2113,31 @@ pub struct House {
     /// the absence of friendship: a stranger is neither, and the difference is
     /// what the door says when it refuses.
     pub bans: std::collections::BTreeSet<openshard_protocol::serial::Serial>,
+    /// How many items may be locked down here, secures included.
+    ///
+    /// **Computed at placement and stored**, which is D2's own rule one level
+    /// up: it is derived from the multi's footprint, and the footprint is a
+    /// client-file fact this crate must never reach for. Storing the number
+    /// keeps the ceiling askable by anything holding a `House` — the drop path
+    /// in `openshard-items` is the one that needs it, and it has no terrain in
+    /// hand. ServUO stores its own `MaxLockDowns` on `BaseHouse` for the same
+    /// reason and saves it.
+    ///
+    /// Zero on a house placed by a shard with no client files: nothing can be
+    /// locked down in a house whose size this shard cannot know.
+    pub lockdowns: u32,
+}
+
+impl House {
+    /// How many items may sit inside the secures, between them.
+    ///
+    /// ServUO's AoS table has this at exactly twice the lockdown count on every
+    /// one of its rows, so it is derived rather than stored — one number to
+    /// compute at placement and one that cannot fall out of step with it.
+    #[must_use]
+    pub const fn storage(&self) -> u32 {
+        self.lockdowns * 2
+    }
 }
 
 /// Where somebody stands with a house.
@@ -2150,6 +2175,36 @@ pub enum Standing {
 }
 
 impl Standing {
+    /// The number it is saved as.
+    ///
+    /// Written out rather than derived from the discriminant, because the
+    /// discriminant is an ordering decision — `Banned` is lowest so that a
+    /// comparison reads "at least this trusted" — and reordering it must not
+    /// silently turn every saved secure into a different access level.
+    #[must_use]
+    pub const fn code(self) -> u8 {
+        match self {
+            Self::Banned => 0,
+            Self::Stranger => 1,
+            Self::Friend => 2,
+            Self::CoOwner => 3,
+            Self::Owner => 4,
+        }
+    }
+
+    /// Read one back, or `None` for a number this engine did not write.
+    #[must_use]
+    pub const fn from_code(code: u8) -> Option<Self> {
+        match code {
+            0 => Some(Self::Banned),
+            1 => Some(Self::Stranger),
+            2 => Some(Self::Friend),
+            3 => Some(Self::CoOwner),
+            4 => Some(Self::Owner),
+            _ => None,
+        }
+    }
+
     /// What to call it on a screen.
     #[must_use]
     pub const fn name(self) -> &'static str {
@@ -2221,6 +2276,33 @@ pub struct HouseDoor {
 pub struct HouseSign {
     /// Which house, by its item serial.
     pub house: openshard_protocol::serial::Serial,
+}
+
+/// An item pinned inside a house: a **lockdown**, and a **secure** if it names
+/// an access level.
+///
+/// # One component and not two
+///
+/// A secure *is* a lockdown — it cannot be lifted either, releasing one works on
+/// both, and both count against the same allowance. Two components would be two
+/// facts that must agree about all three, and the reference's own model is this
+/// one: `BaseHouse.Release` takes a secure off the secures list and the item goes
+/// back to loose in a single step.
+///
+/// # Why the access level is a `Standing`
+///
+/// ServUO's `SecureLevel` is `Owner`, `CoOwners`, `Friends`, `Anyone`, which is
+/// the trusted half of [`Standing`] with a fourth name for its bottom.
+/// `Standing::Stranger` *is* "anyone", so the enum already had the four and did
+/// not need a fifth type beside it.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct LockedDown {
+    /// Which house, by its item serial.
+    pub house: openshard_protocol::serial::Serial,
+    /// The least standing that may open it, if this is a secure container.
+    /// `None` for a plain lockdown, which is not a container and opens for
+    /// nobody.
+    pub secure: Option<Standing>,
 }
 
 /// A deed: the item a house is placed from.

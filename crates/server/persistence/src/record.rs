@@ -329,7 +329,14 @@ mod optional_serial {
 ///   write it back without them. That is not a shard with no lists, it is a
 ///   shard that *deletes* them on the first save, which is worse than refusing
 ///   to open.
-pub const SCHEMA_VERSION: u32 = 28;
+/// - v29: **lockdowns and secures**. v28's argument a third time, and the
+///   sharpest of the three, because this one is not a list on the house — it is
+///   a component on every pinned *item*. A v28 build reads those items as
+///   ordinary ground clutter, writes them back without the pin, and a shard's
+///   houses come up with every lockdown released and every secure standing open.
+///   The house's own ceiling goes the same way: dropped on the read, written
+///   back as nothing, and then no lockdown fits anywhere.
+pub const SCHEMA_VERSION: u32 = 29;
 
 /// A player's house, as saved.
 ///
@@ -367,6 +374,16 @@ pub struct HouseRecord {
     /// Everyone turned away.
     #[serde(default)]
     pub bans: Vec<u32>,
+    /// How many items may be locked down here.
+    ///
+    /// Saved rather than recomputed, unlike the walls and the sign, and the
+    /// difference is worth stating: those are a pure function of the multi id,
+    /// and this is that function *times a shard's own tuning constant*.
+    /// Recomputing it at boot would mean an operator who lowered
+    /// `LOCKDOWNS_PER_TILE` finding half the shard's lockdowns over the new
+    /// ceiling with nothing to say which ones, and one who raised it handing out
+    /// the difference to houses placed before the decision.
+    pub lockdowns: u32,
 }
 
 /// An account, as saved.
@@ -839,8 +856,34 @@ pub struct ItemRecord {
     /// list and a list does not become sixteen columns.
     #[serde(default)]
     pub runebook: Option<RunebookData>,
+    /// The house this item is locked down in, and the access level if it is a
+    /// secure. `None` for everything loose, which is nearly everything.
+    ///
+    /// On the *item* rather than as a list on the house, mirroring the world's
+    /// own `LockedDown` component, and for its reason: a lockdown is asked about
+    /// one at a time, by a lift that already has the item in hand.
+    #[serde(default)]
+    pub locked_down: Option<LockdownData>,
     /// Where it is.
     pub location: ItemLocation,
+}
+
+/// An item pinned inside a house, as saved — a plain mirror of the world's
+/// `LockedDown` component.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub struct LockdownData {
+    /// Which house, by its item serial.
+    #[serde(with = "serial")]
+    pub house: Serial,
+    /// The least standing that may open it, if this is a secure container, as
+    /// `Standing::code`. `None` for a plain lockdown.
+    ///
+    /// Numbered by hand at the world's end, like the pet's standing order and
+    /// the effect kinds, so the on-disk meaning cannot drift when the enum is
+    /// reordered — and it *is* ordered on purpose, which makes reordering it a
+    /// live possibility rather than a hypothetical one.
+    #[serde(default)]
+    pub secure: Option<u8>,
 }
 
 /// A runebook's contents, as saved.
@@ -1440,6 +1483,10 @@ mod tests {
                 uses: Some(37),
                 crafted: Some((true, Some("Rowena".into()))),
                 rune: Some((0, 1495, 1629, -20)),
+                locked_down: Some(LockdownData {
+                    house: Serial::new(0x4000_0001).unwrap(),
+                    secure: Some(3),
+                }),
                 runebook: Some(RunebookData {
                     entries: vec![RunebookEntryData {
                         facet: 0,

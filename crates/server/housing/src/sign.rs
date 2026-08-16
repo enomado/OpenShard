@@ -34,7 +34,9 @@ use openshard_protocol::gump::{
 use openshard_protocol::serial::Serial;
 use openshard_protocol::server_packet::ServerPacket;
 use openshard_state::components::{Client, House, Name};
-use openshard_state::{HouseChange, HouseGumpContext, HouseList, Standing, TargetPurpose, WorldState};
+use openshard_state::{
+    HouseChange, HouseGumpContext, HouseList, HouseStorage, Standing, TargetPurpose, WorldState,
+};
 
 /// The id the house window answers under.
 pub const HOUSE_GUMP: GumpId = openshard_protocol::gump::id::HOUSE;
@@ -76,6 +78,17 @@ pub(crate) mod button {
     pub const BAN: ButtonId = ButtonId(4);
     /// Lift a ban.
     pub const UNBAN: ButtonId = ButtonId(5);
+    /// Raise a cursor to pin an item in place.
+    pub const LOCK_DOWN: ButtonId = ButtonId(6);
+    /// To make a container a secure only co-owners open.
+    pub const SECURE_CO_OWNERS: ButtonId = ButtonId(7);
+    /// The same, open to friends.
+    pub const SECURE_FRIENDS: ButtonId = ButtonId(8);
+    /// The same, open to anybody who walks in — `Standing::Stranger`, which is
+    /// what ServUO's fourth `SecureLevel` means.
+    pub const SECURE_ANYONE: ButtonId = ButtonId(9);
+    /// And to let one go loose again.
+    pub const RELEASE: ButtonId = ButtonId(10);
 }
 
 /// The first row button, and how many a row draws.
@@ -195,6 +208,33 @@ fn build(state: &WorldState, player: EntityId, house: EntityId) -> (GumpLayout, 
             layout.label(x, 98, GUMP_WHITE, label);
             x += 100;
         }
+        // And the storage verbs, on the same terms and the same authority. The
+        // count is drawn beside them because it is the one number a player needs
+        // before pressing any of them, and there is nowhere else to read it.
+        let allowance = crate::storage::allowance(state, house);
+        let used = crate::storage::locked_down(state, house).len();
+        let stored = crate::storage::stored(state, house);
+        layout.label(
+            20,
+            FRAME.1 - 60,
+            HUE_HEADING,
+            format!(
+                "Locked down: {used} of {}.  In the secures: {stored} of {}.",
+                allowance.lockdowns, allowance.storage
+            ),
+        );
+        let mut x = 20;
+        for (id, label) in [
+            (button::LOCK_DOWN, "Lock down"),
+            (button::SECURE_CO_OWNERS, "Secure: co-owners"),
+            (button::SECURE_FRIENDS, "Secure: friends"),
+            (button::SECURE_ANYONE, "Secure: anyone"),
+            (button::RELEASE, "Release"),
+        ] {
+            layout.button(x, FRAME.1 - 36, 4005, 4007, GumpButton::Reply, 0, id);
+            layout.label(x, FRAME.1 - 14, GUMP_WHITE, label);
+            x += 100;
+        }
     }
 
     // Three columns. A row's button appears only for somebody who may press it,
@@ -257,6 +297,15 @@ pub fn handle(state: &mut WorldState, connection: ConnectionId, response: &GumpR
         state.raise_target(player, TargetPurpose::HouseList { change });
         state.system_message(player, prompt);
     };
+    // The storage cursors carry the *house* as well, because unlike a list
+    // change they are not answered by "the house the actor is standing in": a
+    // player pressing Release steps to the item, which may be through a wall
+    // from where they pressed it.
+    let house = context.house;
+    let pin = |state: &mut WorldState, change: HouseStorage, prompt: &str| {
+        state.raise_target(player, TargetPurpose::HouseStorage { change, house });
+        state.system_message(player, prompt);
+    };
     match pressed {
         button::CLOSE => {}
         button::FRIEND => raise(
@@ -268,6 +317,23 @@ pub fn handle(state: &mut WorldState, connection: ConnectionId, response: &GumpR
         button::DROP => raise(state, HouseChange::Drop, "Whom shall be removed?"),
         button::BAN => raise(state, HouseChange::Ban, "Whom shall be banned?"),
         button::UNBAN => raise(state, HouseChange::Unban, "Whose ban shall be lifted?"),
+        button::LOCK_DOWN => pin(state, HouseStorage::LockDown, "What shall be locked down?"),
+        button::SECURE_CO_OWNERS => pin(
+            state,
+            HouseStorage::Secure(Standing::CoOwner),
+            "Which container shall the co-owners keep?",
+        ),
+        button::SECURE_FRIENDS => pin(
+            state,
+            HouseStorage::Secure(Standing::Friend),
+            "Which container shall your friends open?",
+        ),
+        button::SECURE_ANYONE => pin(
+            state,
+            HouseStorage::Secure(Standing::Stranger),
+            "Which container shall stand open to anyone?",
+        ),
+        button::RELEASE => pin(state, HouseStorage::Release, "What shall be released?"),
         other => {
             let Some(index) = row_of(other, context.rows.len()) else {
                 return true;

@@ -29,6 +29,7 @@
 //! hundred lookups for an answer that cannot have changed.
 
 pub mod sign;
+pub mod storage;
 
 #[cfg(test)]
 mod tests;
@@ -167,6 +168,13 @@ pub fn place(
             co_owners: Default::default(),
             friends: Default::default(),
             bans: Default::default(),
+            // From the footprint, once, and stored — see `storage::allowance_for`.
+            // The tiles are counted here because this is the one moment the multi
+            // table is in hand.
+            lockdowns: u32::try_from(
+                storage::allowance_for(tiles_of(state, at, facet, multi).len()).lockdowns,
+            )
+            .unwrap_or(u32::MAX),
         },
     );
     state.registry.insert(entity, facet);

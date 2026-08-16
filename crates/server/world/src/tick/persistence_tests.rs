@@ -916,6 +916,7 @@ fn a_houses_access_lists_survive_a_restart() {
         // A serial no pool can produce, to prove the filter is a filter and not
         // a silent zero: a name this engine cannot read is one it cannot act on.
         bans: vec![banned.raw(), 0],
+        lockdowns: 208,
     }]);
 
     let entity = world.state.registry.entity_of(serial).expect("the house");
@@ -974,6 +975,7 @@ fn a_house_restored_without_client_files_stands_but_stops_nobody() {
         co_owners: Vec::new(),
         friends: Vec::new(),
         bans: Vec::new(),
+        lockdowns: 0,
     }]);
 
     let back = world
@@ -1029,6 +1031,7 @@ fn a_house_and_its_sign_are_not_also_ground_items() {
         co_owners: Vec::new(),
         friends: Vec::new(),
         bans: Vec::new(),
+        lockdowns: 0,
     }]);
 
     let ground = world.ground_items();

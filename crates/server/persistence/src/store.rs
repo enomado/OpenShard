@@ -616,6 +616,7 @@ mod tests {
             crafted: None,
             rune: None,
             runebook: None,
+            locked_down: None,
             location: crate::record::ItemLocation::Contained {
                 container: Serial::new(container).expect("a valid test serial"),
                 x: 0,
@@ -644,6 +645,7 @@ mod tests {
             crafted: None,
             rune: None,
             runebook: None,
+            locked_down: None,
             location: crate::record::ItemLocation::Ground {
                 facet: 0,
                 x: 1400,

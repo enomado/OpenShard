@@ -14,6 +14,15 @@ pub(crate) const ITEM_REACH: u32 = 3;
 /// same items `Movable = false`; this is that, at the one door a lift comes through.
 pub const FIXED_LAYERS: &[Layer] = &[Layer(0x0B), Layer(0x10)];
 
+/// What a lift off a house's lockdown says. ServUO's cliloc 501727 in plain
+/// words, on `LOCKED_MESSAGE`'s licence: the refusals in this crate are English
+/// because the reference sends half of them as plain lines too.
+pub const LOCKED_DOWN_MESSAGE: &str = "That is locked down and you cannot lift it.";
+
+/// What a drop into a full house says. ServUO's cliloc 1080013 in plain words,
+/// on [`LOCKED_DOWN_MESSAGE`]'s licence.
+pub const SECURE_FULL_MESSAGE: &str = "This house cannot hold any more.";
+
 /// Lift an item onto a client's cursor. See `Command::PickUpItem`.
 pub fn pick_up(state: &mut WorldState, connection: ConnectionId, serial: RawSerial, amount: u16) {
     let Some(&player) = state.players.get(&connection) else {
@@ -53,6 +62,19 @@ pub fn pick_up(state: &mut WorldState, connection: ConnectionId, serial: RawSeri
     // otherwise lift like any other — ServUO's `CheckLift` refusing outright.
     // What is *inside* it lifts normally; that is how an offer is taken back.
     if state.registry.has::<TradeWindow>(item) {
+        reject_drag(state, connection, DragCancelReason::CannotLift);
+        return;
+    }
+    // Nor is anything locked down inside a house. ServUO's `CheckLift` asks the
+    // house the same question, and the answer does not depend on who is asking:
+    // a co-owner cannot lift their own lockdown either, they release it first.
+    // Staff walk through it, as they do a locked door.
+    if state
+        .registry
+        .has::<openshard_state::components::LockedDown>(item)
+        && !state.is_staff(player)
+    {
+        state.system_message(player, LOCKED_DOWN_MESSAGE);
         reject_drag(state, connection, DragCancelReason::CannotLift);
         return;
     }
@@ -318,6 +340,15 @@ pub fn drop_into_container(
     let (plus_items, plus_weight) = crate::cost_of(state, held.entity);
     if let Some(full) = crate::check_hold(state, player, container_serial, plus_items, plus_weight) {
         state.system_message(player, full.message());
+        bounce(state, connection, held, DragCancelReason::Other);
+        return;
+    }
+    // And, if it is a house's secure, the *house* must have room. A second
+    // ceiling over the same drop, because they count different things: the
+    // container's is about that container, and this is about everything the
+    // house is storing between all of its secures.
+    if !state.secure_has_room(container_entity, 1) {
+        state.system_message(player, SECURE_FULL_MESSAGE);
         bounce(state, connection, held, DragCancelReason::Other);
         return;
     }

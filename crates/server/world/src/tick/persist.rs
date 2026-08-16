@@ -468,6 +468,15 @@ impl World {
                 max_charges: book.max_charges,
                 default_entry: book.default_entry,
             }),
+            // And the house it is pinned in, if any. A `Standing` becomes its
+            // hand-written code rather than its discriminant — see
+            // `Standing::code`, and the `PetData` order it copies.
+            locked_down: registry
+                .get::<openshard_state::components::LockedDown>(item)
+                .map(|pinned| openshard_persistence::record::LockdownData {
+                    house: pinned.house,
+                    secure: pinned.secure.map(|access| access.code()),
+                }),
             location,
         })
     }
@@ -529,6 +538,22 @@ impl World {
                     // Not saved: a couple of seconds' cooldown that a restart
                     // re-arms at zero, which errs the player's way.
                     next_use: 0,
+                },
+            );
+        }
+        if let Some(pinned) = record.locked_down {
+            self.state.registry.insert(
+                entity,
+                openshard_state::components::LockedDown {
+                    house: pinned.house,
+                    // A code this engine did not write reads as a plain lockdown
+                    // rather than as a secure open to anybody: the item stays
+                    // pinned, which is the recoverable direction, and a container
+                    // whose access level is unreadable is one nobody opens until
+                    // a co-owner sets it again.
+                    secure: pinned
+                        .secure
+                        .and_then(openshard_state::components::Standing::from_code),
                 },
             );
         }

@@ -30,6 +30,9 @@ impl World {
             openshard_state::TargetPurpose::HouseList { change } => {
                 self.change_house_list_for(actor, change, response.object);
             }
+            openshard_state::TargetPurpose::HouseStorage { change, house } => {
+                self.change_house_storage(actor, house, change, response.object);
+            }
             openshard_state::TargetPurpose::Skill { skill } => {
                 let outcome = skills::on_target(&mut self.state, actor, skill, response.object);
                 if let Some(theft) = outcome.stolen {

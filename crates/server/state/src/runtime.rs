@@ -800,6 +800,21 @@ pub enum HouseChange {
     Unban,
 }
 
+/// What a house-storage cursor is about to do with the item it is answered with.
+///
+/// [`HouseChange`]'s shape and its reason: the three differ only in the call
+/// they make.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum HouseStorage {
+    /// Pin it in place.
+    LockDown,
+    /// Pin it and make it a secure container, opening for this standing and
+    /// above.
+    Secure(crate::Standing),
+    /// Let it go loose again.
+    Release,
+}
+
 /// What a raised targeting cursor is waiting to do with the click.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum TargetPurpose {
@@ -809,6 +824,22 @@ pub enum TargetPurpose {
     HouseList {
         /// Which list, and which direction.
         change: HouseChange,
+    },
+    /// A house's storage waiting for the item — the cursor the sign's
+    /// lock-down, secure and release buttons raise.
+    HouseStorage {
+        /// Which of the three.
+        change: HouseStorage,
+        /// Which house, by entity.
+        ///
+        /// Carried, unlike [`HouseList`](Self::HouseList)'s, which resolves to
+        /// "the house the actor is standing in" when the click lands. A list
+        /// change is about a person and the actor is inside their own house
+        /// while they make it; a lockdown is about an *item*, and a player who
+        /// pressed the button by the sign is standing outside the walls the item
+        /// is behind. A despawned entity resolves to nothing, which is the right
+        /// answer for a window opened on a house that has since come down.
+        house: EntityId,
     },
     /// A house waiting for its plot — the cursor a deed raises.
     ///
@@ -1959,6 +1990,85 @@ impl WorldState {
     #[must_use]
     pub fn is_staff(&self, watcher: EntityId) -> bool {
         self.registry.has::<Staff>(watcher)
+    }
+
+    /// Whether `who` may open `container` — the house-secure gate.
+    ///
+    /// Here rather than in `openshard-housing` for the reason
+    /// [`Standing`](crate::Standing) is: the double-click that opens a container
+    /// is `openshard-items`', which has no business depending on the housing
+    /// crate. It is `Guild::at_war_with`'s split — the rules stay in the system
+    /// crate, and the question a wire path asks lives beside the data.
+    ///
+    /// A container with no [`LockedDown`](crate::LockedDown) is not a secure and
+    /// opens for anybody, which is every chest in Britannia.
+    #[must_use]
+    pub fn may_open_secure(&self, who: EntityId, container: EntityId) -> bool {
+        let Some(&crate::LockedDown {
+            house,
+            secure: Some(access),
+        }) = self.registry.get::<crate::LockedDown>(container)
+        else {
+            return true;
+        };
+        let (Some(entry), Some(serial)) = (
+            self.registry
+                .entity_of(house)
+                .and_then(|entity| self.registry.get::<crate::House>(entity)),
+            self.registry.serial_of(who),
+        ) else {
+            // A secure whose house is gone. Shut rather than open: what happens
+            // to the contents when a house comes down is the moving crate's
+            // question, and until there is one the safe reading of "no house" is
+            // "not yours".
+            return false;
+        };
+        entry.standing_of(serial, self.is_staff(who)) >= access
+    }
+
+    /// Whether one more item will fit inside `container`, if it is a house's
+    /// secure.
+    ///
+    /// `true` for every container that is not one, which is every container in
+    /// Britannia. Asked by the drop path, and here rather than in
+    /// `openshard-housing` for [`may_open_secure`](Self::may_open_secure)'s
+    /// reason: the drop is `openshard-items`', and the ceiling it needs is a
+    /// number on the [`House`](crate::House) component rather than a footprint
+    /// it would have to recompute.
+    ///
+    /// The count is one level deep, which is the rule the ceiling means: a bag
+    /// inside a secure chest is one item against the house's allowance, and what
+    /// is inside the *bag* is `capacity`'s ceiling rather than this one.
+    #[must_use]
+    pub fn secure_has_room(&self, container: EntityId, more: usize) -> bool {
+        let Some(&crate::LockedDown {
+            house,
+            secure: Some(_),
+        }) = self.registry.get::<crate::LockedDown>(container)
+        else {
+            return true;
+        };
+        let Some(entry) = self
+            .registry
+            .entity_of(house)
+            .and_then(|entity| self.registry.get::<crate::House>(entity))
+        else {
+            return false;
+        };
+        let secures: Vec<Serial> = self
+            .registry
+            .query::<crate::LockedDown>()
+            .filter(|(item, pinned)| {
+                pinned.house == house && pinned.secure.is_some() && self.registry.serial_of(*item).is_some()
+            })
+            .filter_map(|(item, _)| self.registry.serial_of(item))
+            .collect();
+        let stored = self
+            .registry
+            .query::<Contained>()
+            .filter(|(_, held)| secures.contains(&held.container))
+            .count();
+        stored + more <= entry.storage() as usize
     }
 
     /// Whether a mobile may teleport to a point — the `no_teleport` region flag.

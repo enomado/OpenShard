@@ -137,7 +137,9 @@ CREATE TABLE IF NOT EXISTS houses (
     -- The three access lists, as JSON arrays of serials. See the sqlite schema.
     co_owners TEXT NOT NULL DEFAULT '[]',
     friends   TEXT NOT NULL DEFAULT '[]',
-    bans      TEXT NOT NULL DEFAULT '[]'
+    bans      TEXT NOT NULL DEFAULT '[]',
+    -- What this house will hold. See the sqlite schema's own note.
+    lockdowns INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS items (
     serial    BIGINT PRIMARY KEY,
@@ -186,7 +188,11 @@ CREATE TABLE IF NOT EXISTS items (
     rune_z INTEGER,
     -- a runebook's whole contents, JSON: its entries are a list, and a list of
     -- sixteen destinations does not become sixteen columns.
-    runebook TEXT
+    runebook TEXT,
+    -- the house this is locked down in, and the access level if it is a secure.
+    -- See the sqlite schema.
+    lockdown_house BIGINT,
+    lockdown_secure SMALLINT
 );
 CREATE INDEX IF NOT EXISTS items_owner ON items (owner);
 CREATE TABLE IF NOT EXISTS mobiles (
@@ -562,8 +568,9 @@ impl Store for PgStore {
             for house in houses {
                 transaction
                     .execute(
-                        "INSERT INTO houses (serial, multi, x, y, z, facet, owner, co_owners, friends, bans) \
-                         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
+                        "INSERT INTO houses \
+                         (serial, multi, x, y, z, facet, owner, co_owners, friends, bans, lockdowns) \
+                         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
                         &[
                             &i64::from(house.serial.raw()),
                             &i32::from(house.multi),
@@ -578,6 +585,7 @@ impl Store for PgStore {
                                 .map_err(|e| StoreError::Corrupt(e.to_string()))?,
                             &serde_json::to_string(&house.bans)
                                 .map_err(|e| StoreError::Corrupt(e.to_string()))?,
+                            &house.lockdowns.cast_signed(),
                         ],
                     )
                     .await
@@ -661,7 +669,8 @@ impl Store for PgStore {
                  loc_kind, facet, x, y, z, parent, grid, layer, price, name, spellbook, \
                  corpse, poison_level, poison_charges, trap_kind, trap_power, trap_level, \
                  uses, exceptional, crafter, \
-                 rune_facet, rune_x, rune_y, rune_z, runebook FROM items",
+                 rune_facet, rune_x, rune_y, rune_z, runebook, \
+                 lockdown_house, lockdown_secure FROM items",
                 &[],
             )
             .await
@@ -763,7 +772,7 @@ impl Store for PgStore {
         let client = self.client.lock().await;
         let rows = client
             .query(
-                "SELECT serial, multi, x, y, z, facet, owner, co_owners, friends, bans \
+                "SELECT serial, multi, x, y, z, facet, owner, co_owners, friends, bans, lockdowns \
                  FROM houses ORDER BY serial",
                 &[],
             )
@@ -792,6 +801,7 @@ impl Store for PgStore {
                     co_owners: serde_json::from_str(row.get::<_, &str>(7)).unwrap_or_default(),
                     friends: serde_json::from_str(row.get::<_, &str>(8)).unwrap_or_default(),
                     bans: serde_json::from_str(row.get::<_, &str>(9)).unwrap_or_default(),
+                    lockdowns: row.get::<_, i32>(10).cast_unsigned(),
                 })
             })
             .collect())
@@ -959,9 +969,10 @@ async fn insert_item(
              (serial, owner, graphic, hue, amount, stackable, gump, \
               loc_kind, facet, x, y, z, parent, grid, layer, price, name, spellbook, \
               corpse, poison_level, poison_charges, trap_kind, trap_power, trap_level, uses, \
-              exceptional, crafter, rune_facet, rune_x, rune_y, rune_z, runebook) \
+              exceptional, crafter, rune_facet, rune_x, rune_y, rune_z, runebook, \
+              lockdown_house, lockdown_secure) \
              VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21, \
-                     $22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32) \
+                     $22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34) \
              ON CONFLICT (serial) DO UPDATE SET \
              owner = EXCLUDED.owner, graphic = EXCLUDED.graphic, hue = EXCLUDED.hue, \
              amount = EXCLUDED.amount, stackable = EXCLUDED.stackable, gump = EXCLUDED.gump, \
@@ -975,7 +986,8 @@ async fn insert_item(
              uses = EXCLUDED.uses, exceptional = EXCLUDED.exceptional, \
              crafter = EXCLUDED.crafter, rune_facet = EXCLUDED.rune_facet, \
              rune_x = EXCLUDED.rune_x, rune_y = EXCLUDED.rune_y, rune_z = EXCLUDED.rune_z, \
-             runebook = EXCLUDED.runebook",
+             runebook = EXCLUDED.runebook, lockdown_house = EXCLUDED.lockdown_house, \
+             lockdown_secure = EXCLUDED.lockdown_secure",
             &[
                 &i64::from(item.serial.raw()),
                 // `owner` is `NOT NULL BIGINT` with `0` the sentinel for "no owner" —
@@ -1027,6 +1039,8 @@ async fn insert_item(
                     .map(serde_json::to_string)
                     .transpose()
                     .map_err(|e| StoreError::Corrupt(e.to_string()))?,
+                &item.locked_down.map(|pinned| i64::from(pinned.house.raw())),
+                &item.locked_down.and_then(|pinned| pinned.secure).map(i16::from),
             ],
         )
         .await
@@ -1143,6 +1157,17 @@ fn item_from_row(row: &Row) -> Option<Result<ItemRecord, StoreError>> {
             runebook: row
                 .get::<_, Option<String>>(31)
                 .and_then(|json| serde_json::from_str(&json).ok()),
+            // A house serial that will not parse drops the whole pin — the
+            // sqlite reader's reasoning: an item claiming to be locked down in
+            // nothing is one nobody could ever release.
+            locked_down: row
+                .get::<_, Option<i64>>(32)
+                .and_then(|raw| u32::try_from(raw).ok())
+                .and_then(Serial::new)
+                .map(|house| crate::record::LockdownData {
+                    house,
+                    secure: row.get::<_, Option<i16>>(33).and_then(|n| u8::try_from(n).ok()),
+                }),
             location,
         }))
     }

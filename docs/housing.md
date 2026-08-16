@@ -6,8 +6,9 @@ feature made of parts that could ship separately: a house you can place and walk
 through is not a house, and a house with a lock and no decay is a shard that
 fills up and never empties.
 
-The engine has none of it. `crates/server/housing/src/lib.rs` is four lines
-saying so.
+Four of the five phases are built: a house goes down, its walls stop you, its
+door and its secures know you, and its sign says who owns it. What is left is
+H5 — the decay that takes it away, and the crate that catches what was inside.
 
 > Read [`architecture.md`](architecture.md) for where a system crate sits and
 > what it may depend on, and [`style.md`](style.md) before writing any of it.
@@ -41,7 +42,7 @@ exist (326 against 862 on one install, so the UOP wins).
 | a house as a world item | nothing places one | draws items already | draws multis already |
 | the footprint blocking a step | `Obstructions` exists, nothing fills it from a multi | — | n/a, server-authoritative |
 | the house sign, the deed | **built** | draws items already | ordinary items |
-| door locks | `KeyValue` and the lock rules exist (`.key`) | — | n/a |
+| door locks | **built** — `KeyValue`, the lock rules, and the house's own gate | — | n/a |
 | co-owners, friends, bans | **built** | n/a | n/a |
 | decay | — | — | n/a |
 | customisation (`0xD7` house design) | — | — | speaks it |
@@ -417,6 +418,84 @@ a bank box with a roof.
 
 `items::capacity` is the shape this reuses — the ceiling exists, and a secure is
 a container with an owner list on top of one.
+
+#### Built, and the allowance is derived rather than tabled
+
+**A secure is a lockdown, so there is one component and not two.** `LockedDown`
+carries the house and an `Option<Standing>`: `None` is a plain lockdown, `Some`
+is a secure and the value is the least standing that may open it. Two components
+would be two facts that must agree about three separate rules — that neither
+lifts, that releasing works on both, that both count against the same allowance —
+and the reference's own model is this one, since `BaseHouse.Release` takes a
+secure off the list in a single step.
+
+The access level is a `Standing` because ServUO's `SecureLevel` is the *trusted
+half of it* with a fourth name for its bottom: `Owner`, `CoOwners`, `Friends`,
+`Anyone`. `Standing::Stranger` **is** "anyone", and a banned player is still
+below it — which is the right answer and one a separate four-value enum would
+have had to remember to give.
+
+**The allowance is derived from the multi's own area.** ServUO's is a table:
+`HousePlacementEntry` carries a lockdown count for each of its thirty-odd multi
+ids, hand-written beside the price and the placement offset — the same kind of
+per-house-type content the door positions and the sign offsets are, and not
+copied for the same reason. What the table *is*, plotted against the `Area`
+rectangles each matching house class declares, is roughly linear:
+
+| house | tiles | ServUO lockdowns | per tile |
+|---|---|---|---|
+| small old house | 52 | 212 | 4.08 |
+| small tower | 59 | 290 | 4.92 |
+| two-storey villa | 125 | 550 | 4.40 |
+
+So `LOCKDOWNS_PER_TILE` is **4** and the derived numbers land within a sixth of
+the reference's on every row — a shard's own tuning knob rather than a promise of
+parity, and one an operator turns without editing thirty ids. The second ceiling,
+on what sits *inside* the secures, is exactly twice the first on every row of
+ServUO's own table, so it is derived from the first and there is one number.
+
+**Computed at placement and stored, which is D2 one level up.** The count is a
+`u32` on the `House` component, because the path that needs it — the drop into a
+secure, in `openshard-items` — has no terrain in hand and has no business
+acquiring one. ServUO stores its own `MaxLockDowns` on `BaseHouse` and saves it
+for the same reason. It is **saved** rather than recomputed, unlike the walls and
+the sign, and the difference is the tuning constant: recomputing at boot would
+mean an operator who lowered `LOCKDOWNS_PER_TILE` finding half the shard over the
+new ceiling with nothing to say which lockdowns to drop.
+
+**Both gates ask the component, not the crate** — the third time the layering
+question has been answered the same way, after `Standing` and the door. A lift
+refuses anything with a `LockedDown` and needs no housing rule at all, because
+the answer does not depend on who is asking: a co-owner cannot lift their own
+lockdown either, they release it first. Opening a secure asks
+`WorldState::may_open_secure`, which lives beside the data exactly as
+`standing_of` does.
+
+The secure's refusal is said with the *door's* line and not the lock's, which is
+why it is a separate check from the lock at all: a stranger at a secure is
+refused for being a stranger, and "that is locked" would send them looking for a
+key that does not exist.
+
+**Two ceilings over one drop**, and they count different things: the container's
+is about that container's own subtree, and the house's is about everything stored
+across all of its secures, one level deep. A bag inside a secure chest is one
+item against the house and its own contents are `capacity`'s problem.
+
+Saved, schema **v29** — v28's argument a third time and the sharpest of them,
+because this one is not a list on the house but a component on every pinned
+*item*. A v28 build reads those as ordinary ground clutter, writes them back
+without the pin, and a shard comes up with every lockdown released and every
+secure standing open.
+
+**Reachable from the sign**, which is where a player would look: five more
+buttons beside the five list ones, raising a cursor for the item. The cursor
+carries the *house*, unlike the list cursors which resolve to "the house the
+actor is standing in" — a list change is about a person and the actor is inside
+their own house while making it, but a lockdown is about an item, and somebody
+who pressed the button by the sign is standing outside the walls the item is
+behind.
+
+**H4 is complete.**
 
 ---
 

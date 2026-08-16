@@ -155,6 +155,29 @@ fn ground_of(components: Vec<Component>, land: u16, fits: bool) -> WorldState {
     }
 }
 
+/// An item on the ground, a container if asked for one.
+fn an_item(state: &mut WorldState, at: Point, container: bool) -> EntityId {
+    let (entity, _) = state.registry.spawn_with_serial(SerialKind::Item).unwrap();
+    state.registry.insert(
+        entity,
+        Drawn {
+            id: Graphic(0x0E3C),
+            hue: openshard_protocol::wire::Hue(0),
+        },
+    );
+    state.registry.insert(entity, Position(at));
+    state.registry.insert(entity, Facet(0));
+    if container {
+        state.registry.insert(
+            entity,
+            openshard_state::components::Container {
+                gump: Graphic(0x003C),
+            },
+        );
+    }
+    entity
+}
+
 fn an_owner(state: &mut WorldState) -> Serial {
     let (_, serial) = state.registry.spawn_with_serial(SerialKind::Mobile).unwrap();
     serial
@@ -181,6 +204,8 @@ fn a_house_is_an_item_whose_graphic_is_the_multi() {
             co_owners: Default::default(),
             friends: Default::default(),
             bans: Default::default(),
+            // Five drawn tiles at four apiece — see `storage::LOCKDOWNS_PER_TILE`.
+            lockdowns: 20,
         })
     );
     // And it is an *item*, so everything that walks items reaches it.
@@ -438,6 +463,7 @@ fn a_house(owner: Serial) -> House {
         co_owners: Default::default(),
         friends: Default::default(),
         bans: Default::default(),
+        lockdowns: 20,
     }
 }
 
@@ -845,5 +871,201 @@ fn a_row_button_reads_back_as_the_row_it_was_drawn_for() {
         sign::row_of(sign::button::BAN, 8),
         None,
         "an action button was read as a row"
+    );
+}
+
+/// A house's ceiling is its own footprint at four apiece, computed once and
+/// stored.
+///
+/// The cottage draws five tiles — four walls and a floor — so twenty lockdowns
+/// and forty of storage. The number on the component rather than a recomputation
+/// is the half worth pinning: the drop path reads it with no terrain in hand.
+#[test]
+fn a_house_gets_its_allowance_from_its_own_footprint() {
+    use crate::storage::{LOCKDOWNS_PER_TILE, allowance, allowance_for};
+
+    let mut state = world_with(cottage());
+    let owner = an_owner(&mut state);
+    let at = Point::new(10, 10, 0);
+    let house = place(&mut state, at, Facet(0), COTTAGE, owner).expect("a legal spot");
+
+    let tiles = tiles_of(&state, at, Facet(0), COTTAGE).len();
+    assert_eq!(tiles, 5, "the cottage draws five tiles");
+    assert_eq!(
+        state.registry.get::<House>(house).map(|entry| entry.lockdowns),
+        Some((tiles * LOCKDOWNS_PER_TILE) as u32)
+    );
+    assert_eq!(allowance(&state, house), allowance_for(tiles));
+    assert_eq!(allowance(&state, house).lockdowns, 20);
+    assert_eq!(allowance(&state, house).storage, 40);
+}
+
+/// Lock down, secure, release — and the three rules that decide each.
+#[test]
+fn only_a_co_owner_pins_and_only_inside_the_house() {
+    use crate::storage::{StorageRefusal, lock_down, locked_down, release};
+
+    let mut state = world_with(cottage());
+    let owner = an_owner(&mut state);
+    let at = Point::new(10, 10, 0);
+    let house = place(&mut state, at, Facet(0), COTTAGE, owner).expect("a legal spot");
+    let master = state.registry.entity_of(owner).expect("a mobile");
+
+    // A chest on the house's own floor, and a barrel two tiles outside it.
+    let inside = an_item(&mut state, at, true);
+    let outside = an_item(&mut state, Point::new(at.x + 8, at.y, at.z), true);
+
+    let stranger = an_owner(&mut state);
+    let stranger = state.registry.entity_of(stranger).expect("a mobile");
+    assert_eq!(
+        lock_down(&mut state, stranger, house, inside, None),
+        Err(StorageRefusal::NotYours),
+        "a stranger pinned something in somebody else's house"
+    );
+    assert_eq!(
+        lock_down(&mut state, master, house, outside, None),
+        Err(StorageRefusal::NotInThisHouse),
+        "a thing on the grass was locked down in the house"
+    );
+    assert_eq!(lock_down(&mut state, master, house, inside, None), Ok(()));
+    assert_eq!(locked_down(&state, house), vec![inside]);
+    assert_eq!(
+        lock_down(&mut state, master, house, inside, None),
+        Err(StorageRefusal::NoChange),
+        "pinning the same item twice counted twice"
+    );
+
+    // A secure has to be a container, and the same item becomes one for free —
+    // it is already on the list.
+    let plank = an_item(&mut state, at, false);
+    assert_eq!(
+        lock_down(&mut state, master, house, plank, Some(Standing::Friend)),
+        Err(StorageRefusal::NotAContainer)
+    );
+    assert_eq!(
+        lock_down(&mut state, master, house, inside, Some(Standing::Friend)),
+        Ok(())
+    );
+    assert_eq!(
+        locked_down(&state, house).len(),
+        1,
+        "making a lockdown secure spent a second slot"
+    );
+
+    assert_eq!(release(&mut state, master, house, inside), Ok(()));
+    assert!(locked_down(&state, house).is_empty());
+    assert_eq!(
+        release(&mut state, master, house, inside),
+        Err(StorageRefusal::NoChange)
+    );
+}
+
+/// The allowance is a ceiling and the ceiling refuses.
+#[test]
+fn a_full_house_takes_no_more_lockdowns() {
+    use crate::storage::{StorageRefusal, allowance, lock_down};
+
+    let mut state = world_with(cottage());
+    let owner = an_owner(&mut state);
+    let at = Point::new(10, 10, 0);
+    let house = place(&mut state, at, Facet(0), COTTAGE, owner).expect("a legal spot");
+    let master = state.registry.entity_of(owner).expect("a mobile");
+
+    let ceiling = allowance(&state, house).lockdowns;
+    for _ in 0..ceiling {
+        let item = an_item(&mut state, at, false);
+        assert_eq!(lock_down(&mut state, master, house, item, None), Ok(()));
+    }
+    let one_too_many = an_item(&mut state, at, false);
+    assert_eq!(
+        lock_down(&mut state, master, house, one_too_many, None),
+        Err(StorageRefusal::NoRoom)
+    );
+}
+
+/// A secure opens by standing, and every other container in Britannia opens for
+/// anybody.
+#[test]
+fn a_secure_opens_for_the_standing_it_names() {
+    use crate::storage::{lock_down, may_open};
+
+    let mut state = world_with(cottage());
+    let owner = an_owner(&mut state);
+    let at = Point::new(10, 10, 0);
+    let house = place(&mut state, at, Facet(0), COTTAGE, owner).expect("a legal spot");
+    let master = state.registry.entity_of(owner).expect("a mobile");
+
+    let chest = an_item(&mut state, at, true);
+    let plain = an_item(&mut state, at, true);
+    lock_down(&mut state, master, house, chest, Some(Standing::CoOwner)).unwrap();
+
+    let friend = an_owner(&mut state);
+    let stranger = an_owner(&mut state);
+    {
+        let entry = state.registry.get_mut::<House>(house).expect("its component");
+        trust(entry, owner, friend, Standing::Friend, false).unwrap();
+    }
+    let friend = state.registry.entity_of(friend).expect("a mobile");
+    let stranger = state.registry.entity_of(stranger).expect("a mobile");
+
+    assert!(may_open(&state, master, chest), "the owner was shut out");
+    assert!(
+        !may_open(&state, friend, chest),
+        "a friend opened a co-owners' secure"
+    );
+    assert!(!may_open(&state, stranger, chest));
+    assert!(
+        may_open(&state, stranger, plain),
+        "an ordinary chest refused a stranger"
+    );
+
+    // And "anyone" means the bottom of the ladder, not the absence of one: a
+    // banned player is still below it.
+    lock_down(&mut state, master, house, chest, Some(Standing::Stranger)).unwrap();
+    assert!(may_open(&state, stranger, chest));
+    let banned = state.registry.serial_of(stranger).unwrap();
+    {
+        let entry = state.registry.get_mut::<House>(house).expect("its component");
+        ban(entry, owner, banned, false).unwrap();
+    }
+    assert!(
+        !may_open(&state, stranger, chest),
+        "a banned player opened a secure standing open to anyone"
+    );
+}
+
+/// The storage ceiling counts what is in the secures, one level deep.
+#[test]
+fn the_storage_ceiling_counts_what_is_in_the_secures() {
+    use crate::storage::{allowance, has_room_for, lock_down, stored};
+
+    let mut state = world_with(cottage());
+    let owner = an_owner(&mut state);
+    let at = Point::new(10, 10, 0);
+    let house = place(&mut state, at, Facet(0), COTTAGE, owner).expect("a legal spot");
+    let master = state.registry.entity_of(owner).expect("a mobile");
+
+    let chest = an_item(&mut state, at, true);
+    lock_down(&mut state, master, house, chest, Some(Standing::Friend)).unwrap();
+    let chest_serial = state.registry.serial_of(chest).unwrap();
+
+    assert_eq!(stored(&state, house), 0);
+    for _ in 0..3 {
+        let item = an_item(&mut state, at, false);
+        state.registry.remove::<Position>(item);
+        state.registry.insert(
+            item,
+            openshard_state::components::Contained {
+                container: chest_serial,
+                position: openshard_protocol::gump::GumpPoint::new(0, 0),
+                grid: openshard_protocol::containers::GridSlot(0),
+            },
+        );
+    }
+    assert_eq!(stored(&state, house), 3);
+    assert!(has_room_for(&state, house, allowance(&state, house).storage - 3));
+    assert!(
+        !has_room_for(&state, house, allowance(&state, house).storage - 2),
+        "the ceiling let one past it"
     );
 }

@@ -213,7 +213,11 @@ CREATE TABLE IF NOT EXISTS houses (
     -- every time, by the one house that owns them.
     co_owners TEXT NOT NULL DEFAULT '[]',
     friends   TEXT NOT NULL DEFAULT '[]',
-    bans      TEXT NOT NULL DEFAULT '[]'
+    bans      TEXT NOT NULL DEFAULT '[]',
+    -- What this house will hold. A number rather than a recomputation, because it
+    -- is the footprint times a shard's own tuning constant: see
+    -- `housing::storage`.
+    lockdowns INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS items (
     serial    INTEGER PRIMARY KEY,
@@ -268,7 +272,12 @@ CREATE TABLE IF NOT EXISTS items (
     rune_z INTEGER,
     -- a runebook's whole contents. JSON because its entries are a list, and a
     -- list of sixteen destinations does not become sixteen columns.
-    runebook TEXT
+    runebook TEXT,
+    -- the house this is locked down in, and the access level if it is a secure.
+    -- Two columns rather than JSON: neither is a list, and the house half is the
+    -- one a demolition would want to sweep by.
+    lockdown_house INTEGER,
+    lockdown_secure INTEGER
 );
 CREATE INDEX IF NOT EXISTS items_owner ON items (owner);
 -- NPC mobiles and placed decoration, each a JSON record keyed by serial: a
@@ -505,9 +514,10 @@ impl Store for SqliteStore {
                       loc_kind, facet, x, y, z, parent, grid, layer, price, name, spellbook, \
                       corpse, poison_level, poison_charges, trap_kind, trap_power, \
                       trap_level, uses, exceptional, crafter, \
-                      rune_facet, rune_x, rune_y, rune_z, runebook) \
+                      rune_facet, rune_x, rune_y, rune_z, runebook, \
+                      lockdown_house, lockdown_secure) \
                      VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,\
-                             ?20,?21,?22,?23,?24,?25,?26,?27,?28,?29,?30,?31,?32)",
+                             ?20,?21,?22,?23,?24,?25,?26,?27,?28,?29,?30,?31,?32,?33,?34)",
                         params![
                             item.serial.raw(),
                             // `owner` is `NOT NULL`, `0` the sentinel for "no owner" (a
@@ -561,6 +571,8 @@ impl Store for SqliteStore {
                                 .map(serde_json::to_string)
                                 .transpose()
                                 .unwrap_or_default(),
+                            item.locked_down.map(|pinned| pinned.house.raw()),
+                            item.locked_down.and_then(|pinned| pinned.secure),
                         ],
                     )?;
                     Ok(())
@@ -706,8 +718,9 @@ impl Store for SqliteStore {
                 for house in houses {
                     transaction
                         .execute(
-                            "INSERT INTO houses (serial, multi, x, y, z, facet, owner, co_owners, friends, bans) \
-                             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                            "INSERT INTO houses \
+                             (serial, multi, x, y, z, facet, owner, co_owners, friends, bans, lockdowns) \
+                             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
                             params![
                                 house.serial.raw(),
                                 house.multi,
@@ -722,6 +735,7 @@ impl Store for SqliteStore {
                                     .map_err(|e| StoreError::Corrupt(e.to_string()))?,
                                 serde_json::to_string(&house.bans)
                                     .map_err(|e| StoreError::Corrupt(e.to_string()))?,
+                                house.lockdowns,
                             ],
                         )
                         .map_err(database)?;
@@ -841,7 +855,8 @@ impl Store for SqliteStore {
                      loc_kind, facet, x, y, z, parent, grid, layer, price, name, spellbook, \
                      corpse, poison_level, poison_charges, trap_kind, trap_power, trap_level, \
                      uses, exceptional, crafter, \
-                     rune_facet, rune_x, rune_y, rune_z, runebook FROM items",
+                     rune_facet, rune_x, rune_y, rune_z, runebook, \
+                     lockdown_house, lockdown_secure FROM items",
                 )
                 .map_err(database)?;
             let rows = statement
@@ -901,6 +916,15 @@ impl Store for SqliteStore {
                             runebook: row
                                 .get::<_, Option<String>>(31)?
                                 .and_then(|json| serde_json::from_str(&json).ok()),
+                            // A house serial that will not parse drops the whole
+                            // pin: an item claiming to be locked down in nothing
+                            // is one nobody could ever release.
+                            locked_down: row.get::<_, Option<u32>>(32)?.and_then(Serial::new).map(|house| {
+                                crate::record::LockdownData {
+                                    house,
+                                    secure: row.get::<_, Option<u8>>(33).ok().flatten(),
+                                }
+                            }),
                             // A placeholder overwritten below; the location cannot be
                             // built inside `query_map`'s closure return type cleanly.
                             location: ItemLocation::Ground {
@@ -1069,7 +1093,7 @@ impl Store for SqliteStore {
             let guard = connection.lock().expect("the sqlite mutex is never poisoned");
             let mut statement = guard
                 .prepare(
-                    "SELECT serial, multi, x, y, z, facet, owner, co_owners, friends, bans \
+                    "SELECT serial, multi, x, y, z, facet, owner, co_owners, friends, bans, lockdowns \
                      FROM houses ORDER BY serial",
                 )
                 .map_err(database)?;
@@ -1086,12 +1110,13 @@ impl Store for SqliteStore {
                         row.get::<_, String>(7)?,
                         row.get::<_, String>(8)?,
                         row.get::<_, String>(9)?,
+                        row.get::<_, u32>(10)?,
                     ))
                 })
                 .map_err(database)?;
             let mut houses = Vec::new();
             for row in rows {
-                let (serial, multi, x, y, z, facet, owner, co_owners, friends, bans) =
+                let (serial, multi, x, y, z, facet, owner, co_owners, friends, bans, lockdowns) =
                     row.map_err(database)?;
                 // A row whose serial or owner will not parse is one this engine
                 // did not write. Skipped rather than refused: a corrupt house is
@@ -1113,6 +1138,7 @@ impl Store for SqliteStore {
                     friends: serde_json::from_str(&friends)
                         .map_err(|e| StoreError::Corrupt(e.to_string()))?,
                     bans: serde_json::from_str(&bans).map_err(|e| StoreError::Corrupt(e.to_string()))?,
+                    lockdowns,
                 });
             }
             Ok(houses)
@@ -1366,6 +1392,7 @@ mod tests {
             crafted: None,
             rune: None,
             runebook: None,
+            locked_down: None,
             location: ItemLocation::Contained {
                 container: Serial::new(container).expect("a valid test serial"),
                 x: 0,

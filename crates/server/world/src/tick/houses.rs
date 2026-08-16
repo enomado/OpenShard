@@ -49,6 +49,7 @@ impl World {
                     co_owners: house.co_owners.iter().map(|serial| serial.raw()).collect(),
                     friends: house.friends.iter().map(|serial| serial.raw()).collect(),
                     bans: house.bans.iter().map(|serial| serial.raw()).collect(),
+                    lockdowns: house.lockdowns,
                 })
             })
             .collect()
@@ -93,6 +94,7 @@ impl World {
                     co_owners: record.co_owners.iter().copied().filter_map(Serial::new).collect(),
                     friends: record.friends.iter().copied().filter_map(Serial::new).collect(),
                     bans: record.bans.iter().copied().filter_map(Serial::new).collect(),
+                    lockdowns: record.lockdowns,
                 },
             );
             self.state.registry.insert(entity, facet);
@@ -274,5 +276,41 @@ impl World {
         // Through the sign's own `apply`, so the cursor and the window's rows are
         // one authority check and one eviction rather than two that must agree.
         openshard_housing::sign::apply(&mut self.state, actor, house, change, who);
+    }
+
+    /// The storage cursor came back with an item: pin it, secure it, or let it
+    /// go.
+    ///
+    /// The house rides on the cursor rather than being read off where the actor
+    /// stands — see `TargetPurpose::HouseStorage` for why the two differ — and
+    /// the sign is re-drawn afterwards, because the number it shows is the one
+    /// that just changed.
+    pub(super) fn change_house_storage(
+        &mut self,
+        actor: EntityId,
+        house: EntityId,
+        change: openshard_state::HouseStorage,
+        item: Option<Serial>,
+    ) {
+        use openshard_state::HouseStorage as Change;
+
+        let Some(item) = item.and_then(|serial| self.state.registry.entity_of(serial)) else {
+            self.state.system_message(actor, "That is nothing.");
+            return;
+        };
+        let outcome = match change {
+            Change::LockDown => {
+                openshard_housing::storage::lock_down(&mut self.state, actor, house, item, None)
+            }
+            Change::Secure(access) => {
+                openshard_housing::storage::lock_down(&mut self.state, actor, house, item, Some(access))
+            }
+            Change::Release => openshard_housing::storage::release(&mut self.state, actor, house, item),
+        };
+        match outcome {
+            Ok(()) => self.state.system_message(actor, "Done."),
+            Err(refusal) => self.state.system_message(actor, refusal.message()),
+        }
+        openshard_housing::sign::show(&mut self.state, actor, house);
     }
 }

@@ -132,6 +132,11 @@ pub fn open_worn_container(state: &mut WorldState, connection: ConnectionId, pla
     }
 }
 
+/// What a house's secure says to somebody it does not know. The door's line for
+/// a chest — see `doors::NOT_YOUR_DOOR`, whose reasoning this is the other half
+/// of.
+pub const NOT_YOUR_SECURE: &str = "You cannot open that.";
+
 /// Open a container onto the acting client, if it may reach it.
 ///
 /// The container is reachable when it is on the ground within [`ITEM_REACH`], or
@@ -155,6 +160,14 @@ pub(crate) fn open_container(
     // as they do the door.
     if crate::is_locked(state, container) && !state.is_staff(player) {
         state.system_message(player, crate::LOCKED_MESSAGE);
+        return;
+    }
+    // A house's secure opens only for the people the house names. Said with the
+    // *door's* line rather than the lock's, and that is the point of asking it
+    // separately: a stranger at a secure is refused for being a stranger, and
+    // "that is locked" would send them looking for a key that does not exist.
+    if !state.may_open_secure(player, container) {
+        state.system_message(player, NOT_YOUR_SECURE);
         return;
     }
 
