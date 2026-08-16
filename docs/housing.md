@@ -71,6 +71,23 @@ obstruction index is no longer purely a function of the client's files. It is th
 files plus what the shard has placed. That is already true of doors and dropped
 items; a house is the first thing that adds a *hundred* entries at once.
 
+**D2a — `openshard-state` never holds the multi table.** It does not depend on
+`openshard-uofiles` and must not start: the components are resolved **at
+placement**, by a caller that has the table, and what is stored is the
+obstruction entries and the `House` component. At boot the saved houses are
+restored by the boot code, which already reads the client's files. This is D2's
+"computed at placement and stored" spelled as a dependency rule, and it is what
+keeps a *client file* out of the crate every gameplay system builds on.
+
+**D2b — one entity blocks one tile at several heights.** `Obstructions::block`
+keyed an obstacle by its entity, because the case it was written for was a door:
+one thing, one height, re-registered to refine it. A house is one entity whose
+walls stand on top of each other, so the key is the entity **and the z** — done,
+with a test, before anything above it was written. Keyed by the entity alone the
+second registration overwrote the first, which does not read as a missing wall
+but as the wrong floor being sealed, since which one survived depended on the
+order the components came out of the file in.
+
 **D3 — the placement rules are ServUO's five, and the fifth is the one to get
 right.** From `HousePlacement.Check`: nothing impassable around the outside, no
 impassable tile touching the house, five tiles clear front and back, the
@@ -122,8 +139,9 @@ and none depends on a later one's shape.
 **What a player sees:** a house, where a game master put it, and walls that stop
 them.
 
-1. `Multi` and `House` components in `openshard-state`, and the `Multi` load at
-   boot beside the map and the tiledata.
+1. A `House` component in `openshard-state`, and the multi table loaded at boot
+   beside the map and the tiledata — in the *boot* code, not in `state`. See D2a.
+   The obstruction key is already widened; see D2b.
 2. `openshard-housing`: `place(state, at, facet, multi_id, owner)` — spawn the
    item, fold the components into `Obstructions`, refuse a footprint that does
    not fit.
@@ -219,7 +237,12 @@ is not lost.
 - **The five multis that draw nothing** (`findings.md`) are treasure-site markers,
   and placement must refuse an id with no drawn components rather than spawn an
   invisible house.
-- **Our own client draws multis today because it draws items**, and it has never
-  been pointed at a graphic above `0x4000`. Whether `items::collect` looks the id
-  up in `multi.mul` or draws one sprite for the whole house is untested and is
-  H1's first surprise.
+- **Our own client would draw a house as one unrelated sprite.** Checked rather
+  than assumed, and it is worse than "untested": `render::items::collect` has no
+  notion of a multi at all, and a static id space that runs to `0x10000` means
+  `0x4064` is a *valid* art id. So a villa draws as whatever static happens to
+  sit at 0x4064 — silently, with no error anywhere. The classic client is
+  unaffected, since it reads `multi.mul` itself, which is why H1 is worth landing
+  on the server before this is fixed. The client half is its own piece: a
+  `GroundItem` whose graphic is a multi expands into its components before the
+  collector sees it, and `uofiles::multi` is already there to expand it with.

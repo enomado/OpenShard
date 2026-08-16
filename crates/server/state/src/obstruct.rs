@@ -16,9 +16,10 @@
 //! tile), and the code that flips the door is what keeps the copy honest —
 //! the same bargain the sector grid makes with `Position`.
 //!
-//! Tiles are blocked whole, with no z-span: a door fills its doorway. The day
-//! multi-storey interiors need a rug on one floor to not block the floor above,
-//! an `Obstacle` can learn a z-range; nothing here forbids it.
+//! An obstacle carries a z-span, so a wall on an upper floor blocks that floor
+//! and not the ground beneath it — and one entity may hold several, because a
+//! house is a single entity whose walls stand on top of each other. See
+//! [`Obstructions::block`], where the identity is the entity *and* the z.
 
 use std::collections::HashMap;
 
@@ -60,14 +61,23 @@ pub struct Obstructions {
 
 impl Obstructions {
     /// Mark `entity` as blocking `(x, y)` through the z-span `[z, z + height)`.
-    /// Blocking twice is idempotent.
+    /// Blocking twice at the same height is idempotent.
+    ///
+    /// # One entity may block one tile at several heights
+    ///
+    /// The identity is the entity **and the z**, not the entity alone. A door is
+    /// one thing at one height and re-registering it refines it, which is what
+    /// the entity half is for. A *house* is one entity whose components stand on
+    /// top of each other: a wall on the ground floor and a wall directly above it
+    /// on the second are two obstacles at one tile, and keying by the entity alone
+    /// would let the second overwrite the first — sealing the upper floor and
+    /// opening the lower one, in whichever order they happened to be registered.
     pub fn block(&mut self, x: u16, y: u16, entity: EntityId, door: bool, z: i8, height: u8) {
         let tile = self.tiles.entry((x, y)).or_default();
-        if let Some(existing) = tile.iter_mut().find(|o| o.entity == entity) {
+        if let Some(existing) = tile.iter_mut().find(|o| o.entity == entity && o.z == z) {
             // Re-registering refines what the blocker is — a doorway placed as
             // plain impassable art and then given its `Door` stays one obstacle.
             existing.door = door;
-            existing.z = z;
             existing.height = height;
         } else {
             tile.push(Obstacle {
@@ -251,6 +261,40 @@ impl Terrain for LiveTerrain<'_> {
 
 #[cfg(test)]
 mod tests {
+    /// A house is one entity with walls above walls, and both must block.
+    ///
+    /// The key is the entity *and* the z. Keyed by the entity alone, the second
+    /// registration overwrote the first — which does not read as "one wall is
+    /// missing" but as the wrong floor being sealed, since which of the two
+    /// survived depended on the order the components happened to come out of the
+    /// file in.
+    #[test]
+    fn one_entity_blocks_one_tile_at_two_heights() {
+        let house = an_entity();
+        let mut obstructions = Obstructions::default();
+        obstructions.block(10, 10, house, false, 0, 20);
+        obstructions.block(10, 10, house, false, 20, 20);
+
+        assert!(
+            obstructions.blocker_at_z(10, 10, 0).is_some(),
+            "the ground floor wall is gone"
+        );
+        assert!(
+            obstructions.blocker_at_z(10, 10, 25).is_some(),
+            "the upper floor wall is gone"
+        );
+        // And the storey above both is still open sky.
+        assert!(obstructions.blocker_at_z(10, 10, 60).is_none());
+
+        // Re-registering at a height already held still refines rather than adds:
+        // that is what the entity half of the key is for.
+        obstructions.block(10, 10, house, true, 0, 20);
+        assert!(
+            obstructions.blocker_at_z(10, 10, 0).is_some_and(|o| o.door),
+            "the refinement did not land"
+        );
+    }
+
     use super::*;
     use openshard_entities::Registry;
 
