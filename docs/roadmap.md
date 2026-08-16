@@ -2383,8 +2383,26 @@ Roughly in dependency order, each script-first:
     in the data and waits on PvP rules to read it. (`no_recall` has its reader
     now — see **Travel** below.)
 - [ ] `housing` — player houses: a multi placed on the map, a door with a real
-  lock, decay unless refreshed, friends/co-owners. Wants multis (the client's
-  `multi.mul`/UOP format, unread yet), a region concept and the door locks above.
+  lock, decay unless refreshed, friends/co-owners. **Planned in five phases —
+  see [`housing.md`](housing.md)**, which takes the eight decisions and names
+  what is deferred (customisation, boats).
+  - [x] **The multis are read.** `openshard_uofiles::multi`, both formats. The
+    picture was never the problem — a multi is one item that draws as many, and
+    every client already owns every house, so the shard sends no component of
+    one. What it has to read the same file *for* is the half the picture does not
+    carry: where a wall is for the purpose of stopping somebody.
+
+    Three things about the format are in [`findings.md`](findings.md) and cost
+    the derivation. High Seas widened the component from 12 bytes to 16 and put
+    nothing in the file to say so — `tiledata.mul`'s trap again, and the same
+    arithmetic settles it. The flag that marks a drawn component runs **opposite
+    ways** in `multi.mul` and `MultiCollection.uop`, with nothing in either to
+    say so: read one backwards and both parsers look right while disagreeing
+    about 309 of the 326 multis they share. And the two files are not the same
+    size — 326 against 862 on one install — so the UOP wins, which is the
+    *opposite* of `map0.mul`, where the stale file is zeroed and therefore loud.
+  - [ ] H1–H5: the house on the ground, the deed and its `0x99` cursor, who may
+    come in, lockdowns and secures, decay and the moving crate.
 - [x] `guilds` — **built, with ServUO's five ranks.** Founding, invitations,
   leaving, dismissal, titles, promotion, leadership, disbanding, and the war and
   alliance handshake, reached from the paperdoll's Guild button (`0xD7`/`0x28`).
