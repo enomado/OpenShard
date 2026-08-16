@@ -28,6 +28,7 @@
 //! and a house does not move, so asking `multi.mul` per step would be paying a
 //! hundred lookups for an answer that cannot have changed.
 
+pub mod decay;
 pub mod sign;
 pub mod storage;
 
@@ -171,6 +172,7 @@ pub fn place(
             // From the footprint, once, and stored — see `storage::allowance_for`.
             // The tiles are counted here because this is the one moment the multi
             // table is in hand.
+            age: 0,
             lockdowns: u32::try_from(
                 storage::allowance_for(tiles_of(state, at, facet, multi).len()).lockdowns,
             )
@@ -525,6 +527,29 @@ pub fn tiles_of(state: &WorldState, at: Point, facet: Facet, multi: u16) -> Vec<
     out.sort_unstable_by_key(|tile| (tile.x, tile.y));
     out.dedup();
     out
+}
+
+/// The house standing over `at`, if any.
+///
+/// A scan over the houses rather than an index: there are a handful on a shard,
+/// and this is asked when somebody presses a button, never on a step. That is
+/// also the reason the eager-obstruction argument does not apply — the answer is
+/// wanted a few times a minute, not ten times a second per player.
+#[must_use]
+pub fn house_at(state: &WorldState, at: Point, facet: Facet) -> Option<EntityId> {
+    state
+        .registry
+        .query::<House>()
+        .filter(|(entity, _)| state.facet_of(*entity) == facet)
+        .find(|(entity, house)| {
+            state
+                .registry
+                .get::<Position>(*entity)
+                .is_some_and(|&Position(origin)| {
+                    tiles_of(state, origin, facet, house.multi).contains(&Tile::new(at.x, at.y))
+                })
+        })
+        .map(|(entity, _)| entity)
 }
 
 /// Put a house's walls into the obstruction index.

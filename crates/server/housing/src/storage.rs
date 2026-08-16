@@ -243,6 +243,10 @@ pub fn lock_down(
             secure,
         },
     );
+    // Off the decay clock. The sweep skips a lockdown anyway, but leaving the
+    // component behind would restart the rot the moment it is released — with
+    // whatever remained of a twenty-minute timer set before the house was built.
+    state.registry.remove::<openshard_state::components::Decays>(item);
     Ok(())
 }
 

@@ -82,6 +82,7 @@ pub(crate) fn gameplay_of(config: &Config) -> Gameplay {
         stat_gain_ticks: Gameplay::ticks_from_ms(g.stat_gain_ms),
         stat_gain_chance: g.stat_gain_chance,
         decay_ticks: Gameplay::ticks(g.decay_seconds),
+        house_decay_ticks: Gameplay::ticks(g.house_decay_seconds),
         criminal_ticks: Gameplay::ticks(g.criminal_seconds),
         distance_talk: g.distance_talk,
         distance_whisper: g.distance_whisper,

@@ -917,6 +917,7 @@ fn a_houses_access_lists_survive_a_restart() {
         // a silent zero: a name this engine cannot read is one it cannot act on.
         bans: vec![banned.raw(), 0],
         lockdowns: 208,
+        age: 0,
     }]);
 
     let entity = world.state.registry.entity_of(serial).expect("the house");
@@ -976,6 +977,7 @@ fn a_house_restored_without_client_files_stands_but_stops_nobody() {
         friends: Vec::new(),
         bans: Vec::new(),
         lockdowns: 0,
+        age: 0,
     }]);
 
     let back = world
@@ -1032,6 +1034,7 @@ fn a_house_and_its_sign_are_not_also_ground_items() {
         friends: Vec::new(),
         bans: Vec::new(),
         lockdowns: 0,
+        age: 0,
     }]);
 
     let ground = world.ground_items();

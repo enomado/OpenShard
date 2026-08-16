@@ -100,6 +100,10 @@ skill_cap = 1000
 # How long an item lies on the ground before it rots, in seconds.
 decay_seconds = 1200
 
+# How long a house stands without being refreshed before it collapses, in
+# seconds. Five days. Opening its sign refreshes it; 0 turns decay off.
+house_decay_seconds = 432000
+
 # How long a criminal flag lasts after a grey act, in seconds.
 criminal_seconds = 120
 

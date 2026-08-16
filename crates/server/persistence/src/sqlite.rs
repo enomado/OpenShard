@@ -217,7 +217,10 @@ CREATE TABLE IF NOT EXISTS houses (
     -- What this house will hold. A number rather than a recomputation, because it
     -- is the footprint times a shard's own tuning constant: see
     -- `housing::storage`.
-    lockdowns INTEGER NOT NULL DEFAULT 0
+    lockdowns INTEGER NOT NULL DEFAULT 0,
+    -- how long it has stood unrefreshed, in ticks. Elapsed rather than a
+    -- deadline: the tick counter is not saved. See `housing::decay`.
+    age INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS items (
     serial    INTEGER PRIMARY KEY,
@@ -719,8 +722,9 @@ impl Store for SqliteStore {
                     transaction
                         .execute(
                             "INSERT INTO houses \
-                             (serial, multi, x, y, z, facet, owner, co_owners, friends, bans, lockdowns) \
-                             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                             (serial, multi, x, y, z, facet, owner, co_owners, friends, bans, \
+                              lockdowns, age) \
+                             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
                             params![
                                 house.serial.raw(),
                                 house.multi,
@@ -736,6 +740,9 @@ impl Store for SqliteStore {
                                 serde_json::to_string(&house.bans)
                                     .map_err(|e| StoreError::Corrupt(e.to_string()))?,
                                 house.lockdowns,
+                                // SQLite has no unsigned 64-bit; bit-cast, and
+                                // read back the same way.
+                                house.age.cast_signed(),
                             ],
                         )
                         .map_err(database)?;
@@ -1093,8 +1100,8 @@ impl Store for SqliteStore {
             let guard = connection.lock().expect("the sqlite mutex is never poisoned");
             let mut statement = guard
                 .prepare(
-                    "SELECT serial, multi, x, y, z, facet, owner, co_owners, friends, bans, lockdowns \
-                     FROM houses ORDER BY serial",
+                    "SELECT serial, multi, x, y, z, facet, owner, co_owners, friends, bans, \
+                     lockdowns, age FROM houses ORDER BY serial",
                 )
                 .map_err(database)?;
             let rows = statement
@@ -1111,12 +1118,13 @@ impl Store for SqliteStore {
                         row.get::<_, String>(8)?,
                         row.get::<_, String>(9)?,
                         row.get::<_, u32>(10)?,
+                        row.get::<_, i64>(11)?,
                     ))
                 })
                 .map_err(database)?;
             let mut houses = Vec::new();
             for row in rows {
-                let (serial, multi, x, y, z, facet, owner, co_owners, friends, bans, lockdowns) =
+                let (serial, multi, x, y, z, facet, owner, co_owners, friends, bans, lockdowns, age) =
                     row.map_err(database)?;
                 // A row whose serial or owner will not parse is one this engine
                 // did not write. Skipped rather than refused: a corrupt house is
@@ -1139,6 +1147,7 @@ impl Store for SqliteStore {
                         .map_err(|e| StoreError::Corrupt(e.to_string()))?,
                     bans: serde_json::from_str(&bans).map_err(|e| StoreError::Corrupt(e.to_string()))?,
                     lockdowns,
+                    age: age.cast_unsigned(),
                 });
             }
             Ok(houses)

@@ -8,6 +8,15 @@ pub fn mark_decay(state: &mut WorldState, item: EntityId) {
     if state.registry.has::<Container>(item) {
         return;
     }
+    // And nothing a house is holding. A lockdown is the player saying "leave
+    // this where it is", and rotting it twenty minutes later is the opposite of
+    // that.
+    if state
+        .registry
+        .has::<openshard_state::components::LockedDown>(item)
+    {
+        return;
+    }
     state.registry.insert(
         item,
         Decays {
@@ -25,6 +34,14 @@ pub fn decay(state: &mut WorldState) {
         .query::<Decays>()
         .filter(|(_, decays)| decays.at_tick <= now)
         .map(|(entity, _)| entity)
+        // The belt to `mark_decay`'s braces, and the case that needs it: an item
+        // is dropped loose (which marks it) and locked down *after*, so the clock
+        // is already running when the pin arrives.
+        .filter(|&entity| {
+            !state
+                .registry
+                .has::<openshard_state::components::LockedDown>(entity)
+        })
         .collect();
     for item in expired {
         let Some(serial) = state.registry.serial_of(item) else {

@@ -135,6 +135,11 @@ pub struct GameplayConfig {
     /// How long an item lies on the ground before it rots, in seconds.
     #[serde(default = "default_decay_seconds")]
     pub decay_seconds: u64,
+    /// How long a house stands without being refreshed before it collapses, in
+    /// seconds. ServUO's five days. `0` turns house decay off entirely, which is
+    /// what a shard that never wants a plot to free up sets.
+    #[serde(default = "default_house_decay_seconds")]
+    pub house_decay_seconds: u64,
     /// How long a criminal flag lasts after a grey act, in seconds.
     #[serde(default = "default_criminal_seconds")]
     pub criminal_seconds: u64,
@@ -365,6 +370,9 @@ fn default_stat_gain_chance() -> u32 {
 fn default_decay_seconds() -> u64 {
     20 * 60
 }
+fn default_house_decay_seconds() -> u64 {
+    5 * 24 * 60 * 60
+}
 fn default_criminal_seconds() -> u64 {
     2 * 60
 }
@@ -445,6 +453,7 @@ impl Default for GameplayConfig {
             stat_gain_ms: default_stat_gain_ms(),
             stat_gain_chance: default_stat_gain_chance(),
             decay_seconds: default_decay_seconds(),
+            house_decay_seconds: default_house_decay_seconds(),
             criminal_seconds: default_criminal_seconds(),
             distance_talk: default_distance_talk(),
             distance_whisper: default_distance_whisper(),

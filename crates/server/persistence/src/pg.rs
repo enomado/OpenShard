@@ -139,7 +139,9 @@ CREATE TABLE IF NOT EXISTS houses (
     friends   TEXT NOT NULL DEFAULT '[]',
     bans      TEXT NOT NULL DEFAULT '[]',
     -- What this house will hold. See the sqlite schema's own note.
-    lockdowns INTEGER NOT NULL DEFAULT 0
+    lockdowns INTEGER NOT NULL DEFAULT 0,
+    -- how long it has stood unrefreshed, in ticks. See the sqlite schema.
+    age BIGINT NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS items (
     serial    BIGINT PRIMARY KEY,
@@ -569,8 +571,9 @@ impl Store for PgStore {
                 transaction
                     .execute(
                         "INSERT INTO houses \
-                         (serial, multi, x, y, z, facet, owner, co_owners, friends, bans, lockdowns) \
-                         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
+                         (serial, multi, x, y, z, facet, owner, co_owners, friends, bans, \
+                          lockdowns, age) \
+                         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)",
                         &[
                             &i64::from(house.serial.raw()),
                             &i32::from(house.multi),
@@ -586,6 +589,9 @@ impl Store for PgStore {
                             &serde_json::to_string(&house.bans)
                                 .map_err(|e| StoreError::Corrupt(e.to_string()))?,
                             &house.lockdowns.cast_signed(),
+                            // Postgres BIGINT is signed; bit-cast, read back the
+                            // same way.
+                            &house.age.cast_signed(),
                         ],
                     )
                     .await
@@ -772,8 +778,8 @@ impl Store for PgStore {
         let client = self.client.lock().await;
         let rows = client
             .query(
-                "SELECT serial, multi, x, y, z, facet, owner, co_owners, friends, bans, lockdowns \
-                 FROM houses ORDER BY serial",
+                "SELECT serial, multi, x, y, z, facet, owner, co_owners, friends, bans, \
+                 lockdowns, age FROM houses ORDER BY serial",
                 &[],
             )
             .await
@@ -802,6 +808,7 @@ impl Store for PgStore {
                     friends: serde_json::from_str(row.get::<_, &str>(8)).unwrap_or_default(),
                     bans: serde_json::from_str(row.get::<_, &str>(9)).unwrap_or_default(),
                     lockdowns: row.get::<_, i32>(10).cast_unsigned(),
+                    age: row.get::<_, i64>(11).cast_unsigned(),
                 })
             })
             .collect())

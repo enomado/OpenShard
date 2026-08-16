@@ -204,6 +204,7 @@ fn a_house_is_an_item_whose_graphic_is_the_multi() {
             co_owners: Default::default(),
             friends: Default::default(),
             bans: Default::default(),
+            age: 0,
             // Five drawn tiles at four apiece — see `storage::LOCKDOWNS_PER_TILE`.
             lockdowns: 20,
         })
@@ -463,6 +464,7 @@ fn a_house(owner: Serial) -> House {
         co_owners: Default::default(),
         friends: Default::default(),
         bans: Default::default(),
+        age: 0,
         lockdowns: 20,
     }
 }
@@ -1067,5 +1069,201 @@ fn the_storage_ceiling_counts_what_is_in_the_secures() {
     assert!(
         !has_room_for(&state, house, allowance(&state, house).storage - 2),
         "the ceiling let one past it"
+    );
+}
+
+/// The six stages are the reference's thresholds, and the boundaries are where
+/// it puts them.
+///
+/// The boundaries rather than a sample from the middle of each band: they are
+/// not evenly spaced — the first stage is half a percent of the period and the
+/// last is five — so a rounding slip shows up nowhere else.
+#[test]
+fn a_house_wears_through_the_reference_stages() {
+    use crate::decay::Condition;
+
+    for (per_mille, expected) in [
+        (0, Condition::LikeNew),
+        (4, Condition::LikeNew),
+        (5, Condition::Slightly),
+        (249, Condition::Slightly),
+        (250, Condition::Somewhat),
+        (499, Condition::Somewhat),
+        (500, Condition::Fairly),
+        (749, Condition::Fairly),
+        (750, Condition::Greatly),
+        (949, Condition::Greatly),
+        (950, Condition::InDanger),
+        (999, Condition::InDanger),
+        (1000, Condition::Collapsed),
+        (5000, Condition::Collapsed),
+    ] {
+        assert_eq!(Condition::at(per_mille), expected, "at {per_mille} per mille");
+    }
+}
+
+/// The clock runs, the refresh stops it, and a period of zero turns it off.
+#[test]
+fn the_sweep_ages_a_house_and_a_refresh_undoes_it() {
+    use crate::decay::{Condition, age_and_collect, condition, refresh};
+
+    let mut state = world_with(cottage());
+    state.gameplay.house_decay_ticks = 1000;
+    let owner = an_owner(&mut state);
+    let at = Point::new(10, 10, 0);
+    let house = place(&mut state, at, Facet(0), COTTAGE, owner).expect("a legal spot");
+
+    assert_eq!(condition(&state, house), Condition::LikeNew);
+    for _ in 0..600 {
+        assert!(age_and_collect(&mut state).is_empty());
+    }
+    assert_eq!(condition(&state, house), Condition::Fairly);
+    refresh(&mut state, house);
+    assert_eq!(condition(&state, house), Condition::LikeNew);
+
+    // Decay off: nothing ages, so nothing ever collapses.
+    state.gameplay.house_decay_ticks = 0;
+    for _ in 0..5000 {
+        assert!(age_and_collect(&mut state).is_empty());
+    }
+    assert_eq!(
+        state.registry.get::<House>(house).map(|entry| entry.age),
+        Some(0),
+        "a shard with decay off still counted"
+    );
+}
+
+/// The whole of H5 in one house: it comes down, the walls go with it, and what
+/// it was holding is in the crate rather than gone.
+#[test]
+fn a_collapsed_house_leaves_a_crate_and_no_walls() {
+    use crate::decay::{CRATE_GRAPHIC, age_and_collect, demolish};
+    use crate::storage::lock_down;
+    use openshard_state::components::{Contained, Container};
+
+    let mut state = world_with(cottage());
+    state.gameplay.house_decay_ticks = 10;
+    let owner = an_owner(&mut state);
+    let at = Point::new(10, 10, 0);
+    let house = place(&mut state, at, Facet(0), COTTAGE, owner).expect("a legal spot");
+    let master = state.registry.entity_of(owner).expect("a mobile");
+    let house_serial = state.registry.serial_of(house).expect("its serial");
+
+    // A locked-down plank, a secure chest, and something inside the chest.
+    let plank = an_item(&mut state, at, false);
+    let chest = an_item(&mut state, at, true);
+    lock_down(&mut state, master, house, plank, None).unwrap();
+    lock_down(&mut state, master, house, chest, Some(Standing::Friend)).unwrap();
+    let chest_serial = state.registry.serial_of(chest).unwrap();
+    let inside = an_item(&mut state, at, false);
+    state.registry.remove::<Position>(inside);
+    state.registry.insert(
+        inside,
+        Contained {
+            container: chest_serial,
+            position: openshard_protocol::gump::GumpPoint::new(0, 0),
+            grid: openshard_protocol::containers::GridSlot(0),
+        },
+    );
+    // And a loose barrel nobody pinned, which is not the house's to move.
+    let loose = an_item(&mut state, at, false);
+
+    // The walls are up before, and down after.
+    assert!(
+        state
+            .facet_state(Facet(0))
+            .obstructions
+            .is_blocked(at.x - 1, at.y - 1),
+        "the cottage never had walls"
+    );
+    let mut down = Vec::new();
+    for _ in 0..11 {
+        down = age_and_collect(&mut state);
+        if !down.is_empty() {
+            break;
+        }
+    }
+    assert_eq!(down, vec![house], "the period ran out and nothing collapsed");
+    demolish(&mut state, house);
+
+    assert!(
+        !state
+            .facet_state(Facet(0))
+            .obstructions
+            .is_blocked(at.x - 1, at.y - 1),
+        "the walls outlived the house"
+    );
+    assert!(
+        state.registry.serial_of(house).is_none(),
+        "the house is still there"
+    );
+    assert!(
+        state
+            .registry
+            .query::<openshard_state::components::HouseSign>()
+            .next()
+            .is_none(),
+        "the sign outlived its house"
+    );
+
+    // One crate, on the house's own tile, holding the plank and the chest — and
+    // the chest still holding what was in it.
+    let crates: Vec<_> = state
+        .registry
+        .query::<Container>()
+        .filter(|(entity, _)| {
+            state
+                .registry
+                .get::<Drawn>(*entity)
+                .is_some_and(|drawn| drawn.id == Graphic(CRATE_GRAPHIC))
+        })
+        .map(|(entity, _)| entity)
+        .collect();
+    assert_eq!(crates.len(), 1, "the wrong number of crates");
+    let crate_serial = state.registry.serial_of(crates[0]).unwrap();
+    assert_eq!(state.registry.get::<Position>(crates[0]).map(|p| p.0), Some(at));
+
+    let packed: Vec<EntityId> = state
+        .registry
+        .query::<Contained>()
+        .filter(|(_, held)| held.container == crate_serial)
+        .map(|(entity, _)| entity)
+        .collect();
+    assert_eq!(packed.len(), 2, "the crate holds {packed:?}");
+    assert!(packed.contains(&plank) && packed.contains(&chest));
+    assert_eq!(
+        state.registry.get::<Contained>(inside).map(|held| held.container),
+        Some(chest_serial),
+        "the chest was emptied into the crate beside it"
+    );
+    assert!(
+        state.registry.get::<Position>(loose).is_some(),
+        "the loose barrel was swept up with the house's own things"
+    );
+    assert!(
+        !state
+            .registry
+            .has::<openshard_state::components::LockedDown>(plank),
+        "the plank came out of the house still pinned to it"
+    );
+    let _ = house_serial;
+}
+
+/// A house with nothing pinned in it leaves no crate.
+#[test]
+fn an_empty_house_leaves_no_crate() {
+    let mut state = world_with(cottage());
+    let owner = an_owner(&mut state);
+    let at = Point::new(10, 10, 0);
+    let house = place(&mut state, at, Facet(0), COTTAGE, owner).expect("a legal spot");
+
+    assert_eq!(crate::decay::demolish(&mut state, house), None);
+    assert!(
+        state
+            .registry
+            .query::<openshard_state::components::Container>()
+            .next()
+            .is_none(),
+        "an empty house left a crate to stand in the road"
     );
 }

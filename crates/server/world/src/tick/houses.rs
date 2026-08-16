@@ -49,6 +49,7 @@ impl World {
                     co_owners: house.co_owners.iter().map(|serial| serial.raw()).collect(),
                     friends: house.friends.iter().map(|serial| serial.raw()).collect(),
                     bans: house.bans.iter().map(|serial| serial.raw()).collect(),
+                    age: house.age,
                     lockdowns: house.lockdowns,
                 })
             })
@@ -94,6 +95,7 @@ impl World {
                     co_owners: record.co_owners.iter().copied().filter_map(Serial::new).collect(),
                     friends: record.friends.iter().copied().filter_map(Serial::new).collect(),
                     bans: record.bans.iter().copied().filter_map(Serial::new).collect(),
+                    age: record.age,
                     lockdowns: record.lockdowns,
                 },
             );
@@ -211,6 +213,27 @@ impl World {
 }
 
 impl World {
+    /// Pull down every house whose period is up.
+    ///
+    /// Beside the item decay sweep and on the same cadence, which is every tick.
+    /// A scan over the houses rather than a queue of deadlines: there are a
+    /// handful of them on a shard, and a deadline queue would be a second copy
+    /// of `refreshed_at` to keep in step through every refresh.
+    pub(super) fn collapse_houses(&mut self) {
+        for house in openshard_housing::decay::age_and_collect(&mut self.state) {
+            let owner = self.state.registry.get::<House>(house).map(|entry| entry.owner);
+            openshard_housing::decay::demolish(&mut self.state, house);
+            // The owner is told if they are here to hear it. Nothing is sent to
+            // an absent one: this engine has no offline mail, and inventing one
+            // for a single line is a system rather than a message.
+            if let Some(owner) = owner.and_then(|serial| self.state.registry.entity_of(serial)) {
+                self.state
+                    .system_message(owner, "Your house has collapsed. What it held is in a crate.");
+            }
+            info!("a house collapsed");
+        }
+    }
+
     /// A sign was double-clicked: open its house's window.
     ///
     /// The house is looked up by serial *now*. A sign left standing over a house
@@ -226,24 +249,8 @@ impl World {
     }
 
     /// The house `who` is standing in, if any.
-    ///
-    /// A scan over the houses rather than an index: there are a handful on a
-    /// shard and this is asked when somebody presses a button, never on a step.
     pub(super) fn house_at(&self, at: Point, facet: Facet) -> Option<EntityId> {
-        self.state
-            .registry
-            .query::<House>()
-            .filter(|(entity, _)| self.state.facet_of(*entity) == facet)
-            .find(|(entity, house)| {
-                self.state
-                    .registry
-                    .get::<Position>(*entity)
-                    .is_some_and(|&Position(origin)| {
-                        openshard_housing::tiles_of(&self.state, origin, facet, house.multi)
-                            .contains(&openshard_movement::Tile::new(at.x, at.y))
-                    })
-            })
-            .map(|(entity, _)| entity)
+        openshard_housing::house_at(&self.state, at, facet)
     }
 }
 

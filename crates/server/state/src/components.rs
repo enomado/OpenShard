@@ -2113,6 +2113,18 @@ pub struct House {
     /// the absence of friendship: a stranger is neither, and the difference is
     /// what the door says when it refuses.
     pub bans: std::collections::BTreeSet<openshard_protocol::serial::Serial>,
+    /// How many ticks the house has stood unrefreshed.
+    ///
+    /// A tick count and not a wall clock, which is D6. An **accumulator** and not
+    /// a deadline, unlike every other timer in this engine
+    /// ([`Decays`], [`MurderDecay`]), and the difference is that this one has to
+    /// cross a restart: the tick counter is not saved — the world's clock is in
+    /// UO minutes and `WorldState::ticks` starts at zero every boot — so a
+    /// deadline written as an absolute tick would mean nothing on the way back
+    /// in, and every house on the shard would come up freshly refreshed.
+    ///
+    /// Counted up by the decay sweep, zeroed by a refresh, saved as it stands.
+    pub age: u64,
     /// How many items may be locked down here, secures included.
     ///
     /// **Computed at placement and stored**, which is D2's own rule one level

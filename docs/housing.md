@@ -6,9 +6,11 @@ feature made of parts that could ship separately: a house you can place and walk
 through is not a house, and a house with a lock and no decay is a shard that
 fills up and never empties.
 
-Four of the five phases are built: a house goes down, its walls stop you, its
-door and its secures know you, and its sign says who owns it. What is left is
-H5 — the decay that takes it away, and the crate that catches what was inside.
+**All five phases are built.** A house goes down from a deed, its walls stop
+you, its door and its secures know you, its sign says who owns it and how it is
+wearing, and a house nobody visits collapses into a crate that keeps what was
+inside. Each phase's section below records what came out differently from the
+plan, which is the half worth reading.
 
 > Read [`architecture.md`](architecture.md) for where a system crate sits and
 > what it may depend on, and [`style.md`](style.md) before writing any of it.
@@ -38,13 +40,13 @@ exist (326 against 862 on one install, so the UOP wins).
 | piece | server | client (ours) | classic client |
 |---|---|---|---|
 | multi components | **built** (`uofiles::multi`) | — | reads its own files |
-| `0x99` multi target cursor | **no packet at all** | **no packet at all** | speaks it |
-| a house as a world item | nothing places one | draws items already | draws multis already |
-| the footprint blocking a step | `Obstructions` exists, nothing fills it from a multi | — | n/a, server-authoritative |
+| `0x99` multi target cursor | **built** | **built** — read; the preview picture is not drawn | speaks it |
+| a house as a world item | **built** | **built** — `net_command::multi_pieces` | draws multis already |
+| the footprint blocking a step | **built** | — | n/a, server-authoritative |
 | the house sign, the deed | **built** | draws items already | ordinary items |
 | door locks | **built** — `KeyValue`, the lock rules, and the house's own gate | — | n/a |
 | co-owners, friends, bans | **built** | n/a | n/a |
-| decay | — | — | n/a |
+| decay | **built** | n/a | n/a |
 | customisation (`0xD7` house design) | — | — | speaks it |
 
 `0x99` is the one packet that has to be written from nothing on both ends. It is
@@ -507,6 +509,70 @@ is not lost.
 1. D6's tick count, the refresh, and the five stages ServUO names.
 2. D8's moving crate.
 3. Demolition by the owner, which is the same path arriving deliberately.
+
+#### Built, and D6 needed amending on one point
+
+**The clock is an accumulator, not a deadline** — the one timer in this engine
+that is. `Decays` and `MurderDecay` are both an absolute `at_tick`, which works
+because they are minutes long and die with the process. A house's is five days,
+and `WorldState::ticks` **starts at zero every boot**: the world saves a clock in
+UO minutes and not a tick count, so a deadline written as an absolute tick means
+nothing on the way back in, and every house on the shard would come up freshly
+refreshed. So `House::age` counts up — one add per house per tick over a handful
+of them — and saves and restores as the one number it is. D6 said "a tick count,
+not a wall clock" and that still holds; what it did not say is which end of the
+interval to store.
+
+**Six stages, and they are the reference's own thresholds** — 5, 250, 500, 750,
+950, 1000 per mille of the period, from `GetOldDecayLevel`. Two of ServUO's nine
+are dropped by name: `Ageless` is a staff flag this engine has no concept for,
+and `DemolitionPending` means a rented vendor is still standing inside. The
+thresholds are written out rather than divided, because they are **not evenly
+spaced**: the first band is half a percent of the period and the last is five.
+
+**The sign refreshes it, and the walk does not.** ServUO refreshes on its own
+house menu post-AoS and on the owner walking in before that; the walk is not
+copied because `house_at` is a scan over every house on the shard — fine when
+somebody presses a button, not fine ten times a second per player. The sign is
+where the reference itself moved to, and the sign already draws the condition
+line, so the player who checks is the player who refreshes.
+
+**A period of zero turns decay off**, and turns the *counting* off with it: a
+shard that never wants a plot to free up does not want a counter climbing toward
+a threshold nobody will read.
+
+**The crate is the deletion rule, which is D8, and it holds.** Everything locked
+down, everything secured, and everything inside a secure goes into one crate on
+the house's own tile — the secures go in whole, so a chest keeps its contents
+rather than being emptied beside them. What is *not* swept up is the loose
+clutter: an item somebody dropped on the floor and never pinned was on the ground
+before the demolition and is on the ground after, which is where it already was.
+
+What the crate does not do is stated rather than left to be discovered: it does
+not decay and nothing collects it. ServUO internalises its own after three hours
+and hands it to the owner's bank — a real feature, and not this one. A crate that
+rotted would be a shard that eats somebody's belongings on the day their house
+came down, which is the failure this phase exists to prevent, so the crate stands.
+
+**A lockdown does not rot**, which needed fixing in two places rather than one:
+`mark_decay` skips a pinned item, and the sweep skips one too. The second is the
+case that needs it — an item is dropped loose, which marks it, and locked down
+*after*, so the clock is already running when the pin arrives. `lock_down` also
+takes the component off, or releasing it would restart whatever remained of a
+twenty-minute timer set before the house existed.
+
+**Demolition is the same path arriving deliberately.** The owner's button on the
+sign, and `.hdemolish` for staff — the case the sign is no help for, which is an
+abandoned house whose owner will never open it, standing on a plot somebody else
+wants. The owner check is re-asked when the button comes back, because a window
+outlives the standing that drew it.
+
+Schema **v30**, and it is v27's case rather than v28's: one column, and the bump
+is for the *writer*. A v29 build opens the database, ignores `houses.age`, and
+writes every house back at the default — so every house becomes freshly refreshed
+on the first save and nothing ever collapses again.
+
+**H5 is complete, and so is this plan.**
 
 ## What this plan does not cover
 

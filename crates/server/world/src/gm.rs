@@ -67,6 +67,7 @@ pub fn run(state: &mut WorldState, actor: EntityId, rest: &str) {
         "hdrop" => house_list(state, actor, HouseChange::Drop),
         "hban" => house_list(state, actor, HouseChange::Ban),
         "hunban" => house_list(state, actor, HouseChange::Unban),
+        "hdemolish" => demolish_house(state, actor),
         "admin" => crate::admin::open_menu(state, actor),
         "save" => save_world(state, actor),
         other => notify(state, actor, &format!("Unknown command '{other}'.")),
@@ -536,6 +537,31 @@ fn make_deed(state: &mut WorldState, actor: EntityId, args: &[&str]) {
         openshard_state::components::Name(format!("a house deed ({:#06x})", multi.0)),
     );
     notify(state, actor, "A house deed is at your feet.");
+}
+
+/// `.hdemolish` — pull down the house you are standing in.
+///
+/// The sign has this button and only shows it to the owner. Staff get a command
+/// as well, because the case it is for is the one where the sign is no help: an
+/// abandoned house whose owner will never open it, standing on a plot somebody
+/// else wants.
+fn demolish_house(state: &mut WorldState, actor: EntityId) {
+    let Some(&openshard_state::components::Position(at)) =
+        state.registry.get::<openshard_state::components::Position>(actor)
+    else {
+        return;
+    };
+    let facet = state.facet_of(actor);
+    let Some(house) = openshard_housing::house_at(state, at, facet) else {
+        notify(state, actor, "You are not standing in a house.");
+        return;
+    };
+    openshard_housing::decay::demolish(state, house);
+    notify(
+        state,
+        actor,
+        "The house comes down. What it held is in the crate.",
+    );
 }
 
 /// `.hfriend`, `.hcoowner`, `.hdrop`, `.hban`, `.hunban` — change the house you

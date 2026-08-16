@@ -89,6 +89,8 @@ pub(crate) mod button {
     pub const SECURE_ANYONE: ButtonId = ButtonId(9);
     /// And to let one go loose again.
     pub const RELEASE: ButtonId = ButtonId(10);
+    /// Pull the house down. The owner's, and nobody else's.
+    pub const DEMOLISH: ButtonId = ButtonId(11);
 }
 
 /// The first row button, and how many a row draws.
@@ -126,6 +128,13 @@ pub fn show(state: &mut WorldState, player: EntityId, house: EntityId) {
     ) else {
         return;
     };
+    // Opening the sign is what refreshes the house — see `decay`'s own header for
+    // why it is this and not the owner walking in. Anybody the house trusts, and
+    // it happens before the window is built so the condition line it draws is the
+    // one the viewer just caused.
+    if standing_of(state, player, house) >= Standing::Friend {
+        crate::decay::refresh(state, house);
+    }
     let (layout, context) = build(state, player, house);
     let (string, lines) = layout.finish();
 
@@ -145,6 +154,18 @@ pub fn show(state: &mut WorldState, player: EntityId, house: EntityId) {
     if let Some(row) = state.row_of_mut(player) {
         row.house_gump = Some(context);
     }
+}
+
+/// Where `player` stands with `house`, or a stranger if either is not what it
+/// says it is.
+fn standing_of(state: &WorldState, player: EntityId, house: EntityId) -> Standing {
+    let (Some(entry), Some(who)) = (
+        state.registry.get::<House>(house),
+        state.registry.serial_of(player),
+    ) else {
+        return Standing::Stranger;
+    };
+    entry.standing_of(who, state.is_staff(player))
 }
 
 /// What to call somebody who is on a list.
@@ -181,6 +202,7 @@ fn build(state: &WorldState, player: EntityId, house: EntityId) -> (GumpLayout, 
         .registry
         .serial_of(player)
         .map_or(Standing::Stranger, |who| entry.standing_of(who, staff));
+    let owns = standing >= Standing::Owner;
 
     layout.label(
         20,
@@ -191,6 +213,19 @@ fn build(state: &WorldState, player: EntityId, house: EntityId) -> (GumpLayout, 
     // What the viewer is to this house, said out loud. A friend who wonders why
     // there are no buttons has the answer on the same screen.
     layout.label(20, 44, GUMP_WHITE, format!("You are: {}", standing.name()));
+    // And how the house itself is doing. The one line a player comes to the sign
+    // for that is not about a list.
+    let condition = crate::decay::condition(state, house);
+    layout.label(
+        260,
+        20,
+        if condition >= crate::decay::Condition::Greatly {
+            HUE_BAN
+        } else {
+            GUMP_WHITE
+        },
+        condition.message(),
+    );
 
     // The five verbs, each raising the same cursor the staff commands do. Drawn
     // for a co-owner and above, which is what all five refuse below — see
@@ -234,6 +269,19 @@ fn build(state: &WorldState, player: EntityId, house: EntityId) -> (GumpLayout, 
             layout.button(x, FRAME.1 - 36, 4005, 4007, GumpButton::Reply, 0, id);
             layout.label(x, FRAME.1 - 14, GUMP_WHITE, label);
             x += 100;
+        }
+        // And the one thing only the owner may do.
+        if owns {
+            layout.button(
+                x,
+                FRAME.1 - 36,
+                4005,
+                4007,
+                GumpButton::Reply,
+                0,
+                button::DEMOLISH,
+            );
+            layout.label(x, FRAME.1 - 14, HUE_BAN, "Demolish");
         }
     }
 
@@ -334,6 +382,16 @@ pub fn handle(state: &mut WorldState, connection: ConnectionId, response: &GumpR
             "Which container shall stand open to anyone?",
         ),
         button::RELEASE => pin(state, HouseStorage::Release, "What shall be released?"),
+        button::DEMOLISH => {
+            // The owner's alone, re-asked here: the window outlives the standing
+            // that drew it, and hiding the button hid it on one screen.
+            if standing_of(state, player, context.house) < Standing::Owner {
+                state.system_message(player, "That is not your house to pull down.");
+                return true;
+            }
+            crate::decay::demolish(state, context.house);
+            state.system_message(player, "The house comes down. What it held is in the crate.");
+        }
         other => {
             let Some(index) = row_of(other, context.rows.len()) else {
                 return true;

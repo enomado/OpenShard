@@ -336,7 +336,13 @@ mod optional_serial {
 ///   houses come up with every lockdown released and every secure standing open.
 ///   The house's own ceiling goes the same way: dropped on the read, written
 ///   back as nothing, and then no lockdown fits anywhere.
-pub const SCHEMA_VERSION: u32 = 29;
+/// - v30: **house decay**. One column, `houses.age`, and a bump for the writer
+///   rather than the reader — v27's own case. A v29 build opens the database,
+///   ignores the column, and writes every house back with the default: which is
+///   `0`, so every house on the shard silently becomes freshly refreshed on the
+///   first save, and nothing ever collapses again. The reader's side is harmless
+///   by comparison, which is why the bump is about the other one.
+pub const SCHEMA_VERSION: u32 = 30;
 
 /// A player's house, as saved.
 ///
@@ -374,6 +380,13 @@ pub struct HouseRecord {
     /// Everyone turned away.
     #[serde(default)]
     pub bans: Vec<u32>,
+    /// How many ticks it has stood unrefreshed.
+    ///
+    /// The one timer in this engine saved as an elapsed count rather than as a
+    /// deadline, because it is the one that has to cross a restart: the tick
+    /// counter is not saved, so an absolute tick would read as zero on the way
+    /// back in and every house on the shard would come up freshly refreshed.
+    pub age: u64,
     /// How many items may be locked down here.
     ///
     /// Saved rather than recomputed, unlike the walls and the sign, and the

@@ -104,6 +104,9 @@ pub struct Gameplay {
     pub stat_gain_chance: u32,
     /// How long an item lies on the ground before it rots, in ticks.
     pub decay_ticks: u64,
+    /// How long a house stands without being refreshed before it collapses, in
+    /// ticks. ServUO's five days, and D6's operator setting.
+    pub house_decay_ticks: u64,
     /// How long a criminal flag lasts, in ticks.
     pub criminal_ticks: u64,
     /// How far normal speech carries, in tiles.
@@ -315,6 +318,7 @@ impl Default for Gameplay {
             stat_gain_ticks: Self::ticks_from_ms(500),
             stat_gain_chance: 50, // 5%, ServUO's PlayerChanceToGainStats
             decay_ticks: Self::ticks(20 * 60),
+            house_decay_ticks: Self::ticks(5 * 24 * 60 * 60),
             criminal_ticks: Self::ticks(2 * 60),
             distance_talk: 18,
             distance_whisper: 3,
