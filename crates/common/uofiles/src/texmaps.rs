@@ -250,7 +250,15 @@ mod tests {
 
     impl ScratchDir {
         fn new(name: &str) -> Self {
-            let dir = std::env::temp_dir().join(format!("openshard-texmaps-{name}"));
+            // The pid is not decoration. `name` being unique makes the
+            // directories unique *within* one run, which is what the helper's
+            // own doc is about — but two `cargo test` processes at once (a
+            // workspace run beside a focused one, or CI's) both compute the same
+            // path, and the second's `remove_dir_all` deletes the first's files
+            // between its `create_dir_all` and its `write`. `map.rs`'s
+            // `ScratchDir` had already worked this out and guarded it; this one
+            // was written from the same idea and missed the process half.
+            let dir = std::env::temp_dir().join(format!("openshard-texmaps-{}-{name}", std::process::id()));
             let _ = std::fs::remove_dir_all(&dir);
             std::fs::create_dir_all(&dir).expect("a writable temp directory");
             Self(dir)
@@ -275,7 +283,9 @@ mod tests {
     /// parallel, and two of them sharing a scratch directory means one deletes
     /// the other's files halfway through — which fails as "the index says the
     /// texture is there and the data file disagrees", the exact shape of the bug
-    /// these tests are about.
+    /// these tests are about. Uniqueness *across processes* is
+    /// [`ScratchDir::new`]'s own, and for the same reason one process further
+    /// down: it failed only on a full workspace run, never on the test alone.
     fn synthetic(name: &str, entries: &[(u32, u32)], data: Vec<u8>) -> (ScratchDir, TexMaps) {
         let dir = ScratchDir::new(name);
         let mut index = Vec::new();
