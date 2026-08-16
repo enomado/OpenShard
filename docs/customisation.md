@@ -1,0 +1,316 @@
+# A house whose shape nobody shipped
+
+`docs/housing.md`'s **D7** put this out of scope by name, and called it "a second
+system the size of this one: a design buffer, a preview state, a commit, and a
+whole editor on the client." That estimate was right. **D7 is reverted** — this
+document covers the whole of it.
+
+The load-bearing decision is not the packet set and it is not the editor. It is
+**where a per-house component list lives**, because the seam a house's shape
+comes through today cannot hold one. Everything else in this plan follows from
+the answer to that.
+
+> Read [`housing.md`](housing.md) first — this is its D7 opened up, and it
+> assumes H1–H5's decisions rather than restating them. `architecture.md` for
+> where a system crate sits, `style.md` before writing any of it.
+
+## What a design is, and why the picture is not free this time
+
+Housing's whole tractability came from one sentence: *the picture is free,
+because every client already owns every house.* The wire carries `0x4000 | id`
+and the client draws the hundred and forty-eight statics a villa is made of out
+of its own `multi.mul`.
+
+A **designed** house has no id in that file. Its shape was made on this shard, by
+a player, five minutes ago. So for exactly one kind of house the bargain inverts:
+the shard owes the picture as well as the walls, and it owes it as a packet.
+
+That is why the real protocol sends a design as `0xD8` rather than as an id, and
+it is why "mint a synthetic multi id" is not an escape hatch — see D1's fifth
+reason.
+
+## What is missing, in one table
+
+| piece | server | client (ours) | classic client |
+|---|---|---|---|
+| `0xD7` header decode | **built** — `encoded.rs`, total `Other(u16)` fallthrough | sends two subcommands | speaks it |
+| the `0xD7` design subcommands | — | — | speaks them |
+| `0xD8` the design itself | **no packet at all** | **no packet at all** | speaks it |
+| `0xBF 0x1D` the design revision | **no packet at all** | **no packet at all** | speaks it |
+| a per-house component list | **nowhere it can live** — D1 | — | n/a |
+| a foundation on the ground | **refused by name** (`Refusal::NeedsCustomisation`) | would draw nothing | draws multis already |
+| the design saved | — | n/a | n/a |
+| the editor | — | — | **has one** |
+
+`0xD8` is this plan's `0x99`: the one packet that has to be written from nothing
+on both ends. Zlib-compressed, and `Feature::CompressedGumps`
+(`protocol/src/feature.rs:78`, gated to 5.0.0.0) is this codebase's precedent for
+a compressed payload behind a version gate.
+
+## Why `Terrain::multi_components` cannot be the answer
+
+`Terrain::multi_components(&self, id: u16) -> &[Component]`
+(`movement/src/walk.rs:148`) is where a house's shape reaches gameplay today,
+and it is the natural first guess. It cannot work, for five reasons. The first
+four are structural; the fifth is the one that decides it.
+
+1. **Its only key is `id: u16`.** A design is per *house*. Two houses on
+   foundation `0x13EC` have two designs and one id, and the seam has nowhere to
+   put the difference.
+2. **It returns a borrow out of `&self`.** Whatever holds a design would have to
+   be owned by the terrain and outlive the call — it cannot be computed and
+   returned.
+3. **The one production store is `Option<Arc<Multis>>`, installed once at boot**
+   (`server/src/boot.rs:637`), and `Multis` has no insert or mutate — only
+   `Multis::of(iter)`, which builds a whole table at once.
+4. **The trait is deliberately not world state.** Its own doc says why: putting a
+   reader for a copyrighted file into the crate every gameplay system builds on.
+   A design *is* world state, which is the opposite direction. D2a is the same
+   rule stated for `openshard-state`.
+5. **A synthetic multi id has no picture on any client.** `Multi::new` is public
+   and `Component`'s fields are public, so a synthetic multi is constructible —
+   and useless, because the client resolves `0x4000 | id` against its own
+   `multi.mul` and has never heard of it.
+
+**A live trap found while writing this.** `CachedTerrain`
+(`movement/src/cache.rs:93`) and `LiveTerrain` (`state/src/obstruct.rs:179`) both
+wrap a `Terrain` and forward thirteen and seven methods respectively — and
+**neither forwards `multi_components`**, so both silently answer `&[]`. Housing gets away with it
+because its three readers reach `state.facet_state(facet).terrain` directly. The
+first caller to ask a *wrapped* terrain about a house's shape gets an empty list
+and no error. That is a defect independent of this plan and it is worth fixing
+whether or not any of this is built.
+
+## Decisions, taken here
+
+**C1 — a design is a component on the house entity.**
+`HouseDesign { components: Vec<Component>, revision: u32 }` in `openshard-state`,
+beside `House`.
+
+Nothing new enters the dependency graph, which was worth checking before deciding
+rather than after: `openshard-state` already depends on `openshard-movement`,
+which depends on `openshard-uofiles`, and `Component`'s fields are all public. Had
+it not been reachable, D2a's rule would have forced a different design entirely.
+
+**C2 — one chooser, not three.** `sign_spot` (`housing/src/lib.rs:363`),
+`tiles_of` (`:518`) and `footprint_of` (`:592`) each call
+`terrain.multi_components(multi)` directly. That is three copies of a choice
+about to become two-way, and three places for one to be fixed and the others not.
+
+The three take a `design: Option<&[Component]>`:
+
+- `None` — the terrain's fixed multi. Every classic house, still a borrow, so the
+  common path allocates nothing and the restore sweep costs what it costs today.
+- `Some(&[…])` — this house's own design.
+
+`Option` rather than a modelled state, and the reason matters given `style.md`'s
+rule that `Option` means absent and not unknown: a classic house genuinely **has
+no design**. That is absence in the domain. A foundation with no design is a
+different thing, and C3 makes it unrepresentable.
+
+The design is a *parameter* rather than resolved inside, so the choice stays
+visible at every call site — `place` passes what it is placing, `restore_houses`
+passes what it loaded, the sign path reads the component and passes it. Same
+argument `style.md` makes for `.0` over a `Deref`.
+
+**C3 — a foundation is never undesigned.** `FOUNDATION_IDS`
+(`housing/src/lib.rs:59`) is refused at `place`'s first check today, because a
+foundation's component list has no stairs and a house nobody can enter is worse
+than no house. That reasoning is correct and survives: the refusal is not
+deleted, it is **replaced** by placing the foundation *with* its initial design.
+ServUO's `HouseFoundation` constructor lays a floor and a stair set for exactly
+this reason.
+
+So the invariant is statable: a house entity either carries a `HouseDesign` or is
+a classic multi, and a foundation-id house with no design is a bug rather than a
+state. That is the difference between C2's `Option` — a reader handling two kinds
+of house — and a half-built object.
+
+**C4 — the persistence rule survives, restated precisely.** Housing's rule is
+that components are *never* saved, because a multi's shape is a pure function of
+its id and a copy goes stale the day the operator updates their install
+(`persistence/src/record.rs:349-361`, and `tick/houses.rs`'s module header). A
+designed house's components have no file behind them, so the rule **as written**
+cannot cover them.
+
+It does not need abandoning; it needs saying accurately. **What is never saved is
+a copy of something the client's files already state.** A design says nothing the
+client's files say — the design *is* the original, and there is nothing for it to
+go stale against. Both halves then hold at once, and the boundary between them is
+exactly `HouseDesign`'s presence. Same shape as H5's amendment to D6: the
+decision was right and its statement was one case too narrow.
+
+**Shape: a table keyed by the house's serial, not a blob column on
+`HouseRecord`.** A `HouseRecord` is small and swept for every house on every
+save; a design is a few hundred rows. A classic house writes **no design rows at
+all**, so the overwhelmingly common case pays nothing. The cost, named: a second
+query on restore, joined by serial.
+
+**Schema v31, and for once it is the *reader's* case.** The last four bumps were
+about the writer. This one is not. A v30 build opens the database, does not know
+the design table so does not drop it, reads a house, sees a foundation multi id,
+and computes the footprint from `multi_components` — which for a foundation is a
+bare platform. The shard comes up with a customised house wearing the
+foundation's walls, and nothing says so. That is worse than a house with no walls
+at all, which is at least visible.
+
+**One thing gets better, and it is worth writing down so nobody "fixes" it:** a
+designed house restores with real walls on a shard with **no client files**,
+because its components never came from client files. It is the one place H1's
+stated bargain improves.
+
+**C5 — `0xBF 0x1D` is load-bearing, not an optimisation.** It does not exist
+anywhere in this repo. The custom-house revision is what lets a client cache a
+design by `(serial, revision)` and ask for the full `0xD8` only when what it
+holds is stale. Without it every client walking into an area re-fetches every
+design in it, on every approach.
+
+So the revision is a `u32` on `HouseDesign`, saved, and bumped on commit — and it
+lands in the **first** phase rather than a later one, because retrofitting a
+cache key after clients have cached under no key is a migration rather than a
+feature.
+
+**C6 — the `0xD7` subcommand set, named by role.** `EncodedCommand`
+(`protocol/src/encoded.rs`) decodes a header only and leaves the payload unread,
+with `EncodedSubcommand::Other(u16)` as a total fallthrough — so adding
+subcommands is purely additive and nothing already routed changes. That is a
+better extension point than this plan deserves and it is worth noticing.
+
+| role | what it changes |
+|---|---|
+| begin / end customisation | the session's brackets |
+| build / erase at a tile | the working design |
+| select floor | which storey the editor edits |
+| roof place / delete | the working design, on the roof plane |
+| commit / revert | the committed design, or nothing |
+| backup / restore | a second working copy |
+| synch | the client asking for the authoritative design back |
+| clear | empties the working design |
+
+**The hex values are read out of the reference at implementation time and cited
+at the constant**, per `style.md`'s "ports name their source". A plan that
+guessed them would be shipping magic constants with an extra step.
+
+The dispatch path is four files deep and no more, and `QuestGumpRequest` is the
+worked example end to end: `encoded.rs` names the subcommand → `dispatch.rs:47`
+maps it to a `Command` → `tick/command.rs` declares the variant → `tick.rs`
+routes it to `openshard-housing`.
+
+**C7 — the session is a state, and the working design touches nothing.**
+`DesignSession { editor, working: Vec<Component>, floor: u8 }` as its own
+component on the house entity — a separate component rather than a field on
+`House`, because absence-as-no-component is what a sparse set is for and it keeps
+`House` from growing a field most houses never carry.
+
+The rule that makes the whole thing tractable: **while a session is open, the
+world still shows and blocks the committed design.** ServUO puts the editor onto
+the foundation and freezes them; nobody walks around inside a half-finished edit.
+So there is no incremental obstruction churn, no partial design on the wire, and
+no question about what a stranger standing outside sees. One commit, one swap.
+
+Entry is the owner's, asked through `standing_of` — reused rather than rewritten,
+which is the third time that has been the right answer after `Standing` itself
+and the door.
+
+**Commit is six steps and the fifth is the one that gets forgotten:** validate
+the working design; replace `HouseDesign` and bump `revision`; `unblock` the old
+footprint and `block` the new; re-run `adopt_doors`, because a design can cut a
+doorway where there was none; **re-hang the sign**, because `sign_spot` is
+derived from the multi's *box* and a design that grew the box moved the sign; and
+send the new revision.
+
+**The lockdown allowance is recomputed on commit, and it is the one place H4's
+argument does not apply.** H4 stores the allowance rather than recomputing it at
+boot, so that an operator who lowered `LOCKDOWNS_PER_TILE` does not find half the
+shard over the new ceiling with nothing to say which lockdowns to drop. That
+failure is about the *constant* changing. Here the house's own area changed,
+which is a fact about this house, and the operator-constant failure is untouched.
+
+**A session outlives nothing.** Logout, death and `collapse_houses` all have to
+end one. Named because a dangling `DesignSession` on a despawned house surfaces
+as a panic rather than as a missing feature.
+
+**C8 — our own client draws a designed house as nothing, and it is the old bug in
+a new colour.** `net_command::multi_pieces` expands `0x4000 | id` against the
+client's own table. A designed house has no id there, so it falls through to the
+ordinary item path — which is *precisely* the "a villa drew as whatever static
+happened to sit there" failure `housing.md`'s backlog records as fixed. It must
+answer `None`, and the phase that first puts a designed house on the ground is
+the phase that owes the fix.
+
+## The phases
+
+Four. A full editor is several sessions, and **the first phase that is genuinely
+useful builds the seam and no editor at all** — because everything hard here is
+the seam.
+
+### C1 — designs exist, and staff make them
+
+1. `HouseDesign` in `openshard-state`; C2's chooser through the three readers.
+2. The design table, the restore join, schema v31.
+3. `0xBF 0x1D` and `0xD8`, both ends.
+4. `net_command::multi_pieces` answers `None` for a designed house — C8.
+5. `.hdesign <multi id>` — a staff verb that copies an existing multi's
+   components onto a house as its design.
+
+**No `0xD7` at all, and that is the point.** It proves `0xD8` against a real
+client with components that came out of a file, so a bug in the packet is a bug
+in the packet rather than a bug in an editor nobody has written yet.
+
+**Done when** `.house 0x64` then `.hdesign 0x65` makes a small house draw and
+block as a villa on a real client, and it is still that after a restart.
+
+**Useful on its own**, which is the test of a phase boundary: it is what lets a
+pack ship its own architecture without a client-file edit and without an editor.
+
+### C2 — a foundation is placeable
+
+`Refusal::NeedsCustomisation` goes away, replaced by C3's initial design at
+placement. The deed sells a foundation. A player can own one; it is a bare shell
+with a floor and stairs, and it draws.
+
+### C3 — the session
+
+Enter and leave, build and erase, floor selection, commit and revert. The editor,
+and a session's work on its own.
+
+### C4 — roofs, backup and restore, and the validation
+
+ServUO's `HouseFoundation.Check*`: every tile supported, stairs reachable, the
+piece count under a ceiling. **C3 enforces only the cheap half** — inside the
+foundation's box, under a component ceiling, storeys within the limit — and
+defers the support-and-reachability half **by name**, because "is this design
+structurally coherent" is a graph problem and a floating tower is a cosmetic bug
+rather than a hole in the shard.
+
+## What this plan does not cover
+
+- **House resizing and foundation upgrade.** ServUO's foundation can be enlarged
+  for gold. It is a *placement* question wearing a design costume — it re-asks
+  D3's five rules on a bigger footprint — and it belongs with placement.
+- **A design catalogue** — saving a design and applying it to another house. It
+  is C1's `.hdesign` generalised, and it is content plumbing rather than a system.
+- **Stairs as generated content.** C3 lays the reference's initial stair set; a
+  system that *reasons* about where stairs must go is C4's validation problem.
+- **An editor in our own client.** C8 makes a designed house draw; a client that
+  can edit one is the client-side half of C3 and is its own plan.
+- **Minting synthetic multi ids.** Refused in D1's fifth reason, and recorded
+  here so the next reader who notices `Multi::new` is public knows it was
+  considered rather than missed.
+
+## Backlog, found while planning this
+
+- **`CachedTerrain` and `LiveTerrain` drop `multi_components`.** They forward
+  thirteen and seven `Terrain` methods and not this one, so both answer `&[]`
+  with no error. Latent today only because housing's three readers reach the
+  terrain directly. Independent of this plan, and it is the shape of defect a
+  default method on a trait invites: an override that is missing looks exactly
+  like an override that was not needed.
+- **`housing::place` re-reads the multi table three times** — `footprint_of`,
+  `tiles_of` for the allowance, and `sign_spot`. Cheap at a click, and it becomes
+  three reads of a `Vec<Component>` on the entity once designs exist, which is a
+  different cost with the same shape.
+- **The design is the first thing a house owns that is large.** Every other
+  per-house fact is a serial, a set of serials, or a `u32`. Whatever the save
+  cadence does with a few hundred rows per house has not been asked, and H4's
+  lockdowns were the last time a question of that shape came up.
