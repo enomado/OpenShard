@@ -133,7 +133,11 @@ CREATE TABLE IF NOT EXISTS houses (
     y      INTEGER NOT NULL,
     z      SMALLINT NOT NULL,
     facet  SMALLINT NOT NULL,
-    owner  BIGINT NOT NULL
+    owner  BIGINT NOT NULL,
+    -- The three access lists, as JSON arrays of serials. See the sqlite schema.
+    co_owners TEXT NOT NULL DEFAULT '[]',
+    friends   TEXT NOT NULL DEFAULT '[]',
+    bans      TEXT NOT NULL DEFAULT '[]'
 );
 CREATE TABLE IF NOT EXISTS items (
     serial    BIGINT PRIMARY KEY,
@@ -558,8 +562,8 @@ impl Store for PgStore {
             for house in houses {
                 transaction
                     .execute(
-                        "INSERT INTO houses (serial, multi, x, y, z, facet, owner) \
-                         VALUES ($1, $2, $3, $4, $5, $6, $7)",
+                        "INSERT INTO houses (serial, multi, x, y, z, facet, owner, co_owners, friends, bans) \
+                         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
                         &[
                             &i64::from(house.serial.raw()),
                             &i32::from(house.multi),
@@ -568,6 +572,12 @@ impl Store for PgStore {
                             &i16::from(house.z),
                             &i16::from(house.facet),
                             &i64::from(house.owner.raw()),
+                            &serde_json::to_string(&house.co_owners)
+                                .map_err(|e| StoreError::Corrupt(e.to_string()))?,
+                            &serde_json::to_string(&house.friends)
+                                .map_err(|e| StoreError::Corrupt(e.to_string()))?,
+                            &serde_json::to_string(&house.bans)
+                                .map_err(|e| StoreError::Corrupt(e.to_string()))?,
                         ],
                     )
                     .await
@@ -753,7 +763,8 @@ impl Store for PgStore {
         let client = self.client.lock().await;
         let rows = client
             .query(
-                "SELECT serial, multi, x, y, z, facet, owner FROM houses ORDER BY serial",
+                "SELECT serial, multi, x, y, z, facet, owner, co_owners, friends, bans \
+                 FROM houses ORDER BY serial",
                 &[],
             )
             .await
@@ -774,6 +785,13 @@ impl Store for PgStore {
                     z: row.get::<_, i16>(4) as i8,
                     facet: row.get::<_, i16>(5) as u8,
                     owner,
+                    // A list that will not parse reads as empty. A house whose
+                    // friends are unreadable is a house nobody but the owner can
+                    // enter, which is recoverable; refusing the whole read is a
+                    // shard that will not boot.
+                    co_owners: serde_json::from_str(row.get::<_, &str>(7)).unwrap_or_default(),
+                    friends: serde_json::from_str(row.get::<_, &str>(8)).unwrap_or_default(),
+                    bans: serde_json::from_str(row.get::<_, &str>(9)).unwrap_or_default(),
                 })
             })
             .collect())

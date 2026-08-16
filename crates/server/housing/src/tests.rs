@@ -177,7 +177,10 @@ fn a_house_is_an_item_whose_graphic_is_the_multi() {
         state.registry.get::<House>(house),
         Some(&House {
             multi: COTTAGE,
-            owner
+            owner,
+            co_owners: Default::default(),
+            friends: Default::default(),
+            bans: Default::default(),
         })
     );
     // And it is an *item*, so everything that walks items reaches it.
@@ -424,5 +427,179 @@ fn a_world_with_no_terrain_has_no_houses() {
     assert_eq!(
         place(&mut state, Point::new(10, 10, 0), Facet(0), COTTAGE, owner),
         Err(Refusal::NoSuchMulti)
+    );
+}
+
+/// A fresh house with one owner and nobody else in it.
+fn a_house(owner: Serial) -> House {
+    House {
+        multi: COTTAGE,
+        owner,
+        co_owners: Default::default(),
+        friends: Default::default(),
+        bans: Default::default(),
+    }
+}
+
+fn somebody(n: u32) -> Serial {
+    Serial::new(n).expect("a serial")
+}
+
+/// The reference's rules are nested — a co-owner is a friend, an owner is a
+/// co-owner — and asking them as one question is what stops the wrong one being
+/// asked.
+#[test]
+fn standing_is_one_question_with_a_nested_answer() {
+    let owner = somebody(1);
+    let mut house = a_house(owner);
+    let friend = somebody(2);
+    let co_owner = somebody(3);
+    let stranger = somebody(4);
+    house.friends.insert(friend);
+    house.co_owners.insert(co_owner);
+
+    assert_eq!(standing_of(&house, owner, false), Standing::Owner);
+    assert_eq!(standing_of(&house, co_owner, false), Standing::CoOwner);
+    assert_eq!(standing_of(&house, friend, false), Standing::Friend);
+    assert_eq!(standing_of(&house, stranger, false), Standing::Stranger);
+    // The order is what makes "at least this trusted" a comparison.
+    assert!(Standing::Owner > Standing::CoOwner);
+    assert!(Standing::CoOwner > Standing::Friend);
+    assert!(Standing::Friend > Standing::Stranger);
+    assert!(Standing::Stranger > Standing::Banned);
+}
+
+/// Nobody bans the owner out of their own house, and staff are never turned
+/// away — both are the reference's own first branches.
+#[test]
+fn the_owner_and_staff_cannot_be_banned() {
+    let owner = somebody(1);
+    let mut house = a_house(owner);
+    let staffer = somebody(2);
+    house.bans.insert(owner);
+    house.bans.insert(staffer);
+
+    assert_eq!(
+        standing_of(&house, owner, false),
+        Standing::Owner,
+        "the owner was banned from their own house"
+    );
+    assert_eq!(
+        standing_of(&house, staffer, true),
+        Standing::CoOwner,
+        "a game master was turned away"
+    );
+    // And the same mobile without the authority *is* banned.
+    assert_eq!(standing_of(&house, staffer, false), Standing::Banned);
+}
+
+/// Only the owner names a co-owner. A co-owner who could would be handing the
+/// house to a crowd the owner never met.
+#[test]
+fn a_co_owner_may_name_friends_and_not_co_owners() {
+    let owner = somebody(1);
+    let mut house = a_house(owner);
+    let co_owner = somebody(2);
+    trust(&mut house, owner, co_owner, Standing::CoOwner, false).expect("the owner may");
+
+    let newcomer = somebody(3);
+    assert_eq!(
+        trust(&mut house, co_owner, newcomer, Standing::Friend, false),
+        Ok(()),
+        "a co-owner may name a friend"
+    );
+    assert_eq!(
+        trust(&mut house, co_owner, somebody(4), Standing::CoOwner, false),
+        Err(ListRefusal::NotYours)
+    );
+    // And a friend may name nobody at all.
+    assert_eq!(
+        trust(&mut house, newcomer, somebody(5), Standing::Friend, false),
+        Err(ListRefusal::NotYours)
+    );
+}
+
+/// Promotion **moves** somebody rather than adding them twice: two lists holding
+/// one person is two answers to one question.
+#[test]
+fn promoting_a_friend_leaves_them_in_one_list() {
+    let owner = somebody(1);
+    let mut house = a_house(owner);
+    let who = somebody(2);
+    trust(&mut house, owner, who, Standing::Friend, false).unwrap();
+    trust(&mut house, owner, who, Standing::CoOwner, false).unwrap();
+
+    assert!(house.co_owners.contains(&who));
+    assert!(
+        !house.friends.contains(&who),
+        "they are in both lists, so which one answers depends on check order"
+    );
+    assert_eq!(standing_of(&house, who, false), Standing::CoOwner);
+}
+
+/// A ban is the newer decision and it wins: "banned but still a co-owner" is a
+/// state with no useful answer.
+#[test]
+fn banning_a_co_owner_takes_the_trust_with_it() {
+    let owner = somebody(1);
+    let mut house = a_house(owner);
+    let turncoat = somebody(2);
+    trust(&mut house, owner, turncoat, Standing::CoOwner, false).unwrap();
+
+    ban(&mut house, owner, turncoat, false).expect("the owner may");
+    assert_eq!(standing_of(&house, turncoat, false), Standing::Banned);
+    assert!(!house.co_owners.contains(&turncoat));
+
+    // Lifting it gives back a stranger, not a co-owner: undoing a ban grants
+    // nothing.
+    unban(&mut house, owner, turncoat, false).expect("the owner may");
+    assert_eq!(standing_of(&house, turncoat, false), Standing::Stranger);
+}
+
+/// The owner is not a name on any list and cannot be dropped from one.
+#[test]
+fn nobody_evicts_the_owner() {
+    let owner = somebody(1);
+    let mut house = a_house(owner);
+    let co_owner = somebody(2);
+    trust(&mut house, owner, co_owner, Standing::CoOwner, false).unwrap();
+
+    // `NotTheOwner` and not `NotYours`: a co-owner *may* drop friends, so the
+    // refusal is about who was named rather than about who asked, and saying so
+    // is the difference between a usable message and a puzzling one.
+    assert_eq!(
+        distrust(&mut house, co_owner, owner, false),
+        Err(ListRefusal::NotTheOwner)
+    );
+    assert_eq!(
+        ban(&mut house, co_owner, owner, false),
+        Err(ListRefusal::NotTheOwner)
+    );
+    // Only the owner drops a co-owner.
+    assert_eq!(
+        distrust(&mut house, co_owner, co_owner, false),
+        Err(ListRefusal::NotYours)
+    );
+    assert_eq!(distrust(&mut house, owner, co_owner, false), Ok(()));
+    assert_eq!(standing_of(&house, co_owner, false), Standing::Stranger);
+}
+
+/// The lists have ceilings, and re-adding somebody already on one is not a new
+/// name.
+#[test]
+fn a_full_list_refuses_a_new_name_and_takes_an_old_one() {
+    let owner = somebody(1);
+    let mut house = a_house(owner);
+    for n in 0..MAX_CO_OWNERS as u32 {
+        trust(&mut house, owner, somebody(100 + n), Standing::CoOwner, false).expect("under the ceiling");
+    }
+    assert_eq!(
+        trust(&mut house, owner, somebody(999), Standing::CoOwner, false),
+        Err(ListRefusal::Full)
+    );
+    assert_eq!(
+        trust(&mut house, owner, somebody(100), Standing::CoOwner, false),
+        Ok(()),
+        "somebody already on the list is not a new name"
     );
 }

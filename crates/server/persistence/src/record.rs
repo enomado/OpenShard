@@ -323,7 +323,13 @@ mod optional_serial {
 ///   survive and point at somebody's chest. So the bump is for the *writer*, not
 ///   the reader, and it is worth saying because every version above it was the
 ///   other way round.
-pub const SCHEMA_VERSION: u32 = 27;
+/// - v28: a house's **access lists** — co-owners, friends and bans. v27's own
+///   argument, one turn further: a v27 build knows about houses and not about
+///   who may enter one, so it would read a house, drop the three lists, and
+///   write it back without them. That is not a shard with no lists, it is a
+///   shard that *deletes* them on the first save, which is worse than refusing
+///   to open.
+pub const SCHEMA_VERSION: u32 = 28;
 
 /// A player's house, as saved.
 ///
@@ -352,6 +358,15 @@ pub struct HouseRecord {
     /// Who owns it.
     #[serde(with = "serial")]
     pub owner: Serial,
+    /// Everyone trusted short of owning it.
+    #[serde(default)]
+    pub co_owners: Vec<u32>,
+    /// Everyone who may come in.
+    #[serde(default)]
+    pub friends: Vec<u32>,
+    /// Everyone turned away.
+    #[serde(default)]
+    pub bans: Vec<u32>,
 }
 
 /// An account, as saved.

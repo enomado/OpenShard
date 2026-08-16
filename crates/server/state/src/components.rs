@@ -2095,13 +2095,24 @@ pub struct Guard {
 /// placement — see `openshard_movement::Terrain::multi_components`. Copying them
 /// onto the entity would be storing a copy of a file every client already has,
 /// and the copy would go stale the day the operator updates their install.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub struct House {
     /// Which multi it is, `0x4000` below the graphic on the wire.
     pub multi: u16,
     /// Who owns it. A house always has an owner; demolition is what happens when
     /// it would not.
     pub owner: openshard_protocol::serial::Serial,
+    /// Everyone trusted with the house short of owning it: they may lock things
+    /// down, open every secure, and use the door.
+    pub co_owners: std::collections::BTreeSet<openshard_protocol::serial::Serial>,
+    /// Everyone who may come in and use the door, and nothing else.
+    pub friends: std::collections::BTreeSet<openshard_protocol::serial::Serial>,
+    /// Everyone turned away at it.
+    ///
+    /// A separate list rather than a flag on the other two, because a ban is not
+    /// the absence of friendship: a stranger is neither, and the difference is
+    /// what the door says when it refuses.
+    pub bans: std::collections::BTreeSet<openshard_protocol::serial::Serial>,
 }
 
 /// A deed: the item a house is placed from.

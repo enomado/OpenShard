@@ -886,6 +886,70 @@ fn a_house_survives_a_restart_with_its_walls() {
     );
 }
 
+/// Who may come in survives the restart too.
+///
+/// Its own test rather than a line in the one above, because the three lists are
+/// the reason schema v28 exists: a build that knew about houses and not about
+/// their lists would read a house, drop them, and write it back — which is not a
+/// shard with no lists, it is a shard that deletes them on the first save.
+#[test]
+fn a_houses_access_lists_survive_a_restart() {
+    use openshard_persistence::record::HouseRecord;
+
+    let mut world = World::new(START);
+    let serial = Serial::new(0x4000_00AA).expect("an item serial");
+    let owner = Serial::new(0x0000_0001).expect("a mobile serial");
+    let co_owner = Serial::new(0x0000_0002).expect("a mobile serial");
+    let friend = Serial::new(0x0000_0003).expect("a mobile serial");
+    let banned = Serial::new(0x0000_0004).expect("a mobile serial");
+
+    world.restore_houses(vec![HouseRecord {
+        serial,
+        multi: 0x64,
+        x: START.0 + 5,
+        y: START.1 + 5,
+        z: 0,
+        facet: 0,
+        owner,
+        co_owners: vec![co_owner.raw()],
+        friends: vec![friend.raw()],
+        // A serial no pool can produce, to prove the filter is a filter and not
+        // a silent zero: a name this engine cannot read is one it cannot act on.
+        bans: vec![banned.raw(), 0],
+    }]);
+
+    let entity = world.state.registry.entity_of(serial).expect("the house");
+    let house = world
+        .state
+        .registry
+        .get::<openshard_state::components::House>(entity)
+        .expect("its component");
+    assert_eq!(
+        openshard_housing::standing_of(house, co_owner, false),
+        openshard_housing::Standing::CoOwner
+    );
+    assert_eq!(
+        openshard_housing::standing_of(house, friend, false),
+        openshard_housing::Standing::Friend
+    );
+    assert_eq!(
+        openshard_housing::standing_of(house, banned, false),
+        openshard_housing::Standing::Banned
+    );
+    assert_eq!(
+        house.bans.len(),
+        1,
+        "the unreadable serial became a ban on nobody"
+    );
+
+    // And back out again, so the sweep carries what the restore read.
+    let records = world.house_records();
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].co_owners, vec![co_owner.raw()]);
+    assert_eq!(records[0].friends, vec![friend.raw()]);
+    assert_eq!(records[0].bans, vec![banned.raw()]);
+}
+
 /// A shard booted without client files keeps its houses and gives them no walls.
 ///
 /// Not a crash and not a silent demolition: the entity is there and owned, and
@@ -907,6 +971,9 @@ fn a_house_restored_without_client_files_stands_but_stops_nobody() {
         z: 0,
         facet: 0,
         owner,
+        co_owners: Vec::new(),
+        friends: Vec::new(),
+        bans: Vec::new(),
     }]);
 
     let back = world

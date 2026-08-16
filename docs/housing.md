@@ -288,6 +288,54 @@ including the pointer tile.
 4. The ban: a banned player standing inside is moved out, which is the only rule
    here that acts on somebody rather than refusing them.
 
+#### The lists are built; the sign, the door and the eviction are not
+
+Item 2 is in, and the shape it took is worth naming: **one question, not four
+booleans.** The reference's predicates are nested — `IsFriend` is
+`IsCoOwner(m) || Friends.Contains(m)`, and `IsCoOwner` is `IsOwner(m) || ...` —
+so four independent answers are four chances to ask the wrong one.
+`Standing` is an ordered enum instead, and `standing_of` is the only place the
+order of the checks lives. `Banned` is its *lowest* value, so a comparison reads
+"at least this trusted" and a ban is never that.
+
+Four rules came out of it:
+
+- **The owner and staff cannot be banned**, which is the reference's own first
+  branch and what stops somebody banning the owner out of their own house.
+- **Only the owner names a co-owner**; a co-owner names friends. A co-owner who
+  could name another would be handing the house to a crowd the owner never met.
+- **Promotion moves rather than adds.** Somebody in both lists is two answers to
+  one question, and `standing_of` would silently prefer whichever it checked
+  first.
+- **A ban wins over trust and takes it away.** "Banned but still a co-owner" has
+  no useful answer, and the ban is the thing that was just decided. Lifting one
+  gives back a *stranger*: undoing a ban grants nothing.
+
+Saved, schema **v28** — v27's argument one turn further. A v27 build knows about
+houses and not about who may enter one, so it would read a house, drop the three
+lists and write it back. That is not a shard with no lists; it is a shard that
+deletes them on the first save.
+
+**The door needs a decision before it is written, and it is a layering one.**
+The double-click dispatch is `items::containers::double_click`, and `items` does
+not depend on `openshard-housing` and should not: a door is not a housing
+concept. Three ways out, and the second is the one the engine has already taken
+once:
+
+1. Gate it in the *caller* — the world's tick — before `toggle_door` is reached.
+   Cheap, and it puts a rule somewhere nothing else looks for one.
+2. **Put the question in `state`, beside the data.** `House` is already a `state`
+   component, and `Guild::at_war_with` is exactly this precedent: the *rules*
+   (declaring, allying) live in `openshard-guilds` while the *question* the wire
+   path has to ask lives on the component. `standing_of` would move to
+   `House::standing_of` and `openshard-housing` would keep `trust`, `ban` and the
+   limits. `WorldState::notoriety_toward` is the same shape for the same reason.
+3. A hook on the door, which is a mechanism where a rule would do.
+
+Option 2 is almost certainly right, and it is written down rather than taken
+because moving a type between crates deserves a fresh look rather than a tired
+one.
+
 ---
 
 ### H4 — lockdowns and secures

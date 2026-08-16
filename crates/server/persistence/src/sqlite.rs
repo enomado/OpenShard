@@ -207,7 +207,13 @@ CREATE TABLE IF NOT EXISTS houses (
     y      INTEGER NOT NULL,
     z      INTEGER NOT NULL,
     facet  INTEGER NOT NULL,
-    owner  INTEGER NOT NULL
+    owner  INTEGER NOT NULL,
+    -- The three access lists, as JSON arrays of serials. A house's own data and
+    -- not a join table, for the guild relations' reason: they are read whole,
+    -- every time, by the one house that owns them.
+    co_owners TEXT NOT NULL DEFAULT '[]',
+    friends   TEXT NOT NULL DEFAULT '[]',
+    bans      TEXT NOT NULL DEFAULT '[]'
 );
 CREATE TABLE IF NOT EXISTS items (
     serial    INTEGER PRIMARY KEY,
@@ -700,8 +706,8 @@ impl Store for SqliteStore {
                 for house in houses {
                     transaction
                         .execute(
-                            "INSERT INTO houses (serial, multi, x, y, z, facet, owner) \
-                             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                            "INSERT INTO houses (serial, multi, x, y, z, facet, owner, co_owners, friends, bans) \
+                             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
                             params![
                                 house.serial.raw(),
                                 house.multi,
@@ -709,7 +715,13 @@ impl Store for SqliteStore {
                                 house.y,
                                 house.z,
                                 house.facet,
-                                house.owner.raw()
+                                house.owner.raw(),
+                                serde_json::to_string(&house.co_owners)
+                                    .map_err(|e| StoreError::Corrupt(e.to_string()))?,
+                                serde_json::to_string(&house.friends)
+                                    .map_err(|e| StoreError::Corrupt(e.to_string()))?,
+                                serde_json::to_string(&house.bans)
+                                    .map_err(|e| StoreError::Corrupt(e.to_string()))?,
                             ],
                         )
                         .map_err(database)?;
@@ -1056,7 +1068,10 @@ impl Store for SqliteStore {
         blocking(move || {
             let guard = connection.lock().expect("the sqlite mutex is never poisoned");
             let mut statement = guard
-                .prepare("SELECT serial, multi, x, y, z, facet, owner FROM houses ORDER BY serial")
+                .prepare(
+                    "SELECT serial, multi, x, y, z, facet, owner, co_owners, friends, bans \
+                     FROM houses ORDER BY serial",
+                )
                 .map_err(database)?;
             let rows = statement
                 .query_map([], |row| {
@@ -1068,12 +1083,16 @@ impl Store for SqliteStore {
                         row.get::<_, i8>(4)?,
                         row.get::<_, u8>(5)?,
                         row.get::<_, u32>(6)?,
+                        row.get::<_, String>(7)?,
+                        row.get::<_, String>(8)?,
+                        row.get::<_, String>(9)?,
                     ))
                 })
                 .map_err(database)?;
             let mut houses = Vec::new();
             for row in rows {
-                let (serial, multi, x, y, z, facet, owner) = row.map_err(database)?;
+                let (serial, multi, x, y, z, facet, owner, co_owners, friends, bans) =
+                    row.map_err(database)?;
                 // A row whose serial or owner will not parse is one this engine
                 // did not write. Skipped rather than refused: a corrupt house is
                 // a missing house, and refusing the read would be a shard that
@@ -1089,6 +1108,11 @@ impl Store for SqliteStore {
                     z,
                     facet,
                     owner,
+                    co_owners: serde_json::from_str(&co_owners)
+                        .map_err(|e| StoreError::Corrupt(e.to_string()))?,
+                    friends: serde_json::from_str(&friends)
+                        .map_err(|e| StoreError::Corrupt(e.to_string()))?,
+                    bans: serde_json::from_str(&bans).map_err(|e| StoreError::Corrupt(e.to_string()))?,
                 });
             }
             Ok(houses)

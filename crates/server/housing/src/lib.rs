@@ -157,7 +157,16 @@ pub fn place(
         },
     );
     state.registry.insert(entity, Position(at));
-    state.registry.insert(entity, House { multi, owner });
+    state.registry.insert(
+        entity,
+        House {
+            multi,
+            owner,
+            co_owners: Default::default(),
+            friends: Default::default(),
+            bans: Default::default(),
+        },
+    );
     state.registry.insert(entity, facet);
     // On the sector grid like any item, so a client entering the area is told
     // about it by the ordinary interest sweep rather than by a path of its own.
@@ -165,6 +174,191 @@ pub fn place(
     let obstructions = &mut state.facet_state_mut(facet).obstructions;
     block_footprint(obstructions, entity, &footprint);
     Ok(entity)
+}
+
+/// How many co-owners a house may have — ServUO's `MaxCoOwners`.
+pub const MAX_CO_OWNERS: usize = 15;
+/// How many friends — ServUO's AoS `MaxFriends`. It is 50 before AoS, and this
+/// engine's floor is AoS.
+pub const MAX_FRIENDS: usize = 140;
+/// How many bans, on the same terms.
+pub const MAX_BANS: usize = 140;
+
+/// Where somebody stands with a house.
+///
+/// One question and not four booleans, because the reference's are **nested** —
+/// a co-owner is a friend, an owner is a co-owner — and four independent answers
+/// are four chances to ask the wrong one. See ServUO's `IsFriend`, which is
+/// `IsCoOwner(m) || Friends.Contains(m)`, and `IsCoOwner`, which is `IsOwner(m)
+/// || ...`.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
+pub enum Standing {
+    /// Turned away at the door.
+    ///
+    /// **Lowest**, so an `Ord` comparison means "at least this trusted" and a
+    /// ban is never that. The owner and staff cannot reach it — ServUO's
+    /// `IsBanned` returns false for both, which is what stops somebody banning
+    /// the owner out of their own house.
+    Banned,
+    /// Neither friend nor enemy. May knock, may not enter.
+    Stranger,
+    /// May come in and use the door.
+    Friend,
+    /// Everything but giving the house away.
+    CoOwner,
+    /// The house is theirs.
+    Owner,
+}
+
+/// What `who` is to this house.
+///
+/// The order the checks are made in is the rule: owner first, so nothing can
+/// demote them, then the ban, then the trusted lists. A banned co-owner is
+/// **banned** — the ban is the newer decision and the reference's `HasAccess`
+/// reads it that way, which is what makes "ban them" a usable answer to a
+/// co-owner who has turned.
+#[must_use]
+pub fn standing_of(house: &House, who: Serial, staff: bool) -> Standing {
+    if who == house.owner {
+        return Standing::Owner;
+    }
+    // Staff walk in anywhere, and are never banned. ServUO's own first branch.
+    if staff {
+        return Standing::CoOwner;
+    }
+    if house.bans.contains(&who) {
+        return Standing::Banned;
+    }
+    if house.co_owners.contains(&who) {
+        return Standing::CoOwner;
+    }
+    if house.friends.contains(&who) {
+        return Standing::Friend;
+    }
+    Standing::Stranger
+}
+
+/// Why a change to a house's lists was refused.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ListRefusal {
+    /// The actor is not trusted enough to make this change.
+    NotYours,
+    /// That list is full.
+    Full,
+    /// The owner cannot be made a friend of, banned from, or evicted from their
+    /// own house.
+    NotTheOwner,
+}
+
+impl ListRefusal {
+    /// What to say to whoever tried.
+    #[must_use]
+    pub const fn message(self) -> &'static str {
+        match self {
+            Self::NotYours => "That is not your house to change.",
+            Self::Full => "That list is full.",
+            Self::NotTheOwner => "That cannot be done to the owner.",
+        }
+    }
+}
+
+/// Trust somebody with the house, at `standing`.
+///
+/// Only [`Standing::Friend`] and [`Standing::CoOwner`] can be granted: an owner
+/// is made by transferring the house and a ban is [`ban`]. Granting **moves**
+/// somebody between the two lists rather than adding them to both, so a friend
+/// promoted to co-owner is in one place and the question has one answer.
+///
+/// A co-owner may add friends; only the owner may add co-owners. ServUO's own
+/// split, and the reason it is not "whoever is trusted may share the trust they
+/// have": a co-owner who could name another co-owner could hand the house to a
+/// crowd the owner never met.
+pub fn trust(
+    house: &mut House,
+    actor: Serial,
+    who: Serial,
+    standing: Standing,
+    staff: bool,
+) -> Result<(), ListRefusal> {
+    let actor_standing = standing_of(house, actor, staff);
+    let needed = match standing {
+        Standing::CoOwner => Standing::Owner,
+        _ => Standing::CoOwner,
+    };
+    if actor_standing < needed {
+        return Err(ListRefusal::NotYours);
+    }
+    if who == house.owner {
+        return Err(ListRefusal::NotTheOwner);
+    }
+    let (list, limit) = match standing {
+        Standing::CoOwner => (&mut house.co_owners, MAX_CO_OWNERS),
+        _ => (&mut house.friends, MAX_FRIENDS),
+    };
+    if !list.contains(&who) && list.len() >= limit {
+        return Err(ListRefusal::Full);
+    }
+    list.insert(who);
+    // Out of the other one: two lists holding the same person is two answers to
+    // one question, and `standing_of` would silently prefer whichever it checked
+    // first.
+    match standing {
+        Standing::CoOwner => house.friends.remove(&who),
+        _ => house.co_owners.remove(&who),
+    };
+    house.bans.remove(&who);
+    Ok(())
+}
+
+/// Take somebody off both trusted lists. A co-owner may drop a friend; only the
+/// owner may drop a co-owner.
+pub fn distrust(house: &mut House, actor: Serial, who: Serial, staff: bool) -> Result<(), ListRefusal> {
+    let actor_standing = standing_of(house, actor, staff);
+    let needed = if house.co_owners.contains(&who) {
+        Standing::Owner
+    } else {
+        Standing::CoOwner
+    };
+    if actor_standing < needed {
+        return Err(ListRefusal::NotYours);
+    }
+    if who == house.owner {
+        return Err(ListRefusal::NotTheOwner);
+    }
+    house.co_owners.remove(&who);
+    house.friends.remove(&who);
+    Ok(())
+}
+
+/// Turn somebody away from the house.
+///
+/// A ban is the newer decision and it wins over the trusted lists: banning a
+/// co-owner takes them off it, because "banned but still a co-owner" is a state
+/// with no useful answer and the ban is the thing that was just decided.
+pub fn ban(house: &mut House, actor: Serial, who: Serial, staff: bool) -> Result<(), ListRefusal> {
+    if standing_of(house, actor, staff) < Standing::CoOwner {
+        return Err(ListRefusal::NotYours);
+    }
+    if who == house.owner {
+        return Err(ListRefusal::NotTheOwner);
+    }
+    if !house.bans.contains(&who) && house.bans.len() >= MAX_BANS {
+        return Err(ListRefusal::Full);
+    }
+    house.bans.insert(who);
+    house.co_owners.remove(&who);
+    house.friends.remove(&who);
+    Ok(())
+}
+
+/// Let a banned player back to the door. They come back a stranger, not a
+/// friend: undoing a ban is not the same as granting anything.
+pub fn unban(house: &mut House, actor: Serial, who: Serial, staff: bool) -> Result<(), ListRefusal> {
+    if standing_of(house, actor, staff) < Standing::CoOwner {
+        return Err(ListRefusal::NotYours);
+    }
+    house.bans.remove(&who);
+    Ok(())
 }
 
 /// Put a house's walls into the obstruction index.

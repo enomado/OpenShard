@@ -17,6 +17,7 @@
 use openshard_entities::EntityId;
 use openshard_items as items;
 use openshard_persistence::record::HouseRecord;
+use openshard_protocol::serial::Serial;
 use openshard_protocol::server_packet::ServerPacket;
 use openshard_protocol::target::{MultiTargetRequest, TargetKind};
 use openshard_protocol::wire::CursorId;
@@ -45,6 +46,9 @@ impl World {
                     z: at.z,
                     facet: self.state.facet_of(entity).0,
                     owner: house.owner,
+                    co_owners: house.co_owners.iter().map(|serial| serial.raw()).collect(),
+                    friends: house.friends.iter().map(|serial| serial.raw()).collect(),
+                    bans: house.bans.iter().map(|serial| serial.raw()).collect(),
                 })
             })
             .collect()
@@ -82,6 +86,13 @@ impl World {
                 House {
                     multi: record.multi,
                     owner: record.owner,
+                    // A saved serial that will not parse is dropped rather than
+                    // refused: a name this engine cannot read is a name it cannot
+                    // act on either, and a house that will not restore is worse
+                    // than one missing a friend.
+                    co_owners: record.co_owners.iter().copied().filter_map(Serial::new).collect(),
+                    friends: record.friends.iter().copied().filter_map(Serial::new).collect(),
+                    bans: record.bans.iter().copied().filter_map(Serial::new).collect(),
                 },
             );
             self.state.registry.insert(entity, facet);
