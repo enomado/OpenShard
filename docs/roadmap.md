@@ -2382,7 +2382,7 @@ Roughly in dependency order, each script-first:
     for creatures (only players are told), and the `safe` flag, which is carried
     in the data and waits on PvP rules to read it. (`no_recall` has its reader
     now — see **Travel** below.)
-- [x] `housing` — **built, all five phases.** A multi placed from a deed, walls
+- [x] `housing` — **built, H1–H5.** A multi placed from a deed, walls
   that stop you, a door and secures that know you, a sign that says who owns it
   and how it is wearing, and a house nobody visits collapsing into a crate that
   keeps what was inside. **See [`housing.md`](housing.md)**, which takes the
@@ -2535,6 +2535,32 @@ Roughly in dependency order, each script-first:
     Saved, schema **v30** — v27's case again, a bump for the *writer*: an older
     build ignores `houses.age` and writes every house back at the default, so
     nothing on the shard ever collapses again.
+  - [ ] **H6 — the region a house stands in.** The sixth phase of a five-phase
+    plan, and half of it is a correction: `no_housing` is a `RegionFlags` field
+    with 21 shipped regions behind it and no reader, D3's staff exemption cannot
+    exist because `place` takes no actor, and D4's house-as-region was decided
+    and never assigned to a phase. All three are the same thing — housing and
+    regions never met. The rule is stated over the whole footprint rather than
+    the origin (which is not reliably part of the house at all), at the house's
+    own z rather than each component's (247 shipped rects are z-banded), and
+    before the ground refusal, because `BadGround` means "try a tile over" and
+    inside Deceit that is a lie.
+- [ ] `boats` — a multi that moves: a hull that blocks, a deck you can stand on,
+  and everyone aboard arriving with it. **Planned — see
+  [`boats.md`](boats.md)**, which refuses a parent transform on the engine's own
+  evidence (mounting *deletes* the mount rather than carrying it), keeps the hull
+  out of `Obstructions` because that index only ever subtracts and a deck has to
+  *add* a surface, and finds that `Feature::SmoothShip` already names `0xF6` and
+  its 7.0.9.0 boundary with no packet behind it. It also supplies the repro the
+  open pier/bridge defect below has been waiting for.
+- [ ] `customisation` — the `0xD7` house design system. **Planned — see
+  [`customisation.md`](customisation.md)**, which reverts housing's D7 in full.
+  The decision it turns on is where a per-house component list lives:
+  `Terrain::multi_components` cannot hold one — its only key is a `u16`, it
+  returns a borrow out of `&self`, its store is fixed at boot, it is documented
+  as deliberately not world state, and a synthetic multi id has no picture on any
+  client. Its first phase builds the seam and no editor, which is what lets a
+  pack ship its own architecture with no client-file edit.
 - [x] `guilds` — **built, with ServUO's five ranks.** Founding, invitations,
   leaving, dismissal, titles, promotion, leadership, disbanding, and the war and
   alliance handshake, reached from the paperdoll's Guild button (`0xD7`/`0x28`).
