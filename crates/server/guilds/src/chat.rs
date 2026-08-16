@@ -11,28 +11,20 @@
 //! zero for both modes so that a routing failure is silence rather than a
 //! private line shouted down the street.
 //!
-//! # Alliance chat means something slightly different here
+//! # Alliance chat reaches the alliance
 //!
-//! ServUO's alliance is a **named** object — several guilds, a leader guild, an
-//! invitation handshake of its own — and this engine has none of that; what it
-//! has is [`Relation::Ally`], a pairwise declaration between two guilds. So
-//! [`say_to_alliance`] reaches every guild yours has allied with, which is the
-//! natural reading of a pairwise model and is not the reference's:
-//!
-//! - **ServUO**: A and B are in one alliance, so a line from A reaches B, and B
-//!   sees the alliance's own name.
-//! - **Here**: A is allied with B and with C, so a line from A reaches both —
-//!   even though B and C have declared nothing about each other.
-//!
-//! Named alliances stay deferred (`docs/roadmap.md` §6). When they land this is
-//! the function that changes, and the difference is written here so that whoever
-//! does it knows what behaviour they are replacing.
+//! It did not always. Until named alliances landed, being allied was a pairwise
+//! `Relation::Ally` and this function reached "every guild yours has declared an
+//! alliance with" — which meant two guilds allied to the same third could hear
+//! each other through it while being strangers to one another, and the set a
+//! line reached depended on who was speaking. An alliance is a named group now,
+//! so the set is the same for every member, which is what a channel is.
 
 use openshard_entities::EntityId;
 use openshard_protocol::server_packet::ServerPacket;
 use openshard_protocol::speech::{Font, TalkMode, UnicodeMessage};
 use openshard_protocol::wire::Hue;
-use openshard_state::{GuildId, Relation, WorldState};
+use openshard_state::{GuildId, WorldState};
 
 use crate::{Refusal, roster};
 
@@ -55,11 +47,7 @@ pub fn say_to_guild(
     Ok(())
 }
 
-/// Say something to every guild yours has allied with — and to your own.
-///
-/// Your own as well, which ServUO also does (its alliance includes the speaker's
-/// guild): a line meant for the allies that your own guildmates could not see
-/// would read, to them, as their guildmate having gone quiet.
+/// Say something to every guild in your alliance, your own included.
 pub fn say_to_alliance(
     state: &mut WorldState,
     speaker: EntityId,
@@ -68,20 +56,17 @@ pub fn say_to_alliance(
     text: &str,
 ) -> Result<(), Refusal> {
     let own = state.guild_of(speaker).ok_or(Refusal::NotInAGuild)?;
-    let allies: Vec<GuildId> = own
-        .relations
-        .iter()
-        .filter(|(_, relation)| **relation == Relation::Ally)
-        .map(|(id, _)| *id)
-        .collect();
-    if allies.is_empty() {
+    let alliance = own.alliance.ok_or(Refusal::NoAllies)?;
+    // The alliance's own members, which include the speaker's guild — so there
+    // is no "and also my own" to remember, and a line cannot reach the allies
+    // while the speaker's guildmates watch them go quiet.
+    let members: Vec<GuildId> = crate::alliance_members(state, alliance);
+    if members.is_empty() {
         return Err(Refusal::NoAllies);
     }
-    let own = own.id;
     let packet = line(state, speaker, TalkMode::Alliance, hue, font, text)?;
-    tell_guild(state, own, &packet);
-    for ally in allies {
-        tell_guild(state, ally, &packet);
+    for guild in members {
+        tell_guild(state, guild, &packet);
     }
     Ok(())
 }

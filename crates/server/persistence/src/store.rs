@@ -127,6 +127,9 @@ pub trait Store: Send + Sync {
     /// If the store cannot be read.
     async fn guilds(&self) -> Result<Vec<GuildRecord>, StoreError>;
 
+    /// Every named alliance, in id order.
+    async fn alliances(&self) -> Result<Vec<crate::record::AllianceRecord>, StoreError>;
+
     /// The world's own scalars, as last saved — the clock and where the roll
     /// generator got to. One read for the one row, so a scalar added to
     /// [`WorldRecord`] does not add a method here and a query to every backend.
@@ -171,6 +174,7 @@ pub struct MemoryStore {
     regions: Mutex<HashMap<(u8, u16), RegionRecord>>,
     /// Guilds, keyed by id.
     guilds: Mutex<HashMap<u32, GuildRecord>>,
+    alliances: Mutex<HashMap<u32, crate::record::AllianceRecord>>,
     /// The world's own scalars: the clock, and where the rolls got to. `None` until
     /// a snapshot carries them.
     world: Mutex<Option<WorldRecord>>,
@@ -282,6 +286,14 @@ impl Store for MemoryStore {
                 guilds.insert(record.id, record.clone());
             }
         }
+        // And the alliances, replace-all for the guilds' reason.
+        if let Some(records) = &snapshot.alliances {
+            let mut alliances = self.alliances.lock().expect("the mutex is never poisoned");
+            alliances.clear();
+            for record in records {
+                alliances.insert(record.id, record.clone());
+            }
+        }
         // The regions sweep replaces the whole map of the world at once.
         if let Some(records) = &snapshot.regions {
             let mut regions = self.regions.lock().expect("the mutex is never poisoned");
@@ -365,6 +377,18 @@ impl Store for MemoryStore {
             .collect();
         guilds.sort_by_key(|guild| guild.id);
         Ok(guilds)
+    }
+
+    async fn alliances(&self) -> Result<Vec<crate::record::AllianceRecord>, StoreError> {
+        let mut alliances: Vec<_> = self
+            .alliances
+            .lock()
+            .expect("the mutex is never poisoned")
+            .values()
+            .cloned()
+            .collect();
+        alliances.sort_by_key(|alliance| alliance.id);
+        Ok(alliances)
     }
 
     async fn regions(&self) -> Result<Vec<RegionRecord>, StoreError> {
@@ -451,6 +475,7 @@ mod tests {
             decorations: None,
             regions: None,
             guilds: None,
+            alliances: None,
             world: None,
         }
     }
@@ -533,6 +558,7 @@ mod tests {
             decorations: None,
             regions: None,
             guilds: None,
+            alliances: None,
             world: None,
         };
         let error = store.save(&future).await.expect_err("must refuse");
@@ -619,6 +645,7 @@ mod tests {
                 decorations: None,
                 regions: None,
                 guilds: None,
+                alliances: None,
                 world: None,
             })
             .await
@@ -639,6 +666,7 @@ mod tests {
                 decorations: None,
                 regions: None,
                 guilds: None,
+                alliances: None,
                 world: None,
             })
             .await
@@ -710,6 +738,7 @@ mod tests {
                 decorations: None,
                 regions: None,
                 guilds: None,
+                alliances: None,
                 world: None,
             })
             .await
@@ -729,6 +758,7 @@ mod tests {
                 decorations: None,
                 regions: None,
                 guilds: None,
+                alliances: None,
                 world: None,
             })
             .await
@@ -763,6 +793,7 @@ mod tests {
                 decorations: None,
                 regions: None,
                 guilds: None,
+                alliances: None,
                 world: None,
             })
             .await
@@ -781,6 +812,7 @@ mod tests {
                 decorations: None,
                 regions: None,
                 guilds: None,
+                alliances: None,
                 world: None,
             })
             .await

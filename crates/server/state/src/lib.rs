@@ -69,7 +69,7 @@ pub use components::{
     WrestlingInterceptCooldown, WrestlingOpener, WrestlingStride, effect, is_debuff, stat_shift,
 };
 pub use dialogue::{Dialogue, SpeechEntry, SpeechTable};
-pub use guild::{Guild, GuildId, Guilds, Rank, Relation};
+pub use guild::{Alliance, AllianceId, Alliances, Guild, GuildId, Guilds, Rank, Removal};
 pub use obstruct::{DOOR_HEIGHT, LiveTerrain, Obstacle, Obstructions};
 pub use openshard_protocol::world::{DamageType, RangedRange};
 pub use party::{Parties, Party, PartyId};

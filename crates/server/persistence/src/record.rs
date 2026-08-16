@@ -307,7 +307,14 @@ mod optional_serial {
 ///   either, because which of them led is on the guild and which were Emissaries
 ///   was never written down. So the version refuses the old database rather than
 ///   opening it into a shard where every guild is inert.
-pub const SCHEMA_VERSION: u32 = 25;
+/// - v26: **named alliances**. Being allied was a pairwise declaration stored in
+///   the same list as a war, told apart by [`GuildStanding::at_war`]. It is a
+///   named group now ([`AllianceRecord`]) that a guild is invited into, and the
+///   old rows cannot be converted: an `at_war: false` standing between A and B
+///   says nothing about which alliance they were both meant to be in, or what it
+///   was called. Every one would have to become an alliance of two under a
+///   made-up name, which is worse than refusing.
+pub const SCHEMA_VERSION: u32 = 26;
 
 /// An account, as saved.
 ///
@@ -453,6 +460,15 @@ pub struct CharacterRecord {
 
 /// How one guild stands with another, as saved.
 ///
+/// # `at_war` is the only thing it can say now
+///
+/// It used to distinguish a war from an alliance, because being allied was a
+/// pairwise declaration. Alliances are named groups with their own record
+/// ([`AllianceRecord`]), so every standing here is a war and the flag is
+/// vestigial — kept rather than dropped because dropping it would move the JSON
+/// shape for no gain, and `#[serde(default)]` would then read every saved war as
+/// a peace.
+///
 /// A `bool` rather than a three-state, because absence *is* the neutral case:
 /// two guilds with no declared relation are simply not in each other's lists.
 /// The in-memory [`Relation`](openshard_state::Relation) makes the same choice
@@ -496,6 +512,37 @@ pub struct GuildRecord {
     /// longer existed and start a fresh one nobody had answered.
     #[serde(default)]
     pub proposals: Vec<GuildStanding>,
+    /// Which alliance it belongs to, by [`AllianceRecord::id`]. `None` for most
+    /// guilds.
+    #[serde(default)]
+    pub alliance: Option<u32>,
+}
+
+/// A named alliance, as saved.
+///
+/// # Why the membership is written here and not on the guilds
+///
+/// Unlike a war — which is written on **both** guilds so that neither side can
+/// be the only one that knows — an alliance has a body of its own to be written
+/// on, and one list is one thing to keep in step instead of N. The guild's
+/// [`alliance`](GuildRecord::alliance) is a back-pointer for the lookup, and a
+/// guild naming an alliance whose record is gone reads as no alliance, exactly
+/// as a membership naming a disbanded guild does.
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub struct AllianceRecord {
+    /// Its id, never reused — see [`WorldRecord::alliance_high_water`].
+    pub id: u32,
+    /// What it calls itself.
+    pub name: String,
+    /// Which member guild leads it, by [`GuildRecord::id`].
+    pub leader: u32,
+    /// Every guild in it, the leader included.
+    pub members: Vec<u32>,
+    /// Every guild asked in that has not answered. Saved for the same reason a
+    /// war declaration is: it is half of a decision, and losing it at a restart
+    /// would quietly undo the asking.
+    #[serde(default)]
+    pub pending: Vec<u32>,
 }
 
 /// A quest in progress, as saved.
@@ -1157,6 +1204,11 @@ pub struct WorldRecord {
     /// itself in the new guild.
     #[serde(default)]
     pub guild_high_water: u32,
+    /// The same for alliances, and for the same reason: a guild record names its
+    /// alliance by id, and a restart that reissued one would put a guild into a
+    /// body it never joined.
+    #[serde(default)]
+    pub alliance_high_water: u32,
 }
 
 /// A character's whole carried inventory, replaced as a unit.

@@ -109,7 +109,19 @@ CREATE TABLE IF NOT EXISTS guilds (
     abbreviation TEXT NOT NULL,
     leader       BIGINT NOT NULL,
     relations    TEXT NOT NULL DEFAULT '[]',
-    proposals    TEXT NOT NULL DEFAULT '[]'
+    proposals    TEXT NOT NULL DEFAULT '[]',
+    -- Which alliance, by `alliances.id`. No foreign key, for the same reason a
+    -- character's guild has none.
+    alliance     INTEGER
+);
+-- Every named alliance. The membership is written here rather than on the
+-- guilds, and the guild's own `alliance` column is the back-pointer.
+CREATE TABLE IF NOT EXISTS alliances (
+    id      INTEGER PRIMARY KEY,
+    name    TEXT NOT NULL,
+    leader  INTEGER NOT NULL,
+    members TEXT NOT NULL DEFAULT '[]',
+    pending TEXT NOT NULL DEFAULT '[]'
 );
 CREATE TABLE IF NOT EXISTS items (
     serial    BIGINT PRIMARY KEY,
@@ -189,7 +201,8 @@ CREATE TABLE IF NOT EXISTS world (
     id            INTEGER PRIMARY KEY,
     clock_minutes BIGINT NOT NULL,
     rng_state     BIGINT NOT NULL,
-    guild_high_water INTEGER NOT NULL DEFAULT 0
+    guild_high_water INTEGER NOT NULL DEFAULT 0,
+    alliance_high_water INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS spawners (
     id             BIGINT PRIMARY KEY,
@@ -509,8 +522,8 @@ impl Store for PgStore {
                     .map_err(|e| StoreError::Corrupt(e.to_string()))?;
                 transaction
                     .execute(
-                        "INSERT INTO guilds (id, name, abbreviation, leader, relations, proposals) \
-                         VALUES ($1, $2, $3, $4, $5, $6)",
+                        "INSERT INTO guilds (id, name, abbreviation, leader, relations, proposals, alliance) \
+                         VALUES ($1, $2, $3, $4, $5, $6, $7)",
                         &[
                             &guild.id.cast_signed(),
                             &guild.name,
@@ -518,6 +531,33 @@ impl Store for PgStore {
                             &i64::from(guild.leader.raw()),
                             &relations,
                             &proposals,
+                            &guild.alliance.map(u32::cast_signed),
+                        ],
+                    )
+                    .await
+                    .map_err(database)?;
+            }
+        }
+        if let Some(alliances) = &snapshot.alliances {
+            transaction
+                .execute("DELETE FROM alliances", &[])
+                .await
+                .map_err(database)?;
+            for alliance in alliances {
+                let members = serde_json::to_string(&alliance.members)
+                    .map_err(|e| StoreError::Corrupt(e.to_string()))?;
+                let pending = serde_json::to_string(&alliance.pending)
+                    .map_err(|e| StoreError::Corrupt(e.to_string()))?;
+                transaction
+                    .execute(
+                        "INSERT INTO alliances (id, name, leader, members, pending) \
+                         VALUES ($1, $2, $3, $4, $5)",
+                        &[
+                            &alliance.id.cast_signed(),
+                            &alliance.name,
+                            &alliance.leader.cast_signed(),
+                            &members,
+                            &pending,
                         ],
                     )
                     .await
@@ -532,15 +572,17 @@ impl Store for PgStore {
             // hundred rolls.
             transaction
                 .execute(
-                    "INSERT INTO world (id, clock_minutes, rng_state, guild_high_water) \
+                    "INSERT INTO world (id, clock_minutes, rng_state, guild_high_water, alliance_high_water) \
                      VALUES (0, $1, $2, $3) \
                      ON CONFLICT (id) DO UPDATE SET clock_minutes = EXCLUDED.clock_minutes, \
                      rng_state = EXCLUDED.rng_state, \
-                     guild_high_water = EXCLUDED.guild_high_water",
+                     guild_high_water = EXCLUDED.guild_high_water, \
+                     alliance_high_water = EXCLUDED.alliance_high_water",
                     &[
                         &(record.clock_minutes as i64),
                         &record.rng_state.cast_signed(),
                         &record.guild_high_water.cast_signed(),
+                        &record.alliance_high_water.cast_signed(),
                     ],
                 )
                 .await
@@ -624,7 +666,8 @@ impl Store for PgStore {
         let client = self.client.lock().await;
         let rows = client
             .query(
-                "SELECT id, name, abbreviation, leader, relations, proposals FROM guilds ORDER BY id",
+                "SELECT id, name, abbreviation, leader, relations, proposals, alliance \
+                 FROM guilds ORDER BY id",
                 &[],
             )
             .await
@@ -640,6 +683,31 @@ impl Store for PgStore {
                         .map_err(|e| StoreError::Corrupt(e.to_string()))?,
                     proposals: serde_json::from_str(row.get::<_, &str>(5))
                         .map_err(|e| StoreError::Corrupt(e.to_string()))?,
+                    alliance: row.get::<_, Option<i32>>(6).map(i32::cast_unsigned),
+                })
+            })
+            .collect()
+    }
+
+    async fn alliances(&self) -> Result<Vec<crate::record::AllianceRecord>, StoreError> {
+        let client = self.client.lock().await;
+        let rows = client
+            .query(
+                "SELECT id, name, leader, members, pending FROM alliances ORDER BY id",
+                &[],
+            )
+            .await
+            .map_err(database)?;
+        rows.iter()
+            .map(|row| {
+                Ok(crate::record::AllianceRecord {
+                    id: row.get::<_, i32>(0).cast_unsigned(),
+                    name: row.get::<_, String>(1),
+                    leader: row.get::<_, i32>(2).cast_unsigned(),
+                    members: serde_json::from_str(row.get::<_, &str>(3))
+                        .map_err(|e| StoreError::Corrupt(e.to_string()))?,
+                    pending: serde_json::from_str(row.get::<_, &str>(4))
+                        .map_err(|e| StoreError::Corrupt(e.to_string()))?,
                 })
             })
             .collect()
@@ -649,7 +717,7 @@ impl Store for PgStore {
         let client = self.client.lock().await;
         let rows = client
             .query(
-                "SELECT clock_minutes, rng_state, guild_high_water FROM world WHERE id = 0",
+                "SELECT clock_minutes, rng_state, guild_high_water, alliance_high_water FROM world WHERE id = 0",
                 &[],
             )
             .await
@@ -661,6 +729,7 @@ impl Store for PgStore {
             // Unsigned again, bit for bit — see the write in `save`.
             rng_state: row.get::<_, i64>(1).cast_unsigned(),
             guild_high_water: row.get::<_, i32>(2).cast_unsigned(),
+            alliance_high_water: row.get::<_, i32>(3).cast_unsigned(),
         }))
     }
 
@@ -1087,6 +1156,7 @@ mod tests {
             decorations: None,
             regions: None,
             guilds: None,
+            alliances: None,
             world: None,
         }
     }
@@ -1181,6 +1251,7 @@ mod tests {
             clock_minutes: 13 * 60,
             rng_state: 0xFEDC_BA98_7654_3210,
             guild_high_water: 0,
+            alliance_high_water: 0,
         };
         assert!(record.rng_state > i64::MAX.cast_unsigned(), "the high bit is set");
         store
@@ -1197,6 +1268,7 @@ mod tests {
             clock_minutes: 14 * 60,
             rng_state: 7,
             guild_high_water: 0,
+            alliance_high_water: 0,
         };
         store
             .save(&Snapshot {
@@ -1326,6 +1398,7 @@ mod tests {
             decorations: None,
             regions: None,
             guilds: None,
+            alliances: None,
             world: None,
         };
         let error = store.save(&future).await.expect_err("must refuse");

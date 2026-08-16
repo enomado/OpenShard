@@ -451,6 +451,13 @@ async fn restore_guilds(store: &dyn Store, world: &mut World) {
         Ok(guilds) => world.restore_guilds(guilds),
         Err(error) => error!(%error, "could not read saved guilds; starting with none"),
     }
+    // And the alliances they name. Read separately and failing separately: an
+    // unreadable alliance table is a shard whose guilds are all unallied, which
+    // is a great deal better than a shard with no guilds.
+    match store.alliances().await {
+        Ok(alliances) => world.restore_alliances(alliances),
+        Err(error) => error!(%error, "could not read saved alliances; starting with none"),
+    }
 }
 
 /// Bring back the named regions — towns, dungeons, guarded zones. Saved like
@@ -504,6 +511,7 @@ async fn restore_world(store: &dyn Store, world: World, pinned_seed: Option<u64>
                 // guilds themselves: a disbanded guild leaves no row, so the
                 // maximum id in the table is not the maximum ever issued.
                 .with_guild_high_water(record.guild_high_water)
+                .with_alliance_high_water(record.alliance_high_water)
         }
         Ok(None) => world,
         Err(error) => {

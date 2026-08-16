@@ -27,7 +27,7 @@ pub const TITLE_LIMIT: usize = 20;
 /// player who types forty-one characters gets forty, not an error and a lost
 /// name. Cut on a character boundary — the limits are counts of characters, and
 /// a client may send any UTF-8 it likes.
-fn clip(text: &str, limit: usize) -> String {
+pub(crate) fn clip(text: &str, limit: usize) -> String {
     text.trim().chars().take(limit).collect()
 }
 
@@ -334,11 +334,17 @@ pub fn pass_leadership(state: &mut WorldState, leader: EntityId, member: EntityI
 pub fn disband(state: &mut WorldState, leader: EntityId) -> Result<(), Refusal> {
     let guild = may_lead(state, leader)?;
     let members = roster(state, guild);
-    let allies: Vec<GuildId> = state
+    // Every guild that had a declaration about this one, so their members'
+    // screens can be told. Taken before the disband, because the sweep inside it
+    // is what removes them.
+    let entangled: Vec<GuildId> = state
         .guilds
         .get(guild)
-        .map(|g| g.relations.keys().copied().collect())
+        .map(|g| g.wars.iter().chain(g.war_offers.iter()).copied().collect())
         .unwrap_or_default();
+    // And the alliance, which has to let go of a guild that no longer exists —
+    // otherwise its members read green to a roster that is not there.
+    let alliance = state.guilds.get(guild).and_then(|g| g.alliance);
 
     state.guilds.disband(guild);
     for member in &members {
@@ -346,10 +352,24 @@ pub fn disband(state: &mut WorldState, leader: EntityId) -> Result<(), Refusal> 
         state.system_message(*member, "Your guild has been disbanded.");
         state.broadcast_move(*member);
     }
+    if let Some(alliance) = alliance {
+        if let openshard_state::Removal::Disbanded(gone) = state.alliances.remove(alliance, guild) {
+            for member in gone.members.iter().chain(gone.pending.iter()) {
+                if let Some(entry) = state.guilds.get_mut(*member) {
+                    entry.alliance = None;
+                }
+                recolour_guild(state, *member);
+            }
+        } else {
+            for member in crate::alliance_members(state, alliance) {
+                recolour_guild(state, member);
+            }
+        }
+    }
     // A guild that was at war with this one has members whose screens still show
-    // orange. They are no longer in the roster above — the relation is gone with
-    // the guild — so they are told here or not at all.
-    for other in allies {
+    // orange. They are no longer in the roster above — the declaration is gone
+    // with the guild — so they are told here or not at all.
+    for other in entangled {
         recolour_guild(state, other);
     }
     Ok(())

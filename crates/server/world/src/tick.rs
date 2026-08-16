@@ -250,6 +250,7 @@ impl World {
         Self {
             state: WorldState {
                 guilds: openshard_state::Guilds::default(),
+                alliances: openshard_state::Alliances::default(),
                 parties: openshard_state::Parties::default(),
                 registry: Registry::new(),
                 bus: EventBus::new(),

@@ -549,7 +549,7 @@ fn a_saved_serial_is_the_one_the_client_was_told() {
 /// and so never swept — would silently join the new guild.
 #[test]
 fn a_guild_survives_a_restart_and_its_ids_are_not_handed_out_again() {
-    use openshard_state::{GuildMember, Relation};
+    use openshard_state::GuildMember;
 
     let mut world = World::new(START).with_save_every(0);
     let now = Instant::now();
@@ -566,8 +566,8 @@ fn a_guild_survives_a_restart_and_its_ids_are_not_handed_out_again() {
         .state
         .guilds
         .found("The Black Rose".to_owned(), "TBR".to_owned(), serial);
-    world.state.guilds.propose(ours, theirs, Relation::War);
-    world.state.guilds.propose(theirs, ours, Relation::War);
+    world.state.guilds.declare_war(ours, theirs);
+    world.state.guilds.declare_war(theirs, ours);
     let doomed = world
         .state
         .guilds
@@ -604,9 +604,8 @@ fn a_guild_survives_a_restart_and_its_ids_are_not_handed_out_again() {
         restored.state.guilds.get(ours).map(|g| g.name.as_str()),
         Some("The Silver Serpent")
     );
-    assert_eq!(
-        restored.state.guilds.get(ours).and_then(|g| g.toward(theirs)),
-        Some(Relation::War),
+    assert!(
+        restored.state.guilds.get(ours).unwrap().at_war_with(theirs),
         "the war did not survive the door"
     );
     assert!(restored.state.guilds.get(doomed).is_none());
@@ -692,4 +691,86 @@ fn a_guild_survives_a_restart_and_its_ids_are_not_handed_out_again() {
         restored.state.guild_label(entity).as_deref(),
         Some("[Warlord, OSS]")
     );
+}
+
+/// An alliance is a body of its own, and the guild column is only a
+/// back-pointer to it.
+///
+/// The half that is easy to leave out: the `guilds` table can restore perfectly
+/// and leave every alliance gone, and the guilds would come back naming ids that
+/// address nothing. That is not a crash — `guild_of`'s rule reads it as no
+/// alliance — but it is silently a shard whose alliances all dissolved over a
+/// restart, so the pending guild rides too, and so does the id counter.
+#[test]
+fn an_alliance_survives_a_restart_with_its_membership_and_its_counter() {
+    let mut world = World::new(START).with_save_every(0);
+    let now = Instant::now();
+    let connection = enter(&mut world, now);
+    let player = world.state.players[&connection];
+    let serial = world.state.registry.serial_of(player).expect("a serial");
+
+    let ours =
+        openshard_guilds::found(&mut world.state, player, "The Silver Serpent", "OSS").expect("a guild");
+    let second = world
+        .state
+        .guilds
+        .found("The Black Rose".to_owned(), "TBR".to_owned(), serial);
+    let third = world
+        .state
+        .guilds
+        .found("The Grey Owl".to_owned(), "TGO".to_owned(), serial);
+
+    // Two members and one still being asked, because the pending guild is the
+    // part a save of "the members" would drop.
+    let alliance = world
+        .state
+        .alliances
+        .found("The Northern Compact".to_owned(), ours, second);
+    world.state.alliances.accept(alliance, second);
+    world.state.alliances.ask(alliance, third);
+    for guild in [ours, second] {
+        world.state.guilds.get_mut(guild).unwrap().alliance = Some(alliance);
+    }
+    // A second alliance, disbanded, so the counter and the table disagree the way
+    // the guild table's already does.
+    let doomed = world
+        .state
+        .alliances
+        .found("The Ash Pact".to_owned(), third, ours);
+    world.state.alliances.remove(doomed, third);
+    let high = world.state.alliances.high_water();
+    assert!(high > alliance.0, "the disbanded alliance took an id with it");
+
+    world.take_snapshot();
+    let snapshot = only_snapshot(&mut world).expect("a character entered");
+    let guilds = snapshot.guilds.expect("a full sweep carries the guilds");
+    let alliances = snapshot.alliances.expect("and the alliances");
+    assert_eq!(alliances.len(), 1, "the disbanded one is absent");
+    let saved_world = snapshot.world.expect("and the world's own scalars");
+    assert_eq!(saved_world.alliance_high_water, high);
+
+    let mut restored = World::new(START);
+    restored.restore_guilds(guilds);
+    restored.restore_alliances(alliances);
+    let mut restored = restored.with_alliance_high_water(saved_world.alliance_high_water);
+    assert!(
+        restored.state.allied(ours, second),
+        "two guilds came back in no alliance"
+    );
+    assert!(
+        !restored.state.allied(ours, third),
+        "a guild that had only been asked came back a member"
+    );
+    let back = restored.state.alliances.get(alliance).expect("it was saved");
+    assert_eq!(back.name, "The Northern Compact");
+    assert_eq!(back.leader, ours);
+    assert!(back.pending.contains(&third), "the standing question was dropped");
+
+    // And the counter, for the guild table's reason: a reissued id would put a
+    // guild into a body it never joined.
+    let next = restored
+        .state
+        .alliances
+        .found("The Fourth".to_owned(), ours, second);
+    assert!(next.0 > high, "{next:?} re-used an id that was already issued");
 }

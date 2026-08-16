@@ -1078,6 +1078,7 @@ mod tests {
             decorations: None,
             regions: None,
             guilds: None,
+            alliances: None,
             world: None,
         }
     }

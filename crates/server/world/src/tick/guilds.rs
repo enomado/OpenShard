@@ -22,8 +22,8 @@
 //! id — a member who was offline when it disbanded, and so was never swept —
 //! would silently find itself in the new guild.
 
-use openshard_persistence::{GuildRecord, GuildStanding};
-use openshard_state::guild::{Guild, GuildId, Relation};
+use openshard_persistence::{AllianceRecord, GuildRecord, GuildStanding};
+use openshard_state::guild::{Alliance, AllianceId, Guild, GuildId};
 use tracing::info;
 
 use super::World;
@@ -42,8 +42,24 @@ impl World {
                 name: guild.name.clone(),
                 abbreviation: guild.abbreviation.clone(),
                 leader: guild.leader,
-                relations: standings(guild.relations.iter()),
-                proposals: standings(guild.proposals.iter()),
+                relations: standings(guild.wars.iter()),
+                proposals: standings(guild.war_offers.iter()),
+                alliance: guild.alliance.map(|id| id.0),
+            })
+            .collect()
+    }
+
+    /// Every alliance as a saveable record.
+    pub(super) fn alliance_records(&self) -> Vec<AllianceRecord> {
+        self.state
+            .alliances
+            .iter()
+            .map(|alliance| AllianceRecord {
+                id: alliance.id.0,
+                name: alliance.name.clone(),
+                leader: alliance.leader.0,
+                members: alliance.members.iter().map(|guild| guild.0).collect(),
+                pending: alliance.pending.iter().map(|guild| guild.0).collect(),
             })
             .collect()
     }
@@ -61,13 +77,44 @@ impl World {
                 name: record.name.clone(),
                 abbreviation: record.abbreviation.clone(),
                 leader: record.leader,
-                relations: relations(&record.relations),
-                proposals: relations(&record.proposals),
+                wars: wars(&record.relations),
+                war_offers: wars(&record.proposals),
+                alliance: record.alliance.map(AllianceId),
             });
         }
         if !records.is_empty() {
             info!(guilds = records.len(), "restored the shard's guilds");
         }
+    }
+
+    /// Re-create the alliances from saved records at boot.
+    ///
+    /// Order does not matter against [`restore_guilds`](Self::restore_guilds):
+    /// each side names the other by id and neither validates the link at boot,
+    /// for the reason that file's docs give — a guild naming an alliance that is
+    /// gone reads as no alliance, which is the same rule a membership naming a
+    /// disbanded guild has.
+    pub fn restore_alliances(&mut self, records: Vec<AllianceRecord>) {
+        for record in &records {
+            self.state.alliances.restore(Alliance {
+                id: AllianceId(record.id),
+                name: record.name.clone(),
+                leader: GuildId(record.leader),
+                members: record.members.iter().copied().map(GuildId).collect(),
+                pending: record.pending.iter().copied().map(GuildId).collect(),
+            });
+        }
+        if !records.is_empty() {
+            info!(alliances = records.len(), "restored the shard's alliances");
+        }
+    }
+
+    /// Restore the alliance id counter from the world row. See
+    /// [`with_guild_high_water`](Self::with_guild_high_water).
+    #[must_use]
+    pub fn with_alliance_high_water(mut self, id: u32) -> Self {
+        self.state.alliances.set_high_water(id);
+        self
     }
 
     /// Restore the id counter from the world row.
@@ -85,30 +132,26 @@ impl World {
     }
 }
 
-/// A guild's relations, as they go to disk.
-fn standings<'a>(relations: impl Iterator<Item = (&'a GuildId, &'a Relation)>) -> Vec<GuildStanding> {
-    relations
-        .map(|(&other, &relation)| GuildStanding {
-            other: other.0,
-            at_war: relation == Relation::War,
-        })
-        .collect()
+/// A guild's wars, as they go to disk.
+///
+/// `at_war` is always true now — it is the only standing there is, since being
+/// allied became membership of a named group. Written rather than dropped for
+/// the reason [`GuildStanding`]'s own doc gives.
+fn standings<'a>(wars: impl Iterator<Item = &'a GuildId>) -> Vec<GuildStanding> {
+    wars.map(|&other| GuildStanding {
+        other: other.0,
+        at_war: true,
+    })
+    .collect()
 }
 
-/// And back again. A `bool` is a total answer — see [`GuildStanding::at_war`] —
-/// so there is nothing here to refuse.
-fn relations(standings: &[GuildStanding]) -> std::collections::BTreeMap<GuildId, Relation> {
-    standings
-        .iter()
-        .map(|standing| {
-            (
-                GuildId(standing.other),
-                if standing.at_war {
-                    Relation::War
-                } else {
-                    Relation::Ally
-                },
-            )
-        })
-        .collect()
+/// And back again.
+///
+/// A standing that says `at_war: false` is one this engine no longer writes —
+/// which cannot arrive, because the schema version refuses a database old enough
+/// to hold one. Read as a war anyway rather than skipped: the row exists, the
+/// two guilds meant *something* by it, and the version check is what actually
+/// keeps them out.
+fn wars(standings: &[GuildStanding]) -> std::collections::BTreeSet<GuildId> {
+    standings.iter().map(|standing| GuildId(standing.other)).collect()
 }

@@ -622,6 +622,8 @@ pub struct WorldState {
     /// notoriety byte and that byte depends on who is looking — see
     /// [`notoriety_toward`](Self::notoriety_toward).
     pub guilds: crate::guild::Guilds,
+    /// Every named alliance. See [`Alliance`](crate::guild::Alliance).
+    pub alliances: crate::guild::Alliances,
     /// Every party. Runtime-only — see [`crate::party`].
     pub parties: crate::party::Parties,
     // The targeting cursor and the four gump contexts used to be maps here, keyed
@@ -2167,11 +2169,34 @@ impl WorldState {
         if mine.id == theirs {
             return Notoriety::Friend;
         }
-        match mine.toward(theirs) {
-            Some(crate::guild::Relation::Ally) => Notoriety::Friend,
-            Some(crate::guild::Relation::War) => Notoriety::Enemy,
-            None => standing,
+        // War before alliance, and the order costs nothing to state: two guilds
+        // cannot be both, because joining an alliance is refused while a war
+        // with one of its members stands (`openshard_guilds::join_alliance`).
+        // Asked in this order anyway, so that a pair which somehow became both
+        // reads as *enemies* — the safe direction, since drawing an enemy green
+        // is the mistake a player cannot recover from.
+        if mine.at_war_with(theirs) {
+            return Notoriety::Enemy;
         }
+        match self.allied(mine.id, theirs) {
+            true => Notoriety::Friend,
+            false => standing,
+        }
+    }
+
+    /// Whether two guilds are in the same alliance.
+    ///
+    /// `false` for a guild with itself, which never reaches here — the caller
+    /// answers that as the same guild — and for a membership naming an alliance
+    /// that is gone, which is the [`guild_of`](Self::guild_of) rule one level up.
+    #[must_use]
+    pub fn allied(&self, one: crate::guild::GuildId, other: crate::guild::GuildId) -> bool {
+        let Some(alliance) = self.guilds.get(one).and_then(|guild| guild.alliance) else {
+            return false;
+        };
+        self.alliances
+            .get(alliance)
+            .is_some_and(|alliance| alliance.contains(one) && alliance.contains(other))
     }
 
     /// The flag byte a `0x77`/`0x78` carries about a mobile.

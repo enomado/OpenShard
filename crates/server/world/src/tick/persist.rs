@@ -164,6 +164,7 @@ impl World {
             decorations: None,
             regions: None,
             guilds: None,
+            alliances: None,
             world: None,
         });
 
@@ -218,10 +219,12 @@ impl World {
         // beside the clock, because the maximum id *in the table* is not the
         // maximum ever issued: a disbanded guild leaves no row.
         snapshot.guilds = Some(self.guild_records());
+        snapshot.alliances = Some(self.alliance_records());
         snapshot.world = Some(WorldRecord {
             clock_minutes: self.clock_minutes(),
             rng_state: self.rng_state(),
             guild_high_water: self.state.guilds.high_water(),
+            alliance_high_water: self.state.alliances.high_water(),
         });
 
         // Skip only a genuinely empty save, so a quiet, empty shard queues nothing.

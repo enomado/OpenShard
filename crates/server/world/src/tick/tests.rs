@@ -8517,7 +8517,7 @@ fn decorate_places_statics_and_clear_removes_them() {
 #[test]
 fn a_guildmate_is_green_and_a_guild_at_war_is_orange() {
     use openshard_state::components::GuildMember;
-    use openshard_state::{Relation, guild::GuildId};
+    use openshard_state::guild::GuildId;
 
     // The colour a client is told, which is the only notoriety that is relative:
     // the same mobile is green to a guildmate and blue to a stranger.
@@ -8565,13 +8565,26 @@ fn a_guildmate_is_green_and_a_guild_at_war_is_orange() {
         "an undeclared guild is not blue"
     );
 
-    world.state.guilds.declare(ours, theirs, Relation::Ally);
+    // An alliance is a named group both are in, and green follows membership of
+    // it rather than a fact about the pair.
+    let alliance = world
+        .state
+        .alliances
+        .found("The Northern Compact".to_owned(), ours, theirs);
+    world.state.alliances.accept(alliance, theirs);
+    for guild in [ours, theirs] {
+        world.state.guilds.get_mut(guild).unwrap().alliance = Some(alliance);
+    }
     assert_eq!(world.state.notoriety_toward(one, two), Notoriety::Friend);
     // Both ways: the colour must not depend on which one is asked about.
     assert_eq!(world.state.notoriety_toward(two, one), Notoriety::Friend);
 
-    world.state.guilds.declare(ours, theirs, Relation::War);
-    assert_eq!(world.state.notoriety_toward(one, two), Notoriety::Enemy);
+    world.state.guilds.declare(ours, theirs);
+    assert_eq!(
+        world.state.notoriety_toward(one, two),
+        Notoriety::Enemy,
+        "a war inside an alliance read green"
+    );
     assert_eq!(world.state.notoriety_toward(two, one), Notoriety::Enemy);
 }
 

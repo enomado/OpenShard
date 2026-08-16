@@ -59,7 +59,10 @@ mod reply;
 mod tests;
 
 pub use chat::{say_to_alliance, say_to_guild, tell_guild};
-pub use diplomacy::{Outcome, make_peace, propose};
+pub use diplomacy::{
+    ALLIANCE_NAME_LIMIT, Outcome, alliance_members, declare_war, invite_to_alliance, join_alliance,
+    leave_alliance, make_peace,
+};
 pub use gump::GUILD_GUMP;
 pub use membership::{
     ABBREVIATION_LIMIT, NAME_LIMIT, TITLE_LIMIT, accept_invitation, decline_invitation, demote, disband,
@@ -116,9 +119,21 @@ pub enum Refusal {
     /// The target is already a [`Rank::Leader`] and there is nowhere above it,
     /// or already a [`Rank::Ronin`] and nowhere below.
     NoFurtherRank,
-    /// The guild has declared an alliance with nobody, so there is no alliance
-    /// to speak to.
+    /// The guild is in no alliance.
     NoAllies,
+    /// The guild is already in one, and a guild is in at most one.
+    AlreadyAllied,
+    /// The other guild is already in one.
+    TheyAreAllied,
+    /// Nobody has asked this guild into an alliance.
+    NotAsked,
+    /// The two guilds are at war, which is not a thing an alliance can hold.
+    AtWarWithThem,
+    /// The two guilds are allied, which is not a thing a war can be declared
+    /// across.
+    AlliedWithThem,
+    /// The guild is in no alliance to leave.
+    NotAllied,
 }
 
 impl Refusal {
@@ -142,7 +157,13 @@ impl Refusal {
             Self::NotYourPlaceTo => "Your rank does not allow that.",
             Self::TheyOutrankYou => "They outrank you.",
             Self::NoFurtherRank => "There is no rank beyond that one.",
-            Self::NoAllies => "Your guild is allied with nobody.",
+            Self::NoAllies => "Your guild is in no alliance.",
+            Self::AlreadyAllied => "Your guild is already in an alliance.",
+            Self::TheyAreAllied => "They are already in an alliance.",
+            Self::NotAsked => "Nobody has asked your guild into an alliance.",
+            Self::AtWarWithThem => "You are at war with them.",
+            Self::AlliedWithThem => "You are allied with them.",
+            Self::NotAllied => "Your guild is in no alliance.",
         }
     }
 }

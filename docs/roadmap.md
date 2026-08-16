@@ -2345,19 +2345,22 @@ Roughly in dependency order, each script-first:
     the wire answer, and `broadcast_move` builds one `0x77` per watcher. ServUO's
     order is kept: murderer and criminal resolve **before** guild, so a red
     cannot hide inside a tabard.
-  - **A war takes two declarations** — the guildstone's rule, and an alliance is
-    the same shape, so one `propose` serves both. A guild that declared and was
-    ignored is *not* at war, which is why `proposals` is a separate map from
-    `relations`. Peace, though, is one guild's decision.
+  - **A war takes two declarations** — the guildstone's rule. A guild that
+    declared and was ignored is *not* at war, which is why `war_offers` is a set
+    separate from `wars`: its members must not turn orange on the strength of
+    their own guild's opinion. Peace, though, is one guild's decision, because
+    the alternative is a guild that cannot stop being attacked by one that will
+    not agree to stop.
   - **An invitation is a consent**: a guild may not conscript, so `invite` leaves
     a `GuildCandidate` the player answers.
   - Every operation that can move a colour re-announces the mobiles it moved.
     Nothing on a client asks again on its own.
-  - **Saved, schema v24.** The guilds replace-all like the regions; membership is
+  - **Saved, schema v26.** The guilds replace-all like the regions; membership is
     a character column, so the roster is derived from who names the guild; and the
     id counter is in the world row rather than re-derived, because a disbanded
     guild leaves no row and the maximum id in the table is not the maximum ever
-    issued.
+    issued. The alliances are a second table on the same terms, with a second
+    counter, and the guild's `alliance` column is only a back-pointer into it.
   - **Ranks, and the trap in them.** Ronin, Member, Emissary, Warlord, Leader,
     with ServUO's flag set per rank (`Scripts/Misc/Guild.cs`). The ranks are
     ordered and the permissions are **not nested**: an Emissary recruits,
@@ -2377,7 +2380,34 @@ Roughly in dependency order, each script-first:
     v25 — which refuses an older database rather than opening it into a shard
     where every existing member, leaders included, reads as a Ronin and no guild
     has a way back out of that.
-  - **Guild chat, and alliance chat that is not quite ServUO's.** A guild line is
+  - **Named alliances, replacing a pairwise `Relation::Ally`.** An alliance is a
+    named object — several guilds, a leader guild, a member list and a pending
+    list — a guild is invited *into* by a guild already in it, and answered by
+    that guild's own leader: the shape a player's own membership has, one level
+    up. It replaced this engine's own simplification, in which being allied was a
+    fact about a *pair*, and A allied with B and with C left B and C strangers.
+    That model had no answer to "who is in my alliance", so alliance chat reached
+    a set that depended on who was speaking.
+
+    Four rules came with it, and each is a thing the pairwise model could not
+    state. The name is claimed once and belongs to the alliance, so extending one
+    does not rename it. War and alliance refuse each other in **all three**
+    directions — declaring on an ally, inviting somebody you are at war with, and
+    joining an alliance that holds a guild you are at war with — because green
+    and orange cannot both be true and the notoriety answer would otherwise
+    depend on which question was asked first. The leader guild leaving hands the
+    alliance on rather than dissolving it (ServUO's `CalculateAllianceLeader`),
+    which is why an alliance's id is its own and not that guild's. And an
+    alliance that cannot field two members disbands, handing back its whole
+    membership — pending guilds included — because each has a link to unhook and
+    the alliance is no longer there to be asked.
+
+    Splitting `propose` in half was the point of it: a war is a thing two guilds
+    declare at each other, an alliance is a body one is admitted to, and keeping
+    them one function is what made an alliance pairwise in the first place. The
+    permissions split with it — `CONTROL_WAR_STATUS` for the war, which is the
+    Warlord's, and `ALLIANCE_CONTROL` for the alliance, which is the Leader's.
+  - **Guild chat, and alliance chat.** A guild line is
     not a command or a prefix — it is ordinary `0xAD` speech with the mode byte
     set to `0x0D` (`0x0E` for the alliance), and it goes back out as an ordinary
     `0xAE` with the same mode so the client draws it in its own colour. What
@@ -2392,15 +2422,9 @@ Roughly in dependency order, each script-first:
     property of the line, not of its first character, and a prefix hides the
     state it sets. See [`client.md`](client.md).
 
-    Alliance chat differs from the reference on purpose. ServUO's alliance is a
-    *named* object — several guilds, a leader guild, its own handshake — and this
-    engine has only the pairwise `Relation::Ally`. So a line reaches every guild
-    yours has allied with, even ones that have declared nothing about each other,
-    which is the natural reading of a pairwise model and is written down in
-    `chat.rs` so that whoever lands named alliances knows what they are
-    replacing.
-  - Deferred: the guildstone as a placeable item, and named multi-guild
-    alliances.
+    An alliance line reaches the alliance's members, which is now one set rather
+    than one per speaker — see the entry above for what it used to be.
+  - Deferred: the guildstone as a placeable item.
   - Client-side: the window renders, the health bars take their hue from the
     byte, and the **tooltip** now shows here too — the `[ABBR]` suffix and the
     "Warlord, The Silver Serpent" line both. The `0xD6`/`0xDC` half this client

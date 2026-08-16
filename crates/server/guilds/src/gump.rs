@@ -27,7 +27,7 @@ use openshard_protocol::gump::{
     ButtonId, CloseGump, GUMP_WHITE, GumpButton, GumpDisplay, GumpId, GumpKey, GumpLayout, GumpPoint,
 };
 use openshard_protocol::server_packet::ServerPacket;
-use openshard_state::{Client, GuildGumpContext, GuildMember, GuildPage, Name, Rank, Relation, WorldState};
+use openshard_state::{Client, GuildGumpContext, GuildMember, GuildPage, Name, Rank, WorldState};
 
 use crate::{RankFlags, may_lead, roster};
 
@@ -77,6 +77,11 @@ pub(crate) mod button {
     pub const INVITE: ButtonId = ButtonId(8);
     /// Disband it.
     pub const DISBAND: ButtonId = ButtonId(9);
+    /// Leave the alliance, or decline the invitation to one. Not a row: it
+    /// names the alliance rather than any guild on the page.
+    pub const LEAVE_ALLIANCE: ButtonId = ButtonId(10);
+    /// Accept an invitation into an alliance.
+    pub const JOIN_ALLIANCE: ButtonId = ButtonId(11);
 }
 
 /// The two text fields on the founding form.
@@ -91,6 +96,14 @@ pub(crate) const ROSTER_PROMOTE: u32 = 1;
 pub(crate) const ROSTER_DEMOTE: u32 = 2;
 pub(crate) const ROSTER_DISMISS: u32 = 3;
 pub(crate) const ROSTER_LEAD: u32 = 4;
+
+/// And what a guild's row on the diplomacy page can ask for.
+pub(crate) const DIPLOMACY_WAR: u32 = 0;
+pub(crate) const DIPLOMACY_PEACE: u32 = 1;
+pub(crate) const DIPLOMACY_ALLY: u32 = 2;
+
+/// The field a new alliance's name is typed into.
+pub(crate) const FIELD_ALLIANCE: u32 = 3;
 
 /// A row button is its list's base plus the row index times the number of things
 /// a row can ask for.
@@ -366,38 +379,79 @@ fn roster_page(
 }
 
 /// Every other guild, and where this one stands with it.
+///
+/// # Four columns, and two of them are the same button
+///
+/// A guild is at war, allied, or neither, and the actions are: declare war, make
+/// peace, ask into the alliance, and leave the one you are in. The last is not
+/// about a *row* — it names the alliance rather than the guild beside it — so it
+/// sits at the top with the alliance's name, and the rows carry the other three.
 fn diplomacy_page(
     layout: &mut GumpLayout,
     state: &WorldState,
     player: EntityId,
     context: &mut GuildGumpContext,
 ) {
-    let Ok(own) = may_lead(state, player) else {
-        // Not the leader any more — a stale button on a window drawn while they
-        // were. Draw the page with nothing on it rather than a list they cannot
-        // act on.
-        layout.label(20, 20, HUE_HEADING, "Wars and alliances");
-        action(layout, 20, 46, button::MAIN, GUMP_WHITE, "Back");
-        return;
-    };
     layout.label(20, 20, HUE_HEADING, "Wars and alliances");
     action(layout, 20, 46, button::MAIN, GUMP_WHITE, "Back");
-    layout.label(258, ROW_TOP - 22, GUMP_WHITE, "war  ally  peace");
+    let Some(own) = state.guild_of(player).map(|guild| guild.id) else {
+        return;
+    };
+    // Each button on the flag that would let it through, as on the main page:
+    // a Warlord gets the war columns and an Emissary gets neither, and the
+    // reply path checks the same flags again.
+    let may_war = crate::may(state, player, RankFlags::CONTROL_WAR_STATUS).is_ok();
+    let may_ally = crate::may(state, player, RankFlags::ALLIANCE_CONTROL).is_ok();
 
+    // The alliance this guild is in, named, with the one action that is about
+    // the alliance rather than about any row.
+    let alliance = state.guilds.get(own).and_then(|guild| guild.alliance);
+    match alliance.and_then(|id| state.alliances.get(id)) {
+        Some(entry) => {
+            layout.label(
+                20,
+                66,
+                HUE_ALLY,
+                format!("{} — {} guilds", entry.name, entry.members.len()),
+            );
+            if may_ally {
+                action(layout, 258, 66, button::LEAVE_ALLIANCE, HUE_WAR, "Leave");
+            }
+        }
+        None => {
+            layout.label(20, 66, GUMP_WHITE, "In no alliance.");
+            if may_ally {
+                // The name a new alliance would take. Only read when this guild
+                // is in none — see `invite_to_alliance`, which does not rename.
+                layout.text_entry(150, 66, 200, 20, GUMP_WHITE, FIELD_ALLIANCE, "");
+            }
+        }
+    }
+
+    if may_war || may_ally {
+        layout.label(258, ROW_TOP - 22, GUMP_WHITE, "war  peace  ally");
+    }
     let others: Vec<_> = state.guilds.iter().filter(|guild| guild.id != own).collect();
     let shown = others.len().min(MAX_ROWS);
     for (row, guild) in others.iter().take(shown).enumerate() {
         context.guilds.push(guild.id);
         let y = ROW_TOP + (row as i32) * ROW_HEIGHT;
         let ours = state.guilds.get(own);
-        let (standing, hue) = match ours.and_then(|ours| ours.toward(guild.id)) {
-            Some(Relation::War) => ("at war", HUE_WAR),
-            Some(Relation::Ally) => ("allied", HUE_ALLY),
-            None => match ours.and_then(|ours| ours.offered(guild.id)) {
-                Some(Relation::War) => ("war declared", HUE_WAR),
-                Some(Relation::Ally) => ("alliance offered", HUE_ALLY),
-                None => ("", GUMP_WHITE),
-            },
+        let (standing, hue) = if ours.is_some_and(|ours| ours.at_war_with(guild.id)) {
+            ("at war", HUE_WAR)
+        } else if state.allied(own, guild.id) {
+            ("allied", HUE_ALLY)
+        } else if ours.is_some_and(|ours| ours.has_declared_on(guild.id)) {
+            ("war declared", HUE_WAR)
+        } else if alliance.is_some_and(|id| {
+            state
+                .alliances
+                .get(id)
+                .is_some_and(|entry| entry.pending.contains(&guild.id))
+        }) {
+            ("asked in", HUE_ALLY)
+        } else {
+            ("", GUMP_WHITE)
         };
         layout.label(
             20,
@@ -406,33 +460,37 @@ fn diplomacy_page(
             format!("{} [{}]", guild.name, guild.abbreviation),
         );
         layout.label(150, y, hue, standing);
-        layout.button(
-            258,
-            y,
-            4017,
-            4019,
-            GumpButton::Reply,
-            0,
-            row_button(DIPLOMACY_BASE, DIPLOMACY_ACTIONS, row, 0),
-        );
-        layout.button(
-            288,
-            y,
-            4011,
-            4013,
-            GumpButton::Reply,
-            0,
-            row_button(DIPLOMACY_BASE, DIPLOMACY_ACTIONS, row, 1),
-        );
-        layout.button(
-            318,
-            y,
-            4005,
-            4007,
-            GumpButton::Reply,
-            0,
-            row_button(DIPLOMACY_BASE, DIPLOMACY_ACTIONS, row, 2),
-        );
+        if may_war {
+            layout.button(
+                258,
+                y,
+                4017,
+                4019,
+                GumpButton::Reply,
+                0,
+                row_button(DIPLOMACY_BASE, DIPLOMACY_ACTIONS, row, DIPLOMACY_WAR),
+            );
+            layout.button(
+                288,
+                y,
+                4005,
+                4007,
+                GumpButton::Reply,
+                0,
+                row_button(DIPLOMACY_BASE, DIPLOMACY_ACTIONS, row, DIPLOMACY_PEACE),
+            );
+        }
+        if may_ally {
+            layout.button(
+                318,
+                y,
+                4011,
+                4013,
+                GumpButton::Reply,
+                0,
+                row_button(DIPLOMACY_BASE, DIPLOMACY_ACTIONS, row, DIPLOMACY_ALLY),
+            );
+        }
     }
     cut_notice(layout, others.len(), shown);
 }

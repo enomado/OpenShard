@@ -179,7 +179,21 @@ CREATE TABLE IF NOT EXISTS guilds (
     abbreviation TEXT NOT NULL,
     leader       INTEGER NOT NULL,
     relations    TEXT NOT NULL DEFAULT '[]',
-    proposals    TEXT NOT NULL DEFAULT '[]'
+    proposals    TEXT NOT NULL DEFAULT '[]',
+    -- Which alliance, by `alliances.id`. No foreign key, for the same reason a
+    -- character's guild has none: an id naming an alliance that is gone reads as
+    -- no alliance, and a constraint would turn that into a refused write.
+    alliance     INTEGER
+);
+-- Every named alliance. The membership is written here rather than on the
+-- guilds — one list to keep in step instead of N — and the guild's own
+-- `alliance` column is the back-pointer for the lookup.
+CREATE TABLE IF NOT EXISTS alliances (
+    id      INTEGER PRIMARY KEY,
+    name    TEXT NOT NULL,
+    leader  INTEGER NOT NULL,
+    members TEXT NOT NULL DEFAULT '[]',
+    pending TEXT NOT NULL DEFAULT '[]'
 );
 CREATE TABLE IF NOT EXISTS items (
     serial    INTEGER PRIMARY KEY,
@@ -268,7 +282,8 @@ CREATE TABLE IF NOT EXISTS world (
     id            INTEGER PRIMARY KEY,
     clock_minutes INTEGER NOT NULL,
     rng_state     INTEGER NOT NULL,
-    guild_high_water INTEGER NOT NULL DEFAULT 0
+    guild_high_water INTEGER NOT NULL DEFAULT 0,
+    alliance_high_water INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS spawners (
     id            INTEGER PRIMARY KEY,
@@ -373,6 +388,7 @@ impl Store for SqliteStore {
         let decorations = snapshot.decorations.clone();
         let regions = snapshot.regions.clone();
         let guilds = snapshot.guilds.clone();
+        let alliances = snapshot.alliances.clone();
         let world = snapshot.world;
         blocking(move || {
             let mut guard = connection
@@ -629,16 +645,36 @@ impl Store for SqliteStore {
                         .map_err(|e| StoreError::Corrupt(e.to_string()))?;
                     transaction
                         .execute(
-                            "INSERT INTO guilds (id, name, abbreviation, leader, relations, proposals) \
-                             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                            "INSERT INTO guilds (id, name, abbreviation, leader, relations, proposals, alliance) \
+                             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
                             params![
                                 guild.id,
                                 guild.name,
                                 guild.abbreviation,
                                 guild.leader.raw(),
                                 relations,
-                                proposals
+                                proposals,
+                                guild.alliance
                             ],
+                        )
+                        .map_err(database)?;
+                }
+            }
+            // The alliance sweep, for the guild sweep's reason: one dissolved
+            // since the last save is absent here, and the delete is what makes
+            // that stick.
+            if let Some(alliances) = &alliances {
+                transaction.execute("DELETE FROM alliances", []).map_err(database)?;
+                for alliance in alliances {
+                    let members = serde_json::to_string(&alliance.members)
+                        .map_err(|e| StoreError::Corrupt(e.to_string()))?;
+                    let pending = serde_json::to_string(&alliance.pending)
+                        .map_err(|e| StoreError::Corrupt(e.to_string()))?;
+                    transaction
+                        .execute(
+                            "INSERT INTO alliances (id, name, leader, members, pending) \
+                             VALUES (?1, ?2, ?3, ?4, ?5)",
+                            params![alliance.id, alliance.name, alliance.leader, members, pending],
                         )
                         .map_err(database)?;
                 }
@@ -651,14 +687,16 @@ impl Store for SqliteStore {
                 // failing after a few hundred rolls.
                 transaction
                     .execute(
-                        "INSERT INTO world (id, clock_minutes, rng_state, guild_high_water) VALUES (0, ?1, ?2, ?3) \
+                        "INSERT INTO world (id, clock_minutes, rng_state, guild_high_water, alliance_high_water) VALUES (0, ?1, ?2, ?3, ?4) \
                          ON CONFLICT(id) DO UPDATE SET clock_minutes = excluded.clock_minutes, \
                          rng_state = excluded.rng_state, \
-                         guild_high_water = excluded.guild_high_water",
+                         guild_high_water = excluded.guild_high_water, \
+                         alliance_high_water = excluded.alliance_high_water",
                         params![
                             record.clock_minutes,
                             record.rng_state.cast_signed(),
-                            record.guild_high_water
+                            record.guild_high_water,
+                            record.alliance_high_water
                         ],
                     )
                     .map_err(database)?;
@@ -941,13 +979,49 @@ impl Store for SqliteStore {
         .await
     }
 
+    async fn alliances(&self) -> Result<Vec<crate::record::AllianceRecord>, StoreError> {
+        let connection = Arc::clone(&self.connection);
+        blocking(move || {
+            let guard = connection.lock().expect("the sqlite mutex is never poisoned");
+            let mut statement = guard
+                .prepare("SELECT id, name, leader, members, pending FROM alliances ORDER BY id")
+                .map_err(database)?;
+            let rows = statement
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, u32>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, u32>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, String>(4)?,
+                    ))
+                })
+                .map_err(database)?;
+            let mut alliances = Vec::new();
+            for row in rows {
+                let (id, name, leader, members, pending) = row.map_err(database)?;
+                alliances.push(crate::record::AllianceRecord {
+                    id,
+                    name,
+                    leader,
+                    members: serde_json::from_str(&members)
+                        .map_err(|e| StoreError::Corrupt(e.to_string()))?,
+                    pending: serde_json::from_str(&pending)
+                        .map_err(|e| StoreError::Corrupt(e.to_string()))?,
+                });
+            }
+            Ok(alliances)
+        })
+        .await
+    }
+
     async fn guilds(&self) -> Result<Vec<GuildRecord>, StoreError> {
         let connection = Arc::clone(&self.connection);
         blocking(move || {
             let guard = connection.lock().expect("the sqlite mutex is never poisoned");
             let mut statement = guard
                 .prepare(
-                    "SELECT id, name, abbreviation, leader, relations, proposals \
+                    "SELECT id, name, abbreviation, leader, relations, proposals, alliance \
                      FROM guilds ORDER BY id",
                 )
                 .map_err(database)?;
@@ -960,12 +1034,14 @@ impl Store for SqliteStore {
                         get_serial(row, 3)?,
                         row.get::<_, String>(4)?,
                         row.get::<_, String>(5)?,
+                        row.get::<_, Option<u32>>(6)?,
                     ))
                 })
                 .map_err(database)?;
             let mut guilds = Vec::new();
             for row in rows {
-                let (id, name, abbreviation, leader, relations, proposals) = row.map_err(database)?;
+                let (id, name, abbreviation, leader, relations, proposals, alliance) =
+                    row.map_err(database)?;
                 guilds.push(GuildRecord {
                     id,
                     name,
@@ -975,6 +1051,7 @@ impl Store for SqliteStore {
                         .map_err(|e| StoreError::Corrupt(e.to_string()))?,
                     proposals: serde_json::from_str(&proposals)
                         .map_err(|e| StoreError::Corrupt(e.to_string()))?,
+                    alliance,
                 });
             }
             Ok(guilds)
@@ -986,15 +1063,16 @@ impl Store for SqliteStore {
         let connection = Arc::clone(&self.connection);
         blocking(move || {
             let guard = connection.lock().expect("the sqlite mutex is never poisoned");
-            let row: Option<(i64, i64, u32)> = guard
+            let row: Option<(i64, i64, u32, u32)> = guard
                 .query_row(
-                    "SELECT clock_minutes, rng_state, guild_high_water FROM world WHERE id = 0",
+                    "SELECT clock_minutes, rng_state, guild_high_water, alliance_high_water FROM world WHERE id = 0",
                     [],
                     |row| {
                         Ok((
                             row.get::<_, i64>(0)?,
                             row.get::<_, i64>(1)?,
                             row.get::<_, u32>(2)?,
+                            row.get::<_, u32>(3)?,
                         ))
                     },
                 )
@@ -1003,11 +1081,12 @@ impl Store for SqliteStore {
             // No row at all is a world nobody has saved yet, which is not a row of
             // zeroes: see `Store::world`.
             Ok(
-                row.map(|(clock_minutes, rng_state, guild_high_water)| WorldRecord {
+                row.map(|(clock_minutes, rng_state, guild_high_water, alliance_high_water)| WorldRecord {
                     clock_minutes: clock_minutes.max(0) as u64,
                     // Unsigned again, bit for bit — see the write in `save`.
                     rng_state: rng_state.cast_unsigned(),
                     guild_high_water,
+                    alliance_high_water,
                 }),
             )
         })
@@ -1151,6 +1230,7 @@ mod tests {
             decorations: None,
             regions: None,
             guilds: None,
+            alliances: None,
             world: None,
         }
     }
@@ -1319,6 +1399,7 @@ mod tests {
             clock_minutes: 13 * 60,
             rng_state: 0xFEDC_BA98_7654_3210,
             guild_high_water: 0,
+            alliance_high_water: 0,
         };
         assert!(record.rng_state > i64::MAX.cast_unsigned(), "the high bit is set");
         store
@@ -1352,6 +1433,7 @@ mod tests {
                 other: 99,
                 at_war: false,
             }],
+            alliance: None,
         };
 
         let mut member = character(1, 100);
@@ -1374,6 +1456,7 @@ mod tests {
                         // reason it is saved rather than derived: guild 3 was
                         // founded and disbanded, and leaves no row.
                         guild_high_water: 3,
+                        alliance_high_water: 0,
                     }),
                     ..snapshot(vec![member.clone()], vec![])
                 })
@@ -1419,6 +1502,91 @@ mod tests {
         );
     }
 
+    /// The membership is written on the alliance, not spread across the guilds.
+    ///
+    /// A sweep, for the guild sweep's reason: an alliance dissolved since the
+    /// last save is absent from the next one, and the delete is what makes that
+    /// stick. The pending guild rides in its own column because a save of "the
+    /// members" would silently drop every standing invitation.
+    #[tokio::test]
+    async fn an_alliance_and_its_membership_survive_a_reopen() {
+        use crate::record::AllianceRecord;
+
+        let path = temp_db("alliances");
+        {
+            let store = SqliteStore::open(&path).expect("open");
+            store
+                .save(&Snapshot {
+                    alliances: Some(vec![
+                        AllianceRecord {
+                            id: 1,
+                            name: "The Northern Compact".to_owned(),
+                            leader: 1,
+                            members: vec![1, 2],
+                            pending: vec![3],
+                        },
+                        AllianceRecord {
+                            id: 2,
+                            name: "The Ash Pact".to_owned(),
+                            leader: 4,
+                            members: vec![4, 5],
+                            pending: vec![],
+                        },
+                    ]),
+                    world: Some(WorldRecord {
+                        clock_minutes: 0,
+                        rng_state: 0,
+                        guild_high_water: 0,
+                        // Higher than either row, which is the whole reason it is
+                        // saved rather than derived from the table.
+                        alliance_high_water: 7,
+                    }),
+                    ..snapshot(vec![], vec![])
+                })
+                .await
+                .expect("save");
+            // And the second save is a sweep: the Ash Pact disbanded.
+            store
+                .save(&Snapshot {
+                    tick: 2,
+                    alliances: Some(vec![AllianceRecord {
+                        id: 1,
+                        name: "The Northern Compact".to_owned(),
+                        leader: 2,
+                        members: vec![1, 2],
+                        pending: vec![3],
+                    }]),
+                    ..snapshot(vec![], vec![])
+                })
+                .await
+                .expect("save");
+        }
+
+        let store = SqliteStore::open(&path).expect("reopen");
+        let alliances = store.alliances().await.expect("read");
+        assert_eq!(
+            alliances.len(),
+            1,
+            "the disbanded one is absent, which is the delete"
+        );
+        assert_eq!(alliances[0].name, "The Northern Compact");
+        assert_eq!(
+            alliances[0].leader, 2,
+            "the leader the second save named was not written"
+        );
+        assert_eq!(alliances[0].members, vec![1, 2]);
+        assert_eq!(
+            alliances[0].pending,
+            vec![3],
+            "a standing question is not a membership, and losing it drops it"
+        );
+        assert_eq!(
+            store.world().await.expect("read").map(|w| w.alliance_high_water),
+            Some(7),
+            "the id counter is not the maximum id in the table"
+        );
+    }
+
     #[tokio::test]
     async fn accounts_round_trip() {
         let store = SqliteStore::open_in_memory().expect("open");
@@ -1454,6 +1622,7 @@ mod tests {
             decorations: None,
             regions: None,
             guilds: None,
+            alliances: None,
             world: None,
         };
         let error = store.save(&future).await.expect_err("must refuse");

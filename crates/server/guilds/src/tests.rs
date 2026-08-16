@@ -23,7 +23,7 @@ use openshard_state::rng::Rng;
 use openshard_state::sectors::Sectors;
 use openshard_state::{
     Client, Dialogue, FacetState, Gameplay, GuildCandidate, GuildGumpContext, GuildId, GuildMember,
-    GuildPage, Obstructions, QuestDefs, Rank, Regions, Relation, TargetPurpose, WorldState,
+    GuildPage, Obstructions, QuestDefs, Rank, Regions, TargetPurpose, WorldState,
 };
 
 use crate::{Outcome, Refusal, may_lead, roster};
@@ -65,6 +65,7 @@ fn world() -> WorldState {
         quests: QuestDefs::default(),
         dialogue: Dialogue::default(),
         guilds: openshard_state::Guilds::default(),
+        alliances: openshard_state::Alliances::default(),
         parties: openshard_state::Parties::default(),
         gameplay: Gameplay::default(),
         save_requested: false,
@@ -310,26 +311,19 @@ fn a_war_takes_two_declarations() {
     let theirs = mobile(&mut state);
     let two = crate::found(&mut state, theirs, "The Black Rose", "TBR").unwrap();
 
-    assert_eq!(
-        crate::propose(&mut state, ours, two, Relation::War),
-        Ok(Outcome::Offered)
-    );
-    assert_eq!(
-        state.guilds.get(one).unwrap().toward(two),
-        None,
+    assert_eq!(crate::declare_war(&mut state, ours, two), Ok(Outcome::Offered));
+    assert!(
+        !state.guilds.get(one).unwrap().at_war_with(two),
         "one guild's word made a war"
     );
-    assert_eq!(
-        crate::propose(&mut state, theirs, one, Relation::War),
-        Ok(Outcome::Declared)
-    );
-    assert_eq!(state.guilds.get(one).unwrap().toward(two), Some(Relation::War));
+    assert_eq!(crate::declare_war(&mut state, theirs, one), Ok(Outcome::Declared));
+    assert!(state.guilds.get(one).unwrap().at_war_with(two));
 
     // Peace is one guild's decision, not a second handshake: the alternative is a
     // guild that cannot stop being attacked because its attacker will not agree.
     crate::make_peace(&mut state, ours, two).expect("ending it");
-    assert_eq!(state.guilds.get(one).unwrap().toward(two), None);
-    assert_eq!(state.guilds.get(two).unwrap().toward(one), None);
+    assert!(!state.guilds.get(one).unwrap().at_war_with(two));
+    assert!(!state.guilds.get(two).unwrap().at_war_with(one));
 }
 
 #[test]
@@ -337,7 +331,7 @@ fn a_guild_declares_on_someone_else() {
     let mut state = world();
     let (ours, one) = a_guild(&mut state);
     assert_eq!(
-        crate::propose(&mut state, ours, one, Relation::War),
+        crate::declare_war(&mut state, ours, one),
         Err(Refusal::NoSuchGuild),
         "at war with itself"
     );
@@ -444,9 +438,8 @@ fn a_diplomacy_row_declares_on_the_guild_that_row_drew() {
         &[],
     );
     crate::handle(&mut state, connection, &war);
-    assert_eq!(
-        state.guilds.get(own).unwrap().offered(theirs),
-        Some(Relation::War),
+    assert!(
+        state.guilds.get(own).unwrap().has_declared_on(theirs),
         "row zero declared on nobody"
     );
 }
@@ -467,7 +460,7 @@ fn a_row_the_window_never_drew_names_nobody() {
     );
     crate::handle(&mut state, connection, &forged);
     assert!(
-        state.guilds.iter().all(|guild| guild.proposals.is_empty()),
+        state.guilds.iter().all(|guild| guild.war_offers.is_empty()),
         "a forged row declared a war"
     );
 }
@@ -643,11 +636,11 @@ fn a_warlord_declares_wars_and_an_emissary_recruits_and_neither_does_the_other()
     let rival = crate::found(&mut state, rival_leader, "The Black Rose", "TBR").unwrap();
 
     assert_eq!(
-        crate::propose(&mut state, warlord, rival, Relation::War),
+        crate::declare_war(&mut state, warlord, rival),
         Ok(Outcome::Offered)
     );
     assert_eq!(
-        crate::propose(&mut state, emissary, rival, Relation::War),
+        crate::declare_war(&mut state, emissary, rival),
         Err(Refusal::NotYourPlaceTo),
         "an Emissary may not declare a war"
     );
@@ -662,37 +655,30 @@ fn a_warlord_declares_wars_and_an_emissary_recruits_and_neither_does_the_other()
     );
 }
 
-/// An alliance is the Leader's alone, and a war is not — so the two halves of
-/// `propose` do not gate the same way even though they are one function.
+/// An alliance is the Leader's alone, and a war is not — so the two now ask for
+/// two different flags, which is what splitting `propose` in half was for.
 #[test]
 fn an_alliance_is_out_of_a_warlords_reach() {
-    let mut state = world();
-    let (_, warlord) = a_guild_with(&mut state, Rank::Warlord);
-    let rival_leader = mobile(&mut state);
-    let rival = crate::found(&mut state, rival_leader, "The Black Rose", "TBR").unwrap();
-    assert_eq!(
-        crate::propose(&mut state, warlord, rival, Relation::Ally),
-        Err(Refusal::NotYourPlaceTo)
-    );
-}
-
-/// `make_peace` reads the flag off *what is being ended*, because the button is
-/// one button. A Warlord ends the war and is stopped at the alliance.
-#[test]
-fn ending_a_relation_takes_the_flag_that_relation_wanted() {
     let mut state = world();
     let (leader, warlord) = a_guild_with(&mut state, Rank::Warlord);
     let rival_leader = mobile(&mut state);
     let rival = crate::found(&mut state, rival_leader, "The Black Rose", "TBR").unwrap();
 
-    crate::propose(&mut state, warlord, rival, Relation::War).unwrap();
+    assert_eq!(
+        crate::invite_to_alliance(&mut state, warlord, rival, "The Compact"),
+        Err(Refusal::NotYourPlaceTo)
+    );
+    // The war half of the same window is the Warlord's, and both ends of it: the
+    // rank that declares is the rank that may stop.
+    crate::declare_war(&mut state, warlord, rival).unwrap();
     assert_eq!(crate::make_peace(&mut state, warlord, rival), Ok(()));
 
-    crate::propose(&mut state, leader, rival, Relation::Ally).unwrap();
+    // And leaving is the Leader's, the same flag the invitation wanted.
+    crate::invite_to_alliance(&mut state, leader, rival, "The Compact").unwrap();
     assert_eq!(
-        crate::make_peace(&mut state, warlord, rival),
+        crate::leave_alliance(&mut state, warlord),
         Err(Refusal::NotYourPlaceTo),
-        "the same call, refused because the standing offer is an alliance"
+        "a Warlord may not take the guild out of an alliance either"
     );
 }
 
@@ -788,17 +774,17 @@ fn speaking_to_a_guild_you_are_not_in_is_refused() {
     );
 }
 
-/// Our alliance chat is not ServUO's, and the difference is worth pinning: a
-/// pairwise `Relation::Ally` means a line reaches every guild yours has allied
-/// with, even ones that have declared nothing about each other. See
-/// `chat.rs`'s own note.
+/// The line reaches the alliance, which is now one set rather than one per
+/// speaker. Until named alliances landed this reached "every guild yours has
+/// allied with", so two guilds allied to the same third heard each other while
+/// being strangers — see `chat.rs`'s own note.
 #[test]
 fn an_alliance_line_reaches_every_ally_and_is_refused_without_one() {
     let mut state = world();
     // A founder with a client, unlike `a_guild`'s: the speaker's own guild has
     // to be able to hear the line, and that is half of what this asserts.
     let (leader, _) = player(&mut state, 1);
-    let own = crate::found(&mut state, leader, "The Silver Serpent", "OSS").unwrap();
+    crate::found(&mut state, leader, "The Silver Serpent", "OSS").unwrap();
     assert_eq!(
         crate::say_to_alliance(
             &mut state,
@@ -811,12 +797,12 @@ fn an_alliance_line_reaches_every_ally_and_is_refused_without_one() {
         "an unallied guild has no alliance to speak to"
     );
 
-    // Two separate allies, which have declared nothing about each other.
+    // Two more guilds, both asked into the one alliance and both answering.
     for (name, abbreviation, id) in [("The Black Rose", "TBR", 50u64), ("The Grey Owl", "TGO", 51)] {
         let (their_leader, _) = player(&mut state, id);
         let theirs = crate::found(&mut state, their_leader, name, abbreviation).unwrap();
-        crate::propose(&mut state, leader, theirs, Relation::Ally).unwrap();
-        crate::propose(&mut state, their_leader, own, Relation::Ally).unwrap();
+        crate::invite_to_alliance(&mut state, leader, theirs, "The Northern Compact").unwrap();
+        crate::join_alliance(&mut state, their_leader).unwrap();
     }
     state.outbox.clear();
 
@@ -834,4 +820,223 @@ fn an_alliance_line_reaches_every_ally_and_is_refused_without_one() {
         .filter(|out| out.packet.first() == Some(&0xAE))
         .count();
     assert_eq!(heard, 3, "the speaker's own guild and both allies");
+}
+
+/// An invitation, and the guild that was asked answering it.
+///
+/// Founding is one call and not two: a guild in no alliance that asks somebody
+/// in makes one, and the partner starts pending — which is what stops an
+/// alliance being a thing you can be put into by somebody else naming it.
+#[test]
+fn an_alliance_is_founded_by_asking_and_joined_by_answering() {
+    let mut state = world();
+    let (leader, own) = a_guild(&mut state);
+    let their_leader = mobile(&mut state);
+    let theirs = crate::found(&mut state, their_leader, "The Black Rose", "TBR").unwrap();
+
+    assert_eq!(
+        crate::join_alliance(&mut state, their_leader),
+        Err(Refusal::NotAsked),
+        "a guild nobody asked joined one"
+    );
+
+    let alliance = crate::invite_to_alliance(&mut state, leader, theirs, "The Northern Compact")
+        .expect("a first alliance");
+    assert_eq!(state.guilds.get(own).unwrap().alliance, Some(alliance));
+    assert_eq!(
+        state.guilds.get(theirs).unwrap().alliance,
+        None,
+        "being asked joined them"
+    );
+    assert!(!state.allied(own, theirs), "and made them allies");
+
+    crate::join_alliance(&mut state, their_leader).expect("answering yes");
+    assert_eq!(state.guilds.get(theirs).unwrap().alliance, Some(alliance));
+    assert!(state.allied(own, theirs));
+    assert!(state.allied(theirs, own), "and the other way, which is the point");
+}
+
+/// The third guild is in it with the second, which is what a *named* alliance
+/// buys and the old pairwise relation did not: B and C never declared anything
+/// about each other.
+#[test]
+fn a_third_guild_joins_the_alliance_rather_than_the_guild_that_asked() {
+    let mut state = world();
+    let (leader, _) = a_guild(&mut state);
+    let mut joined = Vec::new();
+    for (name, abbreviation) in [("The Black Rose", "TBR"), ("The Grey Owl", "TGO")] {
+        let their_leader = mobile(&mut state);
+        let theirs = crate::found(&mut state, their_leader, name, abbreviation).unwrap();
+        crate::invite_to_alliance(&mut state, leader, theirs, "The Northern Compact").unwrap();
+        crate::join_alliance(&mut state, their_leader).unwrap();
+        joined.push(theirs);
+    }
+    assert!(
+        state.allied(joined[0], joined[1]),
+        "two guilds in one alliance are strangers to each other"
+    );
+}
+
+/// The name is the alliance's own, and reading it from every invitation would
+/// let any leader rename one by asking somebody in.
+#[test]
+fn extending_an_alliance_does_not_rename_it() {
+    let mut state = world();
+    let (leader, own) = a_guild(&mut state);
+    let (second, third) = {
+        let one = mobile(&mut state);
+        let two = mobile(&mut state);
+        (
+            (
+                one,
+                crate::found(&mut state, one, "The Black Rose", "TBR").unwrap(),
+            ),
+            (two, crate::found(&mut state, two, "The Grey Owl", "TGO").unwrap()),
+        )
+    };
+    let alliance = crate::invite_to_alliance(&mut state, leader, second.1, "The Northern Compact").unwrap();
+    crate::join_alliance(&mut state, second.0).unwrap();
+
+    let again = crate::invite_to_alliance(&mut state, leader, third.1, "Something Else").unwrap();
+    assert_eq!(again, alliance, "a second alliance was founded");
+    assert_eq!(
+        state.alliances.get(alliance).unwrap().name,
+        "The Northern Compact"
+    );
+    assert_eq!(state.guilds.get(own).unwrap().alliance, Some(alliance));
+}
+
+/// A name is claimed once, exactly as a guild's is.
+#[test]
+fn two_alliances_may_not_share_a_name() {
+    let mut state = world();
+    let (leader, _) = a_guild(&mut state);
+    let one = mobile(&mut state);
+    let partner = crate::found(&mut state, one, "The Black Rose", "TBR").unwrap();
+    crate::invite_to_alliance(&mut state, leader, partner, "The Northern Compact").unwrap();
+
+    let two = mobile(&mut state);
+    let other = crate::found(&mut state, two, "The Grey Owl", "TGO").unwrap();
+    let three = mobile(&mut state);
+    let another = crate::found(&mut state, three, "The Ash", "ASH").unwrap();
+    assert_eq!(
+        crate::invite_to_alliance(&mut state, two, another, "the northern compact"),
+        Err(Refusal::NameTaken)
+    );
+    assert_eq!(
+        crate::invite_to_alliance(&mut state, two, another, ""),
+        Err(Refusal::NoName)
+    );
+    assert_eq!(state.guilds.get(other).unwrap().alliance, None);
+}
+
+/// Green and orange cannot both be true, so the two are refused in both orders.
+#[test]
+fn a_war_and_an_alliance_refuse_each_other() {
+    let mut state = world();
+    let (leader, own) = a_guild(&mut state);
+    let their_leader = mobile(&mut state);
+    let theirs = crate::found(&mut state, their_leader, "The Black Rose", "TBR").unwrap();
+
+    crate::declare_war(&mut state, leader, theirs).unwrap();
+    crate::declare_war(&mut state, their_leader, own).unwrap();
+    assert_eq!(
+        crate::invite_to_alliance(&mut state, leader, theirs, "The Northern Compact"),
+        Err(Refusal::AtWarWithThem)
+    );
+
+    // The other order: allied first, and then the war is what is refused.
+    crate::make_peace(&mut state, leader, theirs).unwrap();
+    crate::invite_to_alliance(&mut state, leader, theirs, "The Northern Compact").unwrap();
+    crate::join_alliance(&mut state, their_leader).unwrap();
+    assert_eq!(
+        crate::declare_war(&mut state, leader, theirs),
+        Err(Refusal::AlliedWithThem)
+    );
+}
+
+/// And the third way in: joining an alliance that holds a guild you are at war
+/// with. The invitation checked the inviter, which is not the same set.
+#[test]
+fn joining_is_refused_while_at_war_with_anybody_inside() {
+    let mut state = world();
+    let (leader, own) = a_guild(&mut state);
+    let second = mobile(&mut state);
+    let partner = crate::found(&mut state, second, "The Black Rose", "TBR").unwrap();
+    crate::invite_to_alliance(&mut state, leader, partner, "The Northern Compact").unwrap();
+    crate::join_alliance(&mut state, second).unwrap();
+
+    // A third at war with the *partner*, not with the guild that asks it in.
+    let third = mobile(&mut state);
+    let newcomer = crate::found(&mut state, third, "The Grey Owl", "TGO").unwrap();
+    crate::declare_war(&mut state, third, partner).unwrap();
+    crate::declare_war(&mut state, second, newcomer).unwrap();
+    crate::invite_to_alliance(&mut state, leader, newcomer, "ignored").unwrap();
+    assert_eq!(
+        crate::join_alliance(&mut state, third),
+        Err(Refusal::AtWarWithThem)
+    );
+    assert_eq!(state.guilds.get(newcomer).unwrap().alliance, None);
+    assert!(!state.allied(own, newcomer));
+}
+
+/// Leaving, declining, and the disband that follows the second-to-last guild
+/// going — one button, and all three ends of it.
+#[test]
+fn leaving_an_alliance_of_two_takes_the_alliance_with_it() {
+    let mut state = world();
+    let (leader, own) = a_guild(&mut state);
+    assert_eq!(crate::leave_alliance(&mut state, leader), Err(Refusal::NotAllied));
+
+    let their_leader = mobile(&mut state);
+    let theirs = crate::found(&mut state, their_leader, "The Black Rose", "TBR").unwrap();
+    let alliance = crate::invite_to_alliance(&mut state, leader, theirs, "The Northern Compact").unwrap();
+
+    // Declining is the same call, and it leaves the alliance standing with one
+    // member — which the *inviter* leaving is then what disbands.
+    crate::leave_alliance(&mut state, their_leader).expect("declining");
+    assert!(state.alliances.get(alliance).is_some(), "a decline dissolved it");
+    assert!(
+        state.alliances.get(alliance).unwrap().pending.is_empty(),
+        "and left the question standing"
+    );
+
+    crate::join_alliance(&mut state, their_leader).expect_err("no longer asked");
+    crate::leave_alliance(&mut state, leader).expect("the founder leaving");
+    assert!(
+        state.alliances.get(alliance).is_none(),
+        "an alliance of none stood"
+    );
+    assert_eq!(state.guilds.get(own).unwrap().alliance, None);
+    assert_eq!(
+        state.guilds.get(theirs).unwrap().alliance,
+        None,
+        "a guild was left naming an alliance that is gone"
+    );
+}
+
+/// Three in, one out: the alliance stands, and the leaver is on its own.
+#[test]
+fn leaving_an_alliance_of_three_leaves_it_standing() {
+    let mut state = world();
+    let (leader, own) = a_guild(&mut state);
+    let mut joined = Vec::new();
+    for (name, abbreviation) in [("The Black Rose", "TBR"), ("The Grey Owl", "TGO")] {
+        let their_leader = mobile(&mut state);
+        let theirs = crate::found(&mut state, their_leader, name, abbreviation).unwrap();
+        crate::invite_to_alliance(&mut state, leader, theirs, "The Northern Compact").unwrap();
+        crate::join_alliance(&mut state, their_leader).unwrap();
+        joined.push((their_leader, theirs));
+    }
+    let alliance = state.guilds.get(own).unwrap().alliance.expect("an alliance");
+
+    crate::leave_alliance(&mut state, leader).expect("the founder leaving");
+    let standing = state.alliances.get(alliance).expect("two members is an alliance");
+    assert_ne!(standing.leader, own, "it is still led by the guild that left");
+    assert!(standing.contains(standing.leader), "and led from outside itself");
+    assert!(
+        state.allied(joined[0].1, joined[1].1),
+        "the two left in it drifted apart"
+    );
+    assert!(!state.allied(own, joined[0].1));
 }

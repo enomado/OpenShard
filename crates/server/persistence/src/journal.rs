@@ -117,6 +117,10 @@ pub struct Snapshot {
     /// are saved on their own schedules and a roster is only ever the sum of who
     /// names the guild.
     pub guilds: Option<Vec<GuildRecord>>,
+    /// Every named alliance, or `None` when none changed. Replace-all like the
+    /// guilds and for the same reason: an alliance dissolved since the last save
+    /// is absent from this list, and only a sweep makes that stick.
+    pub alliances: Option<Vec<crate::record::AllianceRecord>>,
     /// The world's own scalars — the clock and the roll generator's position — when
     /// this snapshot swept them. `None` in a snapshot that carried only character
     /// changes; the stored row stands.
@@ -155,6 +159,7 @@ impl Snapshot {
             + self.decorations.as_ref().map_or(0, Vec::len)
             + self.regions.as_ref().map_or(0, Vec::len)
             + self.guilds.as_ref().map_or(0, Vec::len)
+            + self.alliances.as_ref().map_or(0, Vec::len)
     }
 }
 
@@ -318,6 +323,7 @@ impl Journal {
             decorations: None,
             regions: None,
             guilds: None,
+            alliances: None,
             world: None,
         })
     }

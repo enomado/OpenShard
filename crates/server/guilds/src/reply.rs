@@ -12,7 +12,7 @@
 use openshard_entities::EntityId;
 use openshard_gateway::ConnectionId;
 use openshard_protocol::gump::{GumpAnswer, GumpResponse};
-use openshard_state::{GuildGumpContext, GuildPage, Relation, TargetPurpose, WorldState};
+use openshard_state::{GuildGumpContext, GuildPage, TargetPurpose, WorldState};
 
 use crate::gump::{
     self, DIPLOMACY_ACTIONS, DIPLOMACY_BASE, FIELD_ABBREVIATION, FIELD_NAME, GUILD_GUMP, ROSTER_ACTIONS,
@@ -86,6 +86,19 @@ pub fn handle(state: &mut WorldState, connection: ConnectionId, response: &GumpR
             }
             gump::show(state, player, GuildPage::Main);
         }
+        button::LEAVE_ALLIANCE => {
+            if let Err(refusal) = crate::leave_alliance(state, player) {
+                refuse(state, player, refusal);
+            }
+            gump::show(state, player, GuildPage::Diplomacy);
+        }
+        button::JOIN_ALLIANCE => {
+            match crate::join_alliance(state, player) {
+                Ok(_) => state.system_message(player, "Your guild has joined the alliance."),
+                Err(refusal) => refuse(state, player, refusal),
+            }
+            gump::show(state, player, GuildPage::Diplomacy);
+        }
         button::INVITE => {
             // Checked before the cursor goes up, so a plain member never gets one
             // — and checked again when it comes down, because the guild can
@@ -118,9 +131,13 @@ fn other_button(
     if let Some((row, action)) = row_of(DIPLOMACY_BASE, DIPLOMACY_ACTIONS, pressed, context.guilds.len()) {
         let other = context.guilds[row];
         let outcome = match action {
-            0 => crate::propose(state, player, other, Relation::War).map(|_| ()),
-            1 => crate::propose(state, player, other, Relation::Ally).map(|_| ()),
-            _ => crate::make_peace(state, player, other),
+            gump::DIPLOMACY_WAR => crate::declare_war(state, player, other).map(|_| ()),
+            gump::DIPLOMACY_PEACE => crate::make_peace(state, player, other),
+            // `DIPLOMACY_ALLY`, and anything the stride could produce that is
+            // not one of the three. The alliance's name comes off the field on
+            // the same page, and is read only when this guild is in none.
+            _ => crate::invite_to_alliance(state, player, other, &field(response, gump::FIELD_ALLIANCE))
+                .map(|_| ()),
         };
         if let Err(refusal) = outcome {
             refuse(state, player, refusal);
