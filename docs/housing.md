@@ -6,11 +6,15 @@ feature made of parts that could ship separately: a house you can place and walk
 through is not a house, and a house with a lock and no decay is a shard that
 fills up and never empties.
 
-**All five phases are built.** A house goes down from a deed, its walls stop
-you, its door and its secures know you, its sign says who owns it and how it is
-wearing, and a house nobody visits collapses into a crate that keeps what was
-inside. Each phase's section below records what came out differently from the
-plan, which is the half worth reading.
+**H1–H5 are built.** A house goes down from a deed, its walls stop you, its door
+and its secures know you, its sign says who owns it and how it is wearing, and a
+house nobody visits collapses into a crate that keeps what was inside. Each
+phase's section below records what came out differently from the plan, which is
+the half worth reading.
+
+**H6 is not**, and it is a sixth phase of a five-phase plan for a reason worth
+reading before the rest: three things this document published as *decided* were
+never built, and they are one thing — housing and regions never met.
 
 > Read [`architecture.md`](architecture.md) for where a system crate sits and
 > what it may depend on, and [`style.md`](style.md) before writing any of it.
@@ -47,6 +51,7 @@ exist (326 against 862 on one install, so the UOP wins).
 | door locks | **built** — `KeyValue`, the lock rules, and the house's own gate | — | n/a |
 | co-owners, friends, bans | **built** | n/a | n/a |
 | decay | **built** | n/a | n/a |
+| where a house may not go (`no_housing`) | **flag and data, no reader** — H6 | n/a | n/a |
 | customisation (`0xD7` house design) | — | — | speaks it |
 
 `0x99` is the one packet that has to be written from nothing on both ends. It is
@@ -60,7 +65,7 @@ which this engine already reads and our client already sends.
 **D1 — a house is an entity with a `Multi` component, not a new kind of thing.**
 It has a `Position`, a `Drawn` whose graphic is `0x4000 | id`, and a serial from
 the item pool. Everything that already walks items — the sector index, the save,
-the `0x1A`/`0xF3` that draws it — works on it unchanged. What makes it a house is
+the `0x1A` that draws it — works on it unchanged. What makes it a house is
 a `House` component beside those, not a separate table.
 
 **D2 — the footprint is an obstruction, computed at placement and stored.**
@@ -101,10 +106,25 @@ Britain's streets.
 Staff place anywhere, which is ServUO's own first branch and is what makes the
 rules testable before the deed exists.
 
+> **Not built until H6, and the sentence above went on claiming it.** `place`
+> takes `owner: Serial` and never an actor `EntityId`, so it has nobody to ask
+> `is_staff` about and every refusal applies to a game master exactly as it does
+> to a player. Left standing here rather than rewritten, because what a decision
+> *said* is worth keeping beside what the code did: this is the one D that was
+> read as built for five phases.
+
 **D4 — a region, and it comes free.** `Regions` already exists and already
 carries flags. A house is a region with its own flags (no teleport in, no
 recall out), placed and removed with the house. Nothing new is needed for this,
 which is why it is a decision rather than a phase.
+
+> **"Nothing new is needed" was true and "it comes free" was not.** Nothing *was*
+> needed — `Regions` is per-facet on `FacetState` and `Regions::at` is a bucketed
+> lookup that has worked the whole time. But a decision with no phase under it is
+> a decision nobody is assigned, and five phases went by without one line of
+> `openshard-housing` mentioning a region. **H6 is that phase.** The lesson is
+> cheap and worth writing down: a "this comes free" decision needs a phase to be
+> free *in*, or it is not a decision, it is a hope.
 
 **D5 — the door is the door this engine already has.** `.key` and `KeyValue` and
 the lock rules landed with the traps work, on the argument that Britannia locks
@@ -588,15 +608,153 @@ on the first save and nothing ever collapses again.
 
 **H5 is complete, and so is this plan.**
 
+### H6 — the region a house stands in
+
+**What a player sees:** they cannot build in Covetous, and standing in their own
+hall stops a stranger recalling in on top of them.
+
+The sixth phase of a five-phase plan, and it is half a correction. Three things
+this document published as decided were never built, and they are all the same
+thing: **housing and regions never met.** `grep -rn region crates/server/housing/src/`
+finds test scaffolding and nothing else.
+
+1. `no_housing` — a `RegionFlags` field with data behind it and no reader.
+2. D3's staff exemption — `place` has no actor to exempt.
+3. D4's house-as-region — decided, never assigned to a phase.
+
+#### The flag is dead and the data is not
+
+`RegionFlags` (`crates/server/state/src/region.rs:93-112`) is five bools, fully
+plumbed: `data/regions.json` → `build.rs` codegen → `Regions` → `RegionRecord` →
+save → restore. Two of the five are read by nothing: `no_housing` and `safe`.
+
+They are not the same case, and the shipped dataset is what tells them apart.
+`regions:felucca`, facet 0, **128 regions**:
+
+| flag | rows | reader |
+|---|---|---|
+| `guarded` | 51 | `npc::guards.rs:128` |
+| `music` / `light` | 38 / 23 | the region-crossing pass |
+| **`no_housing`** | **21** | **none** |
+| `no_teleport` | 2 | `runtime.rs:2096`, `magic/travel.rs:88` |
+| `no_recall` | 2 | `magic/travel.rs:88` |
+| **`safe`** | **0** | **none** |
+
+So waking `no_housing` closes twenty-one places on the first boot — Covetous,
+Deceit, Despise, Destard, Hythloth, Shame, Wrong, Khaldun, Terathan Keep, Fire,
+Ice, the Solen Hives, Sanctuary and seven more. Waking `safe` closes nothing,
+and would commit the engine to a PvP rule whose other half does not exist.
+
+**So `safe` stays asleep, deliberately and in writing.** A dead flag with a
+reason recorded is a different thing from a dead flag nobody mentioned, and the
+whole reason this phase exists is that the second kind is invisible.
+
+#### Decisions
+
+**D9 — the rule is stated over the whole footprint, not over the origin.** A
+house is many tiles and a region is a set of rectangles with a height band, so a
+villa can straddle a dungeon mouth. Testing the origin alone would let a player
+build a house whose back half is inside Shame by standing one tile outside it —
+and the failure is invisible until somebody notices the walls. `check_ground`
+already walks every footprint tile for the road and `can_fit` rules; the region
+check walks the same list, and one tile inside a `no_housing` region refuses the
+house.
+
+The cost is the honest one to name: `Regions::at` is a bucket lookup plus a
+linear rectangle test per candidate, run once per footprint tile rather than
+once. A hundred lookups at placement, which happens when somebody clicks, is the
+same bargain `check_yard` already takes.
+
+**D10 — `place` takes the actor, not just the owner.** It cannot ask `is_staff`
+about a `Serial`, which is why D3's exemption has never existed. The signature
+gains an actor `EntityId` and the exemption is the shape every other one in this
+engine has — `if state.is_staff(actor) { … }` as a first branch, as
+`WorldState::may_teleport` (`runtime.rs:2089`) and `magic::travel::may_travel`
+(`travel.rs:82`) both do.
+
+**Which rules the exemption covers is its own decision, and it is not "all of
+them".** ServUO's first branch skips the *placement* rules — road, ground, yard,
+region — because a game master laying out a town has to. It does not skip
+`NoSuchMulti` or `DrawsNothing`, which are not rules but facts about the id, nor
+`NoSerials`, which is a shard in trouble. So the exemption sits above D9's
+region check and D3's five, and below the four refusals that are answers rather
+than policies.
+
+Both callers change: `gm::place_house` (`world/src/gm.rs:488`) already has the
+actor in hand, and `houses::place_house_from_deed` (`tick/houses.rs:138`) has it
+as the mobile whose deed is being spent.
+
+**D11 — a house's own region is derived from its footprint, not stored beside
+it.** D4 said a house *is* a region and left the shape open. The shape follows
+from H1's own rule: what is saved is where a house stands and which multi it is,
+and the footprint is recomputed at boot from the same table placement read it
+from. A stored rectangle would be a second copy of that, free to disagree with
+the walls after an install update — the exact failure H1 refused for the
+components.
+
+So the region is registered from `tiles_of` at placement and at restore, on the
+same call that blocks the walls, and removed by `decay::demolish` on the same
+call that unblocks them. `Regions` is per-facet on `FacetState` (`runtime.rs:399`),
+which is where the house's own `Obstructions` entries already live, so the two
+halves cannot end up on different facets.
+
+**What flags a house's region carries** is the smaller half and D4 already named
+it: `no_teleport` and `no_recall`. Not `no_housing` — a house is not a place
+another house may not go, that is what D3's yard is for, and setting both would
+make the yard rule unreachable.
+
+#### Phases within the phase
+
+1. `no_housing` gets its reader — D9's footprint walk, a `Refusal` variant, and
+   the twenty-one dungeons close.
+2. `place` takes the actor and D3's exemption becomes true — D10.
+3. A house registers and unregisters its own region — D11, and D4 becomes built.
+
+Each stands alone. The first is worth having with neither of the others.
+
+#### What a test would pin
+
+- A house refused inside a shipped `no_housing` region, by name, so the data and
+  the reader are tested together rather than against a fixture.
+- The same spot taken by staff, which is D10 and is the only proof the exemption
+  exists at all.
+- **A house whose origin is outside a `no_housing` region and whose footprint
+  reaches in.** D9's whole reason, and the one case an origin-only check passes.
+- A house's region present after placement and gone after `decay::demolish`,
+  because a region outliving its house is a permanent no-recall zone in an empty
+  field and nothing else would notice.
+
+#### Stale text this phase corrects
+
+H6 is a correction pass, so the rot found while planning it rides along rather
+than waiting for a phase of its own:
+
+- `RegionFlags::no_recall` — "Nothing reads this yet: travel is not built."
+  Travel is built and reads it (`magic/src/travel.rs:88`).
+- `EncodedSubcommand::GuildGumpRequest` — "Not acted on: `guilds` is a stub."
+  Guilds is complete, with five ranks, wars and alliances.
+- This document's own D1 — "the `0x1A`/`0xF3` that draws it". This engine draws
+  an item with `0x1A` and has no `0xF3`; the byte appears in the tree once, as a
+  deliberately-unknown packet id in a decoder test
+  (`client_packet.rs:283`).
+
+---
+
 ## What this plan does not cover
 
-- **Customisation** — D7, by name.
+- **Customisation** — D7, by name. **Reverted**: see
+  [`customisation.md`](customisation.md), which covers the whole `0xD7` design
+  system rather than a first cut.
 - **Boats.** They are multis too and this reader already reads them, and a boat
   is a house that *moves*, which is a different problem: every component's
-  position changes together and the obstruction index has to follow. Worth doing
-  and not here.
-- **Ilshenar, T2A and Eodon's no-housing rules.** They are region flags (D4) and
-  this engine has one facet loaded.
+  position changes together and the obstruction index has to follow. **Planned
+  separately**: see [`boats.md`](boats.md).
+- ~~**Ilshenar, T2A and Eodon's no-housing rules.**~~ Folded in as **H6** above.
+  The reason given here — "they are region flags (D4) and this engine has one
+  facet loaded" — was half right and the wrong half was load-bearing. They *are*
+  region flags. But the flag had no reader on the one facet that *is* loaded, so
+  "one facet" was never what stood in the way, and deferring on it left
+  twenty-one shipped dungeons open to building for five phases.
 
 ## Backlog, found while planning this
 
