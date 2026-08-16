@@ -1319,6 +1319,170 @@ fn dropping_an_item_into_a_container_puts_it_inside() {
     );
 }
 
+/// A full container refuses the drop, says which ceiling it hit, and the item
+/// comes back to the hand that offered it.
+///
+/// ServUO's `Container.CheckHold`, which this engine did not have: a chest took
+/// anything. The bounce is what makes the refusal readable — the player watches
+/// the item return and reads the line beside it, rather than watching it vanish.
+#[test]
+fn a_full_container_refuses_the_drop_and_bounces_it_back() {
+    let now = Instant::now();
+    let mut world = world();
+    let player = enter(&mut world, now);
+    let here = Point::new(START.0, START.1, 0);
+    let container = spawn_container_at(&mut world, here, now);
+    spawn_item_at(&mut world, here, now);
+    let item_serial = loose_item_serial(&world);
+    let item = entity(&world, item_serial);
+
+    // Filled to the brim. Not through the drop path, which is the thing under
+    // test: `place_one` is the decree door and has no ceiling of its own.
+    for _ in 0..openshard_items::MAX_ITEMS {
+        openshard_items::place_one(&mut world.state, container, Graphic(0x1BE3), Hue(0), 1)
+            .expect("the serial pool is not dry");
+    }
+    let _ = packets_for(&mut world, player);
+
+    world.queue(Command::PickUpItem {
+        connection: player,
+        serial: RawSerial(item_serial.raw()),
+        amount: 1,
+    });
+    world.tick(now);
+    world.queue(Command::DropItem {
+        connection: player,
+        serial: RawSerial(item_serial.raw()),
+        destination: DropDestination::Item {
+            item: container,
+            at: GumpPoint::new(50, 60),
+        },
+    });
+    world.tick(now);
+
+    assert_eq!(
+        world
+            .state
+            .registry
+            .get::<Contained>(item)
+            .map(|held| held.container),
+        None,
+        "a full container took it anyway"
+    );
+    let said = packets_for(&mut world, player);
+    assert!(
+        said.iter()
+            .any(|packet| String::from_utf8_lossy(packet).contains("That container cannot hold more items")),
+        "the player was refused and not told why"
+    );
+    assert!(
+        said.iter().any(|packet| packet[0] == 0x27),
+        "the item did not bounce back to the hand that offered it"
+    );
+}
+
+/// Staff are never refused — ServUO's `IsStaff` guard, and what lets a game
+/// master fill a chest to see what a full one does.
+#[test]
+fn a_full_container_still_takes_what_a_game_master_drops_in() {
+    let now = Instant::now();
+    let mut world = world();
+    let player = enter(&mut world, now);
+    let entity_of_player = world.state.players[&player];
+    world
+        .state
+        .registry
+        .insert(entity_of_player, openshard_state::components::Staff);
+    let here = Point::new(START.0, START.1, 0);
+    let container = spawn_container_at(&mut world, here, now);
+    spawn_item_at(&mut world, here, now);
+    let item_serial = loose_item_serial(&world);
+    let item = entity(&world, item_serial);
+    for _ in 0..openshard_items::MAX_ITEMS {
+        openshard_items::place_one(&mut world.state, container, Graphic(0x1BE3), Hue(0), 1)
+            .expect("the serial pool is not dry");
+    }
+
+    world.queue(Command::PickUpItem {
+        connection: player,
+        serial: RawSerial(item_serial.raw()),
+        amount: 1,
+    });
+    world.tick(now);
+    world.queue(Command::DropItem {
+        connection: player,
+        serial: RawSerial(item_serial.raw()),
+        destination: DropDestination::Item {
+            item: container,
+            at: GumpPoint::new(50, 60),
+        },
+    });
+    world.tick(now);
+
+    assert_eq!(
+        world
+            .state
+            .registry
+            .get::<Contained>(item)
+            .map(|held| held.container),
+        Some(container),
+        "a game master was refused"
+    );
+}
+
+/// A bag counts against the pack it is put into, contents and all.
+///
+/// ServUO's `TotalItems` is the whole subtree and `CheckHold` walks upward, so
+/// filling a pack with bags of bags is not a way around the ceiling. A one-level
+/// scan would let it through, which is the shape this asserts against.
+#[test]
+fn a_bag_counts_against_the_container_it_goes_into() {
+    let now = Instant::now();
+    let mut world = world();
+    let player = enter(&mut world, now);
+    let here = Point::new(START.0, START.1, 0);
+    let outer = spawn_container_at(&mut world, here, now);
+    let inner = spawn_container_at(&mut world, here, now);
+    let inner_entity = entity(&world, inner);
+
+    // The outer one is nearly full; the bag holds more than the room left.
+    for _ in 0..openshard_items::MAX_ITEMS - 5 {
+        openshard_items::place_one(&mut world.state, outer, Graphic(0x1BE3), Hue(0), 1)
+            .expect("the serial pool is not dry");
+    }
+    for _ in 0..10 {
+        openshard_items::place_one(&mut world.state, inner, Graphic(0x1BE3), Hue(0), 1)
+            .expect("the serial pool is not dry");
+    }
+    let _ = packets_for(&mut world, player);
+
+    world.queue(Command::PickUpItem {
+        connection: player,
+        serial: RawSerial(inner.raw()),
+        amount: 1,
+    });
+    world.tick(now);
+    world.queue(Command::DropItem {
+        connection: player,
+        serial: RawSerial(inner.raw()),
+        destination: DropDestination::Item {
+            item: outer,
+            at: GumpPoint::new(50, 60),
+        },
+    });
+    world.tick(now);
+
+    assert_eq!(
+        world
+            .state
+            .registry
+            .get::<Contained>(inner_entity)
+            .map(|held| held.container),
+        None,
+        "the bag went in with only itself counted"
+    );
+}
+
 #[test]
 fn an_opened_container_lists_what_was_put_in_it() {
     let now = Instant::now();

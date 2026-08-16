@@ -67,7 +67,7 @@ const DEFAULT_STRENGTH: u16 = 100;
 /// Both references special-case it — ServUO's `Gold.DefaultWeight` is 0.02 — so a
 /// 10,000 gold fortune is 200 stones, heavy but carryable, which is the classic
 /// feel of a bank run.
-const GOLD_WEIGHT_HUNDREDTHS: u32 = 2;
+pub(crate) const GOLD_WEIGHT_HUNDREDTHS: u32 = 2;
 
 /// Who is inside what: every contained item, keyed by the container holding it.
 ///

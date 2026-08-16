@@ -529,3 +529,111 @@ fn a_half_used_tool_and_a_half_played_lute_both_survive_a_restart() {
         "the lute's tunes were not saved: {saved:?}"
     );
 }
+
+/// A pack with no room in it loses the ore, and says so.
+///
+/// The line existed and nothing could reach it: `give_to_backpack` failed only
+/// for a mobile wearing no pack at all, so a miner mined into a backpack with no
+/// bottom. The ceiling is ServUO's `Container.GlobalMaxItems`, and the vein is
+/// asserted *not* to have gone down with the swing — a full pack costs the swing
+/// and the tool's use, not the ore in the ground.
+#[test]
+fn a_full_pack_loses_the_ore_and_tells_the_miner() {
+    let now = Instant::now();
+    let mut world = world();
+    let player = enter(&mut world, now);
+    ground(&mut world, MOUNTAIN, None);
+    train(&mut world, player, Skill::Mining, 1000);
+    let pick = give_tool(&mut world, player, PICKAXE);
+    world.tick(now);
+
+    // Fill the pack to the brim with discrete items, which is what a slot count
+    // counts. Not staff: `check_hold` waves those through, and a test run as one
+    // would pass on an engine with no ceiling at all.
+    let entity = world.state.players[&player];
+    assert!(
+        !world.state.is_staff(entity),
+        "staff are never refused, so this would prove nothing"
+    );
+    let owner = world.state.registry.serial_of(entity).unwrap();
+    let backpack = items::backpack_of(&world.state, owner).expect("a backpack");
+    let already = items::contents_of(&world.state, backpack).len();
+    for _ in already..items::MAX_ITEMS {
+        items::place_one(&mut world.state, backpack, Graphic(0x1BE3), Hue(0), 1)
+            .expect("the serial pool is not dry");
+    }
+    let _ = packets_for(&mut world, player);
+
+    let before = definition(HarvestKind::Ore, true);
+    swing_at(&mut world, player, pick, 1, 0, now);
+    finish_swing(&mut world, player, now);
+    let said = clilocs(&mut world, player);
+
+    assert!(
+        said.contains(&before.messages.pack_full.0),
+        "the miner was not told the ore was lost: {said:?}"
+    );
+    assert_eq!(carried(&world, player, ORE_GRAPHIC), 0, "the ore landed anyway");
+    // The vein is untouched. ServUO takes the bank down only on a payout that
+    // landed, and a swing that costs the ore in the ground *and* delivers nothing
+    // is the shape of bug that empties a shard quietly.
+    let bank = world.state.facet_state_mut(Facet(0)).banks.get(
+        before,
+        START.0 + 1,
+        START.1,
+        Facet(0),
+        0,
+        &mut Rng::new(1),
+    );
+    assert_eq!(
+        bank.current, bank.maximum,
+        "a lost payout took the vein down with it"
+    );
+}
+
+/// One more onto a pile already in the pack is not one more *item*.
+///
+/// The trap in a slot count: ore stacks, so a miner at the item ceiling with a
+/// pile of iron already in there is still owed the next ten. ServUO asks
+/// `CheckStack` before `CheckHold` for exactly this, and a ceiling that skipped
+/// the question would stop a miner mining at a hundred and twenty-five swings
+/// with a pack that had room for all of it.
+#[test]
+fn a_pile_already_in_the_pack_takes_more_at_the_item_ceiling() {
+    let now = Instant::now();
+    let mut world = world();
+    let player = enter(&mut world, now);
+    ground(&mut world, MOUNTAIN, None);
+    train(&mut world, player, Skill::Mining, 1000);
+    let pick = give_tool(&mut world, player, PICKAXE);
+    world.tick(now);
+
+    // One swing to make the pile, then fill every remaining slot around it.
+    swing_at(&mut world, player, pick, 1, 0, now);
+    let now = finish_swing(&mut world, player, now);
+    let mined = carried(&world, player, ORE_GRAPHIC);
+    assert!(mined > 0, "the first swing paid nothing, so there is no pile");
+
+    let entity = world.state.players[&player];
+    let owner = world.state.registry.serial_of(entity).unwrap();
+    let backpack = items::backpack_of(&world.state, owner).expect("a backpack");
+    let already = items::contents_of(&world.state, backpack).len();
+    for _ in already..items::MAX_ITEMS {
+        items::place_one(&mut world.state, backpack, Graphic(0x1BE3), Hue(0), 1)
+            .expect("the serial pool is not dry");
+    }
+    let _ = packets_for(&mut world, player);
+
+    let before = definition(HarvestKind::Ore, true);
+    swing_at(&mut world, player, pick, 1, 0, now);
+    finish_swing(&mut world, player, now);
+    let said = clilocs(&mut world, player);
+    assert!(
+        !said.contains(&before.messages.pack_full.0),
+        "a merge onto a pile that was already there was charged a slot: {said:?}"
+    );
+    assert!(
+        carried(&world, player, ORE_GRAPHIC) > mined,
+        "the ore did not reach the pile it should have merged onto"
+    );
+}

@@ -310,6 +310,17 @@ pub fn drop_into_container(
         bounce(state, connection, held, DragCancelReason::OutOfRange);
         return;
     }
+    // And it must have room. ServUO's `CheckHold`, asked here rather than in
+    // `drop_onto_serial` because both arms of that one land in this function —
+    // the gate belongs where the item actually goes in. The item bounces back to
+    // where it came from, which is what makes the refusal readable: the player
+    // sees it return to their hand and reads why.
+    let (plus_items, plus_weight) = crate::cost_of(state, held.entity);
+    if let Some(full) = crate::check_hold(state, player, container_serial, plus_items, plus_weight) {
+        state.system_message(player, full.message());
+        bounce(state, connection, held, DragCancelReason::Other);
+        return;
+    }
 
     let grid = item_count(state, container_serial);
     state.take_held(connection);

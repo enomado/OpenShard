@@ -35,10 +35,18 @@ pub fn backpack_of(state: &WorldState, mobile: Serial) -> Option<Serial> {
 /// Put an item into a mobile's backpack: merged onto a like pile when
 /// `stackable` (gold, reagents), else placed as a discrete piece.
 ///
-/// Returns whether it landed. `false` means the mobile wears no backpack, and the
-/// caller decides what that means — nothing is spilled on the ground here, because
-/// a reward that quietly becomes litter at the giver's feet is worse than one that
-/// visibly did not arrive.
+/// Returns whether it landed. `false` means the mobile wears no backpack **or the
+/// pack will not hold it**, and the caller decides what that means — nothing is
+/// spilled on the ground here, because a reward that quietly becomes litter at the
+/// giver's feet is worse than one that visibly did not arrive.
+///
+/// # The full-pack half arrived late
+///
+/// Until 2026-08-16 this could only fail for want of a pack at all, so the harvest
+/// system's "your pack is full" line was a line nothing could reach: a miner mined
+/// into a backpack with no bottom. See [`check_hold`](crate::check_hold), and note
+/// that a *merge* onto a pile already in there costs no slot — only weight — which
+/// is why the two arms below ask different questions.
 pub fn give_to_backpack(
     state: &mut WorldState,
     mobile: Serial,
@@ -50,6 +58,11 @@ pub fn give_to_backpack(
     let Some(backpack) = backpack_of(state, mobile) else {
         return false;
     };
+    if let Some(owner) = state.registry.entity_of(mobile) {
+        if !room_for(state, owner, backpack, graphic, hue, amount, stackable) {
+            return false;
+        }
+    }
     // Coins are currency rather than discrete loot: a one-coin reward still
     // belongs on the existing pile even when its source omitted the flag.
     if stackable || graphic == GOLD_GRAPHIC {
@@ -58,6 +71,54 @@ pub fn give_to_backpack(
         crate::place_one(state, backpack, graphic, hue, amount);
     }
     true
+}
+
+/// Whether a pack will take what [`give_to_backpack`] is about to put in it.
+///
+/// The two arms differ in **slots**, not in weight. A stackable that has a pile of
+/// its own art and hue already in there merges onto it and takes no new slot;
+/// anything else is one more item. ServUO draws the same line — `CheckStack`
+/// before `CheckHold` — and drawing it here is what stops a miner being refused a
+/// hundred and twenty-sixth swing that would have gone onto the pile of ore they
+/// are already carrying.
+///
+/// The weight is charged either way, because ore weighs what it weighs whichever
+/// pile it lands on.
+fn room_for(
+    state: &WorldState,
+    owner: EntityId,
+    backpack: Serial,
+    graphic: Graphic,
+    hue: Hue,
+    amount: u16,
+    stackable: bool,
+) -> bool {
+    let merges = (stackable || graphic == GOLD_GRAPHIC)
+        && state
+            .registry
+            .query::<Contained>()
+            .filter(|(_, held)| held.container == backpack)
+            .any(|(entity, _)| {
+                state.registry.has::<Stackable>(entity)
+                    && state
+                        .registry
+                        .get::<Drawn>(entity)
+                        .is_some_and(|drawn| drawn.id == graphic && drawn.hue == hue)
+            });
+    let facet = state.facet_of(owner);
+    let each = if graphic == GOLD_GRAPHIC {
+        crate::GOLD_WEIGHT_HUNDREDTHS
+    } else {
+        u32::from(
+            state
+                .facets
+                .get(&facet)
+                .and_then(|facet| facet.terrain.as_deref())
+                .map_or(0, |terrain| terrain.item_weight(graphic)),
+        ) * 100
+    };
+    let stones = u16::try_from(each.saturating_mul(u32::from(amount)) / 100).unwrap_or(u16::MAX);
+    crate::check_hold(state, owner, backpack, usize::from(!merges), stones).is_none()
 }
 
 /// Take `amount` of a graphic out of a mobile's backpack — **all or nothing**.

@@ -1401,9 +1401,9 @@ Roughly in dependency order, each script-first:
     slice. Deferred: ML **bonus resources** (gems, bark fragments, pearls), whose
     items do not exist yet; **granite** and the special deep-water catches;
     `BaseOre`'s pile-size art swap, without which rolling ServUO's four ore
-    graphics would leave four piles that refuse to merge; High Seas' lava tiles;
-    and a real **pack-capacity** refusal, since nothing in `items` caps what a
-    backpack holds — "your pack is full" fires only when there is no pack at all.
+    graphics would leave four piles that refuse to merge; and High Seas' lava
+    tiles. The **pack-capacity** refusal this list also carried has landed — see
+    `items::capacity` under the staff-command entry in §7.
   - [ ] Sphere's per-skill `AdvRate` tables and its "learn only from a challenge"
     `GainRadius` — **dropped, not deferred**: ServUO's band *is* the
     learn-from-a-challenge rule, and its `gain_factor` column is the per-skill
@@ -1909,6 +1909,34 @@ Roughly in dependency order, each script-first:
     the spot rather than a step late. The gate lives in the world, not the `gm`
     module, so a command function may assume its caller cleared it. The vocabulary
     grows one verb at a time in `world::gm`.
+  - [x] **A container has a ceiling now — `items::capacity`.** ServUO's
+    `Container.CheckHold`, and the gap the harvest slice deferred: nothing capped
+    what a backpack held, so "your backpack is full, so the ore you mined is lost"
+    was a line only a mobile wearing *no pack at all* could reach, and a miner
+    mined into a pack with no bottom.
+
+    Two ceilings, and only one of them is reliable here. **Items** is a count —
+    125, `GlobalMaxItems` — and works on any shard, because counting rows needs
+    nothing but the registry. **Weight** is in stones and comes from the tiledata,
+    which is a client file, so a shard with no map weighs everything at zero and
+    the weight ceiling silently does not apply. That is the same bargain
+    `total_weight` and the step checks already make, and it is why the item count
+    is the half worth trusting. A player's own backpack takes ServUO's ML ceiling
+    of 550 stones rather than the global 400, and the expansion gate is real.
+
+    Both halves are **recursive and both walk upward**: a bag counts its own
+    contents against the pack it is in, and every container up the chain is asked,
+    so filling a pack with bags of bags is not a way around it. Staff are never
+    refused, which is what lets a game master fill a chest to see what a full one
+    does. And a stackable that merges onto a pile already in there costs **no
+    slot** — ServUO asks `CheckStack` before `CheckHold`, and a ceiling that
+    skipped the question would stop a miner at a hundred and twenty-five swings
+    with a pack that had room for all of it.
+
+    Two doors are gated and no more: the player's own drag-and-drop, where the
+    item bounces back to the hand that offered it so the refusal is readable, and
+    `give_to_backpack`. A corpse being filled and a vendor's shelf being stocked
+    are decrees, not offers, and go on taking whatever they are given.
   - [x] **`.skill <name> <value>`, and the `0x3A` a moved skill owes a window.**
     `Command::SetSkill` existed and only tests reached it, so the one way to move
     a skill on a running shard was to train it — which makes half the engine hard

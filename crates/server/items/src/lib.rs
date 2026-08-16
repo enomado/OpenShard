@@ -37,6 +37,7 @@ use openshard_state::{HeldItem, Origin, Outbound, TICKS_PER_SECOND, TradeWindow,
 use tracing::{debug, warn};
 
 mod backpack;
+mod capacity;
 mod consume;
 mod containers;
 mod decay;
@@ -52,6 +53,7 @@ mod trigger;
 mod weight;
 
 pub use backpack::*;
+pub use capacity::*;
 pub use consume::*;
 pub use containers::*;
 pub use decay::*;
