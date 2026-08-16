@@ -752,9 +752,35 @@ pub struct CraftGumpContext {
     pub notice: Option<ClilocId>,
 }
 
+/// What a house-list cursor is about to do with the mobile it is answered with.
+///
+/// One enum and not five purposes, because the five differ only in which call
+/// they make — and a `TargetPurpose` variant per call would be five places to
+/// remember to add the sixth.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum HouseChange {
+    /// Trust them to come in.
+    Friend,
+    /// Trust them with the house.
+    CoOwner,
+    /// Take them off both trusted lists.
+    Drop,
+    /// Turn them away, and put them out if they are inside.
+    Ban,
+    /// Let them back to the door, as a stranger.
+    Unban,
+}
+
 /// What a raised targeting cursor is waiting to do with the click.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum TargetPurpose {
+    /// A house's list waiting for the name to put on it — the cursor `.hfriend`
+    /// and its four siblings raise, and the one a house sign will raise when
+    /// there is one.
+    HouseList {
+        /// Which list, and which direction.
+        change: HouseChange,
+    },
     /// A house waiting for its plot — the cursor a deed raises.
     ///
     /// Carries the *deed* rather than the multi id, and the difference is a rule:

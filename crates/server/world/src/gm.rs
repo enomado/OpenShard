@@ -20,7 +20,7 @@ use openshard_protocol::target::{TargetCursor, TargetKind};
 use openshard_protocol::wire::{CursorId, Graphic, Hue};
 use openshard_protocol::world::{Facet, Point};
 use openshard_state::components::{Client, Equipped, Position, SPELLBOOK_GRAPHIC, Spellbook, Staff, Stats};
-use openshard_state::{TargetPurpose, WorldState};
+use openshard_state::{HouseChange, TargetPurpose, WorldState};
 
 use openshard_items as items;
 use openshard_skills as skills;
@@ -62,6 +62,11 @@ pub fn run(state: &mut WorldState, actor: EntityId, rest: &str) {
         "skill" => set_skill(state, actor, &args),
         "house" => place_house(state, actor, &args),
         "deed" => make_deed(state, actor, &args),
+        "hfriend" => house_list(state, actor, HouseChange::Friend),
+        "hcoowner" => house_list(state, actor, HouseChange::CoOwner),
+        "hdrop" => house_list(state, actor, HouseChange::Drop),
+        "hban" => house_list(state, actor, HouseChange::Ban),
+        "hunban" => house_list(state, actor, HouseChange::Unban),
         "admin" => crate::admin::open_menu(state, actor),
         "save" => save_world(state, actor),
         other => notify(state, actor, &format!("Unknown command '{other}'.")),
@@ -531,6 +536,32 @@ fn make_deed(state: &mut WorldState, actor: EntityId, args: &[&str]) {
         openshard_state::components::Name(format!("a house deed ({:#06x})", multi.0)),
     );
     notify(state, actor, "A house deed is at your feet.");
+}
+
+/// `.hfriend`, `.hcoowner`, `.hdrop`, `.hban`, `.hunban` — change the house you
+/// are standing in, by clicking whom.
+///
+/// A **cursor** and not a name, for `.tele`'s reason: naming a mobile needs a
+/// lookup this engine has no verb for, and picking one is what the reference's
+/// own house sign does. When a sign exists it is a window over exactly these
+/// five calls; until then this is how the rules are reachable at all, which is
+/// what `.key` and `.trap` are for their own.
+fn house_list(state: &mut WorldState, actor: EntityId, change: HouseChange) {
+    state.raise_target(actor, TargetPurpose::HouseList { change });
+    let Some(&Client { connection, .. }) = state.registry.get::<Client>(actor) else {
+        return;
+    };
+    let Some(serial) = state.registry.serial_of(actor) else {
+        return;
+    };
+    state.send_packet(
+        connection,
+        &ServerPacket::TargetCursor(TargetCursor {
+            cursor_id: CursorId(serial.raw()),
+            kind: TargetKind::Object,
+        }),
+    );
+    notify(state, actor, "Whom?");
 }
 
 /// Send the actor a private system line — the reply to a command, seen by no one

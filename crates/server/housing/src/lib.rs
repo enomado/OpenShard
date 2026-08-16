@@ -173,6 +173,7 @@ pub fn place(
     state.facet_state_mut(facet).sectors.insert(entity, at);
     let obstructions = &mut state.facet_state_mut(facet).obstructions;
     block_footprint(obstructions, entity, &footprint);
+    adopt_doors(state, entity, facet, at, multi);
     Ok(entity)
 }
 
@@ -184,59 +185,14 @@ pub const MAX_FRIENDS: usize = 140;
 /// How many bans, on the same terms.
 pub const MAX_BANS: usize = 140;
 
-/// Where somebody stands with a house.
+/// Where somebody stands with a house — re-exported from `openshard-state`.
 ///
-/// One question and not four booleans, because the reference's are **nested** —
-/// a co-owner is a friend, an owner is a co-owner — and four independent answers
-/// are four chances to ask the wrong one. See ServUO's `IsFriend`, which is
-/// `IsCoOwner(m) || Friends.Contains(m)`, and `IsCoOwner`, which is `IsOwner(m)
-/// || ...`.
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
-pub enum Standing {
-    /// Turned away at the door.
-    ///
-    /// **Lowest**, so an `Ord` comparison means "at least this trusted" and a
-    /// ban is never that. The owner and staff cannot reach it — ServUO's
-    /// `IsBanned` returns false for both, which is what stops somebody banning
-    /// the owner out of their own house.
-    Banned,
-    /// Neither friend nor enemy. May knock, may not enter.
-    Stranger,
-    /// May come in and use the door.
-    Friend,
-    /// Everything but giving the house away.
-    CoOwner,
-    /// The house is theirs.
-    Owner,
-}
-
-/// What `who` is to this house.
-///
-/// The order the checks are made in is the rule: owner first, so nothing can
-/// demote them, then the ban, then the trusted lists. A banned co-owner is
-/// **banned** — the ban is the newer decision and the reference's `HasAccess`
-/// reads it that way, which is what makes "ban them" a usable answer to a
-/// co-owner who has turned.
-#[must_use]
-pub fn standing_of(house: &House, who: Serial, staff: bool) -> Standing {
-    if who == house.owner {
-        return Standing::Owner;
-    }
-    // Staff walk in anywhere, and are never banned. ServUO's own first branch.
-    if staff {
-        return Standing::CoOwner;
-    }
-    if house.bans.contains(&who) {
-        return Standing::Banned;
-    }
-    if house.co_owners.contains(&who) {
-        return Standing::CoOwner;
-    }
-    if house.friends.contains(&who) {
-        return Standing::Friend;
-    }
-    Standing::Stranger
-}
+/// The type lives beside the data because a *door* has to ask it and the
+/// double-click dispatch is `openshard-items`', which does not depend on this
+/// crate. See [`Standing`](openshard_state::Standing)'s own docs: it is
+/// [`Guild`](openshard_state::Guild)'s split, where the rules are the system
+/// crate's and the question a wire path asks lives on the component.
+pub use openshard_state::Standing;
 
 /// Why a change to a house's lists was refused.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -280,7 +236,7 @@ pub fn trust(
     standing: Standing,
     staff: bool,
 ) -> Result<(), ListRefusal> {
-    let actor_standing = standing_of(house, actor, staff);
+    let actor_standing = house.standing_of(actor, staff);
     let needed = match standing {
         Standing::CoOwner => Standing::Owner,
         _ => Standing::CoOwner,
@@ -313,7 +269,7 @@ pub fn trust(
 /// Take somebody off both trusted lists. A co-owner may drop a friend; only the
 /// owner may drop a co-owner.
 pub fn distrust(house: &mut House, actor: Serial, who: Serial, staff: bool) -> Result<(), ListRefusal> {
-    let actor_standing = standing_of(house, actor, staff);
+    let actor_standing = house.standing_of(actor, staff);
     let needed = if house.co_owners.contains(&who) {
         Standing::Owner
     } else {
@@ -336,7 +292,7 @@ pub fn distrust(house: &mut House, actor: Serial, who: Serial, staff: bool) -> R
 /// co-owner takes them off it, because "banned but still a co-owner" is a state
 /// with no useful answer and the ban is the thing that was just decided.
 pub fn ban(house: &mut House, actor: Serial, who: Serial, staff: bool) -> Result<(), ListRefusal> {
-    if standing_of(house, actor, staff) < Standing::CoOwner {
+    if house.standing_of(actor, staff) < Standing::CoOwner {
         return Err(ListRefusal::NotYours);
     }
     if who == house.owner {
@@ -354,11 +310,135 @@ pub fn ban(house: &mut House, actor: Serial, who: Serial, staff: bool) -> Result
 /// Let a banned player back to the door. They come back a stranger, not a
 /// friend: undoing a ban is not the same as granting anything.
 pub fn unban(house: &mut House, actor: Serial, who: Serial, staff: bool) -> Result<(), ListRefusal> {
-    if standing_of(house, actor, staff) < Standing::CoOwner {
+    if house.standing_of(actor, staff) < Standing::CoOwner {
         return Err(ListRefusal::NotYours);
     }
     house.bans.remove(&who);
     Ok(())
+}
+
+/// Hand every door standing inside a footprint to the house.
+///
+/// # Why a house adopts its doors rather than placing them
+///
+/// The obvious source is the multi itself, and it is not one: of the 326 multis
+/// a shipped `multi.mul` holds, **three** carry a door component. The reference
+/// agrees — ServUO's houses call `AddDoor` from each house class with an explicit
+/// graphic and position, which is a per-house-type table of *content* this engine
+/// does not have and should not invent.
+///
+/// So the rule is the one a player would state: a door standing inside your house
+/// is your house's door. It is derivable from what is already on the ground, it
+/// needs no table, and it is right for a door added by a pack, by a staff command
+/// or by a later customisation system without any of them knowing about it.
+///
+/// Called at placement, and again whenever a door is put down — a house cannot
+/// adopt a door that does not exist yet.
+pub fn adopt_doors(state: &mut WorldState, house: EntityId, facet: Facet, at: Point, multi: u16) {
+    let Some(serial) = state.registry.serial_of(house) else {
+        return;
+    };
+    // **Every drawn tile, not the blocking footprint.** A door stands in a
+    // *doorway*, which is by construction a gap in the walls — the one place the
+    // footprint does not reach. Using it here adopted nothing, which a test
+    // caught rather than a player.
+    let area = tiles_of(state, at, facet, multi);
+    let inside: Vec<EntityId> = state
+        .registry
+        .query::<openshard_state::components::Door>()
+        .map(|(entity, _)| entity)
+        .filter(|&entity| state.facet_of(entity) == facet)
+        .filter(|&entity| {
+            state
+                .registry
+                .get::<Position>(entity)
+                .is_some_and(|&Position(at)| area.contains(&Tile::new(at.x, at.y)))
+        })
+        .collect();
+    for door in inside {
+        state
+            .registry
+            .insert(door, openshard_state::components::HouseDoor { house: serial });
+    }
+}
+
+/// Where a banned player is put out to.
+///
+/// One tile west of the house's box, at the ground the house stands on. ServUO
+/// moves them to the sign's own spot, which this engine has no sign for yet — and
+/// "just outside, on the side the box ends" is the same intent with data that
+/// exists.
+#[must_use]
+pub fn doorstep(state: &WorldState, at: Point, facet: Facet, multi: u16) -> Point {
+    let tiles = tiles_of(state, at, facet, multi);
+    let west = tiles.iter().map(|tile| tile.x).min().unwrap_or(at.x);
+    Point::new(west.saturating_sub(1), at.y, at.z)
+}
+
+/// Put every banned player standing inside a house out of it.
+///
+/// The one rule in H3 that *acts* on somebody rather than refusing them, and the
+/// reason a ban is worth anything at all: a ban that only locked the door would
+/// leave whoever was already inside there for good.
+///
+/// Returns who was moved, so the caller can tell them — this crate does not send
+/// packets, for `place`'s reason.
+pub fn evict_the_banned(state: &mut WorldState, house: EntityId) -> Vec<EntityId> {
+    let Some(entry) = state.registry.get::<House>(house).cloned() else {
+        return Vec::new();
+    };
+    let Some(&Position(at)) = state.registry.get::<Position>(house) else {
+        return Vec::new();
+    };
+    let facet = state.facet_of(house);
+    let area = tiles_of(state, at, facet, entry.multi);
+    let out = doorstep(state, at, facet, entry.multi);
+
+    let caught: Vec<EntityId> = state
+        .registry
+        .query::<Position>()
+        .filter(|(entity, _)| state.registry.has::<openshard_state::components::Body>(*entity))
+        .filter(|(entity, _)| state.facet_of(*entity) == facet)
+        .filter(|(_, Position(where_they_are))| area.contains(&Tile::new(where_they_are.x, where_they_are.y)))
+        .filter(|(entity, _)| {
+            state
+                .registry
+                .serial_of(*entity)
+                .is_some_and(|who| entry.standing_of(who, state.is_staff(*entity)) == Standing::Banned)
+        })
+        .map(|(entity, _)| entity)
+        .collect();
+    for who in &caught {
+        state.registry.insert(*who, Position(out));
+    }
+    caught
+}
+
+/// Every tile a house covers — its drawn components, blocking or not.
+///
+/// The footprint's counterpart, and the difference matters: a footprint is what
+/// *stops* somebody and a doorway is a gap in it, so "does this house cover this
+/// tile" and "does this house block this tile" are two questions with two
+/// answers.
+#[must_use]
+pub fn tiles_of(state: &WorldState, at: Point, facet: Facet, multi: u16) -> Vec<Tile> {
+    let multi = multi & !MULTI_FLAG;
+    let Some(terrain) = state.facet_state(facet).terrain.as_deref() else {
+        return Vec::new();
+    };
+    let mut out: Vec<Tile> = terrain
+        .multi_components(multi)
+        .iter()
+        .filter(|component| component.drawn())
+        .filter_map(|component| {
+            let x = u16::try_from(i32::from(at.x) + i32::from(component.dx)).ok()?;
+            let y = u16::try_from(i32::from(at.y) + i32::from(component.dy)).ok()?;
+            Some(Tile::new(x, y))
+        })
+        .collect();
+    out.sort_unstable_by_key(|tile| (tile.x, tile.y));
+    out.dedup();
+    out
 }
 
 /// Put a house's walls into the obstruction index.

@@ -1,5 +1,7 @@
 use super::*;
 use openshard_protocol::wire::Hue;
+use openshard_state::Standing;
+use openshard_state::components::{House, HouseDoor};
 
 /// How long a door stays open before it swings shut on its own, in ticks —
 /// roughly the classic client's self-closing delay.
@@ -32,6 +34,17 @@ pub fn toggle_door(state: &mut WorldState, player: EntityId, door: EntityId, ser
     let Some(is_open) = state.registry.get::<Door>(door).map(|d| d.is_open) else {
         return;
     };
+    // A house door opens for the people the house trusts. Asked before the lock,
+    // because a stranger at a friend's door is refused for *being* a stranger and
+    // saying "that is locked" would send them looking for a key.
+    //
+    // The question is `House::standing_of`, which lives on the component in
+    // `state` for exactly this: `items` has no business depending on the housing
+    // crate, and a door is not a housing concept. See `Standing`'s own docs.
+    if !is_open && !may_pass(state, player, door) {
+        state.system_message(player, NOT_YOUR_DOOR);
+        return;
+    }
     // A locked door refuses to be opened, and says so. Only while *shut*: ServUO
     // checks `m_Locked && !m_Open`, so a door left standing open can always be pushed
     // closed again — otherwise a lock that snapped on while the door was open would
@@ -41,6 +54,34 @@ pub fn toggle_door(state: &mut WorldState, player: EntityId, door: EntityId, ser
         return;
     }
     set_door(state, door, serial, !is_open);
+}
+
+/// What a house door says to somebody it does not know. ServUO's own line for a
+/// house they have no access to.
+pub const NOT_YOUR_DOOR: &str = "You cannot open that door.";
+
+/// Whether `player` may work this door, which is only a question for a house's.
+///
+/// A door with no [`HouseDoor`] belongs to Britannia and opens for anyone — every
+/// door in the world is one of those today.
+fn may_pass(state: &WorldState, player: EntityId, door: EntityId) -> bool {
+    let Some(&HouseDoor { house }) = state.registry.get::<HouseDoor>(door) else {
+        return true;
+    };
+    let Some(house) = state
+        .registry
+        .entity_of(house)
+        .and_then(|entity| state.registry.get::<House>(entity))
+    else {
+        // The house is gone and its door outlived it. Opens for anyone, which is
+        // the harmless direction: the alternative is a door nobody can ever move
+        // standing in the middle of a field.
+        return true;
+    };
+    let Some(who) = state.registry.serial_of(player) else {
+        return false;
+    };
+    house.standing_of(who, state.is_staff(player)) >= Standing::Friend
 }
 
 /// ServUO cliloc 502503, what a player is told by a door that will not open.

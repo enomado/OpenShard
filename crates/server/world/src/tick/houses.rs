@@ -201,3 +201,98 @@ impl World {
             .system_message(player, "Where would you like to place the house?");
     }
 }
+
+impl World {
+    /// The house `who` is standing in, if any.
+    ///
+    /// A scan over the houses rather than an index: there are a handful on a
+    /// shard and this is asked when somebody presses a button, never on a step.
+    pub(super) fn house_at(&self, at: Point, facet: Facet) -> Option<EntityId> {
+        self.state
+            .registry
+            .query::<House>()
+            .filter(|(entity, _)| self.state.facet_of(*entity) == facet)
+            .find(|(entity, house)| {
+                self.state
+                    .registry
+                    .get::<Position>(*entity)
+                    .is_some_and(|&Position(origin)| {
+                        openshard_housing::tiles_of(&self.state, origin, facet, house.multi)
+                            .contains(&openshard_movement::Tile::new(at.x, at.y))
+                    })
+            })
+            .map(|(entity, _)| entity)
+    }
+
+    /// Change one of a house's lists, and put out anybody the change turned away.
+    ///
+    /// The eviction rides here rather than in `openshard-housing` for the reason
+    /// `place` does not announce itself: the crate decides *who may be where* and
+    /// the world is what tells people about it.
+    pub(super) fn change_house_list(
+        &mut self,
+        actor: EntityId,
+        house: EntityId,
+        change: impl FnOnce(&mut House, Serial, bool) -> Result<(), openshard_housing::ListRefusal>,
+    ) {
+        let Some(who) = self.state.registry.serial_of(actor) else {
+            return;
+        };
+        let staff = self.state.is_staff(actor);
+        let Some(entry) = self.state.registry.get_mut::<House>(house) else {
+            return;
+        };
+        match change(entry, who, staff) {
+            Ok(()) => {
+                for evicted in openshard_housing::evict_the_banned(&mut self.state, house) {
+                    self.state
+                        .system_message(evicted, "You have been banned from this house.");
+                }
+                self.state.system_message(actor, "Done.");
+            }
+            Err(refusal) => self.state.system_message(actor, refusal.message()),
+        }
+    }
+}
+
+impl World {
+    /// The house-list cursor came back with somebody: make the change.
+    ///
+    /// The house is the one the **actor** is standing in, read now rather than
+    /// when the cursor went up — the same rule the deed's placement follows, and
+    /// for the same reason: whoever walked out of their house between raising the
+    /// cursor and answering it is no longer changing that house's lists.
+    pub(super) fn change_house_list_for(
+        &mut self,
+        actor: EntityId,
+        change: openshard_state::HouseChange,
+        who: Option<Serial>,
+    ) {
+        use openshard_state::HouseChange as Change;
+
+        let Some(who) = who else {
+            self.state.system_message(actor, "That is nobody.");
+            return;
+        };
+        let Some(&Position(at)) = self.state.registry.get::<Position>(actor) else {
+            return;
+        };
+        let facet = self.state.facet_of(actor);
+        let Some(house) = self.house_at(at, facet) else {
+            self.state
+                .system_message(actor, "You are not standing in a house.");
+            return;
+        };
+        self.change_house_list(actor, house, move |entry, actor, staff| match change {
+            Change::Friend => {
+                openshard_housing::trust(entry, actor, who, openshard_state::Standing::Friend, staff)
+            }
+            Change::CoOwner => {
+                openshard_housing::trust(entry, actor, who, openshard_state::Standing::CoOwner, staff)
+            }
+            Change::Drop => openshard_housing::distrust(entry, actor, who, staff),
+            Change::Ban => openshard_housing::ban(entry, actor, who, staff),
+            Change::Unban => openshard_housing::unban(entry, actor, who, staff),
+        });
+    }
+}

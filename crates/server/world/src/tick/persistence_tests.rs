@@ -925,16 +925,16 @@ fn a_houses_access_lists_survive_a_restart() {
         .get::<openshard_state::components::House>(entity)
         .expect("its component");
     assert_eq!(
-        openshard_housing::standing_of(house, co_owner, false),
-        openshard_housing::Standing::CoOwner
+        house.standing_of(co_owner, false),
+        openshard_state::Standing::CoOwner
     );
     assert_eq!(
-        openshard_housing::standing_of(house, friend, false),
-        openshard_housing::Standing::Friend
+        house.standing_of(friend, false),
+        openshard_state::Standing::Friend
     );
     assert_eq!(
-        openshard_housing::standing_of(house, banned, false),
-        openshard_housing::Standing::Banned
+        house.standing_of(banned, false),
+        openshard_state::Standing::Banned
     );
     assert_eq!(
         house.bans.len(),

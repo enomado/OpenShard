@@ -458,10 +458,10 @@ fn standing_is_one_question_with_a_nested_answer() {
     house.friends.insert(friend);
     house.co_owners.insert(co_owner);
 
-    assert_eq!(standing_of(&house, owner, false), Standing::Owner);
-    assert_eq!(standing_of(&house, co_owner, false), Standing::CoOwner);
-    assert_eq!(standing_of(&house, friend, false), Standing::Friend);
-    assert_eq!(standing_of(&house, stranger, false), Standing::Stranger);
+    assert_eq!(house.standing_of(owner, false), Standing::Owner);
+    assert_eq!(house.standing_of(co_owner, false), Standing::CoOwner);
+    assert_eq!(house.standing_of(friend, false), Standing::Friend);
+    assert_eq!(house.standing_of(stranger, false), Standing::Stranger);
     // The order is what makes "at least this trusted" a comparison.
     assert!(Standing::Owner > Standing::CoOwner);
     assert!(Standing::CoOwner > Standing::Friend);
@@ -480,17 +480,17 @@ fn the_owner_and_staff_cannot_be_banned() {
     house.bans.insert(staffer);
 
     assert_eq!(
-        standing_of(&house, owner, false),
+        house.standing_of(owner, false),
         Standing::Owner,
         "the owner was banned from their own house"
     );
     assert_eq!(
-        standing_of(&house, staffer, true),
+        house.standing_of(staffer, true),
         Standing::CoOwner,
         "a game master was turned away"
     );
     // And the same mobile without the authority *is* banned.
-    assert_eq!(standing_of(&house, staffer, false), Standing::Banned);
+    assert_eq!(house.standing_of(staffer, false), Standing::Banned);
 }
 
 /// Only the owner names a co-owner. A co-owner who could would be handing the
@@ -534,7 +534,7 @@ fn promoting_a_friend_leaves_them_in_one_list() {
         !house.friends.contains(&who),
         "they are in both lists, so which one answers depends on check order"
     );
-    assert_eq!(standing_of(&house, who, false), Standing::CoOwner);
+    assert_eq!(house.standing_of(who, false), Standing::CoOwner);
 }
 
 /// A ban is the newer decision and it wins: "banned but still a co-owner" is a
@@ -547,13 +547,13 @@ fn banning_a_co_owner_takes_the_trust_with_it() {
     trust(&mut house, owner, turncoat, Standing::CoOwner, false).unwrap();
 
     ban(&mut house, owner, turncoat, false).expect("the owner may");
-    assert_eq!(standing_of(&house, turncoat, false), Standing::Banned);
+    assert_eq!(house.standing_of(turncoat, false), Standing::Banned);
     assert!(!house.co_owners.contains(&turncoat));
 
     // Lifting it gives back a stranger, not a co-owner: undoing a ban grants
     // nothing.
     unban(&mut house, owner, turncoat, false).expect("the owner may");
-    assert_eq!(standing_of(&house, turncoat, false), Standing::Stranger);
+    assert_eq!(house.standing_of(turncoat, false), Standing::Stranger);
 }
 
 /// The owner is not a name on any list and cannot be dropped from one.
@@ -581,7 +581,7 @@ fn nobody_evicts_the_owner() {
         Err(ListRefusal::NotYours)
     );
     assert_eq!(distrust(&mut house, owner, co_owner, false), Ok(()));
-    assert_eq!(standing_of(&house, co_owner, false), Standing::Stranger);
+    assert_eq!(house.standing_of(co_owner, false), Standing::Stranger);
 }
 
 /// The lists have ceilings, and re-adding somebody already on one is not a new
@@ -602,4 +602,112 @@ fn a_full_list_refuses_a_new_name_and_takes_an_old_one() {
         Ok(()),
         "somebody already on the list is not a new name"
     );
+}
+
+/// A door standing inside a house becomes the house's, and the house's rules
+/// then decide who may work it.
+///
+/// The multi cannot be the source — three of a shipped file's 326 carry a door
+/// component at all — so the rule is the one a player would state.
+#[test]
+fn a_house_adopts_the_doors_standing_inside_it() {
+    use openshard_state::components::{Door, HouseDoor};
+
+    let mut state = world_with(cottage());
+    let owner = an_owner(&mut state);
+    let at = Point::new(10, 10, 0);
+
+    // One door where the house will stand, and one well outside it.
+    let inside = door_at(&mut state, Point::new(10, 10, 0));
+    let outside = door_at(&mut state, Point::new(25, 25, 0));
+
+    let house = place(&mut state, at, Facet(0), COTTAGE, owner).expect("a legal spot");
+    let serial = state.registry.serial_of(house).unwrap();
+
+    assert_eq!(
+        state.registry.get::<HouseDoor>(inside).map(|d| d.house),
+        Some(serial),
+        "the door in the doorway is not the house's"
+    );
+    assert!(
+        !state.registry.has::<HouseDoor>(outside),
+        "a door in the next field was adopted"
+    );
+    // And it is still an ordinary door in every other respect.
+    assert!(state.registry.has::<Door>(inside));
+}
+
+/// A door with no house opens for anyone, which is every door in Britannia.
+fn door_at(state: &mut WorldState, at: Point) -> EntityId {
+    use openshard_state::components::Door;
+    let (entity, _) = state
+        .registry
+        .spawn_with_serial(openshard_protocol::serial::SerialKind::Item)
+        .unwrap();
+    state.registry.insert(entity, Position(at));
+    state.registry.insert(entity, Facet(0));
+    state.registry.insert(
+        entity,
+        Door {
+            closed: Graphic(0x06A5),
+            open: Graphic(0x06A6),
+            offset_x: 1,
+            offset_y: 0,
+            is_open: false,
+            close_at: 0,
+        },
+    );
+    entity
+}
+
+/// A ban that only locked the door would leave whoever was already inside there
+/// for good. This is the rule that makes one worth anything.
+#[test]
+fn a_ban_puts_out_whoever_is_already_inside() {
+    use openshard_state::components::Body;
+
+    let mut state = world_with(cottage());
+    let owner = an_owner(&mut state);
+    let at = Point::new(10, 10, 0);
+    let house = place(&mut state, at, Facet(0), COTTAGE, owner).expect("a legal spot");
+
+    // Three people standing in the doorway tile: the owner, a friend, and one
+    // about to be banned.
+    let inside = [owner, an_owner(&mut state), an_owner(&mut state)];
+    for who in inside {
+        let entity = state.registry.entity_of(who).expect("a mobile");
+        state.registry.insert(entity, Position(at));
+        state.registry.insert(entity, Facet(0));
+        state.registry.insert(
+            entity,
+            Body {
+                id: Graphic(0x0190),
+                hue: openshard_protocol::wire::Hue(0),
+            },
+        );
+    }
+    let friend = inside[1];
+    let unwelcome = inside[2];
+    {
+        let entry = state.registry.get_mut::<House>(house).expect("its component");
+        trust(entry, owner, friend, Standing::Friend, false).unwrap();
+        ban(entry, owner, unwelcome, false).unwrap();
+    }
+
+    let moved = evict_the_banned(&mut state, house);
+    assert_eq!(
+        moved.len(),
+        1,
+        "the wrong number of people were put out: {moved:?}"
+    );
+
+    let where_of = |serial: Serial| {
+        let entity = state.registry.entity_of(serial).unwrap();
+        state.registry.get::<Position>(entity).unwrap().0
+    };
+    assert_eq!(where_of(owner), at, "the owner was put out of their own house");
+    assert_eq!(where_of(friend), at, "a friend was put out");
+    assert_ne!(where_of(unwelcome), at, "the banned player stayed inside");
+    // Just outside the box's west edge, which is where the doorstep is.
+    assert_eq!(where_of(unwelcome), doorstep(&state, at, Facet(0), COTTAGE));
 }

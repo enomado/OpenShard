@@ -316,25 +316,47 @@ houses and not about who may enter one, so it would read a house, drop the three
 lists and write it back. That is not a shard with no lists; it is a shard that
 deletes them on the first save.
 
-**The door needs a decision before it is written, and it is a layering one.**
-The double-click dispatch is `items::containers::double_click`, and `items` does
-not depend on `openshard-housing` and should not: a door is not a housing
-concept. Three ways out, and the second is the one the engine has already taken
-once:
+**The door is gated, and the layering question was answered by taking option 2.**
+`Standing` and `standing_of` live on the `House` component in `openshard-state`
+now, because a *door* has to ask them and the double-click dispatch is
+`openshard-items`', which has no business depending on the housing crate — a door
+is not a housing concept. It is `Guild::at_war_with`'s split exactly: the rules
+(trusting, banning, the limits) stay in the system crate, and the question a wire
+path asks lives on the component. `openshard-housing` re-exports the type.
 
-1. Gate it in the *caller* — the world's tick — before `toggle_door` is reached.
-   Cheap, and it puts a rule somewhere nothing else looks for one.
-2. **Put the question in `state`, beside the data.** `House` is already a `state`
-   component, and `Guild::at_war_with` is exactly this precedent: the *rules*
-   (declaring, allying) live in `openshard-guilds` while the *question* the wire
-   path has to ask lives on the component. `standing_of` would move to
-   `House::standing_of` and `openshard-housing` would keep `trust`, `ban` and the
-   limits. `WorldState::notoriety_toward` is the same shape for the same reason.
-3. A hook on the door, which is a mechanism where a rule would do.
+A house door refuses a stranger **before** the lock is asked about, because a
+stranger at a friend's door is refused for *being* a stranger, and "that is
+locked" would send them looking for a key.
 
-Option 2 is almost certainly right, and it is written down rather than taken
-because moving a type between crates deserves a fresh look rather than a tired
-one.
+**A house adopts the doors standing inside it**, and that is a rule this plan
+chose rather than inherited. The obvious source is the multi, and the shipped
+file says no: **three** of its 326 multis carry a door component. The reference
+agrees — ServUO calls `AddDoor` from each house class with an explicit graphic
+and position, which is a per-house-type table of content this engine does not
+have and should not invent. So the rule is the one a player would state: a door
+inside your house is your house's door. It needs no table and it is right for a
+door put down by a pack, by a staff command, or by a customisation system that
+does not know about it.
+
+The adoption uses `tiles_of`, **not** the footprint, and the difference is the
+whole of it: a door stands in a *doorway*, which is by construction a gap in the
+walls — the one place a blocking footprint does not reach. Using the footprint
+adopted nothing, which a test caught rather than a player.
+
+**The eviction is the one rule that acts on somebody.** A ban that only locked
+the door would leave whoever was already inside there for good. `evict_the_banned`
+puts them one tile past the box's west edge — ServUO moves them to the sign's own
+spot, which there is no sign for yet, and "just outside" is the same intent with
+data that exists.
+
+**Reachable through five staff commands** — `.hfriend`, `.hcoowner`, `.hdrop`,
+`.hban`, `.hunban` — each raising an object cursor, because naming a mobile needs
+a lookup this engine has no verb for and *picking* one is what the reference's own
+sign does. When the sign exists it is a window over exactly these five calls.
+
+**Still open in H3: the sign itself**, which is item 1 — an item placed with the
+house, double-clicked into a gump that lists the three lists and names the owner.
+Everything under it is built.
 
 ---
 

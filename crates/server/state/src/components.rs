@@ -2115,6 +2115,86 @@ pub struct House {
     pub bans: std::collections::BTreeSet<openshard_protocol::serial::Serial>,
 }
 
+/// Where somebody stands with a house.
+///
+/// One question and not four booleans, because the reference's are **nested** —
+/// a co-owner is a friend, an owner is a co-owner — and four independent answers
+/// are four chances to ask the wrong one. See ServUO's `IsFriend`, which is
+/// `IsCoOwner(m) || Friends.Contains(m)`, and `IsCoOwner`, which is `IsOwner(m)
+/// || ...`.
+///
+/// # Why it is here and not only in the housing crate
+///
+/// Because a *door* has to ask it. The double-click dispatch lives in
+/// `openshard-items`, which does not depend on `openshard-housing` and should
+/// not — a door is not a housing concept. This is [`Guild`](crate::Guild)'s split
+/// exactly: the *rules* (trusting, banning, the limits) are the system crate's,
+/// and the *question* a wire path has to answer lives on the component. See
+/// [`WorldState::notoriety_toward`](crate::WorldState::notoriety_toward), which
+/// is here for the same reason.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
+pub enum Standing {
+    /// Turned away at the door.
+    ///
+    /// **Lowest**, so an `Ord` comparison means "at least this trusted" and a
+    /// ban is never that.
+    Banned,
+    /// Neither friend nor enemy. May knock, may not enter.
+    Stranger,
+    /// May come in and use the door.
+    Friend,
+    /// Everything but giving the house away.
+    CoOwner,
+    /// The house is theirs.
+    Owner,
+}
+
+impl House {
+    /// What `who` is to this house.
+    ///
+    /// The order the checks are made in is the rule: owner first, so nothing can
+    /// demote them, then the ban, then the trusted lists. A banned co-owner is
+    /// **banned** — the ban is the newer decision and the reference's
+    /// `HasAccess` reads it that way, which is what makes "ban them" a usable
+    /// answer to a co-owner who has turned.
+    ///
+    /// `staff` is the caller's, because whether a mobile holds the authority is
+    /// [`WorldState::is_staff`](crate::WorldState::is_staff)'s to answer and this
+    /// takes no world.
+    #[must_use]
+    pub fn standing_of(&self, who: openshard_protocol::serial::Serial, staff: bool) -> Standing {
+        if who == self.owner {
+            return Standing::Owner;
+        }
+        // Staff walk in anywhere, and are never banned. ServUO's own first branch.
+        if staff {
+            return Standing::CoOwner;
+        }
+        if self.bans.contains(&who) {
+            return Standing::Banned;
+        }
+        if self.co_owners.contains(&who) {
+            return Standing::CoOwner;
+        }
+        if self.friends.contains(&who) {
+            return Standing::Friend;
+        }
+        Standing::Stranger
+    }
+}
+
+/// A door that belongs to a house.
+///
+/// On the *door*, naming the house, and not a list on the house naming its
+/// doors: a door is asked about one at a time, by a double-click that already
+/// has the door in hand, and a list would be a second copy of the same fact to
+/// keep in step through every demolition.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct HouseDoor {
+    /// Which house, by its item serial.
+    pub house: openshard_protocol::serial::Serial,
+}
+
 /// A deed: the item a house is placed from.
 ///
 /// It carries the multi rather than the house carrying the deed, because the
