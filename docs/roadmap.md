@@ -2382,10 +2382,12 @@ Roughly in dependency order, each script-first:
     for creatures (only players are told), and the `safe` flag, which is carried
     in the data and waits on PvP rules to read it. (`no_recall` has its reader
     now — see **Travel** below.)
-- [ ] `housing` — player houses: a multi placed on the map, a door with a real
-  lock, decay unless refreshed, friends/co-owners. **Planned in five phases —
-  see [`housing.md`](housing.md)**, which takes the eight decisions and names
-  what is deferred (customisation, boats).
+- [x] `housing` — **built, all five phases.** A multi placed from a deed, walls
+  that stop you, a door and secures that know you, a sign that says who owns it
+  and how it is wearing, and a house nobody visits collapsing into a crate that
+  keeps what was inside. **See [`housing.md`](housing.md)**, which takes the
+  eight decisions, records what each phase came out differently on, and names
+  what stays deferred (customisation, boats).
   - [x] **The multis are read.** `openshard_uofiles::multi`, both formats. The
     picture was never the problem — a multi is one item that draws as many, and
     every client already owns every house, so the shard sends no component of
@@ -2437,8 +2439,102 @@ Roughly in dependency order, each script-first:
     reads fine and holds no houses; the bump exists so an *older build* cannot go
     on writing to a database whose houses it does not know about while handing out
     item serials one of them already holds.
-  - [ ] H2–H5: the deed and its `0x99` cursor, who may come in, lockdowns and
-    secures, decay and the moving crate.
+  - [x] **H2 — the deed, and the cursor that draws the house.** `0x99`
+    `MultiTargetRequest`, written from nothing on both ends because neither
+    engine had it. It is the one packet in this plan whose *length* depends on
+    the client — 26 bytes classic, 30 post-High-Seas — which put it outside
+    `EncodePacket` entirely, since that trait's `LENGTH` is a const. The
+    `OpenContainer` precedent, and the second member of that club.
+
+    The deed rides on the `TargetPurpose` rather than the multi id, and that is
+    a rule: the id can be read back off the deed when the click lands, so a deed
+    sold, dropped or destroyed while the cursor was up does not still place a
+    house, and a player with one deed and a fast hand cannot place two. The deed
+    is spent on success and kept on a refusal.
+
+    Our own client draws the house it is told about, which was a silent bug
+    before this: `render::items::collect` had no notion of a multi, and a static
+    id space running to `0x10000` means `0x4064` is a *valid* art id — so a villa
+    drew as whatever static happened to sit there, with no error anywhere.
+    `net_command::multi_pieces` expands it at the seam where the view becomes a
+    draw list, so the renderer never learns what a multi is. It answers `None`
+    and not an empty list with no table, because falling through to the ordinary
+    item path is precisely the old bug. `parity.md`'s question was asked: every
+    other `GroundItem` producer builds from the map's own statics or a fixture,
+    and a placed house is not in the map file, so there is one call site.
+
+    What is not drawn is the *preview* under the cursor. The packet is folded
+    into `WorldView`; the picture is not.
+  - [x] **H3 — who may come in.** Co-owners, friends and bans with ServUO's own
+    limits, the door, the eviction, and the sign.
+
+    **One question, not four booleans.** The reference's predicates are nested —
+    `IsFriend` is `IsCoOwner(m) || …`, `IsCoOwner` is `IsOwner(m) || …` — so four
+    independent answers are four chances to ask the wrong one. `Standing` is an
+    ordered enum and `standing_of` is the only place the order of the checks
+    lives; `Banned` is its *lowest* value, so a comparison reads "at least this
+    trusted" and a ban is never that.
+
+    `Standing` lives on the component in `openshard-state` rather than in the
+    housing crate, because a *door* has to ask it and the double-click dispatch
+    is `openshard-items`'. That is `Guild::at_war_with`'s split, and it is the
+    answer the secure gate and the storage ceiling both took later.
+
+    **A house adopts the doors standing inside it**, which is a rule this plan
+    chose rather than inherited: three of `multi.mul`'s 326 multis carry a door
+    component, and ServUO's own answer is a per-house-class `AddDoor` table this
+    engine does not have. The adoption reads the *drawn* tiles and not the
+    blocking footprint — a door stands in a doorway, which is by construction the
+    one place the footprint does not reach.
+
+    The sign's position is the one number the reference *derives* rather than
+    declares: its classic houses each carry a hand-written `SetSign` offset, but
+    a customisable one cannot, so `HouseFoundation` computes the box's
+    west-south corner at z+7. Reduced against `Multi::center`'s own definition it
+    is `(min_x, max_y)`, and it holds for every multi.
+
+    Saved, schema **v28**, and the bump found a defect underneath: the house
+    entity has a graphic and a position, so `ground_items` was sweeping it up as
+    an `ItemRecord` *as well as* writing a `HouseRecord`.
+  - [x] **H4 — lockdowns and secures.** One component and not two, because a
+    secure *is* a lockdown: neither lifts, releasing works on both, both count
+    against one allowance. The access level is a `Standing` because ServUO's
+    `SecureLevel` is the trusted half of `Standing` with a fourth name for its
+    bottom — and `Stranger` being "anyone" means a banned player is still below
+    it, which a separate four-value enum would have had to remember to give.
+
+    **The allowance is derived from the multi's area**, not tabled. ServUO
+    carries a lockdown count per multi id beside the price and the placement
+    offset; plotted against each house class's own `Area` rectangles that table
+    is close to linear (212 over 52 tiles, 290 over 59, 550 over 125), so four
+    per tile lands within a sixth on every row. It is computed at placement and
+    stored on the component — D2 one level up — because the path that needs it is
+    the drop into a secure, which has no terrain in hand.
+
+    Saved, schema **v29**, the sharpest of the three house bumps: this one is not
+    a list on the house but a component on every pinned *item*, so an older build
+    reads them as ground clutter and writes them back unpinned.
+  - [x] **H5 — decay, and the crate.** Six stages at `GetOldDecayLevel`'s own
+    thresholds, the sign as the refresh, demolition by the owner or by staff, and
+    one crate holding everything the house was keeping.
+
+    **The clock is an accumulator, and it is the only one in this engine.**
+    `Decays` and `MurderDecay` are an absolute `at_tick`, which works because
+    they are minutes long and die with the process. A house's is five days, and
+    `WorldState::ticks` starts at zero every boot — the world saves a clock in UO
+    minutes, not a tick count — so a deadline would mean nothing on the way back
+    in and every house would come up freshly refreshed. D6 said "a tick count,
+    not a wall clock" and still holds; what it did not say is which end of the
+    interval to store.
+
+    The crate does not decay and nothing collects it, which is stated rather than
+    left to be discovered: ServUO internalises its own to the owner's bank after
+    three hours, and a crate that rotted would be a shard that eats somebody's
+    belongings on the day their house came down.
+
+    Saved, schema **v30** — v27's case again, a bump for the *writer*: an older
+    build ignores `houses.age` and writes every house back at the default, so
+    nothing on the shard ever collapses again.
 - [x] `guilds` — **built, with ServUO's five ranks.** Founding, invitations,
   leaving, dismissal, titles, promotion, leadership, disbanding, and the war and
   alliance handshake, reached from the paperdoll's Guild button (`0xD7`/`0x28`).
