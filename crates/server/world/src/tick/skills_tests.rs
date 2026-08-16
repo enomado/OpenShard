@@ -1503,3 +1503,162 @@ fn animal_lore_reads_a_pet_and_refuses_a_wild_thing_to_a_novice() {
         "the window opened"
     );
 }
+
+/// Setting a skill sends the one-line `0x3A`, so an open window follows.
+///
+/// `Command::SetSkill` moved the sheet and told nobody, which is only invisible
+/// because every test before this one read the sheet rather than the wire.
+#[test]
+fn setting_a_skill_sends_the_window_its_one_line() {
+    let now = Instant::now();
+    let mut world = world();
+    let connection = enter(&mut world, now);
+    let _ = packets_for(&mut world, connection);
+
+    train(&mut world, connection, Skill::Mining, 500);
+    world.tick(now);
+    let deltas: Vec<Vec<u8>> = packets_for(&mut world, connection)
+        .into_iter()
+        .filter(|packet| packet[0] == 0x3A)
+        .collect();
+    assert_eq!(deltas.len(), 1, "one skill moved, so one line: {deltas:?}");
+    // `0xDF` is the delta-with-caps body, and the id is Mining's — raw, unlike
+    // the full list's one-based ids.
+    assert_eq!(deltas[0][3], 0xDF);
+    assert_eq!(
+        u16::from_be_bytes([deltas[0][4], deltas[0][5]]),
+        u16::from(Skill::Mining.id())
+    );
+
+    // And setting it to what it already is says nothing.
+    train(&mut world, connection, Skill::Mining, 500);
+    world.tick(now);
+    assert!(
+        !packets_for(&mut world, connection)
+            .iter()
+            .any(|packet| packet[0] == 0x3A),
+        "a set that changed nothing sent a line"
+    );
+}
+
+/// A stat change moves every skill that stat lends to, and each one needs its
+/// line.
+///
+/// The value a window draws is the trained number *plus* what the stats lend it
+/// before AoS, so `.set str 100` moved dozens of numbers on the shard and none on
+/// any window. Nothing about it is visible from the sheet, which is why it stood
+/// for as long as it did.
+#[test]
+fn a_stat_change_tells_the_window_about_every_skill_it_moved() {
+    let now = Instant::now();
+    let mut world = world();
+    // Pre-AoS, which is the era the stat influence exists in at all: ServUO
+    // zeroes the three scale columns from AoS on, and this asserts the influence.
+    world.state.gameplay.combat_era = openshard_config::CombatEra::from(1);
+    let connection = enter(&mut world, now);
+    let player = world.state.players[&connection];
+    let serial = world.state.registry.serial_of(player).unwrap();
+    let before = openshard_skills::skill_value(&world.state, player, Skill::Mining);
+    let stats = *world
+        .state
+        .registry
+        .get::<openshard_state::components::Stats>(player)
+        .expect("a player has stats");
+    let _ = packets_for(&mut world, connection);
+
+    // Strength alone, and *down*: Mining's bonus caps out at its `stat_total`, so
+    // a fresh character already sits on the ceiling and raising strength moves
+    // nothing. Dexterity and intelligence are left where they are so what is
+    // announced can only have come from the one stat that changed.
+    world.queue(Command::SetStats {
+        serial,
+        strength: 10,
+        dexterity: stats.dexterity,
+        intelligence: stats.intelligence,
+    });
+    world.tick(now);
+    let moved: Vec<u8> = packets_for(&mut world, connection)
+        .into_iter()
+        .filter(|packet| packet[0] == 0x3A && packet[3] == 0xDF)
+        .map(|packet| packet[5])
+        .collect();
+    assert!(
+        moved.contains(&Skill::Mining.id()),
+        "Mining leans on strength and was not announced: {moved:?}"
+    );
+    assert!(
+        moved.len() > 1,
+        "one stat lends to more than one skill: {moved:?}"
+    );
+    assert!(
+        !moved.contains(&Skill::Meditation.id()),
+        "Meditation leans on no stat at all and was announced anyway: {moved:?}"
+    );
+    assert!(
+        openshard_skills::skill_value(&world.state, player, Skill::Mining) < before,
+        "the value the window is being told about did not actually move"
+    );
+}
+
+/// `.skill <name> <value>` — the counterpart of `.set`, in the unit a player
+/// reads off their own window.
+#[test]
+fn the_skill_command_takes_a_name_and_whole_points() {
+    let now = Instant::now();
+    let mut world = world();
+    let connection = enter(&mut world, now);
+    let player = world.state.players[&connection];
+
+    gm::run(&mut world.state, player, "skill mining 95");
+    assert_eq!(
+        world
+            .state
+            .registry
+            .get::<openshard_state::components::Skills>(player)
+            .map(|s| s.get(Skill::Mining)),
+        Some(950),
+        "whole points are tenths on the sheet"
+    );
+
+    // One decimal, because the window draws one.
+    gm::run(&mut world.state, player, "skill lumberjacking 33.5");
+    assert_eq!(
+        world
+            .state
+            .registry
+            .get::<openshard_state::components::Skills>(player)
+            .map(|s| s.get(Skill::Lumberjacking)),
+        Some(335)
+    );
+
+    // A name nobody has, and a value that is not one. Both answer rather than
+    // doing nothing, which is what a silent no-op looks like from a chat box.
+    for (line, expected) in [
+        ("skill mimning 95", "There is no skill called 'mimning'."),
+        ("skill mining lots", "That is not a skill value. Try 95, or 95.5."),
+        (
+            "skill mining 95.55",
+            "That is not a skill value. Try 95, or 95.5.",
+        ),
+    ] {
+        world.tick(now);
+        let _ = packets_for(&mut world, connection);
+        gm::run(&mut world.state, player, line);
+        world.tick(now);
+        let said = packets_for(&mut world, connection);
+        assert!(
+            said.iter()
+                .any(|packet| String::from_utf8_lossy(packet).contains(expected)),
+            "{line:?} did not answer with {expected:?}"
+        );
+    }
+    assert_eq!(
+        world
+            .state
+            .registry
+            .get::<openshard_state::components::Skills>(player)
+            .map(|s| s.get(Skill::Mining)),
+        Some(950),
+        "a refused command moved the sheet"
+    );
+}

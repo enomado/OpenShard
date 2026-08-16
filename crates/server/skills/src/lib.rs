@@ -55,13 +55,24 @@ impl SkillValue {
     }
 }
 
-/// A mobile's skill moved.
+/// A mobile's skill moved, in trained value or in what a window would draw.
 ///
-/// Every change passes through the one gain path, so this is the single place a
-/// skill's value changes at all — up from training, or *down* when a skill set to
-/// "down" gives ground so another can rise past the total cap. The world reads it
-/// to send the owner the single-line `0x3A` that makes an open skill window follow
-/// live; nothing else needs it.
+/// The world reads it to send the owner the single-line `0x3A` that makes an open
+/// skill window follow live; nothing else needs it. Three things raise one: the
+/// gain path — up from training, or *down* when a skill set to "down" gives
+/// ground so another can rise past the total cap — [`set_skill`], and
+/// [`apply_stats`].
+///
+/// # A stat change moves a skill without training it
+///
+/// The value a window draws is [`skill_value`]: the trained number *plus* what
+/// the body's stats lend it before AoS. So changing strength moves every skill
+/// strength lends to, without any of them being trained, and a window standing in
+/// front of the player would otherwise keep drawing the old numbers forever. Those
+/// events carry [`previous`](Self::previous) **equal** to
+/// [`value`](Self::value), which is honest — the trained number did not move —
+/// and is also what keeps "your skill has increased" quiet for a change that is
+/// not a gain.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct SkillChanged {
     /// The mobile.
@@ -106,7 +117,9 @@ pub fn set_stats(state: &mut WorldState, serial: Serial, strength: u16, dexterit
 /// Set a mobile's stats and re-cap its hit points, mana and stamina.
 ///
 /// The one door stats change through, so the three derived pools can never drift
-/// from them — a stat gain and a `Command::SetStats` both land here.
+/// from them — a stat gain and a `Command::SetStats` both land here. It is also
+/// the door the *skills* a stat lends to are announced from: see
+/// [`SkillChanged`]'s own docs for why a stat change is a skill change.
 pub fn apply_stats(
     state: &mut WorldState,
     entity: EntityId,
@@ -114,6 +127,11 @@ pub fn apply_stats(
     dexterity: u16,
     intelligence: u16,
 ) {
+    // Every skill's drawn value, taken before the stats move. Fifty-eight reads
+    // of a table, on a path walked when an operator types `.set` or a stat gains
+    // — the alternative is deciding from the scale columns which skills *could*
+    // have moved, which is the same table read plus a rule to get wrong.
+    let before = drawn_values(state, entity);
     state.registry.insert(
         entity,
         Stats {
@@ -122,6 +140,7 @@ pub fn apply_stats(
             intelligence,
         },
     );
+    announce_drawn_moves(state, entity, &before);
     // Strength caps hit points, intelligence mana, dexterity stamina; a lowered
     // cap drags the current value down with it, a raised one leaves room to heal
     // into.
@@ -169,8 +188,62 @@ pub fn set_skill(state: &mut WorldState, serial: Serial, skill: u8, value: u16) 
     };
     let mut skills = state.registry.get::<Skills>(entity).cloned().unwrap_or_default();
     let cap = skills.cap(skill).min(state.gameplay.skill_cap);
-    skills.set(skill, value.min(cap));
+    let previous = skills.get(skill);
+    let raised = value.min(cap);
+    skills.set(skill, raised);
     state.registry.insert(entity, skills);
+    if raised != previous {
+        state.bus.send(SkillChanged {
+            entity,
+            serial,
+            skill,
+            previous: SkillValue::new(previous),
+            value: SkillValue::new(raised),
+        });
+    }
+}
+
+/// What a window would draw for every skill this mobile has, by id.
+///
+/// [`skill_value`], not the trained number: the point of taking it is to notice a
+/// move that never touched the sheet.
+fn drawn_values(state: &WorldState, entity: EntityId) -> [u16; openshard_state::skill::SKILL_COUNT] {
+    let mut values = [0u16; openshard_state::skill::SKILL_COUNT];
+    for (id, slot) in values.iter_mut().enumerate() {
+        // `SKILL_COUNT` is the length of the table, so every id in it is a skill.
+        let skill = Skill::from_id(id as u8).expect("an id under SKILL_COUNT is a skill");
+        *slot = skill_value(state, entity, skill);
+    }
+    values
+}
+
+/// Announce every skill whose drawn value differs from what `before` recorded.
+///
+/// The trained number is what rides on the event, and it is the same on both
+/// sides — see [`SkillChanged`].
+fn announce_drawn_moves(
+    state: &mut WorldState,
+    entity: EntityId,
+    before: &[u16; openshard_state::skill::SKILL_COUNT],
+) {
+    let Some(serial) = state.registry.serial_of(entity) else {
+        return;
+    };
+    let after = drawn_values(state, entity);
+    for (id, (was, is)) in before.iter().zip(after.iter()).enumerate() {
+        if was == is {
+            continue;
+        }
+        let skill = Skill::from_id(id as u8).expect("an id under SKILL_COUNT is a skill");
+        let trained = SkillValue::new(state.registry.get::<Skills>(entity).map_or(0, |s| s.get(skill)));
+        state.bus.send(SkillChanged {
+            entity,
+            serial,
+            skill,
+            previous: trained,
+            value: trained,
+        });
+    }
 }
 
 /// Set the ceiling on one of a mobile's skills, in tenths, dragging the value

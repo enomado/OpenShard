@@ -59,6 +59,7 @@ pub fn run(state: &mut WorldState, actor: EntityId, rest: &str) {
         "spellbook" => full_spellbook(state, actor),
         "quests" => openshard_quests::open_log_for(state, actor),
         "set" => set_stat(state, actor, &args),
+        "skill" => set_skill(state, actor, &args),
         "admin" => crate::admin::open_menu(state, actor),
         "save" => save_world(state, actor),
         other => notify(state, actor, &format!("Unknown command '{other}'.")),
@@ -412,6 +413,59 @@ fn set_stat(state: &mut WorldState, actor: EntityId, args: &[&str]) {
     };
     skills::set_stats(state, serial, strength, dexterity, intelligence);
     notify(state, actor, &format!("Set {stat} to {value}."));
+}
+
+/// `.skill <name> <value>` — set one of your own skills, the value in whole
+/// points.
+///
+/// The counterpart of `.set`, and missing until now: there was a `Command::SetSkill`
+/// that only tests reached, so the one way to move a skill on a running shard was
+/// to train it. That makes half of this engine hard to try — a miner needs Mining
+/// before a vein gives anything, and a smith needs Blacksmithy before the ore is
+/// worth digging.
+///
+/// **Whole points, not tenths**, because "95" is what a player reads off their own
+/// window and `.skill mining 950` is a trap laid for whoever types the obvious
+/// thing. The engine's own unit is tenths and the conversion happens here, at the
+/// one place a person types a number.
+fn set_skill(state: &mut WorldState, actor: EntityId, args: &[&str]) {
+    let (Some(name), Some(points)) = (args.first(), args.get(1)) else {
+        notify(
+            state,
+            actor,
+            "Usage: .skill <name> <value>, e.g. .skill mining 95",
+        );
+        return;
+    };
+    let Some(skill) = openshard_state::skill::Skill::from_name(name) else {
+        notify(state, actor, &format!("There is no skill called '{name}'."));
+        return;
+    };
+    // One decimal, since the window draws one: ".skill mining 95.5" is a value a
+    // player can see and so a value they will type.
+    let Some(tenths) = points.split_once('.').map_or_else(
+        || points.parse::<u16>().ok().and_then(|whole| whole.checked_mul(10)),
+        |(whole, fraction)| {
+            let whole = whole.parse::<u16>().ok()?;
+            let tenth = fraction.parse::<u16>().ok().filter(|_| fraction.len() == 1)?;
+            whole.checked_mul(10)?.checked_add(tenth)
+        },
+    ) else {
+        notify(state, actor, "That is not a skill value. Try 95, or 95.5.");
+        return;
+    };
+    let Some(serial) = state.registry.serial_of(actor) else {
+        return;
+    };
+    skills::set_skill(state, serial, skill.id(), tenths);
+    // Read back rather than echoed: the cap is the sheet's and the shard's, so
+    // what was asked for is not always what was set.
+    let set = openshard_skills::skill_value(state, actor, skill);
+    notify(
+        state,
+        actor,
+        &format!("Set {} to {}.{}.", skill.info().name, set / 10, set % 10),
+    );
 }
 
 /// Send the actor a private system line — the reply to a command, seen by no one

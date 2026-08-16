@@ -244,6 +244,28 @@ impl Skill {
     pub const fn info(self) -> &'static SkillInfo {
         &SKILLS[self as usize]
     }
+
+    /// The skill that goes by `name`, ignoring case and any spaces or slashes in
+    /// it.
+    ///
+    /// For an operator typing a name rather than an id. The punctuation is
+    /// dropped on both sides because the table's own spelling is the client's —
+    /// "Item Identification", "Bowcraft/Fletching" — and nobody types either at
+    /// a command prompt. It is a scan of fifty-eight rows, asked once when
+    /// somebody presses Enter.
+    #[must_use]
+    pub fn from_name(name: &str) -> Option<Self> {
+        let squashed = |text: &str| {
+            text.chars()
+                .filter(|c| c.is_ascii_alphanumeric())
+                .map(|c| c.to_ascii_lowercase())
+                .collect::<String>()
+        };
+        let wanted = squashed(name);
+        (0..SKILL_COUNT as u8)
+            .filter_map(Self::from_id)
+            .find(|skill| squashed(skill.info().name) == wanted)
+    }
 }
 
 /// One skill's data — ServUO's `SkillInfo`, one row of its table.
@@ -318,6 +340,30 @@ include!(concat!(env!("OUT_DIR"), "/skills.rs"));
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every name in the table finds its own row, and the punctuation the client's
+    /// spelling carries is not something anybody has to type.
+    #[test]
+    fn a_skill_is_found_by_the_name_a_person_would_type() {
+        for id in 0..SKILL_COUNT as u8 {
+            let skill = Skill::from_id(id).expect("every id in range names a skill");
+            assert_eq!(Skill::from_name(skill.info().name), Some(skill));
+        }
+        assert_eq!(Skill::from_name("mining"), Some(Skill::Mining));
+        assert_eq!(Skill::from_name("  MINING "), Some(Skill::Mining));
+        assert_eq!(
+            Skill::from_name("bowcraftfletching"),
+            Some(Skill::Fletching),
+            "the slash in the table's own spelling"
+        );
+        assert_eq!(
+            Skill::from_name("item identification"),
+            Some(Skill::ItemId),
+            "and the space in it"
+        );
+        assert_eq!(Skill::from_name("mimning"), None);
+        assert_eq!(Skill::from_name(""), None, "the empty name is nobody's");
+    }
 
     #[test]
     fn the_table_covers_every_id() {

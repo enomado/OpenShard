@@ -1900,7 +1900,7 @@ Roughly in dependency order, each script-first:
     master's `.`-prefixed speech is split off in the `Command::Say` handler and
     run as a command instead of reaching anyone's screen; an ordinary player
     saying `.hello` just talks, so there is no leak and no surprise. The commands
-    — `.where`, `.go`, `.tele`, `.add`, `.set`, `.admin` — lean on the systems
+    — `.where`, `.go`, `.tele`, `.add`, `.set`, `.skill`, `.admin` — lean on the systems
     that own their rules (`items` spawns, `skills` re-caps the stat) rather than
     reaching into the registry, and answer the actor privately with a `0x1C`
     system line. `.go <x> <y>` jumps to coordinates; `.tele` raises a targeting
@@ -1909,6 +1909,28 @@ Roughly in dependency order, each script-first:
     the spot rather than a step late. The gate lives in the world, not the `gm`
     module, so a command function may assume its caller cleared it. The vocabulary
     grows one verb at a time in `world::gm`.
+  - [x] **`.skill <name> <value>`, and the `0x3A` a moved skill owes a window.**
+    `Command::SetSkill` existed and only tests reached it, so the one way to move
+    a skill on a running shard was to train it — which makes half the engine hard
+    to try, since a miner needs Mining before a vein gives anything and a smith
+    needs Blacksmithy before the ore is worth digging. The command takes a **name**
+    (`Skill::from_name`, punctuation-insensitive because the table's own spelling
+    is the client's — "Bowcraft/Fletching") and **whole points with one decimal**,
+    because 95 is what a player reads off their own window and `.skill mining 950`
+    is a trap laid for whoever types the obvious thing.
+
+    Two silences came out with it, and the second is the one that mattered.
+    `set_skill` moved the sheet and sent nothing, so a window standing open drew
+    a stale number. And `apply_stats` — the one door stats change through — moved
+    every skill's *drawn* value without announcing any of them: what a window
+    shows is the trained number **plus what the stats lend it** before AoS, so
+    `.set str 10` moved twenty-seven numbers on the shard and none on the screen.
+    Both emit `SkillChanged` now; the stat door takes all fifty-eight drawn values
+    before and after and announces the difference, rather than deciding from the
+    scale columns which skills *could* have moved — the same table read, plus a
+    rule to get wrong. Those events carry `previous` equal to `value`, which is
+    honest (the trained number did not move) and is also what keeps "your skill
+    has increased" quiet for a change that is not a gain.
   - [x] **The `.admin` gump and a pack-driven world.** `.admin` opens a staff-only
     gump (`0xB0`, answered on `0xB1`, re-checked GM+ on the button, not only on
     open) whose buttons populate cities and lay down decoration. The *data* lives

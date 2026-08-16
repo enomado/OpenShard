@@ -3889,14 +3889,15 @@ that the ring reaches it. What was found on the way and left undone:
 
 ## Backlog, found while drawing the skill window
 
-- **A stat change moves every skill's value and no `0x3A` follows.** The value
-  the window draws is `openshard_skills::skill_value` — trained, plus what the
-  body's stats lend it — and `apply_stats` writes the stats without emitting a
-  `SkillChanged`, which is what the delta packet is sent from. So `.set str 100`
-  moves fifty-eight numbers on a shard and none of them on any window standing
-  in front of a player. The server's half: either the stat door emits for every
-  skill that leans on the stat it changed, or the window is re-sent. Neither is
-  a client fix, and the client cannot tell.
+- ~~**A stat change moves every skill's value and no `0x3A` follows.**~~ Fixed,
+  and it was the server's half exactly as this said. `apply_stats` now takes all
+  fifty-eight *drawn* values before the stats move and announces every one that
+  differs afterwards — the difference itself, rather than a rule about which
+  skills the changed stat lends to, because that rule is the same table read
+  plus something to get wrong. `set_skill` was silent for the same reason and
+  emits too. See `SkillChanged`'s own docs for why those events carry `previous`
+  equal to `value`: the trained number did not move, and saying so is what keeps
+  "your skill has increased" quiet for a change that is not a gain.
 - ~~**The lock arrows are drawn and answer nothing, and no skill can be used
   from the window.**~~ Fixed. Both packets already existed and the shard
   already decoded both — what was missing was entirely client-side:
@@ -3937,10 +3938,10 @@ that the ring reaches it. What was found on the way and left undone:
   read once at startup. Refused rather than skipped, so the day one arrives it
   says so instead of drawing the wrong names.
 - **`SkillUpdate` has no gate on a live wire.** The e2e covers the whole list
-  both ways; the one-line delta is unit-tested on both sides and never crosses a
-  socket in a test, because making a skill actually move means training one and
-  a gain is a dice roll. A staff command that sets a skill would make it
-  gateable — there is `.set` for stats and nothing for skills.
+  both ways; the one-line delta crosses no socket in a test. The staff command
+  this asked for exists now — `.skill <name> <value>`, and `.set` on a stat
+  moves a batch of them — so the blocker is gone and the e2e is simply unwritten.
+  `tick::skills_tests` covers both at the packet level in the meantime.
 - **Nothing stops a second `GumpRenderer::render` in a frame.** The rule is
   written on the function now, and the app obeys it by collecting every line of
   gump-space text into one list. It is still a rule and not a type: a third
