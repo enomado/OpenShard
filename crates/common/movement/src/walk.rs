@@ -128,6 +128,27 @@ pub trait Terrain {
         0
     }
 
+    /// What multi `id` is made of — the tiles a house draws as, at their offsets
+    /// from its own origin. Empty for a terrain that has no multi table, and for
+    /// an id no client knows.
+    ///
+    /// # Why this is on the terrain
+    ///
+    /// A multi's components are a *client-file* fact, exactly as
+    /// [`item_blocks`](Self::item_blocks) and [`item_height`](Self::item_height)
+    /// are, and this trait is the seam those already reach gameplay through. The
+    /// alternative — a table hung on world state — would put a reader for a
+    /// copyrighted file into the crate every gameplay system is built on, and
+    /// would need a second answer for "what if the shard has no client files",
+    /// which every method here already has.
+    ///
+    /// The whole list, undrawn components included: what a *renderer* skips and
+    /// what a *footprint* covers are two questions. See
+    /// [`Component::drawn`](openshard_uofiles::multi::Component::drawn).
+    fn multi_components(&self, _id: u16) -> &[openshard_uofiles::multi::Component] {
+        &[]
+    }
+
     /// The tiledata name of static art `graphic`, for a single-click label — the
     /// same table as [`item_blocks`](Self::item_blocks), read for its name rather
     /// than its flags. A terrain with no tiledata (an open world) has no names.

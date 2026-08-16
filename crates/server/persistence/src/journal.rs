@@ -67,8 +67,8 @@ use openshard_entities::EntityId;
 use openshard_protocol::serial::Serial;
 
 use crate::record::{
-    CharacterRecord, DecorationRecord, GuildRecord, Inventory, ItemRecord, MobileRecord, RegionRecord,
-    SCHEMA_VERSION, SpawnerRecord, WorldRecord,
+    CharacterRecord, DecorationRecord, GuildRecord, HouseRecord, Inventory, ItemRecord, MobileRecord,
+    RegionRecord, SCHEMA_VERSION, SpawnerRecord, WorldRecord,
 };
 
 /// A consistent picture of everything that changed, taken at one tick.
@@ -121,6 +121,15 @@ pub struct Snapshot {
     /// guilds and for the same reason: an alliance dissolved since the last save
     /// is absent from this list, and only a sweep makes that stick.
     pub alliances: Option<Vec<crate::record::AllianceRecord>>,
+    /// Every house on the shard, or `None` for a snapshot that did not sweep them.
+    ///
+    /// Replace-all, for the guilds' reason: a house demolished since the last
+    /// save is absent from this list, and the delete is what makes that stick.
+    ///
+    /// The *components* do not ride here. A multi's shape is a pure function of
+    /// its id and lives in the client's files, so what is saved is where the
+    /// house stands and which multi it is; the footprint is recomputed at boot.
+    pub houses: Option<Vec<HouseRecord>>,
     /// The world's own scalars — the clock and the roll generator's position — when
     /// this snapshot swept them. `None` in a snapshot that carried only character
     /// changes; the stored row stands.
@@ -160,6 +169,7 @@ impl Snapshot {
             + self.regions.as_ref().map_or(0, Vec::len)
             + self.guilds.as_ref().map_or(0, Vec::len)
             + self.alliances.as_ref().map_or(0, Vec::len)
+            + self.houses.as_ref().map_or(0, Vec::len)
     }
 }
 
@@ -324,6 +334,7 @@ impl Journal {
             regions: None,
             guilds: None,
             alliances: None,
+            houses: None,
             world: None,
         })
     }

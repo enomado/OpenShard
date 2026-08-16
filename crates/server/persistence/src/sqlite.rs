@@ -195,6 +195,20 @@ CREATE TABLE IF NOT EXISTS alliances (
     members TEXT NOT NULL DEFAULT '[]',
     pending TEXT NOT NULL DEFAULT '[]'
 );
+-- Every house. The *components* are deliberately absent: a multi's shape is a
+-- pure function of its id and lives in the client's own files, so saving it
+-- would be saving a copy of a file every client already has — one that goes
+-- stale the day the operator updates their install. The footprint is recomputed
+-- at boot from the id and the position.
+CREATE TABLE IF NOT EXISTS houses (
+    serial INTEGER PRIMARY KEY,
+    multi  INTEGER NOT NULL,
+    x      INTEGER NOT NULL,
+    y      INTEGER NOT NULL,
+    z      INTEGER NOT NULL,
+    facet  INTEGER NOT NULL,
+    owner  INTEGER NOT NULL
+);
 CREATE TABLE IF NOT EXISTS items (
     serial    INTEGER PRIMARY KEY,
     owner     INTEGER NOT NULL,
@@ -389,6 +403,7 @@ impl Store for SqliteStore {
         let regions = snapshot.regions.clone();
         let guilds = snapshot.guilds.clone();
         let alliances = snapshot.alliances.clone();
+        let houses = snapshot.houses.clone();
         let world = snapshot.world;
         blocking(move || {
             let mut guard = connection
@@ -675,6 +690,27 @@ impl Store for SqliteStore {
                             "INSERT INTO alliances (id, name, leader, members, pending) \
                              VALUES (?1, ?2, ?3, ?4, ?5)",
                             params![alliance.id, alliance.name, alliance.leader, members, pending],
+                        )
+                        .map_err(database)?;
+                }
+            }
+            // And the houses, on the same terms: a demolition is an absence.
+            if let Some(houses) = &houses {
+                transaction.execute("DELETE FROM houses", []).map_err(database)?;
+                for house in houses {
+                    transaction
+                        .execute(
+                            "INSERT INTO houses (serial, multi, x, y, z, facet, owner) \
+                             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                            params![
+                                house.serial.raw(),
+                                house.multi,
+                                house.x,
+                                house.y,
+                                house.z,
+                                house.facet,
+                                house.owner.raw()
+                            ],
                         )
                         .map_err(database)?;
                 }
@@ -1015,6 +1051,51 @@ impl Store for SqliteStore {
         .await
     }
 
+    async fn houses(&self) -> Result<Vec<crate::record::HouseRecord>, StoreError> {
+        let connection = Arc::clone(&self.connection);
+        blocking(move || {
+            let guard = connection.lock().expect("the sqlite mutex is never poisoned");
+            let mut statement = guard
+                .prepare("SELECT serial, multi, x, y, z, facet, owner FROM houses ORDER BY serial")
+                .map_err(database)?;
+            let rows = statement
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, u32>(0)?,
+                        row.get::<_, u16>(1)?,
+                        row.get::<_, u16>(2)?,
+                        row.get::<_, u16>(3)?,
+                        row.get::<_, i8>(4)?,
+                        row.get::<_, u8>(5)?,
+                        row.get::<_, u32>(6)?,
+                    ))
+                })
+                .map_err(database)?;
+            let mut houses = Vec::new();
+            for row in rows {
+                let (serial, multi, x, y, z, facet, owner) = row.map_err(database)?;
+                // A row whose serial or owner will not parse is one this engine
+                // did not write. Skipped rather than refused: a corrupt house is
+                // a missing house, and refusing the read would be a shard that
+                // will not boot over one bad row.
+                let (Some(serial), Some(owner)) = (Serial::new(serial), Serial::new(owner)) else {
+                    continue;
+                };
+                houses.push(crate::record::HouseRecord {
+                    serial,
+                    multi,
+                    x,
+                    y,
+                    z,
+                    facet,
+                    owner,
+                });
+            }
+            Ok(houses)
+        })
+        .await
+    }
+
     async fn guilds(&self) -> Result<Vec<GuildRecord>, StoreError> {
         let connection = Arc::clone(&self.connection);
         blocking(move || {
@@ -1231,6 +1312,7 @@ mod tests {
             regions: None,
             guilds: None,
             alliances: None,
+            houses: None,
             world: None,
         }
     }
@@ -1623,6 +1705,7 @@ mod tests {
             regions: None,
             guilds: None,
             alliances: None,
+            houses: None,
             world: None,
         };
         let error = store.save(&future).await.expect_err("must refuse");

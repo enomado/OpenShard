@@ -60,6 +60,7 @@ pub fn run(state: &mut WorldState, actor: EntityId, rest: &str) {
         "quests" => openshard_quests::open_log_for(state, actor),
         "set" => set_stat(state, actor, &args),
         "skill" => set_skill(state, actor, &args),
+        "house" => place_house(state, actor, &args),
         "admin" => crate::admin::open_menu(state, actor),
         "save" => save_world(state, actor),
         other => notify(state, actor, &format!("Unknown command '{other}'.")),
@@ -466,6 +467,37 @@ fn set_skill(state: &mut WorldState, actor: EntityId, args: &[&str]) {
         actor,
         &format!("Set {} to {}.{}.", skill.info().name, set / 10, set % 10),
     );
+}
+
+/// `.house <multi id>` — put a house at your feet.
+///
+/// The staff half of housing, and the whole of H1's front door: a deed and the
+/// cursor that draws the house under it are H2, and until they exist this is how
+/// a house gets onto the ground at all. The id is the multi's, hex or decimal,
+/// with or without the `0x4000` the wire carries — `place` masks either.
+///
+/// At the operator's feet rather than at a clicked tile, `.add`'s convention,
+/// which also means the placement is somewhere they are standing and can see.
+fn place_house(state: &mut WorldState, actor: EntityId, args: &[&str]) {
+    let Some(multi) = args.first().and_then(parse_u16) else {
+        notify(state, actor, "Usage: .house <multi id>, e.g. .house 0x64");
+        return;
+    };
+    let Some(&Position(at)) = state.registry.get::<Position>(actor) else {
+        return;
+    };
+    let facet = state.facet_of(actor);
+    let Some(owner) = state.registry.serial_of(actor) else {
+        return;
+    };
+    match openshard_housing::place(state, at, facet, multi, owner) {
+        Ok(_) => notify(
+            state,
+            actor,
+            &format!("A house ({multi:#06x}) stands at your feet."),
+        ),
+        Err(refusal) => notify(state, actor, refusal.message()),
+    }
 }
 
 /// Send the actor a private system line — the reply to a command, seen by no one

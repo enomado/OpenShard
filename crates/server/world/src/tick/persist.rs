@@ -165,6 +165,7 @@ impl World {
             regions: None,
             guilds: None,
             alliances: None,
+            houses: None,
             world: None,
         });
 
@@ -220,6 +221,7 @@ impl World {
         // maximum ever issued: a disbanded guild leaves no row.
         snapshot.guilds = Some(self.guild_records());
         snapshot.alliances = Some(self.alliance_records());
+        snapshot.houses = Some(self.house_records());
         snapshot.world = Some(WorldRecord {
             clock_minutes: self.clock_minutes(),
             rng_state: self.rng_state(),

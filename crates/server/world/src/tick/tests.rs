@@ -15063,3 +15063,47 @@ fn a_guild_line_is_not_said_out_loud() {
         "the stranger is standing right there and must not have heard it"
     );
 }
+
+/// `.house` puts a house at the operator's feet, and its walls stop people.
+///
+/// Through the command rather than through `openshard_housing::place`, because
+/// the crate's own tests already cover the arithmetic and what this adds is the
+/// two seams they cannot see: the command reaching the crate at all, and a
+/// terrain with no multi table answering "no such multi" rather than panicking.
+#[test]
+fn the_house_command_is_refused_on_a_shard_with_no_multis() {
+    let now = Instant::now();
+    let mut world = world();
+    let player = enter(&mut world, now);
+    let entity = world.state.players[&player];
+    let _ = packets_for(&mut world, player);
+
+    // The test world has no terrain at all, which is the same answer a shard
+    // whose install predates the multi format gives — and the point is that it
+    // is *an answer*, said out loud, rather than a house with no walls.
+    gm::run(&mut world.state, entity, "house 0x64");
+    world.tick(now);
+    let said = packets_for(&mut world, player);
+    assert!(
+        said.iter()
+            .any(|packet| String::from_utf8_lossy(packet).contains("No house has that number")),
+        "a shard with no multis placed a house anyway, or said nothing"
+    );
+    assert_eq!(
+        world
+            .registry()
+            .query::<openshard_state::components::House>()
+            .count(),
+        0
+    );
+
+    // And a malformed one answers rather than doing nothing, `.skill`'s rule.
+    gm::run(&mut world.state, entity, "house");
+    world.tick(now);
+    assert!(
+        packets_for(&mut world, player)
+            .iter()
+            .any(|packet| String::from_utf8_lossy(packet).contains("Usage: .house")),
+        "a bare .house said nothing"
+    );
+}

@@ -2401,8 +2401,44 @@ Roughly in dependency order, each script-first:
     about 309 of the 326 multis they share. And the two files are not the same
     size — 326 against 862 on one install — so the UOP wins, which is the
     *opposite* of `map0.mul`, where the stale file is zeroed and therefore loud.
-  - [ ] H1–H5: the house on the ground, the deed and its `0x99` cursor, who may
-    come in, lockdowns and secures, decay and the moving crate.
+  - [x] **H1 — a house on the ground.** `openshard-housing`, `.house <multi id>`,
+    and the footprint folded into `Obstructions` at placement so the walls stop
+    people. A house is an ordinary item entity whose graphic is `0x4000 | id`
+    with a `House` component beside it, so the sector grid, the interest sweep
+    and the `0x1A` that draws it all work on one unchanged.
+
+    The components reach gameplay through **`Terrain::multi_components`**, which
+    is the seam `item_blocks` and `item_height` already use — a multi's shape is
+    a client-file fact like a static's height, and routing it the same way means
+    `openshard-housing` depends on no file reader and a shard with no client
+    files places no houses instead of needing a second answer.
+
+    Only components the tiledata calls impassable are folded in, so a floor and
+    a roof stay walkable; a house whose floor blocked would be sealed shut from
+    the inside.
+
+    ServUO's five placement rules are in, and two of them turned out to be one
+    question: "nothing impassable in contact" and "the foundation rests on a
+    surface" are both *is there an open gap with a floor here*, which `can_fit`
+    already answers against the map's own statics. The road is a land-tile id
+    against nine ranges — the rule a player notices the absence of, since without
+    it houses go up in Britain's streets. The yard is measured wall to wall
+    against the other house's footprint rather than a stored rectangle, and it is
+    a square rather than the reference's front-and-back strip, because a classic
+    multi carries no facing to measure a strip from.
+
+    **Saved, schema v27** — the first bump that is not about *reading*. What is
+    saved is where a house stands and which multi it is, never its components:
+    those are a pure function of the id and live in the client's files, so a copy
+    would go stale the day the operator updates their install. The footprint is
+    recomputed at boot, and a restore deliberately skips the placement rules —
+    a house legal when it was built stays built, or a shard that changed its yard
+    size would demolish half of Britannia at the next restart. A v26 database
+    reads fine and holds no houses; the bump exists so an *older build* cannot go
+    on writing to a database whose houses it does not know about while handing out
+    item serials one of them already holds.
+  - [ ] H2–H5: the deed and its `0x99` cursor, who may come in, lockdowns and
+    secures, decay and the moving crate.
 - [x] `guilds` — **built, with ServUO's five ranks.** Founding, invitations,
   leaving, dismissal, titles, promotion, leadership, disbanding, and the war and
   alliance handshake, reached from the paperdoll's Guild button (`0xD7`/`0x28`).

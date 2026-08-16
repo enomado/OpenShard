@@ -774,3 +774,161 @@ fn an_alliance_survives_a_restart_with_its_membership_and_its_counter() {
         .found("The Fourth".to_owned(), ours, second);
     assert!(next.0 > high, "{next:?} re-used an id that was already issued");
 }
+
+/// A house survives a restart, and its walls come back with it.
+///
+/// The half that is easy to leave out is the walls: the entity can restore
+/// perfectly and stop nobody, because the footprint is *not* saved — a multi's
+/// shape lives in the client's files and saving a copy would go stale the day
+/// the operator updates their install. So the record is the id and the position,
+/// and the obstruction index is rebuilt from them. A test that only checked the
+/// `House` component came back would pass on a shard you can walk through.
+#[test]
+fn a_house_survives_a_restart_with_its_walls() {
+    use openshard_movement::Terrain;
+    use openshard_uofiles::multi::Component;
+
+    /// A terrain that knows one multi: two walls and a floor. The floor is here
+    /// so the restore is asserted to keep dropping it, not merely to add walls.
+    struct Ground;
+    const COTTAGE: u16 = 0x64;
+    const WALL: u16 = 0x0006;
+
+    impl Terrain for Ground {
+        fn can_step(&self, _from: Point, to: Point) -> Option<Point> {
+            Some(to)
+        }
+        fn multi_components(&self, id: u16) -> &[Component] {
+            const COMPONENTS: [Component; 3] = [
+                Component {
+                    graphic: WALL,
+                    dx: -1,
+                    dy: 0,
+                    dz: 0,
+                    flags: 1,
+                },
+                Component {
+                    graphic: WALL,
+                    dx: 1,
+                    dy: 0,
+                    dz: 0,
+                    flags: 1,
+                },
+                Component {
+                    graphic: 0x0007,
+                    dx: 0,
+                    dy: 0,
+                    dz: 0,
+                    flags: 1,
+                },
+            ];
+            if id == COTTAGE { &COMPONENTS } else { &[] }
+        }
+        fn item_blocks(&self, graphic: Graphic) -> bool {
+            graphic.0 == WALL
+        }
+        fn item_height(&self, graphic: Graphic) -> u8 {
+            if graphic.0 == WALL { 20 } else { 0 }
+        }
+    }
+
+    let mut world = World::new(START).with_save_every(0);
+    world.state.facet_state_mut(Facet(0)).terrain = Some(Box::new(Ground));
+    let now = Instant::now();
+    let connection = enter(&mut world, now);
+    let player = world.state.players[&connection];
+    let owner = world.state.registry.serial_of(player).expect("a serial");
+
+    let at = Point::new(START.0 + 5, START.1 + 5, 0);
+    let house =
+        openshard_housing::place(&mut world.state, at, Facet(0), COTTAGE, owner).expect("a legal spot");
+    let serial = world.state.registry.serial_of(house).expect("a house serial");
+
+    world.take_snapshot();
+    let snapshot = only_snapshot(&mut world).expect("a character entered");
+    let houses = snapshot.houses.expect("a full sweep carries the houses");
+    assert_eq!(houses.len(), 1);
+    assert_eq!(houses[0].serial, serial);
+    assert_eq!(houses[0].multi, COTTAGE);
+    assert_eq!((houses[0].x, houses[0].y, houses[0].z), (at.x, at.y, at.z));
+    assert_eq!(houses[0].owner, owner);
+
+    // The shard comes back up on that save, with the same terrain.
+    let mut restored = World::new(START);
+    restored.state.facet_state_mut(Facet(0)).terrain = Some(Box::new(Ground));
+    restored.restore_houses(houses);
+
+    let back = restored
+        .state
+        .registry
+        .entity_of(serial)
+        .expect("the house came back under its own serial");
+    assert_eq!(
+        restored
+            .state
+            .registry
+            .get::<openshard_state::components::House>(back)
+            .map(|h| h.multi),
+        Some(COTTAGE)
+    );
+    let obstructions = &restored.state.facet_state(Facet(0)).obstructions;
+    assert!(
+        obstructions.blocker_at_z(at.x - 1, at.y, 0).is_some(),
+        "a restored house has no walls, so it is a picture and not a building"
+    );
+    assert!(
+        obstructions.blocker_at_z(at.x + 1, at.y, 0).is_some(),
+        "the second wall did not come back"
+    );
+    assert!(
+        obstructions.blocker_at_z(at.x, at.y, 0).is_none(),
+        "the floor was folded in on the way back, sealing the house shut"
+    );
+}
+
+/// A shard booted without client files keeps its houses and gives them no walls.
+///
+/// Not a crash and not a silent demolition: the entity is there and owned, and
+/// the only thing missing is the half that came from a file the shard cannot
+/// read. Said out loud here because the alternative — dropping the house — would
+/// lose somebody's property over a misconfigured `world.client_files`.
+#[test]
+fn a_house_restored_without_client_files_stands_but_stops_nobody() {
+    use openshard_persistence::record::HouseRecord;
+
+    let mut world = World::new(START);
+    let serial = Serial::new(0x4000_0099).expect("an item serial");
+    let owner = Serial::new(0x0000_0001).expect("a mobile serial");
+    world.restore_houses(vec![HouseRecord {
+        serial,
+        multi: 0x64,
+        x: START.0 + 5,
+        y: START.1 + 5,
+        z: 0,
+        facet: 0,
+        owner,
+    }]);
+
+    let back = world
+        .state
+        .registry
+        .entity_of(serial)
+        .expect("the house is still a house");
+    assert_eq!(
+        world
+            .state
+            .registry
+            .get::<openshard_state::components::House>(back)
+            .map(|h| h.owner),
+        Some(owner),
+        "the owner was lost with the walls"
+    );
+    assert!(
+        !world
+            .state
+            .facet_state(Facet(0))
+            .obstructions
+            .is_blocked(START.0 + 4, START.1 + 5),
+        "a shard with no multi table invented a wall"
+    );
+}

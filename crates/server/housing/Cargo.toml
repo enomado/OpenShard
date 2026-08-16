@@ -12,3 +12,13 @@ authors.workspace = true
 workspace = true
 
 [dependencies]
+openshard-entities.workspace = true
+openshard-movement.workspace = true
+openshard-protocol.workspace = true
+openshard-state.workspace = true
+
+[dev-dependencies]
+# The tests stand a bare `WorldState` up with a terrain that knows one multi:
+# every part of one is in `openshard-state` except the bus and the component type.
+openshard-events.workspace = true
+openshard-uofiles.workspace = true

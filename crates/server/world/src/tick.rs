@@ -101,6 +101,7 @@ mod gates;
 /// never mistaken for each other.
 mod guilds;
 mod healer;
+mod houses;
 mod motion;
 mod party;
 mod persist;

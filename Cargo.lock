@@ -2719,6 +2719,14 @@ dependencies = [
 [[package]]
 name = "openshard-housing"
 version = "0.0.1"
+dependencies = [
+ "openshard-entities",
+ "openshard-events",
+ "openshard-movement",
+ "openshard-protocol",
+ "openshard-state",
+ "openshard-uofiles",
+]
 
 [[package]]
 name = "openshard-items"
@@ -2918,6 +2926,7 @@ dependencies = [
  "openshard-events",
  "openshard-gateway",
  "openshard-guilds",
+ "openshard-housing",
  "openshard-items",
  "openshard-magic",
  "openshard-movement",

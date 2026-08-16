@@ -1079,6 +1079,7 @@ mod tests {
             regions: None,
             guilds: None,
             alliances: None,
+            houses: None,
             world: None,
         }
     }

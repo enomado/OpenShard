@@ -123,6 +123,18 @@ CREATE TABLE IF NOT EXISTS alliances (
     members TEXT NOT NULL DEFAULT '[]',
     pending TEXT NOT NULL DEFAULT '[]'
 );
+-- Every house. The components are absent on purpose: a multi's shape is a pure
+-- function of its id and lives in the client's own files, so the footprint is
+-- recomputed at boot rather than saved. See the sqlite schema's own note.
+CREATE TABLE IF NOT EXISTS houses (
+    serial BIGINT PRIMARY KEY,
+    multi  INTEGER NOT NULL,
+    x      INTEGER NOT NULL,
+    y      INTEGER NOT NULL,
+    z      SMALLINT NOT NULL,
+    facet  SMALLINT NOT NULL,
+    owner  BIGINT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS items (
     serial    BIGINT PRIMARY KEY,
     owner     BIGINT NOT NULL,
@@ -538,6 +550,30 @@ impl Store for PgStore {
                     .map_err(database)?;
             }
         }
+        if let Some(houses) = &snapshot.houses {
+            transaction
+                .execute("DELETE FROM houses", &[])
+                .await
+                .map_err(database)?;
+            for house in houses {
+                transaction
+                    .execute(
+                        "INSERT INTO houses (serial, multi, x, y, z, facet, owner) \
+                         VALUES ($1, $2, $3, $4, $5, $6, $7)",
+                        &[
+                            &i64::from(house.serial.raw()),
+                            &i32::from(house.multi),
+                            &i32::from(house.x),
+                            &i32::from(house.y),
+                            &i16::from(house.z),
+                            &i16::from(house.facet),
+                            &i64::from(house.owner.raw()),
+                        ],
+                    )
+                    .await
+                    .map_err(database)?;
+            }
+        }
         if let Some(alliances) = &snapshot.alliances {
             transaction
                 .execute("DELETE FROM alliances", &[])
@@ -711,6 +747,36 @@ impl Store for PgStore {
                 })
             })
             .collect()
+    }
+
+    async fn houses(&self) -> Result<Vec<crate::record::HouseRecord>, StoreError> {
+        let client = self.client.lock().await;
+        let rows = client
+            .query(
+                "SELECT serial, multi, x, y, z, facet, owner FROM houses ORDER BY serial",
+                &[],
+            )
+            .await
+            .map_err(database)?;
+        Ok(rows
+            .iter()
+            .filter_map(|row| {
+                // A row this engine did not write is skipped rather than refused,
+                // the sqlite reader's reasoning: a corrupt house is a missing
+                // house, and a shard that will not boot over one bad row is worse.
+                let serial = Serial::new(row.get::<_, i32>(0).cast_unsigned())?;
+                let owner = Serial::new(row.get::<_, i32>(6).cast_unsigned())?;
+                Some(crate::record::HouseRecord {
+                    serial,
+                    multi: row.get::<_, i32>(1).cast_unsigned() as u16,
+                    x: row.get::<_, i32>(2).cast_unsigned() as u16,
+                    y: row.get::<_, i32>(3).cast_unsigned() as u16,
+                    z: row.get::<_, i16>(4) as i8,
+                    facet: row.get::<_, i16>(5) as u8,
+                    owner,
+                })
+            })
+            .collect())
     }
 
     async fn world(&self) -> Result<Option<WorldRecord>, StoreError> {
@@ -1157,6 +1223,7 @@ mod tests {
             regions: None,
             guilds: None,
             alliances: None,
+            houses: None,
             world: None,
         }
     }
@@ -1399,6 +1466,7 @@ mod tests {
             regions: None,
             guilds: None,
             alliances: None,
+            houses: None,
             world: None,
         };
         let error = store.save(&future).await.expect_err("must refuse");

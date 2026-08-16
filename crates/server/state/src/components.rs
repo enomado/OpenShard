@@ -2083,6 +2083,27 @@ pub struct Guard {
     pub until: u64,
 }
 
+/// A player's house: one entity that draws as a hundred statics.
+///
+/// Beside a [`Position`] and a [`Drawn`] whose graphic is `0x4000 | multi`, so
+/// everything that already walks items — the sector index, the save, the `0x1A`
+/// that draws it — works on a house unchanged. What makes it a house is this
+/// component, not a table of its own.
+///
+/// The **components are not here**. They are a pure function of the multi id and
+/// they live in the client's files, which is where they are read from at
+/// placement — see `openshard_movement::Terrain::multi_components`. Copying them
+/// onto the entity would be storing a copy of a file every client already has,
+/// and the copy would go stale the day the operator updates their install.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct House {
+    /// Which multi it is, `0x4000` below the graphic on the wire.
+    pub multi: u16,
+    /// Who owns it. A house always has an owner; demolition is what happens when
+    /// it would not.
+    pub owner: openshard_protocol::serial::Serial,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

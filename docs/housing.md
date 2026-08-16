@@ -156,6 +156,67 @@ them.
 walking into a wall is refused and walking through the door is not, and it is
 still there after a restart.
 
+#### Built
+
+Items 1–4 are in. `openshard-housing` is the crate, `.house <multi id>` is the
+command, and the footprint is folded into `Obstructions` at placement. Two things
+came out differently from the plan and one is still open:
+
+- **The multi table hangs off `Terrain`, not off world state.** D2a said the
+  components are resolved by "a caller that has the table"; the code found a
+  better answer, which is that `Terrain` is *already* the seam client-file facts
+  reach gameplay through — `item_blocks` and `item_height` are how a placed
+  static learns whether it stops anybody and how tall it is, and a multi's shape
+  is the same kind of fact. So `Terrain::multi_components` is a new method with
+  an empty default, `MapTerrain` carries an `Arc<Multis>`, and `openshard-housing`
+  depends on neither `uofiles` nor a table on `WorldState`. It also answers the
+  "what if the shard has no client files" question for free, the way every other
+  method on that trait already does.
+- **Only the floor question is decided at all.** A component is folded into the
+  footprint when its tiledata says it blocks, which keeps a floor and a roof
+  walkable — a house whose floor blocked would be sealed shut from the inside.
+  That is the *component* half.
+- **D3's rules are in, and two of the five turned out to be one question.**
+  ServUO's rule two (nothing impassable in contact) and rule four (the foundation
+  rests on a surface) are both "is there an open gap with a floor here", which is
+  exactly what `Terrain::can_fit` already answers against the map's own statics —
+  so they are one call and one refusal, `BadGround`. Rule five is the road, a
+  land-tile id against ServUO's nine ranges. Rule three is the yard, and it is
+  measured **wall to wall against the other house's own footprint** rather than
+  against a stored rectangle: a footprint is what a house *is*, and a rectangle
+  would be a second copy of it to keep in step.
+
+  One divergence, deliberate: ServUO's yard is a *strip* five tiles off the front
+  and back, because a foundation knows which way it faces. A classic multi does
+  not carry a facing, so the yard here is a square. Named in the code rather than
+  left to be discovered as a bug.
+- **A house is two facts and they are undone separately.** `unblock` takes the
+  walls out of the obstruction index; the *entity* still owns a yard until it is
+  despawned. A demolition that called only the first would leave a plot nobody
+  could ever build on again — asserted in the tests, and it is the shape H5's
+  moving crate has to get right.
+- **The save is in, and what it saves is where the house stands.** Not the
+  components: a multi's shape is a pure function of its id and lives in the
+  client's files, so a copy would go stale the day the operator updates their
+  install — and then the shard's walls and the client's picture disagree with
+  nothing to say which is right. The footprint is recomputed at boot from the
+  same table placement read it from.
+
+  A restore does **not** go through `place`. That decides whether a house *may*
+  stand somewhere, and a house legal when it was built stays built: a shard that
+  changed its yard size would otherwise demolish half of Britannia at the next
+  restart, silently.
+
+  Schema **v27**, and it is the first bump that is not about reading. A v26
+  database opens fine and holds no houses, which is true of it. What it must not
+  do is keep being written by a build that does not know about them — an older
+  engine would agree about the version, ignore the table, and hand out item
+  serials one of which a saved house already holds. The bump is for the *writer*.
+
+  A shard booted **without** client files restores the houses and gives them no
+  walls, rather than dropping them. Losing somebody's property over a
+  misconfigured `world.client_files` is the worse failure, and it is gated.
+
 ---
 
 ### H2 — the deed, and the cursor that shows the house

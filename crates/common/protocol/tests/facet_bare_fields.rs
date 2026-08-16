@@ -25,7 +25,7 @@ use std::path::{Path, PathBuf};
 const ALLOWLIST: &[(&str, usize, &str)] = &[
     (
         "crates/server/persistence/src/record.rs",
-        7,
+        8,
         "F2: the disk seam — a saved facet is a SQL column, not a live component",
     ),
     (

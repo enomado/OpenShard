@@ -63,6 +63,13 @@ pub struct MapTerrain<M = Map, T = TileData> {
     tiles: T,
     /// Whether water counts as ground. A boat or a fish says yes.
     swimming: bool,
+    /// Every multi the client knows, shared rather than copied per facet — the
+    /// table is a few hundred kilobytes and a facet's terrain is built per facet.
+    ///
+    /// `None` for a terrain built without one, which answers no components at
+    /// all: a shard with no multi table places no houses, the same bargain every
+    /// other client-file method here makes.
+    multis: Option<std::sync::Arc<openshard_uofiles::multi::Multis>>,
 }
 
 impl<M, T> MapTerrain<M, T>
@@ -76,10 +83,19 @@ where
             map,
             tiles,
             swimming: false,
+            multis: None,
         }
     }
 
     /// Let this terrain treat water as standable.
+    /// Give this terrain the client's multi table, so a house's components can
+    /// be resolved from an id.
+    #[must_use]
+    pub fn with_multis(mut self, multis: std::sync::Arc<openshard_uofiles::multi::Multis>) -> Self {
+        self.multis = Some(multis);
+        self
+    }
+
     pub const fn swimming(mut self, swimming: bool) -> Self {
         self.swimming = swimming;
         self
@@ -534,6 +550,13 @@ where
 
     fn item_height(&self, graphic: Graphic) -> u8 {
         self.tiles().static_tile(graphic.0).height
+    }
+
+    fn multi_components(&self, id: u16) -> &[openshard_uofiles::multi::Component] {
+        self.multis
+            .as_ref()
+            .and_then(|multis| multis.get(id))
+            .map_or(&[], |multi| &multi.components)
     }
 
     fn item_name(&self, graphic: Graphic) -> Option<&str> {

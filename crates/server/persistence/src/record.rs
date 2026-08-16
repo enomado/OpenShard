@@ -314,7 +314,45 @@ mod optional_serial {
 ///   says nothing about which alliance they were both meant to be in, or what it
 ///   was called. Every one would have to become an alliance of two under a
 ///   made-up name, which is worse than refusing.
-pub const SCHEMA_VERSION: u32 = 26;
+/// - v27: **houses**. A new table and no unreadable old data, which makes this
+///   the first bump that is not about *reading*. A v26 database opens fine and
+///   simply holds no houses, which is true of it. What it must not do is keep
+///   being written by a build that does not know about them: an older engine
+///   would read the version, agree, ignore the `houses` table, and go on handing
+///   out item serials — one of which a saved house already holds. The rows would
+///   survive and point at somebody's chest. So the bump is for the *writer*, not
+///   the reader, and it is worth saying because every version above it was the
+///   other way round.
+pub const SCHEMA_VERSION: u32 = 27;
+
+/// A player's house, as saved.
+///
+/// **The components are not here**, and that is the point: a multi's shape is a
+/// pure function of its id and it lives in the client's files, so saving it would
+/// be saving a copy of a file every client already has — one that goes stale the
+/// day the operator updates their install. What is saved is where the house
+/// stands and which multi it is, and the footprint is recomputed at boot.
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub struct HouseRecord {
+    /// Its item serial, so the entity comes back as the same thing to a client
+    /// that had it on screen.
+    #[serde(with = "serial")]
+    pub serial: Serial,
+    /// Which multi, `0x4000` below the graphic on the wire.
+    pub multi: u16,
+    /// Where its origin stands — not the corner of its box. See
+    /// `openshard_uofiles::multi::Multi::center`.
+    pub x: u16,
+    /// The same, south.
+    pub y: u16,
+    /// And its height.
+    pub z: i8,
+    /// Which facet it is on.
+    pub facet: u8,
+    /// Who owns it.
+    #[serde(with = "serial")]
+    pub owner: Serial,
+}
 
 /// An account, as saved.
 ///

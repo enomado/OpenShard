@@ -454,6 +454,12 @@ async fn restore_guilds(store: &dyn Store, world: &mut World) {
     // And the alliances they name. Read separately and failing separately: an
     // unreadable alliance table is a shard whose guilds are all unallied, which
     // is a great deal better than a shard with no guilds.
+    // And the houses, after the facets exist — restoring one asks the terrain for
+    // its footprint, and a terrain that is not there yet answers no walls.
+    match store.houses().await {
+        Ok(houses) => world.restore_houses(houses),
+        Err(error) => error!(%error, "could not read saved houses; starting with none"),
+    }
     match store.alliances().await {
         Ok(alliances) => world.restore_alliances(alliances),
         Err(error) => error!(%error, "could not read saved alliances; starting with none"),
@@ -549,6 +555,27 @@ pub fn load_world(config: &Config) -> Result<World, Box<dyn std::error::Error>> 
         config.world.facets.len()
     );
 
+    // Every multi the client knows: the houses, the ships, the boats. Read once
+    // and shared by every facet, since a multi is a shape rather than a place.
+    //
+    // A failure here is a shard with no *houses*, not a shard with no world — an
+    // install can predate the format, and the alternative is refusing to boot
+    // over a feature nobody may be using. Said out loud for that reason.
+    let multis = match openshard_uofiles::multi::Multis::load(dir) {
+        Ok(multis) => {
+            eprintln!(
+                "world load +{:.3}s: {} multis read",
+                started.elapsed().as_secs_f64(),
+                multis.len()
+            );
+            Some(std::sync::Arc::new(multis))
+        }
+        Err(error) => {
+            warn!(%error, "could not read the client's multis; no house can be placed");
+            None
+        }
+    };
+
     let mut world = configured_world(config);
     for &facet in &config.world.facets {
         let facet = openshard_protocol::world::Facet(facet);
@@ -604,7 +631,11 @@ pub fn load_world(config: &Config) -> Result<World, Box<dyn std::error::Error>> 
             statics = map.static_count(),
             "facet loaded"
         );
-        world = world.with_facet(facet, MapTerrain::new(map, tiles.clone()), Some(coarse));
+        let mut terrain = MapTerrain::new(map, tiles.clone());
+        if let Some(multis) = multis.clone() {
+            terrain = terrain.with_multis(multis);
+        }
+        world = world.with_facet(facet, terrain, Some(coarse));
     }
     info!(
         facets = config.world.facets.len(),
