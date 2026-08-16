@@ -24,7 +24,7 @@ use openshard_protocol::wire::CursorId;
 use openshard_protocol::wire::{Graphic, Hue};
 use openshard_protocol::world::{Facet, Point};
 use openshard_state::TargetPurpose;
-use openshard_state::components::{Client, Contained, Drawn, House, HouseDeed, Position};
+use openshard_state::components::{Client, Contained, Drawn, House, HouseDeed, HouseSign, Position};
 use tracing::{info, warn};
 
 use super::World;
@@ -108,6 +108,12 @@ impl World {
                 // through a wall.
                 Err(_) => wall_less += 1,
             }
+            // Rebuilt rather than restored, for the module header's reason: the
+            // sign's spot is a pure function of the multi's box, and a saved copy
+            // of it would go stale the day the operator updates their install.
+            // A shard with no client files gets no sign, the same bargain the
+            // walls make.
+            openshard_housing::hang_sign(&mut self.state, entity, facet, at, record.multi);
             restored += 1;
         }
         if restored > 0 {
@@ -203,6 +209,20 @@ impl World {
 }
 
 impl World {
+    /// A sign was double-clicked: open its house's window.
+    ///
+    /// The house is looked up by serial *now*. A sign left standing over a house
+    /// that has come down opens nothing, which is what the serial buys over the
+    /// entity id it was hung with.
+    pub(super) fn open_house_sign(&mut self, player: EntityId, sign: EntityId) {
+        let Some(&HouseSign { house }) = self.state.registry.get::<HouseSign>(sign) else {
+            return;
+        };
+        if let Some(house) = self.state.registry.entity_of(house) {
+            openshard_housing::sign::show(&mut self.state, player, house);
+        }
+    }
+
     /// The house `who` is standing in, if any.
     ///
     /// A scan over the houses rather than an index: there are a handful on a
@@ -223,36 +243,6 @@ impl World {
             })
             .map(|(entity, _)| entity)
     }
-
-    /// Change one of a house's lists, and put out anybody the change turned away.
-    ///
-    /// The eviction rides here rather than in `openshard-housing` for the reason
-    /// `place` does not announce itself: the crate decides *who may be where* and
-    /// the world is what tells people about it.
-    pub(super) fn change_house_list(
-        &mut self,
-        actor: EntityId,
-        house: EntityId,
-        change: impl FnOnce(&mut House, Serial, bool) -> Result<(), openshard_housing::ListRefusal>,
-    ) {
-        let Some(who) = self.state.registry.serial_of(actor) else {
-            return;
-        };
-        let staff = self.state.is_staff(actor);
-        let Some(entry) = self.state.registry.get_mut::<House>(house) else {
-            return;
-        };
-        match change(entry, who, staff) {
-            Ok(()) => {
-                for evicted in openshard_housing::evict_the_banned(&mut self.state, house) {
-                    self.state
-                        .system_message(evicted, "You have been banned from this house.");
-                }
-                self.state.system_message(actor, "Done.");
-            }
-            Err(refusal) => self.state.system_message(actor, refusal.message()),
-        }
-    }
 }
 
 impl World {
@@ -268,8 +258,6 @@ impl World {
         change: openshard_state::HouseChange,
         who: Option<Serial>,
     ) {
-        use openshard_state::HouseChange as Change;
-
         let Some(who) = who else {
             self.state.system_message(actor, "That is nobody.");
             return;
@@ -283,16 +271,8 @@ impl World {
                 .system_message(actor, "You are not standing in a house.");
             return;
         };
-        self.change_house_list(actor, house, move |entry, actor, staff| match change {
-            Change::Friend => {
-                openshard_housing::trust(entry, actor, who, openshard_state::Standing::Friend, staff)
-            }
-            Change::CoOwner => {
-                openshard_housing::trust(entry, actor, who, openshard_state::Standing::CoOwner, staff)
-            }
-            Change::Drop => openshard_housing::distrust(entry, actor, who, staff),
-            Change::Ban => openshard_housing::ban(entry, actor, who, staff),
-            Change::Unban => openshard_housing::unban(entry, actor, who, staff),
-        });
+        // Through the sign's own `apply`, so the cursor and the window's rows are
+        // one authority check and one eviction rather than two that must agree.
+        openshard_housing::sign::apply(&mut self.state, actor, house, change, who);
     }
 }

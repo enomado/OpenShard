@@ -196,35 +196,73 @@ impl Multi {
     /// keeps [`center`](Self::center) the same number on both engines.
     #[must_use]
     pub fn new(id: u16, components: Vec<Component>) -> Self {
-        let (mut min_x, mut min_y) = (i16::MAX, i16::MAX);
-        let (mut max_x, mut max_y) = (i16::MIN, i16::MIN);
-        for (nth, component) in components.iter().enumerate() {
-            if nth != 0 && !component.drawn() {
-                continue;
-            }
-            min_x = min_x.min(component.dx);
-            min_y = min_y.min(component.dy);
-            max_x = max_x.max(component.dx);
-            max_y = max_y.max(component.dy);
-        }
-        if components.is_empty() {
+        let Some(box_) = bounds(&components) else {
             return Self {
                 id,
                 components,
                 center: (0, 0),
                 size: (0, 0),
             };
-        }
+        };
         Self {
             id,
             components,
-            center: (-min_x, -min_y),
+            center: (-box_.min_x, -box_.min_y),
             size: (
-                (max_x - min_x).unsigned_abs() + 1,
-                (max_y - min_y).unsigned_abs() + 1,
+                (box_.max_x - box_.min_x).unsigned_abs() + 1,
+                (box_.max_y - box_.min_y).unsigned_abs() + 1,
             ),
         }
     }
+}
+
+/// The corners of a multi's bounding box, in tiles from its origin.
+///
+/// Signed and origin-relative, which is what [`Multi::center`] and
+/// [`Multi::size`] are each derived from — and what a caller that wants a
+/// *corner* rather than a size needs, because those two numbers cannot be turned
+/// back into one without redoing the same arithmetic.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Bounds {
+    /// The westmost component's offset.
+    pub min_x: i16,
+    /// The northmost.
+    pub min_y: i16,
+    /// The eastmost.
+    pub max_x: i16,
+    /// The southmost.
+    pub max_y: i16,
+}
+
+/// The box a component list occupies, or `None` if the list is empty.
+///
+/// Entry zero **and** every drawn component, which is the reference's own `i ==
+/// 0 || m_Flags != 0`. Public and separate from [`Multi::new`] so that a caller
+/// deriving a position from the box — where a house's sign stands, which ServUO
+/// computes as `(Min.X, Height - 1 - Center.Y)` — asks the same function the
+/// centre was computed by, rather than a second copy of it that can drift.
+#[must_use]
+pub fn bounds(components: &[Component]) -> Option<Bounds> {
+    let (mut min_x, mut min_y) = (i16::MAX, i16::MAX);
+    let (mut max_x, mut max_y) = (i16::MIN, i16::MIN);
+    for (nth, component) in components.iter().enumerate() {
+        if nth != 0 && !component.drawn() {
+            continue;
+        }
+        min_x = min_x.min(component.dx);
+        min_y = min_y.min(component.dy);
+        max_x = max_x.max(component.dx);
+        max_y = max_y.max(component.dy);
+    }
+    if components.is_empty() {
+        return None;
+    }
+    Some(Bounds {
+        min_x,
+        min_y,
+        max_x,
+        max_y,
+    })
 }
 
 /// Every multi a client knows about.

@@ -189,6 +189,16 @@ impl World {
             {
                 self.offer_a_plot(player, item);
             }
+            // And a house's sign, for the same reason and on the same terms:
+            // there is one place a double-clicked item is given a default
+            // meaning, and it is this match.
+            _ if self
+                .state
+                .registry
+                .has::<openshard_state::components::HouseSign>(item) =>
+            {
+                self.open_house_sign(player, item);
+            }
             skills::LOCKPICK_GRAPHIC => {
                 skills::use_lockpick(&mut self.state, player, item);
             }

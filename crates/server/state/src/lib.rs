@@ -60,7 +60,7 @@ pub use components::{
     Client, Combat, Contained, Container, CorpseBody, CriminalUntil, DEFAULT_SKILL_CAP, Decays, Decoration,
     Discorded, Door, Drawn, EMPTY_BOTTLE_GRAPHIC, Equipped, FIELD_HEIGHT, Fame, Field, FieldKind, Frozen,
     Ghost, Guard, GuildCandidate, GuildMember, Harvesting, Heading, HearsGhosts, Hidden, Hitpoints, House,
-    HouseDeed, HouseDoor, InRegion, Instrument, Karma, KeyValue, LastStatGain, Lock, MOONGATE_GRAPHIC,
+    HouseDeed, HouseDoor, HouseSign, InRegion, Instrument, Karma, KeyValue, LastStatGain, Lock, MOONGATE_GRAPHIC,
     MOONGATE_REACH, Mana, Meditating, MeleeDamage, Moongate, Movement, MurderDecay, Murders, Name, NightHome,
     Npc, POISON_POTION_GRAPHIC, Pacified, PartyCandidate, PartyMember, PoisonCharges, Poisoned, Position,
     RECALL_RUNE_GRAPHIC, RUNEBOOK_ENTRIES, RUNEBOOK_GRAPHIC, Resistance, RuneMark, Runebook, RunebookEntry,
@@ -79,8 +79,8 @@ pub use region::{Region, RegionFlags, RegionId, RegionRect, Regions};
 pub use rng::Rng;
 pub use runtime::{
     Action, CastStyle, CraftGumpContext, CraftGumpPage, FacetState, Gameplay, GuildGumpContext, GuildPage,
-    HeldItem, HouseChange, Origin, Outbound, QuestGumpContext, QuestSection, TICKS_PER_SECOND, TargetPurpose,
-    TooltipMode, Trade, TradeSide, WorldState,
+    HeldItem, HouseChange, HouseGumpContext, HouseList, Origin, Outbound, QuestGumpContext, QuestSection,
+    TICKS_PER_SECOND, TargetPurpose, TooltipMode, Trade, TradeSide, WorldState,
 };
 pub use sectors::{SECTOR_SIZE, Sectors, VIEW_RANGE, distance, in_range};
 pub use skill::{SKILL_COUNT, SKILLS, Skill, SkillInfo, StatCode};

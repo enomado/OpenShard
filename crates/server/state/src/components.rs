@@ -2149,6 +2149,20 @@ pub enum Standing {
     Owner,
 }
 
+impl Standing {
+    /// What to call it on a screen.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Banned => "banned",
+            Self::Stranger => "a stranger here",
+            Self::Friend => "a friend of this house",
+            Self::CoOwner => "a co-owner",
+            Self::Owner => "the owner",
+        }
+    }
+}
+
 impl House {
     /// What `who` is to this house.
     ///
@@ -2191,6 +2205,20 @@ impl House {
 /// keep in step through every demolition.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct HouseDoor {
+    /// Which house, by its item serial.
+    pub house: openshard_protocol::serial::Serial,
+}
+
+/// The sign standing outside a house — the thing you double-click to see who
+/// owns it and to change who may come in.
+///
+/// On the *sign*, naming the house, for [`HouseDoor`]'s reason and one more: the
+/// sign is derived from the house rather than owned by it. It is not saved — a
+/// restore rebuilds it from the [`House`] record — so a back-pointer from the
+/// house would be a serial that meant one sign before the restart and another
+/// after.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct HouseSign {
     /// Which house, by its item serial.
     pub house: openshard_protocol::serial::Serial,
 }

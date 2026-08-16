@@ -70,10 +70,12 @@ pub mod id {
     pub const GUILD: GumpId = GumpId(0x0055_0001);
     /// What Animal Lore draws about a creature.
     pub const ANIMAL_LORE: GumpId = GumpId(0x0A11);
+    /// A house sign: who owns it, and who may come in.
+    pub const HOUSE: GumpId = GumpId(0x0056_0001);
 
     /// The table, for the distinctness check and for anything that wants to ask
     /// whether an id belongs to the engine at all.
-    pub const ALL: [GumpId; 9] = [
+    pub const ALL: [GumpId; 10] = [
         ADMIN,
         QUEST,
         QUEST_RESIGN,
@@ -83,6 +85,7 @@ pub mod id {
         HEALER,
         GUILD,
         ANIMAL_LORE,
+        HOUSE,
     ];
 }
 

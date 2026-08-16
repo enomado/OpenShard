@@ -13,12 +13,18 @@ workspace = true
 
 [dependencies]
 openshard-entities.workspace = true
+# The sign's window is answered per connection, like every other gump's.
+openshard-gateway.workspace = true
 openshard-movement.workspace = true
 openshard-protocol.workspace = true
 openshard-state.workspace = true
+# For the multi's own bounding box, which is where a house's sign hangs. The
+# component type already arrives through `Terrain::multi_components`; this is the
+# arithmetic over it, and computing it here instead would be a second copy of
+# what `Multi::center` is derived from.
+openshard-uofiles.workspace = true
 
 [dev-dependencies]
 # The tests stand a bare `WorldState` up with a terrain that knows one multi:
-# every part of one is in `openshard-state` except the bus and the component type.
+# every part of one is in `openshard-state` except the bus.
 openshard-events.workspace = true
-openshard-uofiles.workspace = true

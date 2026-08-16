@@ -714,6 +714,35 @@ pub struct GuildGumpContext {
     pub members: Vec<Serial>,
 }
 
+/// What a house sign's window is showing, and what its rows meant.
+///
+/// [`GuildGumpContext`]'s shape and its reason: a reply names a row, and which
+/// person row three was is what this side remembers drawing.
+///
+/// The house is held by **entity** and not by serial, unlike the members: the
+/// window is closed the moment it is answered, so it cannot outlive the house
+/// the way a roster row outlives a member's logout — and an entity that has been
+/// despawned resolves to nothing, which is the right answer for a window opened
+/// on a house that has since come down.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct HouseGumpContext {
+    /// Which house's sign was clicked.
+    pub house: EntityId,
+    /// Everyone the window drew, in row order, with which list they were on.
+    pub rows: Vec<(HouseList, Serial)>,
+}
+
+/// One of a house's three lists of people.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum HouseList {
+    /// Co-owners, who may do everything but hand the house over.
+    CoOwners,
+    /// Friends, who may come in and open the doors.
+    Friends,
+    /// The banned, who may do neither.
+    Bans,
+}
+
 /// Which part of the craft window a player is looking at.
 ///
 /// ServUO keeps this as a `CraftPage` plus a separate `CraftGumpItem` gump; the

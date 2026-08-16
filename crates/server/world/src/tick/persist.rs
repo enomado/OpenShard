@@ -337,11 +337,21 @@ impl World {
             // portal becomes a permanent one whose caster no longer exists. The
             // eight city moongates are `Decoration` and are already out by the
             // line above, so the two cases do not collide.
+            //
+            // A house is out because it is saved as a `HouseRecord` — it has a
+            // graphic and a position like any item, so it was collected *as well
+            // as*, and the restore, which puts houses back before items, then
+            // found its own serial already spoken for. Its sign is out on the
+            // same terms for a different reason: it is derived from the house and
+            // rebuilt at restore, so an item copy would come back as a plaque
+            // that no longer opens anything.
             if !registry.has::<Drawn>(item)
                 || registry.has::<Body>(item)
                 || registry.has::<Decoration>(item)
                 || registry.has::<Field>(item)
                 || registry.has::<Moongate>(item)
+                || registry.has::<openshard_state::components::House>(item)
+                || registry.has::<openshard_state::components::HouseSign>(item)
             {
                 continue;
             }

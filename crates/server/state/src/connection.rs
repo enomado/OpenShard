@@ -24,7 +24,9 @@ use openshard_protocol::world::{Light, MusicId};
 
 use openshard_entities::EntityId;
 
-use crate::runtime::{CraftGumpContext, GuildGumpContext, HeldItem, QuestGumpContext, TargetPurpose};
+use crate::runtime::{
+    CraftGumpContext, GuildGumpContext, HeldItem, HouseGumpContext, QuestGumpContext, TargetPurpose,
+};
 
 /// The derived half of a player's status bar, kept to compare against next time.
 ///
@@ -150,6 +152,13 @@ pub struct Connection {
     /// confirm open for. The `gate_gump` shape: a reply carries only a button, so
     /// *which* healer asked has to live here, not in the packet.
     pub healer_gump: Option<EntityId>,
+    /// The house sign this client has open, and what its rows meant.
+    ///
+    /// The `guild_gump` shape rather than the `gate_gump` one, because a house
+    /// window has rows: three lists of people, each row offering to drop whoever
+    /// is on it. Which serial row four named is what this side remembers
+    /// drawing, and never the number in the packet.
+    pub house_gump: Option<HouseGumpContext>,
 }
 
 impl Connection {
@@ -171,6 +180,7 @@ impl Connection {
             runebook_gump: None,
             gate_gump: None,
             healer_gump: None,
+            house_gump: None,
         }
     }
 

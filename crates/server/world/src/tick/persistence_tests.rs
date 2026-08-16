@@ -999,3 +999,53 @@ fn a_house_restored_without_client_files_stands_but_stops_nobody() {
         "a shard with no multi table invented a wall"
     );
 }
+
+/// A house is one record, not two.
+///
+/// The house entity is a drawable thing standing on the ground with a graphic
+/// and a position, which is exactly what `ground_items` collects — so it was
+/// swept up as an item *as well as* written as a [`HouseRecord`], and the
+/// restore, which puts the houses back before the items, then found its own
+/// serial already spoken for.
+///
+/// The sign is out on the same terms and a different reason: it is *derived*
+/// from the house, rebuilt by `restore_houses` from the record, and an item copy
+/// of it would come back as a graphic that no longer opens a window.
+#[test]
+fn a_house_and_its_sign_are_not_also_ground_items() {
+    use openshard_persistence::record::HouseRecord;
+
+    let mut world = World::new(START);
+    let serial = Serial::new(0x4000_00BB).expect("an item serial");
+    let owner = Serial::new(0x0000_0001).expect("a mobile serial");
+    world.restore_houses(vec![HouseRecord {
+        serial,
+        multi: 0x64,
+        x: START.0 + 5,
+        y: START.1 + 5,
+        z: 0,
+        facet: 0,
+        owner,
+        co_owners: Vec::new(),
+        friends: Vec::new(),
+        bans: Vec::new(),
+    }]);
+
+    let ground = world.ground_items();
+    assert!(
+        !ground.iter().any(|record| record.serial == serial),
+        "the house was saved as an item as well as a house"
+    );
+    let signs = world
+        .state
+        .registry
+        .query::<openshard_state::components::HouseSign>()
+        .filter_map(|(sign, _)| world.state.registry.serial_of(sign))
+        .collect::<Vec<_>>();
+    for sign in signs {
+        assert!(
+            !ground.iter().any(|record| record.serial == sign),
+            "the sign was saved as an item"
+        );
+    }
+}

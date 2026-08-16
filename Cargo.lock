@@ -2722,6 +2722,7 @@ version = "0.0.1"
 dependencies = [
  "openshard-entities",
  "openshard-events",
+ "openshard-gateway",
  "openshard-movement",
  "openshard-protocol",
  "openshard-state",

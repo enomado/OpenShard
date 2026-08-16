@@ -40,9 +40,9 @@ exist (326 against 862 on one install, so the UOP wins).
 | `0x99` multi target cursor | **no packet at all** | **no packet at all** | speaks it |
 | a house as a world item | nothing places one | draws items already | draws multis already |
 | the footprint blocking a step | `Obstructions` exists, nothing fills it from a multi | — | n/a, server-authoritative |
-| the house sign, the deed | — | — | ordinary items |
+| the house sign, the deed | **built** | draws items already | ordinary items |
 | door locks | `KeyValue` and the lock rules exist (`.key`) | — | n/a |
-| co-owners, friends, bans | — | — | n/a |
+| co-owners, friends, bans | **built** | n/a | n/a |
 | decay | — | — | n/a |
 | customisation (`0xD7` house design) | — | — | speaks it |
 
@@ -288,7 +288,7 @@ including the pointer tile.
 4. The ban: a banned player standing inside is moved out, which is the only rule
    here that acts on somebody rather than refusing them.
 
-#### The lists are built; the sign, the door and the eviction are not
+#### Built: all four
 
 Item 2 is in, and the shape it took is worth naming: **one question, not four
 booleans.** The reference's predicates are nested — `IsFriend` is
@@ -345,18 +345,64 @@ adopted nothing, which a test caught rather than a player.
 
 **The eviction is the one rule that acts on somebody.** A ban that only locked
 the door would leave whoever was already inside there for good. `evict_the_banned`
-puts them one tile past the box's west edge — ServUO moves them to the sign's own
-spot, which there is no sign for yet, and "just outside" is the same intent with
-data that exists.
+puts them one tile past the box's west edge. ServUO moves them to a
+`BaseBanLocation` each house class declares — a hand-written table, like the door
+positions and the sign offsets — and "just outside, on the side the box ends" is
+the same intent from data that exists. It is deliberately **not** the sign's tile
+now that there is one: the sign hangs on the wall at z+7, which is a place for a
+plaque and not for a person.
 
 **Reachable through five staff commands** — `.hfriend`, `.hcoowner`, `.hdrop`,
 `.hban`, `.hunban` — each raising an object cursor, because naming a mobile needs
 a lookup this engine has no verb for and *picking* one is what the reference's own
 sign does. When the sign exists it is a window over exactly these five calls.
 
-**Still open in H3: the sign itself**, which is item 1 — an item placed with the
-house, double-clicked into a gump that lists the three lists and names the owner.
-Everything under it is built.
+**The sign is up, and its position is the one number the reference derives.**
+ServUO's fourteen classic houses each declare theirs — `SetSign(2, 4, 5)`,
+`SetSign(5, 12, 16)` — which is the same per-house-type table the doors are, and
+for the same reason it is not copied. But its *customisable* houses cannot have
+one, because the multi is built at run time, so `HouseFoundation` computes a spot:
+`Components.Min.X`, `Components.Height - 1 - Components.Center.Y`, `z + 7`.
+Reduce that against `Multi::center`'s own definition and the y is just `max_y` —
+so the rule is **the box's west-south corner**, and it holds for every multi
+rather than only the ones somebody typed a number for.
+
+The arithmetic is `uofiles::multi::bounds`, pulled out of `Multi::new` and made
+public so the sign asks the same function the centre was computed by. A second
+copy of it in the housing crate would be a copy that can drift, and the whole
+point of matching the reference's bounds was that `center` agrees on both
+engines.
+
+The hanger (`0xB98`) ServUO puts on the same tile is left out: it draws a bracket,
+does nothing, and is one more entity per house to save, restore and take down.
+
+**The sign is not saved.** It is derived from the house — position from the
+multi's box, ownership from the `House` component — so `restore_houses` hangs a
+fresh one, exactly as the walls are recomputed rather than stored. Which uncovered
+a defect in H1: the house entity *itself* has a graphic and a position, so
+`ground_items` was sweeping it up as an `ItemRecord` **as well as** writing a
+`HouseRecord`, and the restore — houses first, items second — then found its own
+serial already spoken for. Both are excluded now, with a test.
+
+**The window is a window over the five verbs.** The five buttons raise the same
+cursor `.hfriend` and its four siblings do; the rows are the half a cursor cannot
+do — taking somebody *off* a list without asking them to stand still for it. The
+cursor's answer and the window's rows both go through `sign::apply`, so there is
+one authority check and one eviction rather than two that must agree.
+
+Which list a row was drawn under decides its verb — a co-owner or a friend is
+dropped, a banned player is let back to the door — so one button id serves all
+three columns, and `HouseGumpContext` remembers which column each row came from.
+That is `openshard_guilds::gump`'s rule: a reply names a *number*, and what the
+number meant is the server's memory.
+
+**One thing it inherits rather than fixes:** a name is only there while its owner
+is logged in, because a serial resolves to an entity and an offline character has
+none. The fallback is the serial rather than "someone", so two absent friends are
+two rows a player can tell apart. The guild roster has the same gap and the fix is
+the same one — a name read off the character store — which neither has.
+
+**H3 is complete.**
 
 ---
 

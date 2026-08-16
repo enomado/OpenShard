@@ -28,6 +28,8 @@
 //! and a house does not move, so asking `multi.mul` per step would be paying a
 //! hundred lookups for an answer that cannot have changed.
 
+pub mod sign;
+
 #[cfg(test)]
 mod tests;
 
@@ -174,6 +176,7 @@ pub fn place(
     let obstructions = &mut state.facet_state_mut(facet).obstructions;
     block_footprint(obstructions, entity, &footprint);
     adopt_doors(state, entity, facet, at, multi);
+    hang_sign(state, entity, facet, at, multi);
     Ok(entity)
 }
 
@@ -317,6 +320,78 @@ pub fn unban(house: &mut House, actor: Serial, who: Serial, staff: bool) -> Resu
     Ok(())
 }
 
+/// The graphic a house sign draws as — ServUO's `HouseSign`.
+pub const SIGN_GRAPHIC: u16 = 0x0BD2;
+
+/// How far above the house's own z the sign hangs. ServUO's `SetSign(x, y, 7)`.
+const SIGN_Z: i16 = 7;
+
+/// Where a house's sign hangs, or `None` on a shard with no multi table.
+///
+/// # The one sign position the reference derives
+///
+/// ServUO's classic houses each declare theirs — `SetSign(2, 4, 5)`,
+/// `SetSign(5, 12, 16)`, fourteen of them — which is the same per-house-type
+/// table [`adopt_doors`] refuses to invent, and for the same reason: it is
+/// content, and nothing in a client file says it.
+///
+/// Its **customisable** houses do not have that luxury, because the multi is
+/// built at run time, so `HouseFoundation` computes one: `x = Components.Min.X`,
+/// `y = Components.Height - 1 - Components.Center.Y`, `z = 7`. Reduce it against
+/// [`Multi::center`](openshard_uofiles::multi::Multi::center)'s own definition
+/// and the y is just `max_y` — so the rule is **the box's west-south corner**,
+/// and it is derivable for every multi rather than only for the ones somebody
+/// typed a number for.
+///
+/// The hanger (`0xB98`) that ServUO puts on the same tile is left out. It draws
+/// a bracket and does nothing, and one more entity per house is one more to
+/// save, restore and take down.
+#[must_use]
+pub fn sign_spot(state: &WorldState, at: Point, facet: Facet, multi: u16) -> Option<Point> {
+    let multi = multi & !MULTI_FLAG;
+    let terrain = state.facet_state(facet).terrain.as_deref()?;
+    let box_ = openshard_uofiles::multi::bounds(terrain.multi_components(multi))?;
+    let x = u16::try_from(i32::from(at.x) + i32::from(box_.min_x)).ok()?;
+    let y = u16::try_from(i32::from(at.y) + i32::from(box_.max_y)).ok()?;
+    let z = i8::try_from(i32::from(at.z) + i32::from(SIGN_Z)).ok()?;
+    Some(Point::new(x, y, z))
+}
+
+/// Hang a house's sign, and return it.
+///
+/// Separate from [`place`] because the restore needs it too and does not go
+/// through `place` — a house that was legal when it was built stays built, and
+/// a sign that only existed on the placement path would vanish at the first
+/// restart.
+pub fn hang_sign(
+    state: &mut WorldState,
+    house: EntityId,
+    facet: Facet,
+    at: Point,
+    multi: u16,
+) -> Option<EntityId> {
+    let serial = state.registry.serial_of(house)?;
+    let spot = sign_spot(state, at, facet, multi)?;
+    let (sign, _) = state
+        .registry
+        .spawn_with_serial(openshard_protocol::serial::SerialKind::Item)
+        .ok()?;
+    state.registry.insert(
+        sign,
+        Drawn {
+            id: Graphic(SIGN_GRAPHIC),
+            hue: Hue(0),
+        },
+    );
+    state.registry.insert(sign, Position(spot));
+    state
+        .registry
+        .insert(sign, openshard_state::components::HouseSign { house: serial });
+    state.registry.insert(sign, facet);
+    state.facet_state_mut(facet).sectors.insert(sign, spot);
+    Some(sign)
+}
+
 /// Hand every door standing inside a footprint to the house.
 ///
 /// # Why a house adopts its doors rather than placing them
@@ -364,10 +439,13 @@ pub fn adopt_doors(state: &mut WorldState, house: EntityId, facet: Facet, at: Po
 
 /// Where a banned player is put out to.
 ///
-/// One tile west of the house's box, at the ground the house stands on. ServUO
-/// moves them to the sign's own spot, which this engine has no sign for yet — and
-/// "just outside, on the side the box ends" is the same intent with data that
-/// exists.
+/// One tile west of the house's box, at the ground the house stands on.
+///
+/// **Not** the sign's tile, now that there is one: [`sign_spot`] hangs it on the
+/// wall at z+7, which is a place for a plaque and not for a person. ServUO moves
+/// the banned to a `BaseBanLocation` each house class declares — a third
+/// hand-written table, alongside the doors and the sign offsets — and "just
+/// outside, on the side the box ends" is the same intent from data that exists.
 #[must_use]
 pub fn doorstep(state: &WorldState, at: Point, facet: Facet, multi: u16) -> Point {
     let tiles = tiles_of(state, at, facet, multi);

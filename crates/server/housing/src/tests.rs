@@ -711,3 +711,139 @@ fn a_ban_puts_out_whoever_is_already_inside() {
     // Just outside the box's west edge, which is where the doorstep is.
     assert_eq!(where_of(unwelcome), doorstep(&state, at, Facet(0), COTTAGE));
 }
+
+/// The sign hangs on the box's west-south corner, seven above the house's z.
+///
+/// The numbers rather than the rule, because the rule is one reduction away from
+/// ServUO's `SetSign(Components.Min.X, Components.Height - 1 - Components.Center.Y, 7)`
+/// and a reduction is exactly the kind of thing that is right on paper and off
+/// by one in the tree. The cottage's box runs from -1 to +1 on both axes, so the
+/// corner is one west and one south of the origin.
+#[test]
+fn a_house_hangs_its_sign_on_the_corner_of_its_box() {
+    let mut state = world_with(cottage());
+    let owner = an_owner(&mut state);
+    let at = Point::new(10, 10, 0);
+    let house = place(&mut state, at, Facet(0), COTTAGE, owner).expect("a legal spot");
+    let serial = state.registry.serial_of(house).expect("the house's serial");
+
+    assert_eq!(
+        sign_spot(&state, at, Facet(0), COTTAGE),
+        Some(Point::new(9, 11, 7))
+    );
+    let signs: Vec<_> = state
+        .registry
+        .query::<openshard_state::components::HouseSign>()
+        .map(|(entity, sign)| (entity, sign.house))
+        .collect();
+    assert_eq!(signs.len(), 1, "a house got {} signs", signs.len());
+    assert_eq!(signs[0].1, serial, "the sign names another house");
+    assert_eq!(
+        state.registry.get::<Position>(signs[0].0).map(|p| p.0),
+        Some(Point::new(9, 11, 7))
+    );
+    assert_eq!(
+        state.registry.get::<Drawn>(signs[0].0).map(|drawn| drawn.id),
+        Some(Graphic(SIGN_GRAPHIC))
+    );
+    // And it is an item, so the interest sweep announces it like any other.
+    assert!(
+        state
+            .registry
+            .serial_of(signs[0].0)
+            .is_some_and(|serial| serial.is_item()),
+        "the sign took a mobile serial"
+    );
+}
+
+/// A shard with no client files gets a house with no sign, rather than a sign
+/// at the origin.
+///
+/// The same bargain the walls make. A sign hung at the house's own tile would be
+/// *inside* it on every multi whose box is not centred, and a plaque a player
+/// cannot reach is worse than no plaque.
+#[test]
+fn a_house_with_no_multi_table_hangs_no_sign() {
+    let mut state = world_with(cottage());
+    let owner = an_owner(&mut state);
+    assert_eq!(
+        sign_spot(&state, Point::new(10, 10, 0), Facet(0), COTTAGE + 1),
+        None,
+        "an id the table does not hold got a spot anyway"
+    );
+    let _ = owner;
+}
+
+/// The sign's window is a window over the five verbs, and it obeys them.
+///
+/// The row is the half a cursor cannot do — taking somebody *off* a list — so
+/// this is the branch worth pinning: a friend pressing a co-owner's row changes
+/// nothing, and the co-owner pressing it does.
+#[test]
+fn only_a_co_owner_may_drop_a_name_from_the_window() {
+    let mut state = world_with(cottage());
+    let owner = an_owner(&mut state);
+    let at = Point::new(10, 10, 0);
+    let house = place(&mut state, at, Facet(0), COTTAGE, owner).expect("a legal spot");
+
+    let friend = an_owner(&mut state);
+    let co_owner = an_owner(&mut state);
+    {
+        let entry = state.registry.get_mut::<House>(house).expect("its component");
+        trust(entry, owner, friend, Standing::Friend, false).unwrap();
+        trust(entry, owner, co_owner, Standing::CoOwner, false).unwrap();
+    }
+
+    // A friend pressing the row: refused, because `distrust` asks for co-owner.
+    let as_friend = state.registry.entity_of(friend).expect("a mobile");
+    sign::apply(
+        &mut state,
+        as_friend,
+        house,
+        openshard_state::HouseChange::Drop,
+        co_owner,
+    );
+    assert!(
+        state
+            .registry
+            .get::<House>(house)
+            .is_some_and(|entry| entry.co_owners.contains(&co_owner)),
+        "a friend dropped a co-owner"
+    );
+
+    // The co-owner pressing the friend's row: done.
+    let as_co_owner = state.registry.entity_of(co_owner).expect("a mobile");
+    sign::apply(
+        &mut state,
+        as_co_owner,
+        house,
+        openshard_state::HouseChange::Drop,
+        friend,
+    );
+    assert!(
+        state
+            .registry
+            .get::<House>(house)
+            .is_some_and(|entry| !entry.friends.contains(&friend)),
+        "a co-owner could not drop a friend"
+    );
+}
+
+/// A row button reads back as the row it was drawn for, and a number past the
+/// end reads back as nothing.
+#[test]
+fn a_row_button_reads_back_as_the_row_it_was_drawn_for() {
+    for row in 0..8 {
+        assert_eq!(sign::row_of(sign::row_button(row), 8), Some(row));
+    }
+    assert_eq!(
+        sign::row_of(sign::row_button(8), 8),
+        None,
+        "a reply naming row nine of an eight-row list resolved to something"
+    );
+    assert_eq!(
+        sign::row_of(sign::button::BAN, 8),
+        None,
+        "an action button was read as a row"
+    );
+}
