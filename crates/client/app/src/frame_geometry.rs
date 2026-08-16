@@ -253,7 +253,28 @@ pub(crate) fn assemble_geometry(
         .map(openshard_client_render::mobiles::OpaqueMask::fingerprint);
     let static_atlas_revision = window.atlases.statics.revision();
     let animation_tick = world.presentation.tile_animations.tick();
-    let items_fingerprint = items_fingerprint(&world.presentation.items);
+    // The house being drawn under a `0x99` cursor, chained on so the renderer is
+    // handed one list. Borrowed when there is no preview, which is nearly always
+    // — the concatenation costs a frame's allocation only while somebody is
+    // holding a deed.
+    let drawn_items: std::borrow::Cow<'_, [openshard_client_render::items::GroundItem]> =
+        if world.presentation.multi_preview.is_empty() {
+            std::borrow::Cow::Borrowed(&world.presentation.items)
+        } else {
+            std::borrow::Cow::Owned(
+                world
+                    .presentation
+                    .items
+                    .iter()
+                    .chain(world.presentation.multi_preview.iter())
+                    .copied()
+                    .collect(),
+            )
+        };
+    // Over the *chained* list, which is what makes the preview move: the cache
+    // key is what the frame draws, and a preview that slid a tile without
+    // changing the fingerprint would be a house frozen where the pointer was.
+    let items_fingerprint = items_fingerprint(&drawn_items);
     // Map-static volume ownership depends on the occlusion grid, which exists
     // only for a non-flat sky. Server items also participate in that grid, so
     // leave the collector live whenever any are present. The cache is therefore
@@ -294,7 +315,7 @@ pub(crate) fn assemble_geometry(
     // rather than pieced together from two call sites.
     let inputs = frame::Inputs {
         map: &resources.map,
-        items: &world.presentation.items,
+        items: &drawn_items,
         camera: &camera,
         tiledata: &resources.tiledata,
         animations: &world.presentation.tile_animations,
@@ -543,4 +564,52 @@ pub(crate) struct FrameFacts {
     /// What a click is holding, turned back into an index into
     /// `self.world.presentation.item_serials`.
     pub(crate) held_item: Option<openshard_client_render::items::ItemIndex>,
+}
+
+#[cfg(test)]
+mod tests {
+    use openshard_client_render::items::GroundItem;
+    use openshard_protocol::wire::{Graphic, Hue};
+    use openshard_protocol::world::Point;
+
+    use super::items_fingerprint;
+
+    fn at(x: u16, y: u16) -> GroundItem {
+        GroundItem {
+            at: Point::new(x, y, 0),
+            graphic: Graphic(0x0006),
+            hue: Hue::NONE,
+        }
+    }
+
+    /// A preview that slid one tile changes the fingerprint the static geometry
+    /// is cached against.
+    ///
+    /// The load-bearing half of chaining the preview in: the cache key is what
+    /// the frame *draws*, and the whole point of the preview is that it moves
+    /// with the pointer while nothing else in the list does. A fingerprint taken
+    /// over `presentation.items` alone would be identical between these two
+    /// frames, and the house would sit frozen where the pointer first was.
+    #[test]
+    fn a_preview_that_moved_is_a_different_frame() {
+        let world = [at(10, 10), at(11, 10)];
+        let here: Vec<_> = world.iter().copied().chain([at(20, 20)]).collect();
+        let there: Vec<_> = world.iter().copied().chain([at(20, 21)]).collect();
+
+        assert_ne!(
+            items_fingerprint(&here),
+            items_fingerprint(&there),
+            "a house that slid a tile reused the frame before it"
+        );
+        assert_ne!(
+            items_fingerprint(&world),
+            items_fingerprint(&here),
+            "a preview appearing at all did not invalidate the cache"
+        );
+        assert_eq!(
+            items_fingerprint(&here),
+            items_fingerprint(&here.clone()),
+            "the same frame hashed two ways"
+        );
+    }
 }

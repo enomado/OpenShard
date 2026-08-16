@@ -1830,6 +1830,12 @@ impl App {
         // both reads the view and may put a `0xD6` on the wire, which is exactly
         // the mixture the drawing half is kept free of.
         let hover = self.hover_tooltip();
+        // And the house under a placement cursor, up here for the same reason
+        // the three above are: it reads the view and the pointer, and the pass
+        // that draws it runs inside the window's borrow. It is the one thing in
+        // the draw list rebuilt per *frame* rather than per packet, because it
+        // follows the pointer.
+        self.refresh_multi_preview(camera);
 
         let Some(window) = self.window.as_mut() else {
             return;

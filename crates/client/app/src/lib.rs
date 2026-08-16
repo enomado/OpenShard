@@ -832,6 +832,7 @@ pub fn run<D: Dial + Send + 'static>(
                 corpses: Vec::new(),
                 items: Vec::new(),
                 item_serials: Vec::new(),
+                multi_preview: Vec::new(),
                 damage_numbers: Vec::new(),
                 health_estimates: std::collections::BTreeMap::new(),
                 clutter: clutter::Clutter::default(),

@@ -1030,3 +1030,45 @@ impl App {
         }
     }
 }
+
+impl crate::App {
+    /// Rebuild the house drawn under a `0x99` cursor.
+    ///
+    /// Once a frame, before the geometry is assembled, because a preview follows
+    /// the *pointer* and the pointer moves between packets. Cheap when there is
+    /// no multi cursor up, which is nearly always: one `Option` test and a
+    /// `clear` over an already-empty vector.
+    ///
+    /// The pieces go into `presentation.multi_preview` rather than
+    /// `presentation.items` — see that field for the two reasons, which are not
+    /// the same reason.
+    pub(crate) fn refresh_multi_preview(&mut self, camera: Camera) {
+        let multi = self
+            .world
+            .authoritative
+            .view
+            .as_ref()
+            .and_then(|view| view.target)
+            .and_then(|target| target.multi);
+        let (Some(multi), true) = (multi, self.world_owns_pointer()) else {
+            self.world.presentation.multi_preview.clear();
+            return;
+        };
+        // The same tile the click would answer with, so what a player sees is
+        // where the house lands. `target_under_cursor` reads a picked static
+        // first and this does not: a house is placed on the *ground*, and the
+        // shard raises a location cursor for exactly that reason.
+        let Some(tile) = self.pick_tile(camera) else {
+            self.world.presentation.multi_preview.clear();
+            return;
+        };
+        let at = openshard_protocol::world::Point::new(tile.at.x, tile.at.y, tile.stand_z.0);
+        self.world.presentation.multi_preview = crate::net_command::multi_pieces(
+            self.resources.multis.as_deref(),
+            multi.graphic(),
+            at,
+            openshard_protocol::wire::Hue::NONE,
+        )
+        .unwrap_or_default();
+    }
+}

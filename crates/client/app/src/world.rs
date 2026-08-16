@@ -196,6 +196,19 @@ pub struct PresentationWorld {
     /// Ground-item render data and the parallel wire serials used for picks.
     pub items: Vec<GroundItem>,
     pub item_serials: Vec<Serial>,
+    /// The house a `0x99` cursor is drawing under the pointer, expanded into its
+    /// pieces. Empty whenever no multi cursor is up.
+    ///
+    /// **Deliberately not in [`items`](Self::items)**, and the two reasons are
+    /// different from each other. It has no serial, so appending it would desync
+    /// `item_serials`, which picking indexes by position — and it must not be
+    /// pickable in any case, because it is not a thing in the world. And it
+    /// moves with the *pointer* rather than with the item list, so it is
+    /// rebuilt on a different clock from everything beside it.
+    ///
+    /// It is chained onto `items` at the one call that hands them to
+    /// `frame::Inputs`, so the renderer never learns there were two lists.
+    pub multi_preview: Vec<GroundItem>,
     /// Damage numbers are presentation events, not authoritative world state.
     pub damage_numbers: Vec<DamageNumber>,
     /// Presentation-only delayed health, keyed by the mobile the shard named.
@@ -918,6 +931,7 @@ mod tests {
             corpses: Vec::new(),
             items: Vec::new(),
             item_serials: Vec::new(),
+            multi_preview: Vec::new(),
             damage_numbers: Vec::new(),
             health_estimates: BTreeMap::new(),
             clutter: clutter::Clutter::default(),

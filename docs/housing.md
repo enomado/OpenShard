@@ -40,7 +40,7 @@ exist (326 against 862 on one install, so the UOP wins).
 | piece | server | client (ours) | classic client |
 |---|---|---|---|
 | multi components | **built** (`uofiles::multi`) | — | reads its own files |
-| `0x99` multi target cursor | **built** | **built** — read; the preview picture is not drawn | speaks it |
+| `0x99` multi target cursor | **built** | **built** — read and drawn | speaks it |
 | a house as a world item | **built** | **built** — `net_command::multi_pieces` | draws multis already |
 | the footprint blocking a step | **built** | — | n/a, server-authoritative |
 | the house sign, the deed | **built** | draws items already | ordinary items |
@@ -263,20 +263,34 @@ under the pointer, which is the whole reason `0x99` exists.
 - **The deed is spent on success and kept on a refusal.** A player who picked a
   bad spot has lost a click, not a house.
 
-**Still open in H2:** the preview's *picture*. `0x99` is folded into
-`WorldView` now — `OpenTarget` carries the cursor and the house as one value, so
-a plain `0x6C` arriving after a house cursor cannot leave a villa following the
-pointer. Two `Option`s side by side would have been a packet away from exactly
-that, which is `combat.md`'s D1 in a different colour.
+**The preview is drawn, and it went in the shape the deferral predicted.**
+`0x99` is folded into `WorldView` as `OpenTarget`, which carries the cursor and
+the house as **one value** — so a plain `0x6C` arriving after a house cursor
+cannot leave a villa following the pointer. Two `Option`s side by side would have
+been one packet away from exactly that, which is `combat.md`'s D1 in a different
+colour.
 
-What is left is drawing it, and the subtlety worth knowing before starting: the
-draw geometry is cached against `items_fingerprint(&presentation.items)`
-(`frame_geometry.rs`), and a preview moves with the *pointer* rather than with
-the item list. Appending the pieces to `presentation.items` would also desync
-`item_serials`, which picking indexes by position — and the preview must not be
-pickable anyway, since it is not a thing in the world. So it wants a list of its
-own, chained at the collect call and left out of the fingerprint's stead by
-including the pointer tile.
+The pieces live in `presentation.multi_preview`, a list of their own, and the two
+reasons they are not in `presentation.items` are **not the same reason**. A
+preview has no serial, so appending it would desync `item_serials`, which picking
+indexes by position — and it must not be pickable in any case, because it is not
+a thing in the world. It is chained onto `items` at the one call that builds
+`frame::Inputs`, borrowed rather than copied when there is no preview, so the
+renderer never learns there were two lists and an ordinary frame allocates
+nothing.
+
+It is rebuilt **once a frame** rather than once a packet, which is the one thing
+in the draw list that is: it follows the pointer, and the pointer moves between
+packets. And `items_fingerprint` is taken over the *chained* list, not over
+`presentation.items` — the static geometry cache is keyed on what the frame
+draws, and a preview that slid a tile without changing the key would be a house
+frozen where the pointer first was. That is the one assertion the test makes,
+because it is the one a reader would not think to check.
+
+The tile is `pick_tile`'s, not the picked static's, and that differs from
+`target_under_cursor` on purpose: a house goes on the *ground*, which is why the
+shard raises a location cursor for it, so what the player sees is where the house
+will land.
 
 ---
 

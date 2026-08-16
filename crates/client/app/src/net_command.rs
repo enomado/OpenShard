@@ -789,7 +789,7 @@ fn resolve_localized_message(cliloc: Option<&Cliloc>, message: &LocalizedMessage
 ///   out of the static art, where `0x4064` is a perfectly valid id for something
 ///   that is not a house — silently, with no error anywhere. That was this
 ///   client's behaviour before this function existed.
-fn multi_pieces(
+pub(crate) fn multi_pieces(
     multis: Option<&openshard_uofiles::multi::Multis>,
     graphic: Graphic,
     at: Point,
