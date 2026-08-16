@@ -551,6 +551,22 @@ pub fn run<D: Dial + Send + 'static>(
         }
     };
     checkpoint("tile data loaded");
+    // Every multi the client knows: the houses and the ships. A house arrives as
+    // *one* item whose graphic is `0x4000 | id`, and without this table that
+    // graphic is looked up in the static art — where it is a perfectly valid id
+    // for something else entirely, so a villa draws as an unrelated sprite with
+    // no error anywhere. See `crate::net_command`'s expansion.
+    //
+    // A client that cannot read them draws no houses rather than failing to
+    // start, which is the bargain `animdata` above already makes.
+    let multis = match openshard_uofiles::multi::Multis::load(dir) {
+        Ok(multis) => Some(std::sync::Arc::new(multis)),
+        Err(error) => {
+            eprintln!("opening the multis: {error} — houses will not draw");
+            None
+        }
+    };
+    checkpoint("multis loaded");
     // What the animated statics cycle through. Read here and folded into
     // `tile_animations` below, because it takes both files to know which
     // graphics animate: the flag is `tiledata.mul`'s and the cycle is this one's.
@@ -845,6 +861,7 @@ pub fn run<D: Dial + Send + 'static>(
             repack_forced: false,
             texmaps,
             tiledata,
+            multis,
             hue_ramp,
             font_atlas,
             gumps,

@@ -260,10 +260,12 @@ under the pointer, which is the whole reason `0x99` exists.
 - **The deed is spent on success and kept on a refusal.** A player who picked a
   bad spot has lost a click, not a house.
 
-**Still open in H2:** the client half — our own client neither decodes `0x99` nor
-draws a multi under the pointer, which is the same gap as the backlog's "a house
-draws as one unrelated sprite" and wants the same fix. The classic client already
-does both.
+**Still open in H2:** the *preview* — our own client now draws a placed house
+correctly, but does not decode `0x99`, so a deed raises no picture under the
+pointer there. The classic client does. The expansion the preview needs is
+already written (`net_command::multi_pieces`); what is missing is folding the
+packet into `WorldView` and feeding the pieces to the cursor rather than to the
+ground.
 
 ---
 
@@ -327,12 +329,17 @@ is not lost.
 - **The five multis that draw nothing** (`findings.md`) are treasure-site markers,
   and placement must refuse an id with no drawn components rather than spawn an
   invisible house.
-- **Our own client would draw a house as one unrelated sprite.** Checked rather
-  than assumed, and it is worse than "untested": `render::items::collect` has no
-  notion of a multi at all, and a static id space that runs to `0x10000` means
-  `0x4064` is a *valid* art id. So a villa draws as whatever static happens to
-  sit at 0x4064 — silently, with no error anywhere. The classic client is
-  unaffected, since it reads `multi.mul` itself, which is why H1 is worth landing
-  on the server before this is fixed. The client half is its own piece: a
-  `GroundItem` whose graphic is a multi expands into its components before the
-  collector sees it, and `uofiles::multi` is already there to expand it with.
+- ~~**Our own client would draw a house as one unrelated sprite.**~~ Fixed, and
+  it was as bad as it looked: `render::items::collect` had no notion of a multi,
+  and a static id space running to `0x10000` means `0x4064` is a *valid* art id,
+  so a villa drew as whatever static happened to sit there — silently, with no
+  error anywhere.
+
+  `net_command::multi_pieces` is the expansion, at the seam where the view
+  becomes a draw list, so the renderer never learns what a multi is: it is handed
+  more items and nothing else changes. Every piece takes the *house's* serial,
+  which is what makes clicking any wall pick the house.
+
+  The load-bearing detail is that it answers `None` and not an empty list when
+  the client has no multi table. Falling through to the ordinary item path is
+  precisely the old bug.

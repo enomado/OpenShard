@@ -18,7 +18,8 @@ use openshard_protocol::items::{CORPSE_GRAPHIC, WorldItemPayload};
 use openshard_protocol::localized;
 use openshard_protocol::server_packet::ServerPacket;
 use openshard_protocol::speech::LocalizedMessage;
-use openshard_protocol::wire::Hue;
+use openshard_protocol::wire::{Graphic, Hue};
+use openshard_protocol::world::Point;
 use openshard_uofiles::anim::is_ghost;
 use openshard_uofiles::cliloc::{Cliloc, ClilocNumber};
 
@@ -534,6 +535,26 @@ impl App {
                     ));
                 }
                 WorldItemPayload::Stack(amount) => {
+                    // A house is one item and a hundred statics. Expanded here,
+                    // at the seam where the view becomes a draw list, so the
+                    // renderer never learns what a multi is — it is handed more
+                    // items and nothing else changes.
+                    //
+                    // Every component takes the *house's* serial, which is what
+                    // makes clicking any wall pick the house: `item_serials`
+                    // runs parallel to `items` and picking reads it by index.
+                    if let Some(pieces) = multi_pieces(
+                        self.resources.multis.as_deref(),
+                        item.graphic,
+                        item.position,
+                        item.hue,
+                    ) {
+                        for piece in pieces {
+                            self.world.presentation.items.push(piece);
+                            self.world.presentation.item_serials.push(*serial);
+                        }
+                        continue;
+                    }
                     self.world.presentation.items.push(GroundItem {
                         at: item.position,
                         graphic: openshard_client_render::items::displayed_graphic(item.graphic, amount),
@@ -749,6 +770,53 @@ fn resolve_localized_message(cliloc: Option<&Cliloc>, message: &LocalizedMessage
     resolve_cliloc_arguments(template, &message.arguments)
 }
 
+/// A house, as the pieces a renderer draws — or `None` when the graphic is an
+/// ordinary item.
+///
+/// A multi is one item on the wire and a hundred statics on screen. This is the
+/// seam where that expansion happens, so the renderer never learns what a multi
+/// is: it is handed more items and nothing else changes.
+///
+/// Three things it gets right and a caller writing it inline would not:
+///
+/// - **The flag test comes first.** Almost every item is not a house, and the
+///   table is only consulted for the graphics that could be one.
+/// - **Only the drawn components.** A multi's list carries tiles the client never
+///   draws, and the flag saying so reads backwards from its name — see
+///   [`openshard_uofiles::multi`].
+/// - **`None` when there is no table**, which is not the same as an empty list.
+///   Falling through to the ordinary item path would draw the house's *graphic*
+///   out of the static art, where `0x4064` is a perfectly valid id for something
+///   that is not a house — silently, with no error anywhere. That was this
+///   client's behaviour before this function existed.
+fn multi_pieces(
+    multis: Option<&openshard_uofiles::multi::Multis>,
+    graphic: Graphic,
+    at: Point,
+    hue: Hue,
+) -> Option<Vec<GroundItem>> {
+    use openshard_protocol::wire::MultiId;
+
+    if graphic.0 & MultiId::FLAG == 0 {
+        return None;
+    }
+    let multi = multis?.get(MultiId::from_graphic(graphic).0)?;
+    Some(
+        multi
+            .drawn()
+            .map(|component| GroundItem {
+                at: Point::new(
+                    at.x.wrapping_add_signed(component.dx),
+                    at.y.wrapping_add_signed(component.dy),
+                    at.z.saturating_add(component.dz as i8),
+                ),
+                graphic: Graphic(component.graphic),
+                hue,
+            })
+            .collect(),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use std::rc::Rc;
@@ -890,6 +958,81 @@ mod tests {
             crowd.drawn_for(None),
             Some(Gaze::on(start)),
             "the body moves before the server's acknowledgement"
+        );
+    }
+
+    /// A house is one item on the wire and many statics on screen — and the one
+    /// case that was silently wrong before: without the expansion, `0x4064` is
+    /// looked up in the *static* art, where it is a valid id for something that
+    /// is not a house at all.
+    #[test]
+    fn a_multi_becomes_the_statics_it_draws_as() {
+        use openshard_uofiles::multi::{Component, Multi, Multis};
+
+        let cottage = Multi::new(
+            0x64,
+            vec![
+                // The signature tile every multi starts with, undrawn.
+                Component {
+                    graphic: 1,
+                    dx: 0,
+                    dy: 0,
+                    dz: 0,
+                    flags: 0,
+                },
+                Component {
+                    graphic: 0x0006,
+                    dx: -1,
+                    dy: 2,
+                    dz: 0,
+                    flags: 1,
+                },
+                Component {
+                    graphic: 0x0007,
+                    dx: 1,
+                    dy: 0,
+                    dz: 20,
+                    flags: 1,
+                },
+            ],
+        );
+        let multis = Multis::of([cottage]);
+
+        let pieces = multi_pieces(
+            Some(&multis),
+            Graphic(0x4064),
+            Point::new(100, 200, 5),
+            Hue(0x1234),
+        )
+        .expect("a multi expands");
+        assert_eq!(pieces.len(), 2, "the undrawn signature tile was drawn");
+        assert_eq!(pieces[0].at, Point::new(99, 202, 5), "the offset is signed");
+        assert_eq!(pieces[0].graphic, Graphic(0x0006));
+        assert_eq!(
+            pieces[0].hue,
+            Hue(0x1234),
+            "a dyed house dyes every wall, which is the one hue there is"
+        );
+        assert_eq!(pieces[1].at, Point::new(101, 200, 25), "z is an offset too");
+    }
+
+    /// An ordinary item is not a house, and the table is not even consulted.
+    #[test]
+    fn an_item_below_the_multi_flag_expands_into_nothing() {
+        assert!(
+            multi_pieces(None, Graphic(0x0EED), Point::new(1, 1, 0), Hue(0)).is_none(),
+            "a pile of gold went looking for a house"
+        );
+    }
+
+    /// `None` and an empty list are different answers, and the difference is the
+    /// bug this function exists to stop: falling through would draw the house's
+    /// own graphic out of the static art.
+    #[test]
+    fn a_client_with_no_multi_table_draws_no_house_rather_than_the_wrong_sprite() {
+        assert!(
+            multi_pieces(None, Graphic(0x4064), Point::new(1, 1, 0), Hue(0)).is_none(),
+            "with no table this must still be recognised as a multi"
         );
     }
 }

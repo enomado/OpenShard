@@ -195,7 +195,7 @@ impl Multi {
     /// the reference's own `i == 0 || m_Flags != 0`. Matching it exactly is what
     /// keeps [`center`](Self::center) the same number on both engines.
     #[must_use]
-    fn new(id: u16, components: Vec<Component>) -> Self {
+    pub fn new(id: u16, components: Vec<Component>) -> Self {
         let (mut min_x, mut min_y) = (i16::MAX, i16::MAX);
         let (mut max_x, mut max_y) = (i16::MIN, i16::MIN);
         for (nth, component) in components.iter().enumerate() {
@@ -235,6 +235,19 @@ pub struct Multis {
 }
 
 impl Multis {
+    /// Build a table from multis already in hand.
+    ///
+    /// For a caller that has components without a file behind them — a test, or
+    /// an editor that has just drawn one. The readers do not use it; they insert
+    /// as they go, because they know the id before they know the components.
+    #[must_use]
+    pub fn of(multis: impl IntoIterator<Item = Multi>) -> Self {
+        Self {
+            multis: multis.into_iter().map(|multi| (multi.id, multi)).collect(),
+            format: None,
+        }
+    }
+
     /// Read a client's multis out of `dir`, preferring `MultiCollection.uop`.
     ///
     /// See the module docs for why the UOP wins where both exist. An install with

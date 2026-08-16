@@ -62,6 +62,15 @@ pub struct Resources {
     /// bridge's deck now, not only the land, and that needs `tiledata.mul` on
     /// both ends of the channel.
     pub tiledata: Arc<TileData>,
+    /// Every multi the client ships, or `None` for an install this build could
+    /// not read them from.
+    ///
+    /// A house is one item on the wire and a hundred statics on screen, and the
+    /// expansion happens where the view becomes a draw list — see
+    /// `net_command`. `None` means houses do not draw; it must **not** mean the
+    /// graphic falls through to the static art, where `0x4064` is a valid id for
+    /// something that is not a house.
+    pub multis: Option<Arc<openshard_uofiles::multi::Multis>>,
     /// Every hue the client ships, packed once: unlike the sprite atlases it
     /// tints, nothing about it depends on where the camera is standing.
     pub hue_ramp: HueRamp,
