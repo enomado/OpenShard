@@ -43,6 +43,9 @@ dist/
 # project knowledge and is versioned.
 CLAUDE.local.md
 .mcp.json
+# A plugin's own session state — an iteration counter and a session id, written
+# into the project directory by the tool rather than by anyone working on it.
+.claude/*.local.*
 # Embedding models the code-index server downloads into the working directory.
 .fastembed_cache/
 .skeleton/
