@@ -84,6 +84,36 @@ impl Hue {
 #[serde(transparent)]
 pub struct SoundId(pub u16);
 
+/// A multi's own id — a house, a ship, a boat's hold.
+///
+/// **Not a [`Graphic`]**, and the distinction is the whole reason this exists.
+/// A placed multi arrives as a world item whose graphic is `0x4000 | id`, so the
+/// two id spaces overlap and a value that means "cottage" in one means an
+/// unrelated static in the other. `0x99` writes the bare id; `0x1A` writes the
+/// masked graphic; something holding a `u16` cannot tell you which it had.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Debug)]
+pub struct MultiId(pub u16);
+
+impl MultiId {
+    /// The bit that turns an id into the graphic a placed multi draws as.
+    pub const FLAG: u16 = 0x4000;
+
+    /// The graphic a placed copy of this multi carries.
+    #[must_use]
+    pub const fn graphic(self) -> Graphic {
+        Graphic(Self::FLAG | self.0)
+    }
+
+    /// The multi a graphic names, whichever spelling it was in.
+    ///
+    /// A mask rather than a subtraction: a caller may hold `0x4064` or `0x0064`
+    /// and both mean the same house.
+    #[must_use]
+    pub const fn from_graphic(graphic: Graphic) -> Self {
+        Self(graphic.0 & !Self::FLAG)
+    }
+}
+
 /// The id a targeting cursor request carries and its response echoes back.
 ///
 /// Opaque to the client: the server picks it, the client repeats it, and that is

@@ -2104,6 +2104,18 @@ pub struct House {
     pub owner: openshard_protocol::serial::Serial,
 }
 
+/// A deed: the item a house is placed from.
+///
+/// It carries the multi rather than the house carrying the deed, because the
+/// deed is what exists first and the only thing it has to know is which building
+/// it becomes. Spent on a successful placement and kept on a refused one — a
+/// player who picked a bad spot has lost nothing but a click.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct HouseDeed {
+    /// Which house it builds.
+    pub multi: openshard_protocol::wire::MultiId,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

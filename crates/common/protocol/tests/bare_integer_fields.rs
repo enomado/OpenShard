@@ -53,6 +53,14 @@ use std::path::Path;
 const ALLOWLIST: &[(&str, &str, &str)] = &[
     // -- geometric components: N1 amendment 2, N2 amendment 2 --------------
     (
+        "target.rs",
+        "offset",
+        "MultiTargetRequest: three signed tile deltas, which is a geometry this crate \
+         has no type for — Point is unsigned x/y and this is a displacement, not a place. \
+         Zero in every placement this engine makes; carried because the reference's boats \
+         set it and a field we never write is still one we must not corrupt",
+    ),
+    (
         "world.rs",
         "x",
         "Point: one geometric quantity's own axis, added to and compared on every step",

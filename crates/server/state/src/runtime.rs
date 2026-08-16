@@ -755,6 +755,17 @@ pub struct CraftGumpContext {
 /// What a raised targeting cursor is waiting to do with the click.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum TargetPurpose {
+    /// A house waiting for its plot — the cursor a deed raises.
+    ///
+    /// Carries the *deed* rather than the multi id, and the difference is a rule:
+    /// the id can be read back off the deed when the click lands, and a deed
+    /// dropped, sold or destroyed while the cursor was up must not still place a
+    /// house. Same shape as [`SkillSecond`](Self::SkillSecond)'s carried potion,
+    /// and for the same reason.
+    PlaceHouse {
+        /// The deed being spent.
+        deed: EntityId,
+    },
     /// Teleport the targeter to the clicked spot — the cursor `.tele`.
     Teleport,
     /// A targeted spell waiting for its aim — the cursor a spell puts up once

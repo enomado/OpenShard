@@ -14,10 +14,16 @@
 //! other `Terrain` method makes, and it is better than the alternative, which is
 //! a house whose walls came from a file the client no longer has.
 
+use openshard_entities::EntityId;
+use openshard_items as items;
 use openshard_persistence::record::HouseRecord;
+use openshard_protocol::server_packet::ServerPacket;
+use openshard_protocol::target::{MultiTargetRequest, TargetKind};
+use openshard_protocol::wire::CursorId;
 use openshard_protocol::wire::{Graphic, Hue};
 use openshard_protocol::world::{Facet, Point};
-use openshard_state::components::{Drawn, House, Position};
+use openshard_state::TargetPurpose;
+use openshard_state::components::{Client, Contained, Drawn, House, HouseDeed, Position};
 use tracing::{info, warn};
 
 use super::World;
@@ -96,5 +102,91 @@ impl World {
         if restored > 0 {
             info!(houses = restored, wall_less, "restored the shard's houses");
         }
+    }
+}
+
+impl World {
+    /// A deed's cursor came back: put the house where they clicked, and spend the
+    /// deed.
+    ///
+    /// The **deed is re-read here**, not trusted from when the cursor went up.
+    /// `TargetPurpose::PlaceHouse` carries the deed rather than the multi id for
+    /// exactly this: a deed sold, dropped or destroyed while the cursor was up
+    /// must not still place a house, and a player with one deed and a fast hand
+    /// must not place two.
+    pub(super) fn place_house_from_deed(
+        &mut self,
+        actor: EntityId,
+        deed: EntityId,
+        at: openshard_protocol::world::Point,
+    ) {
+        let Some(&HouseDeed { multi }) = self.state.registry.get::<HouseDeed>(deed) else {
+            return; // not a deed any more, or never was
+        };
+        // Still theirs. A deed in somebody else's pack is not a deed you hold,
+        // and the walk up the containment tree is `items`' own — a deed in a bag
+        // in the backpack is carried as surely as one loose in it.
+        let carried = self
+            .state
+            .registry
+            .get::<Contained>(deed)
+            .and_then(|held| items::owner_of_container(&self.state, held.container))
+            == Some(actor);
+        if !carried {
+            self.state.system_message(actor, "You no longer have that deed.");
+            return;
+        }
+        let facet = self.state.facet_of(actor);
+        let Some(owner) = self.state.registry.serial_of(actor) else {
+            return;
+        };
+        match openshard_housing::place(&mut self.state, at, facet, multi.0, owner) {
+            Ok(_) => {
+                if let Some(serial) = self.state.registry.serial_of(deed) {
+                    items::consume(&mut self.state, serial, 1);
+                }
+                self.state
+                    .system_message(actor, "The house is built. Use the sign to name it.");
+            }
+            // The deed is **not** spent on a refusal. ServUO puts it back in the
+            // pack for the same reason: a player who picked a bad spot has lost
+            // nothing but a click.
+            Err(refusal) => self.state.system_message(actor, refusal.message()),
+        }
+    }
+}
+
+impl World {
+    /// A deed was double-clicked: raise the cursor with the house drawn under it.
+    ///
+    /// `0x99` rather than `0x6C`, which is the whole point of the packet — a
+    /// player picking a plot needs to see the walls, because five of ServUO's
+    /// placement rules are about what is *around* the footprint and none of them
+    /// can be judged from a crosshair on one tile.
+    pub(super) fn offer_a_plot(&mut self, player: EntityId, deed: EntityId) {
+        let Some(&HouseDeed { multi }) = self.state.registry.get::<HouseDeed>(deed) else {
+            return;
+        };
+        let (Some(&Client { connection, .. }), Some(serial)) = (
+            self.state.registry.get::<Client>(player),
+            self.state.registry.serial_of(player),
+        ) else {
+            return; // a creature holding a deed has no cursor to raise
+        };
+        self.state
+            .raise_target(player, TargetPurpose::PlaceHouse { deed });
+        self.state.send_packet(
+            connection,
+            &ServerPacket::MultiTarget(MultiTargetRequest {
+                cursor_id: CursorId(serial.raw()),
+                // A house goes on the ground. An object cursor would refuse the
+                // click on the grass the player is trying to build on.
+                kind: TargetKind::Location,
+                multi,
+                offset: (0, 0, 0),
+            }),
+        );
+        self.state
+            .system_message(player, "Where would you like to place the house?");
     }
 }

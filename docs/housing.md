@@ -236,6 +236,35 @@ the cursor until they pick a spot.
 clicked and is consumed; a refused placement says which of D3's rules it broke
 and keeps the deed.
 
+#### Built on the server; the client half is not drawn yet
+
+Items 1, 3 and 4 are in, plus `.deed <multi id>` so the path is reachable on a
+running shard before a vendor sells one. `.house` remains the staff shortcut that
+places directly; a deed goes through every placement rule with the house drawn
+under the pointer, which is the whole reason `0x99` exists.
+
+- **`0x99` is not an `EncodePacket`.** Its `LENGTH` is a `const` and the packet
+  has two — 26 classic, 30 from High Seas, the same bytes with four zeroes on the
+  end. Declaring either would be a lie the framer's own assertion catches, so it
+  follows `OpenContainer`'s precedent: an inherent `write_body`, a
+  `multi_target_length(version)` beside it, and `ServerPacket::length` (which
+  *does* see a version) picking between them.
+- **`MultiId` exists now**, because the N10 gate refused a bare `u16` and was
+  right to: a multi id and the graphic a placed multi draws as are two `u16`s
+  that overlap, `0x99` writes the bare one and `0x1A` the masked one, and a value
+  holding neither type cannot say which it had.
+- **The cursor carries the *deed*, not the multi.** A deed sold, dropped or
+  destroyed while the cursor was up must not still place a house, and a player
+  with one deed and a fast hand must not place two — so the deed is re-read when
+  the click lands, and the multi comes off it then.
+- **The deed is spent on success and kept on a refusal.** A player who picked a
+  bad spot has lost a click, not a house.
+
+**Still open in H2:** the client half — our own client neither decodes `0x99` nor
+draws a multi under the pointer, which is the same gap as the backlog's "a house
+draws as one unrelated sprite" and wants the same fix. The classic client already
+does both.
+
 ---
 
 ### H3 — who may come in

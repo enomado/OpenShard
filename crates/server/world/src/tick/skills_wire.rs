@@ -179,6 +179,16 @@ impl World {
             skills::BANDAGE_GRAPHIC => {
                 skills::use_bandage(&mut self.state, player, item);
             }
+            // A deed is not a skill, and it is matched here anyway: this is the
+            // one place a double-clicked item gets a *default* meaning, and the
+            // alternative is a second dispatch beside it doing the same match.
+            _ if self
+                .state
+                .registry
+                .has::<openshard_state::components::HouseDeed>(item) =>
+            {
+                self.offer_a_plot(player, item);
+            }
             skills::LOCKPICK_GRAPHIC => {
                 skills::use_lockpick(&mut self.state, player, item);
             }

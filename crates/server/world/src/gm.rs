@@ -61,6 +61,7 @@ pub fn run(state: &mut WorldState, actor: EntityId, rest: &str) {
         "set" => set_stat(state, actor, &args),
         "skill" => set_skill(state, actor, &args),
         "house" => place_house(state, actor, &args),
+        "deed" => make_deed(state, actor, &args),
         "admin" => crate::admin::open_menu(state, actor),
         "save" => save_world(state, actor),
         other => notify(state, actor, &format!("Unknown command '{other}'.")),
@@ -498,6 +499,38 @@ fn place_house(state: &mut WorldState, actor: EntityId, args: &[&str]) {
         ),
         Err(refusal) => notify(state, actor, refusal.message()),
     }
+}
+
+/// `.deed <multi id>` — put a house deed in your pack.
+///
+/// The other half of `.house`, and the one that exercises the *player's* path:
+/// `.house` places directly, which is the staff shortcut, while a deed raises the
+/// `0x99` cursor and goes through every placement rule with the house drawn under
+/// the pointer. Until a vendor sells one this is the only way to hold a deed, and
+/// without it the whole H2 path is unreachable on a running shard.
+fn make_deed(state: &mut WorldState, actor: EntityId, args: &[&str]) {
+    let Some(multi) = args.first().and_then(parse_u16) else {
+        notify(state, actor, "Usage: .deed <multi id>, e.g. .deed 0x64");
+        return;
+    };
+    let Some(&Position(at)) = state.registry.get::<Position>(actor) else {
+        return;
+    };
+    let facet = state.facet_of(actor);
+    // ServUO's own deed graphic, `0x14F0` — a rolled scroll.
+    let Some(deed) = items::spawn_item(state, Graphic(0x14F0), Hue(0), 1, false, at, facet) else {
+        notify(state, actor, "No room for a deed.");
+        return;
+    };
+    let multi = openshard_protocol::wire::MultiId(multi & !openshard_protocol::wire::MultiId::FLAG);
+    state
+        .registry
+        .insert(deed, openshard_state::components::HouseDeed { multi });
+    state.registry.insert(
+        deed,
+        openshard_state::components::Name(format!("a house deed ({:#06x})", multi.0)),
+    );
+    notify(state, actor, "A house deed is at your feet.");
 }
 
 /// Send the actor a private system line — the reply to a command, seen by no one

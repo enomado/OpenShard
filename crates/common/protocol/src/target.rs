@@ -8,10 +8,11 @@
 
 use crate::codec::{PacketReader, PacketWriter};
 use crate::error::DecodeError;
+use crate::feature::Feature;
 use crate::packet::{DecodePacket, EncodePacket, PacketLength};
 use crate::serial::Serial;
 use crate::version::ClientVersion;
-use crate::wire::{CursorId, Graphic};
+use crate::wire::{CursorId, Graphic, MultiId};
 use crate::world::Point;
 
 /// The `cursorType` byte a cancelled (right-clicked) target comes back as.
@@ -46,6 +47,114 @@ pub struct TargetCursor {
     pub cursor_id: CursorId,
     /// What the cursor may pick.
     pub kind: TargetKind,
+}
+
+/// `0x99` — raise a targeting cursor with a **house drawn under it**.
+///
+/// ServUO's `MultiTargetReq`. It is a `0x6C` with four more fields on the end:
+/// the multi to draw and an offset to draw it at, so the player sees the villa
+/// following their pointer and picks a spot with the walls in front of them
+/// rather than guessing. The answer comes back as an ordinary
+/// [`TargetResponse`] — the client has nothing extra to say, because where the
+/// house goes is where the cursor was.
+///
+/// # Two lengths, and the bytes are the same
+///
+/// 26 for a classic client and **30** from High Seas, and the difference is four
+/// zero bytes on the end: every field is written at the same offset in both. The
+/// reference has two whole packet classes for that (`MultiTargetReq` and
+/// `MultiTargetReqHS`), which is one class per trailing pad; here it is one
+/// encoder and a length that reads the version, the way `0x24` and `0x25`
+/// already do.
+///
+/// # The gap in the middle is not padding to be tidied away
+///
+/// Bytes 7–17 are zero and mean nothing — the reference `Fill()`s to 18 and then
+/// seeks there to write the multi. It is the shape of a packet that grew a tail
+/// without moving its head, and shortening it would be a different packet.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct MultiTargetRequest {
+    /// The cursor this is, echoed back in the response.
+    pub cursor_id: CursorId,
+    /// What may be picked. A house goes on the ground, so this is
+    /// [`TargetKind::Location`] in every use there is — carried anyway, because
+    /// the byte is on the wire and inventing its value here would be this engine
+    /// deciding something the caller is entitled to.
+    pub kind: TargetKind,
+    /// Which multi the client draws under the pointer. The bare id, which is
+    /// what ServUO writes and `0x4000` below the graphic a placed one carries —
+    /// see [`MultiId`], whose whole reason to exist is that those two `u16`s
+    /// mean different things.
+    pub multi: MultiId,
+    /// Where the drawing sits relative to the cursor, in tiles and z.
+    ///
+    /// Zero in every ordinary placement: a multi is drawn from its own origin and
+    /// the origin is the tile clicked. The field exists because the reference's
+    /// boats use it, and a value this engine never sets is still a value it must
+    /// not corrupt.
+    pub offset: (i16, i16, i16),
+}
+
+/// How long a `0x99` is for a given client — see [`MultiTargetRequest`].
+#[must_use]
+pub const fn multi_target_length(high_seas: bool) -> PacketLength {
+    PacketLength::Fixed(if high_seas { 30 } else { 26 })
+}
+
+impl MultiTargetRequest {
+    /// Write the body, header excluded.
+    ///
+    /// Not an [`EncodePacket`] impl, for [`OpenContainer`](crate::containers::OpenContainer)'s
+    /// reason: that trait's `LENGTH` is a `const` and this packet has two, so
+    /// declaring either would be a lie the framer's own assertion catches. The
+    /// length lives in [`multi_target_length`], which can see a version.
+    pub fn write_body(&self, out: &mut PacketWriter, version: ClientVersion) {
+        out.u8(self.kind as u8);
+        out.u32(self.cursor_id.0);
+        out.u8(0); // cursor type: neutral, as `0x6C` writes it
+        // To byte 18. Eleven bytes the client fills in on the way back, and the
+        // reference writes as a `Fill()` before seeking past them.
+        out.zeros(11);
+        out.u16(self.multi.0);
+        out.u16(self.offset.0 as u16);
+        out.u16(self.offset.1 as u16);
+        out.u16(self.offset.2 as u16);
+        if version.supports(Feature::HsPackets) {
+            out.zeros(4);
+        }
+    }
+}
+
+impl DecodePacket for MultiTargetRequest {
+    const ID: u8 = 0x99;
+
+    fn decode_body(reader: &mut PacketReader<'_>, _version: ClientVersion) -> Result<Self, DecodeError> {
+        let raw_kind = reader.u8()?;
+        let kind = match raw_kind {
+            0 => TargetKind::Object,
+            1 => TargetKind::Location,
+            // `0x6C`'s rule, and for its reason: what a cursor may pick decides
+            // whether a click on grass is an answer or a misfire, and guessing
+            // makes a whole placement silently wrong.
+            _ => {
+                return Err(DecodeError::UnknownValue {
+                    field: "0x99 target kind",
+                    value: u32::from(raw_kind),
+                });
+            }
+        };
+        let cursor_id = CursorId(reader.u32()?);
+        let _cursor_type = reader.u8()?;
+        reader.skip(11)?;
+        let multi = MultiId(reader.u16()?);
+        let offset = (reader.u16()? as i16, reader.u16()? as i16, reader.u16()? as i16);
+        Ok(Self {
+            cursor_id,
+            kind,
+            multi,
+            offset,
+        })
+    }
 }
 
 impl EncodePacket for TargetCursor {
@@ -144,6 +253,7 @@ impl DecodePacket for TargetResponse {
 mod tests {
     use super::*;
     use crate::packet::{decode_packet, encode_packet};
+    use crate::server_packet::ServerPacket;
 
     fn version() -> ClientVersion {
         ClientVersion::new(7, 0, 45, 65)
@@ -232,5 +342,71 @@ mod tests {
         assert_eq!(p.len(), 19);
         let got: TargetResponse = decode_packet(&p, version()).unwrap();
         assert!(got.cancelled);
+    }
+
+    fn a_request() -> MultiTargetRequest {
+        MultiTargetRequest {
+            cursor_id: CursorId(0x0000_002A),
+            kind: TargetKind::Location,
+            multi: MultiId(0x0064),
+            offset: (0, 0, 0),
+        }
+    }
+
+    /// The two lengths, and the fact that they are the *same bytes*: High Seas
+    /// added four zeroes on the end and moved nothing. The reference keeps two
+    /// whole packet classes for that difference.
+    #[test]
+    fn a_multi_target_is_twenty_six_bytes_and_thirty_after_high_seas() {
+        let classic = ServerPacket::MultiTarget(a_request()).encode(ClientVersion::new(6, 0, 0, 0));
+        let modern = ServerPacket::MultiTarget(a_request()).encode(ClientVersion::HS);
+        assert_eq!(classic.len(), 26);
+        assert_eq!(modern.len(), 30);
+        assert_eq!(
+            classic[..26],
+            modern[..26],
+            "the extra four bytes moved a field instead of padding the end"
+        );
+        assert_eq!(&modern[26..], &[0, 0, 0, 0]);
+    }
+
+    /// The multi id lands at byte 18, which is where the reference seeks to after
+    /// filling the eleven bytes it never writes. An encoder that packed them out
+    /// would produce a shorter, tidier packet no client can read.
+    #[test]
+    fn the_multi_sits_at_byte_eighteen_after_a_gap_of_nothing() {
+        let bytes = ServerPacket::MultiTarget(a_request()).encode(version());
+        assert_eq!(&bytes[7..18], &[0; 11], "the gap is not padding to be tidied");
+        assert_eq!(u16::from_be_bytes([bytes[18], bytes[19]]), 0x0064);
+    }
+
+    #[test]
+    fn a_multi_target_round_trips() {
+        for version in [ClientVersion::new(6, 0, 0, 0), ClientVersion::HS] {
+            // A non-zero offset, because zero is what every placement sends and a
+            // field only ever written as zero is a field whose bytes nobody has
+            // checked.
+            let sent = MultiTargetRequest {
+                offset: (-3, 4, -128),
+                ..a_request()
+            };
+            let bytes = ServerPacket::MultiTarget(sent).encode(version);
+            let got: MultiTargetRequest = decode_packet(&bytes, version).unwrap();
+            assert_eq!(got, sent, "at {version:?}");
+        }
+    }
+
+    /// A multi id and the graphic a placed one draws as are two `u16`s that mean
+    /// different things, which is what [`MultiId`] exists to keep apart.
+    #[test]
+    fn a_multi_id_is_not_the_graphic_it_draws_as() {
+        let cottage = MultiId(0x0064);
+        assert_eq!(cottage.graphic(), Graphic(0x4064));
+        assert_eq!(MultiId::from_graphic(Graphic(0x4064)), cottage);
+        assert_eq!(
+            MultiId::from_graphic(Graphic(0x0064)),
+            cottage,
+            "a caller holding the bare id reaches the same multi"
+        );
     }
 }

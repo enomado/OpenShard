@@ -43,7 +43,7 @@ use crate::properties::{PropertyListReply, TooltipRevision};
 use crate::skill::{SkillUpdate, SkillsFull, SkillsPacket};
 use crate::speech::{LocalizedMessage, SpokenMessage, UnicodeMessage};
 use crate::spellbook::SpellbookContent;
-use crate::target::TargetCursor;
+use crate::target::{MultiTargetRequest, TargetCursor};
 use crate::vendor::{BuyList, SellList};
 use crate::version::ClientVersion;
 use crate::world::{
@@ -60,6 +60,8 @@ use crate::world::{
 pub enum ServerPacket {
     /// `0x6C` — raise a targeting cursor.
     TargetCursor(TargetCursor),
+    /// `0x99` — a targeting cursor with a house drawn under it.
+    MultiTarget(MultiTargetRequest),
     /// `0x72` — the settled war stance.
     WarMode(WarMode),
     /// `0xAA` — which mobile's bar the client highlights.
@@ -180,6 +182,7 @@ impl ServerPacket {
     pub const fn id(&self) -> u8 {
         match self {
             Self::TargetCursor(_) => <TargetCursor as EncodePacket>::ID,
+            Self::MultiTarget(_) => <MultiTargetRequest as DecodePacket>::ID,
             Self::WarMode(_) => <WarMode as EncodePacket>::ID,
             Self::AttackTarget(_) => <AttackTarget as EncodePacket>::ID,
             Self::Health(_) => <HealthBar as EncodePacket>::ID,
@@ -248,6 +251,9 @@ impl ServerPacket {
     pub fn length(&self, version: ClientVersion) -> PacketLength {
         match self {
             Self::TargetCursor(_) => TargetCursor::LENGTH,
+            // Two lengths, and the version decides — see `MultiTargetRequest`,
+            // which for that reason is not an `EncodePacket` at all.
+            Self::MultiTarget(_) => crate::target::multi_target_length(version.supports(Feature::HsPackets)),
             Self::WarMode(_) => <WarMode as EncodePacket>::LENGTH,
             Self::AttackTarget(_) => AttackTarget::LENGTH,
             Self::Health(_) => HealthBar::LENGTH,
@@ -320,6 +326,7 @@ impl ServerPacket {
     fn encode_body(&self, out: &mut PacketWriter, version: ClientVersion) {
         match self {
             Self::TargetCursor(packet) => packet.encode_body(out, version),
+            Self::MultiTarget(packet) => packet.write_body(out, version),
             Self::WarMode(packet) => packet.encode_body(out, version),
             Self::AttackTarget(packet) => packet.encode_body(out, version),
             Self::Health(packet) => packet.encode_body(out, version),
@@ -588,6 +595,9 @@ impl ServerPacket {
             <TargetCursor as DecodePacket>::ID => decode_server(packet, version)
                 .map(Self::TargetCursor)
                 .map_err(ServerDecodeError::TargetCursor)?,
+            <MultiTargetRequest as DecodePacket>::ID => decode_server(packet, version)
+                .map(Self::MultiTarget)
+                .map_err(ServerDecodeError::MultiTarget)?,
             // The shop's two halves. Each names a different serial — the buy
             // list names the stock crate, the sell list the vendor — which is
             // why the window that joins them is keyed on neither by accident;
@@ -726,6 +736,8 @@ pub enum ServerDecodeError {
     DragCancel(DecodeError),
     /// `0x6C` did not decode.
     TargetCursor(DecodeError),
+    /// `0x99` did not decode.
+    MultiTarget(DecodeError),
     /// `0x74` did not decode.
     BuyList(DecodeError),
     /// `0x9E` did not decode.
@@ -784,6 +796,7 @@ impl fmt::Display for ServerDecodeError {
             Self::EquipUpdate(error) => ("0x2E equip update", error),
             Self::DragCancel(error) => ("0x27 drag cancel", error),
             Self::TargetCursor(error) => ("0x6C target cursor", error),
+            Self::MultiTarget(error) => ("0x99 multi target", error),
             Self::BuyList(error) => ("0x74 buy list", error),
             Self::SellList(error) => ("0x9E sell list", error),
         };
@@ -838,6 +851,11 @@ pub fn server_packet_length(id: u8, version: ClientVersion) -> Option<PacketLeng
     match id {
         0x24 => return Some(open_container_length(version)),
         0x25 => return Some(add_to_container_length(version)),
+        0x99 => {
+            return Some(crate::target::multi_target_length(
+                version.supports(Feature::HsPackets),
+            ));
+        }
         0xB9 => return Some(supported_features_length(
             version.supports(Feature::ExtraFeatureMask),
         )),
@@ -1410,13 +1428,17 @@ mod tests {
     #[test]
     fn an_id_this_engine_never_sends_is_fatal() {
         // Not a silent skip: without a length there is no way to find where the
-        // next packet starts, so the connection is over. `0x99` — mount a
-        // ridable — is a real server-to-client packet this engine does not
-        // send; the example used to be `0xD6`, which it *does* send.
-        assert_eq!(server_packet_length(0x99, version()), None);
+        // next packet starts, so the connection is over.
+        //
+        // The example is `0x1E`, the pre-6.0 animation packet `0x6E` replaced.
+        // It has been `0xD6` and then `0x99` before now, and both of those had
+        // to be moved along when this engine started sending them — which is the
+        // lesson: the id here should be one that *cannot* be implemented later,
+        // not merely one that has not been. An obsolete packet stays obsolete.
+        assert_eq!(server_packet_length(0x1E, version()), None);
         assert_eq!(
-            frame_server_packet(&[0x99, 0x00, 0x05], version()),
-            Err(FrameError::UnknownPacket(0x99))
+            frame_server_packet(&[0x1E, 0x00, 0x05], version()),
+            Err(FrameError::UnknownPacket(0x1E))
         );
     }
 

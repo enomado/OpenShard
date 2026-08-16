@@ -24,6 +24,9 @@ impl World {
             openshard_state::TargetPurpose::Teleport => {
                 crate::gm::teleport_to(&mut self.state, actor, response.location);
             }
+            openshard_state::TargetPurpose::PlaceHouse { deed } => {
+                self.place_house_from_deed(actor, deed, response.location);
+            }
             openshard_state::TargetPurpose::Skill { skill } => {
                 let outcome = skills::on_target(&mut self.state, actor, skill, response.object);
                 if let Some(theft) = outcome.stolen {
