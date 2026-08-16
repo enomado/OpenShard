@@ -260,12 +260,20 @@ under the pointer, which is the whole reason `0x99` exists.
 - **The deed is spent on success and kept on a refusal.** A player who picked a
   bad spot has lost a click, not a house.
 
-**Still open in H2:** the *preview* — our own client now draws a placed house
-correctly, but does not decode `0x99`, so a deed raises no picture under the
-pointer there. The classic client does. The expansion the preview needs is
-already written (`net_command::multi_pieces`); what is missing is folding the
-packet into `WorldView` and feeding the pieces to the cursor rather than to the
-ground.
+**Still open in H2:** the preview's *picture*. `0x99` is folded into
+`WorldView` now — `OpenTarget` carries the cursor and the house as one value, so
+a plain `0x6C` arriving after a house cursor cannot leave a villa following the
+pointer. Two `Option`s side by side would have been a packet away from exactly
+that, which is `combat.md`'s D1 in a different colour.
+
+What is left is drawing it, and the subtlety worth knowing before starting: the
+draw geometry is cached against `items_fingerprint(&presentation.items)`
+(`frame_geometry.rs`), and a preview moves with the *pointer* rather than with
+the item list. Appending the pieces to `presentation.items` would also desync
+`item_serials`, which picking indexes by position — and the preview must not be
+pickable anyway, since it is not a thing in the world. So it wants a list of its
+own, chained at the collect call and left out of the fingerprint's stead by
+including the pointer tile.
 
 ---
 

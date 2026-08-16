@@ -123,7 +123,7 @@ impl App {
             (_, Some(item)) => Some(item),
             _ => None,
         };
-        if cursor.kind == TargetKind::Object && object.is_none() {
+        if cursor.cursor.kind == TargetKind::Object && object.is_none() {
             return false;
         }
         // A location target still has to name a static when the cursor is on
@@ -142,7 +142,7 @@ impl App {
         };
         if let Some(link) = self.world.shard.link() {
             link.target(TargetResponse {
-                cursor_id: cursor.cursor_id,
+                cursor_id: cursor.cursor.cursor_id,
                 object,
                 location,
                 graphic,
@@ -177,7 +177,7 @@ impl App {
         };
         if let Some(link) = self.world.shard.link() {
             link.target(TargetResponse {
-                cursor_id: cursor.cursor_id,
+                cursor_id: cursor.cursor.cursor_id,
                 object: None,
                 location: Point::new(0, 0, 0),
                 graphic: None,

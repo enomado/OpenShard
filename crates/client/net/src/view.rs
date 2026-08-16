@@ -296,6 +296,23 @@ pub struct Item {
     pub hue: Hue,
 }
 
+/// A targeting cursor the shard has open, and the house drawn under it.
+///
+/// One value and not two `Option`s side by side, which is the shape this would
+/// naturally have taken and the one `combat.md`'s D1 already learned to avoid:
+/// the same state in two places is the same state one packet can forget to
+/// refold. A `0x6C` arriving after a `0x99` writes `multi: None` because it
+/// replaces the whole value, and there is no way to leave a house being drawn
+/// under a cursor that is no longer about one.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct OpenTarget {
+    /// What the shard asked for.
+    pub cursor: TargetCursor,
+    /// The multi the client draws under the pointer, for a `0x99`. `None` for
+    /// an ordinary `0x6C`.
+    pub multi: Option<openshard_protocol::wire::MultiId>,
+}
+
 /// Everything this client has been told about the world.
 ///
 /// # There is no such thing as an empty one
@@ -362,7 +379,7 @@ pub struct WorldView {
     /// reference client draws them in.
     pub contents: FxHashMap<Serial, Vec<ContainedItem>>,
     /// The one target cursor the shard currently has open for this player.
-    pub target: Option<TargetCursor>,
+    pub target: Option<OpenTarget>,
     /// Buy catalogues currently opened by NPC vendors, keyed by vendor serial.
     pub vendor_buys: FxHashMap<Serial, VendorBuy>,
     /// Sell catalogues currently opened by NPC vendors, keyed by vendor serial.
@@ -1051,8 +1068,27 @@ impl WorldView {
                 self.remove_from_containers(item.serial, None) || changed
             }
             ServerPacket::TargetCursor(cursor) => {
-                let changed = self.target != Some(*cursor);
-                self.target = Some(*cursor);
+                // No multi, and that has to be *written* rather than left alone:
+                // a plain cursor after a house cursor must stop drawing the
+                // house, and the two live in one value so it cannot be forgotten.
+                let opened = OpenTarget {
+                    cursor: *cursor,
+                    multi: None,
+                };
+                let changed = self.target != Some(opened);
+                self.target = Some(opened);
+                changed
+            }
+            ServerPacket::MultiTarget(request) => {
+                let opened = OpenTarget {
+                    cursor: TargetCursor {
+                        cursor_id: request.cursor_id,
+                        kind: request.kind,
+                    },
+                    multi: Some(request.multi),
+                };
+                let changed = self.target != Some(opened);
+                self.target = Some(opened);
                 changed
             }
             // A window over a container. The contents are a separate packet and
@@ -2402,7 +2438,7 @@ mod tests {
         // `0xD6` and this client now reads it, so the example has to be an id
         // the framing table genuinely has no row for — the same correction
         // `connection.rs`'s own test carries.
-        view.shard_lost("unknown packet 0x99");
+        view.shard_lost("unknown packet 0x1E");
 
         assert!(view.mobiles.is_empty(), "nobody is standing there any more");
         assert!(view.containers.is_empty(), "no window offers to send a packet");
@@ -2414,7 +2450,7 @@ mod tests {
         assert_eq!(view.journal.len(), said + 1, "and the log gained the reason");
         let last = view.journal.back().expect("the line");
         assert!(last.serial.is_none(), "the system said it, not a mobile");
-        assert!(last.text.contains("unknown packet 0x99"));
+        assert!(last.text.contains("unknown packet 0x1E"));
         assert_eq!(
             view.player.serial,
             start().serial,
@@ -2740,5 +2776,41 @@ mod tests {
             },
         ));
         assert_eq!(view.journal.back().expect("a line").name, "[Party tell]");
+    }
+
+    /// A house cursor is a cursor *and* a house, and the two travel together.
+    ///
+    /// The invariant worth a test is the second half: a plain `0x6C` arriving
+    /// after a `0x99` must stop drawing the house. Held as two `Option`s side by
+    /// side that would be a packet away from a villa following the pointer
+    /// through a "whom shall I examine?" — which is `combat.md`'s D1, in a
+    /// different colour.
+    #[test]
+    fn a_house_cursor_carries_its_house_and_a_plain_one_takes_it_away() {
+        use openshard_protocol::target::{MultiTargetRequest, TargetKind};
+        use openshard_protocol::wire::{CursorId, MultiId};
+
+        let mut view = WorldView::entered(start());
+        view.apply(&ServerPacket::MultiTarget(MultiTargetRequest {
+            cursor_id: CursorId(7),
+            kind: TargetKind::Location,
+            multi: MultiId(0x64),
+            offset: (0, 0, 0),
+        }));
+        let open = view.target.expect("a cursor is up");
+        assert_eq!(open.cursor.cursor_id, CursorId(7));
+        assert_eq!(open.cursor.kind, TargetKind::Location);
+        assert_eq!(open.multi, Some(MultiId(0x64)));
+
+        view.apply(&ServerPacket::TargetCursor(TargetCursor {
+            cursor_id: CursorId(8),
+            kind: TargetKind::Object,
+        }));
+        let open = view.target.expect("the new cursor is up");
+        assert_eq!(open.cursor.cursor_id, CursorId(8));
+        assert_eq!(
+            open.multi, None,
+            "a plain cursor kept drawing the house from the one before it"
+        );
     }
 }

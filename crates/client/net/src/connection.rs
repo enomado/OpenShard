@@ -384,16 +384,18 @@ mod tests {
         // There is no resynchronising: without a length there is no way to know
         // where the next packet starts, so the only honest move is to stop.
         //
-        // `0x99` — the mount request — and not `0xD6`, which this test used to
-        // name: the shard *does* send a `0xD6` (a tooltip), and the assertion
-        // written against it was the reason a shop took the connection down.
-        // The example has to be an id the framing table genuinely has no row
-        // for, or the test asserts a defect rather than a rule.
+        // `0x1E`, the pre-6.0 animation packet `0x6E` replaced. It has been
+        // `0xD6` and then `0x99`, and both had to be moved along once the shard
+        // started sending them — the `0xD6` one after the assertion written
+        // against it took a shop's connection down. So the id here must be one
+        // that *cannot* be implemented later, not merely one that has not been:
+        // an obsolete packet stays obsolete, and the test keeps asserting a rule
+        // rather than a defect.
         let mut connection = Connection::new(Stream::Plain, version());
-        connection.receive(&[0x99, 0x00, 0x05, 0x01, 0x02]);
+        connection.receive(&[0x1E, 0x00, 0x05, 0x01, 0x02]);
         assert!(matches!(
             connection.poll(),
-            Err(ConnectionError::Frame(FrameError::UnknownPacket(0x99)))
+            Err(ConnectionError::Frame(FrameError::UnknownPacket(0x1E)))
         ));
     }
 
