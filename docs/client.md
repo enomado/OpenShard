@@ -3937,11 +3937,15 @@ that the ring reaches it. What was found on the way and left undone:
   of, and reading it would mean the name table is a *view* rather than a file
   read once at startup. Refused rather than skipped, so the day one arrives it
   says so instead of drawing the wrong names.
-- **`SkillUpdate` has no gate on a live wire.** The e2e covers the whole list
-  both ways; the one-line delta crosses no socket in a test. The staff command
-  this asked for exists now — `.skill <name> <value>`, and `.set` on a stat
-  moves a batch of them — so the blocker is gone and the e2e is simply unwritten.
-  `tick::skills_tests` covers both at the packet level in the meantime.
+- ~~**`SkillUpdate` has no gate on a live wire.**~~ Gated. The blocker was that
+  making a skill move meant training one and a gain is a dice roll; `.skill
+  <name> <value>` is the staff command this asked for, and
+  `a_skill_the_shard_moves_arrives_as_one_line` drives the whole path — say it,
+  read the delta, find the new value in the table a window draws from. Worth its
+  own case rather than a line in the full-list one: the two `0x3A` bodies share
+  an id, and the delta is the only one of the pair whose skill ids ride **raw**
+  rather than one-based, so a client applying the full list's numbering to a
+  delta would move the wrong bar and look correct from either side alone.
 - **Nothing stops a second `GumpRenderer::render` in a frame.** The rule is
   written on the function now, and the app obeys it by collecting every line of
   gump-space text into one list. It is still a rule and not a type: a third

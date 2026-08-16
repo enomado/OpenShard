@@ -19,12 +19,12 @@ use std::time::Duration;
 use openshard_client_net::connection::Event;
 use openshard_client_net::transport::enter_world;
 use openshard_client_net::view::WorldView;
-use openshard_client_net::{doll, skill};
+use openshard_client_net::{doll, skill, talk};
 use openshard_protocol::server_packet::ServerPacket;
 use openshard_protocol::skill::SkillLock;
 use openshard_protocol::wire::{ClilocId, RawSkillId};
 
-use openshard_e2e_shard::{plan, shard, version};
+use openshard_e2e_shard::{ACCOUNT, plan, shard, spawn, stock_config, version};
 
 /// Alchemy: id 0, and the one the whole list's *one-based* numbering exists to
 /// keep apart from its terminator. A client that read the ids as sent would file
@@ -218,4 +218,77 @@ async fn a_passive_skill_refuses_the_use_button() {
         },
     )
     .await;
+}
+
+/// The one-line `0x3A` delta, over a socket, and folded into the table a window
+/// draws from.
+///
+/// The whole list has been gated both ways since this window was built; the
+/// delta never crossed a socket, because making a skill move used to mean
+/// training one and a gain is a dice roll. `.skill` is what makes it reachable.
+///
+/// The two `0x3A` bodies are the reason this is worth its own test: they share
+/// an id and are told apart by the byte after the length, and this is the only
+/// one of the pair whose ids ride **raw** rather than one-based. A client that
+/// applied the full list's numbering to a delta would move the wrong bar and
+/// look, from either side alone, entirely correct.
+#[tokio::test]
+async fn a_skill_the_shard_moves_arrives_as_one_line() {
+    // The stock account is an ordinary player and `.skill` from one is speech.
+    // Granted here, where the grant is visible — `admin_menu`'s reasoning.
+    let (address, _shard) = spawn(|address| {
+        let mut config = stock_config(address);
+        for account in &mut config.accounts {
+            if account.name == ACCOUNT {
+                account.access = openshard_config::RawAccessLevel("administrator".to_owned());
+            }
+        }
+        config
+    });
+    let entered = tokio::time::timeout(Duration::from_secs(20), enter_world(address, plan(), version()))
+        .await
+        .expect("the login conversation finished inside the timeout")
+        .expect("the client reached the world");
+    let (mut socket, mut view) = entered;
+
+    until(&mut socket, &mut view, "the skill list", |view, _| {
+        view.player.skills.len() >= FEWEST
+    })
+    .await;
+    let before = view.player.skills[&MINING];
+    let untouched = view.player.skills[&ALCHEMY];
+
+    // A value nothing else would produce, and one the login's own list cannot
+    // already be showing — asserted, rather than assumed, because a test that
+    // passed on the list it already had would prove nothing about the delta.
+    const MOVED: u16 = 917;
+    assert_ne!(before.base, MOVED, "the character already stood at the value");
+    socket
+        .send(&talk::say(
+            ".skill mining 91.7",
+            openshard_protocol::speech::TalkMode::Regular,
+        ))
+        .await
+        .expect("the shard is listening");
+
+    until(&mut socket, &mut view, "the skill delta", |view, packet| {
+        matches!(packet, ServerPacket::SkillUpdate(_)) && view.player.skills[&MINING].base == MOVED
+    })
+    .await;
+
+    let after = view.player.skills[&MINING];
+    assert_eq!(after.base, MOVED, "the line named the wrong skill");
+    assert!(
+        after.value >= MOVED,
+        "a skill is worth at least what is trained in it — value {} against base {MOVED}",
+        after.value
+    );
+    assert_eq!(
+        after.lock, before.lock,
+        "a delta carries the whole row, and the lock came back changed"
+    );
+    assert_eq!(
+        view.player.skills[&ALCHEMY], untouched,
+        "a one-line update moved a second skill"
+    );
 }
