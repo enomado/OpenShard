@@ -2377,10 +2377,25 @@ Roughly in dependency order, each script-first:
     v25 — which refuses an older database rather than opening it into a shard
     where every existing member, leaders included, reads as a Ronin and no guild
     has a way back out of that.
-  - Deferred: the guildstone as a placeable item, guild chat, and named
-    multi-guild alliances. Guild chat waited for **party**, which has now landed
-    with the router both need (`openshard_party::tell_party`) — so it is next
-    rather than blocked.
+  - **Guild chat, and alliance chat that is not quite ServUO's.** A guild line is
+    not a command or a prefix — it is ordinary `0xAD` speech with the mode byte
+    set to `0x0D` (`0x0E` for the alliance), and it goes back out as an ordinary
+    `0xAE` with the same mode so the client draws it in its own colour. What
+    matters is that `World::say` branches on the mode **before** anything
+    measures a distance: these two pick listeners by membership, and a line that
+    fell through to the broadcast would be a private one said out loud in the
+    street. `speech_range` answers zero for both, so even a routing failure is
+    silence rather than that.
+
+    Alliance chat differs from the reference on purpose. ServUO's alliance is a
+    *named* object — several guilds, a leader guild, its own handshake — and this
+    engine has only the pairwise `Relation::Ally`. So a line reaches every guild
+    yours has allied with, even ones that have declared nothing about each other,
+    which is the natural reading of a pairwise model and is written down in
+    `chat.rs` so that whoever lands named alliances knows what they are
+    replacing.
+  - Deferred: the guildstone as a placeable item, and named multi-guild
+    alliances.
   - Client-side: the window renders, the health bars take their hue from the
     byte, and the **tooltip** now shows here too — the `[ABBR]` suffix and the
     "Warlord, The Silver Serpent" line both. The `0xD6`/`0xDC` half this client
@@ -2504,9 +2519,9 @@ started.
   entry: Sacred Journey, the moon-phase gates, red/young restrictions, ship-mark
   runes, and a tooltip that refreshes when a property changes — which travel gave
   its first real consumer, since a marked rune's name changes under the player.
-- ~~**Party (`0xBF 0x06`).**~~ Landed; see **Parties** in §6 below. Still open
-  from that entry: the loot flag has no consumer, and guild chat is next on the
-  router it built. **Chat channels (`0xB3`/`0xB5`)** are untouched and are a
+- ~~**Party (`0xBF 0x06`).**~~ Landed; see **Parties** in §6 below, and guild
+  chat landed on the router it built. Still open from that entry: the loot flag
+  has no consumer. **Chat channels (`0xB3`/`0xB5`)** are untouched and are a
   separate thing — the channel window, not the group.
 - ~~**Pets and taming.**~~ Landed with Animal Taming; see **Taming, and the pets
   it wanted** in §6 `skills`. Still open from that entry: **stabling** (which

@@ -14817,3 +14817,72 @@ fn a_party_forms_over_the_wire_and_talks_to_itself() {
     assert!(heard.contains(&leader_connection));
     assert!(heard.contains(&member_connection));
 }
+
+/// The branch in `World::say`, end to end. A guild line arrives as ordinary
+/// `0xAD` speech with mode `0x0D`, and the thing worth asserting is what it does
+/// **not** do: reach the stranger standing on the next tile.
+///
+/// Nothing in `openshard-guilds`' own tests would catch the branch being absent
+/// — they call `say_to_guild` directly, and a missing branch would send the line
+/// through the ordinary broadcast where everybody in earshot hears it.
+#[test]
+fn a_guild_line_is_not_said_out_loud() {
+    let mut world = world();
+    let now = Instant::now();
+    let speaker_connection = enter(&mut world, now);
+    let mate_connection = enter_as(&mut world, ConnectionId::from_raw(4243), now + WALK_INTERVAL);
+    let stranger_connection = enter_as(&mut world, ConnectionId::from_raw(4244), now + WALK_INTERVAL * 2);
+    world.tick(now + WALK_INTERVAL * 3);
+    let speaker = world.state.players[&speaker_connection];
+    let mate = world.state.players[&mate_connection];
+
+    let serial = world.registry().serial_of(speaker).unwrap();
+    let guild = world
+        .state
+        .guilds
+        .found("The Silver Serpent".to_owned(), "OSS".to_owned(), serial);
+    for (who, rank) in [
+        (speaker, openshard_state::Rank::Leader),
+        (mate, openshard_state::Rank::Member),
+    ] {
+        world.state.registry.insert(
+            who,
+            openshard_state::GuildMember {
+                guild,
+                title: String::new(),
+                rank,
+            },
+        );
+    }
+    let _ = world.drain_outbound().count();
+
+    world.queue(Command::Say {
+        connection: speaker_connection,
+        mode: openshard_protocol::speech::RawTalkMode(openshard_protocol::speech::TalkMode::Guild.to_wire()),
+        hue: openshard_protocol::wire::RawHue(0x3B2),
+        font: openshard_protocol::speech::RawFont(3),
+        text: "regroup".to_owned(),
+    });
+    world.tick(now + WALK_INTERVAL * 4);
+
+    let heard: Vec<_> = world
+        .drain_outbound()
+        .filter(|out| out.packet.first() == Some(&0xAE))
+        .filter(|out| {
+            String::from_utf16_lossy(
+                &out.packet
+                    .chunks_exact(2)
+                    .map(|pair| u16::from_be_bytes([pair[0], pair[1]]))
+                    .collect::<Vec<_>>(),
+            )
+            .contains("regroup")
+        })
+        .map(|out| out.connection)
+        .collect();
+    assert!(heard.contains(&speaker_connection));
+    assert!(heard.contains(&mate_connection));
+    assert!(
+        !heard.contains(&stranger_connection),
+        "the stranger is standing right there and must not have heard it"
+    );
+}

@@ -40,6 +40,16 @@ pub enum TalkMode {
     Whisper,
     /// A yell, carried two screens off.
     Yell,
+    /// A line to the speaker's guild. ServUO's `MessageType.Guild`.
+    ///
+    /// **Not a range**, unlike every mode above it: distance decides nothing,
+    /// and a listener is picked by membership rather than by where they are
+    /// standing. Anything that routes speech by earshot has to branch off this
+    /// before it measures — see `openshard_guilds::chat`.
+    Guild,
+    /// The same, to every guild this one is allied with. ServUO's
+    /// `MessageType.Alliance`.
+    Alliance,
     /// A mode this engine has no rule for, carried through as the byte it was.
     ///
     /// As [`RawTalkMode::interpret`] produces it, never one of the named modes
@@ -58,6 +68,8 @@ impl TalkMode {
             Self::Label => 6,
             Self::Whisper => 8,
             Self::Yell => 9,
+            Self::Guild => 13,
+            Self::Alliance => 14,
             Self::Other(mode) => mode,
         }
     }
@@ -90,6 +102,8 @@ impl RawTalkMode {
             6 => TalkMode::Label,
             8 => TalkMode::Whisper,
             9 => TalkMode::Yell,
+            13 => TalkMode::Guild,
+            14 => TalkMode::Alliance,
             other => TalkMode::Other(other),
         }
     }

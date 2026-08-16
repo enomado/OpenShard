@@ -727,3 +727,111 @@ fn a_title_reaches_yourself_and_everybody_you_outrank() {
         Some("Master of Arms")
     );
 }
+
+/// A guild line goes to the roster and to nobody else. The interesting half is
+/// the "nobody else": ordinary speech picks listeners by distance, and these
+/// three are standing on top of each other with no position component at all —
+/// so a line that fell through to the broadcast would reach the stranger.
+#[test]
+fn a_guild_line_reaches_the_roster_and_stops_there() {
+    let mut state = world();
+    let (leader, _) = a_guild_with(&mut state, Rank::Member);
+    let members: Vec<_> = crate::roster(&state, state.guild_of(leader).unwrap().id);
+    // Both members need a client, or the outbox cannot show who heard it.
+    for (id, &member) in members.iter().enumerate() {
+        let connection = ConnectionId::from_raw(100 + id as u64);
+        state.connections.insert(
+            connection,
+            Connection::new(
+                ClientVersion::new(7, 0, 0, 0),
+                AccountName::new("tester"),
+                AccessLevel::Player,
+            ),
+        );
+        state.players.insert(connection, member);
+        state.registry.insert(member, Client { connection });
+    }
+    let (stranger, _) = player(&mut state, 200);
+    assert!(state.guild_of(stranger).is_none());
+    state.outbox.clear();
+
+    crate::say_to_guild(
+        &mut state,
+        leader,
+        openshard_protocol::wire::Hue(0x3B2),
+        openshard_protocol::speech::Font(3),
+        "regroup",
+    )
+    .expect("a member may speak to their guild");
+
+    let heard: Vec<_> = std::mem::take(&mut state.outbox)
+        .into_iter()
+        .filter(|out| out.packet.first() == Some(&0xAE))
+        .map(|out| out.connection)
+        .collect();
+    assert_eq!(heard.len(), 2, "both guild members, and not the stranger");
+}
+
+#[test]
+fn speaking_to_a_guild_you_are_not_in_is_refused() {
+    let mut state = world();
+    let (alone, _) = player(&mut state, 1);
+    assert_eq!(
+        crate::say_to_guild(
+            &mut state,
+            alone,
+            openshard_protocol::wire::Hue(0x3B2),
+            openshard_protocol::speech::Font(3),
+            "anyone?"
+        ),
+        Err(Refusal::NotInAGuild)
+    );
+}
+
+/// Our alliance chat is not ServUO's, and the difference is worth pinning: a
+/// pairwise `Relation::Ally` means a line reaches every guild yours has allied
+/// with, even ones that have declared nothing about each other. See
+/// `chat.rs`'s own note.
+#[test]
+fn an_alliance_line_reaches_every_ally_and_is_refused_without_one() {
+    let mut state = world();
+    // A founder with a client, unlike `a_guild`'s: the speaker's own guild has
+    // to be able to hear the line, and that is half of what this asserts.
+    let (leader, _) = player(&mut state, 1);
+    let own = crate::found(&mut state, leader, "The Silver Serpent", "OSS").unwrap();
+    assert_eq!(
+        crate::say_to_alliance(
+            &mut state,
+            leader,
+            openshard_protocol::wire::Hue(0x3B2),
+            openshard_protocol::speech::Font(3),
+            "hello"
+        ),
+        Err(Refusal::NoAllies),
+        "an unallied guild has no alliance to speak to"
+    );
+
+    // Two separate allies, which have declared nothing about each other.
+    for (name, abbreviation, id) in [("The Black Rose", "TBR", 50u64), ("The Grey Owl", "TGO", 51)] {
+        let (their_leader, _) = player(&mut state, id);
+        let theirs = crate::found(&mut state, their_leader, name, abbreviation).unwrap();
+        crate::propose(&mut state, leader, theirs, Relation::Ally).unwrap();
+        crate::propose(&mut state, their_leader, own, Relation::Ally).unwrap();
+    }
+    state.outbox.clear();
+
+    crate::say_to_alliance(
+        &mut state,
+        leader,
+        openshard_protocol::wire::Hue(0x3B2),
+        openshard_protocol::speech::Font(3),
+        "to arms",
+    )
+    .expect("an allied guild may speak to its alliance");
+
+    let heard = std::mem::take(&mut state.outbox)
+        .into_iter()
+        .filter(|out| out.packet.first() == Some(&0xAE))
+        .count();
+    assert_eq!(heard, 3, "the speaker's own guild and both allies");
+}

@@ -4011,6 +4011,25 @@ already had and one whole feature it does not have.
   server's problem — a packet that never leaves is a defect nobody would look
   for the day the stub is filled.
 
+## Backlog, found while giving the shard guild chat
+
+- 🚩 **This client cannot send a guild or party line.** `talk::say` writes
+  `TalkMode::Regular` as a constant, so the mode byte a guild line is *made of*
+  (`0x0D`, `0x0E` for the alliance) can never leave here. The shard's half is
+  built and works — on ClassicUO, which has a channel selector above its chat
+  line.
+
+  It is not plumbing, which is why it is a note rather than a change: giving
+  `say` a mode argument is five minutes, and the question it leaves is what the
+  player *presses*. A reference client uses a dropdown; ClassicUO also takes a
+  leading `/` for the party. Either is a decision about this client's chat tab
+  and belongs with whoever owns it — a half-built convention would be worse than
+  the gap, because it would have to be unlearned.
+
+  Party is the same gap twice over: this client sends no `0xBF 0x06` at all and
+  draws no party window, so there is nothing to select a party channel *for*
+  yet.
+
 ## Tooltips, and the half that was never written
 
 The AoS property list — the cliloc lines a modern client shows on hover — landed

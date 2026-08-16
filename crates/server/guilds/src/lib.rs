@@ -49,6 +49,7 @@
 //! a guild re-announces the *whole* guild rather than only the joiner: the new
 //! member's own screen has to turn green too.
 
+mod chat;
 mod diplomacy;
 pub mod gump;
 mod membership;
@@ -57,6 +58,7 @@ mod reply;
 #[cfg(test)]
 mod tests;
 
+pub use chat::{say_to_alliance, say_to_guild, tell_guild};
 pub use diplomacy::{Outcome, make_peace, propose};
 pub use gump::GUILD_GUMP;
 pub use membership::{
@@ -114,6 +116,9 @@ pub enum Refusal {
     /// The target is already a [`Rank::Leader`] and there is nowhere above it,
     /// or already a [`Rank::Ronin`] and nowhere below.
     NoFurtherRank,
+    /// The guild has declared an alliance with nobody, so there is no alliance
+    /// to speak to.
+    NoAllies,
 }
 
 impl Refusal {
@@ -137,6 +142,7 @@ impl Refusal {
             Self::NotYourPlaceTo => "Your rank does not allow that.",
             Self::TheyOutrankYou => "They outrank you.",
             Self::NoFurtherRank => "There is no rank beyond that one.",
+            Self::NoAllies => "Your guild is allied with nobody.",
         }
     }
 }

@@ -42,11 +42,21 @@ pub struct MobileSpoke {
 /// How far speech in `mode` carries, in tiles. A whisper is heard only right up
 /// close, a yell two screens off, everything else across the screen — the
 /// operator's three `distance_*` ranges, chosen by the mode the client sent.
+///
+/// # Two modes have no range at all
+///
+/// [`Guild`](TalkMode::Guild) and [`Alliance`](TalkMode::Alliance) pick their
+/// listeners by membership, not by distance, and are routed before anything here
+/// is asked — see `World::say`. They are named anyway, and answered **zero**,
+/// because the `_` arm they used to fall into would have given a guild line the
+/// ordinary talk range: if that routing ever fails to happen, the failure should
+/// be a line nobody hears rather than a private one shouted down the street.
 #[must_use]
 pub const fn speech_range(mode: TalkMode, gameplay: &Gameplay) -> u32 {
     match mode {
         TalkMode::Whisper => gameplay.distance_whisper,
         TalkMode::Yell => gameplay.distance_yell,
+        TalkMode::Guild | TalkMode::Alliance => 0,
         _ => gameplay.distance_talk,
     }
 }

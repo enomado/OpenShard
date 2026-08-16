@@ -68,6 +68,25 @@ impl World {
                 }
             }
         }
+        // Guild and alliance lines leave here and never reach `chat::say`: they
+        // pick their listeners by membership, and everything below this measures
+        // a distance. Branching *before* the broadcast rather than teaching the
+        // broadcast a third rule is the whole of why it is safe — a guild line
+        // that fell through would be a private one said out loud in the street.
+        if matches!(mode, TalkMode::Guild | TalkMode::Alliance) {
+            if let Some(&actor) = self.state.players.get(&connection) {
+                let spoken = match mode {
+                    TalkMode::Alliance => {
+                        openshard_guilds::say_to_alliance(&mut self.state, actor, hue, font, &text)
+                    }
+                    _ => openshard_guilds::say_to_guild(&mut self.state, actor, hue, font, &text),
+                };
+                if let Err(refusal) = spoken {
+                    self.state.system_message(actor, refusal.message());
+                }
+            }
+            return;
+        }
         chat::say(&mut self.state, connection, mode, hue, font, &text);
 
         // Townsperson services triggered by keyword: saying "bank" near a banker
