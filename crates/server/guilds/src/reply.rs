@@ -15,9 +15,10 @@ use openshard_protocol::gump::{GumpAnswer, GumpResponse};
 use openshard_state::{GuildGumpContext, GuildPage, Relation, TargetPurpose, WorldState};
 
 use crate::gump::{
-    self, DIPLOMACY_BASE, FIELD_ABBREVIATION, FIELD_NAME, GUILD_GUMP, ROSTER_BASE, button, row_of,
+    self, DIPLOMACY_ACTIONS, DIPLOMACY_BASE, FIELD_ABBREVIATION, FIELD_NAME, GUILD_GUMP, ROSTER_ACTIONS,
+    ROSTER_BASE, button, row_of,
 };
-use crate::{Refusal, may_lead};
+use crate::{RankFlags, Refusal};
 
 /// The paperdoll's Guild button: open the window.
 pub fn open(state: &mut WorldState, connection: ConnectionId) {
@@ -89,7 +90,7 @@ pub fn handle(state: &mut WorldState, connection: ConnectionId, response: &GumpR
             // Checked before the cursor goes up, so a plain member never gets one
             // — and checked again when it comes down, because the guild can
             // change while it is up.
-            if let Err(refusal) = may_lead(state, player) {
+            if let Err(refusal) = crate::may(state, player, RankFlags::CAN_INVITE) {
                 refuse(state, player, refusal);
             } else {
                 state.raise_target(player, TargetPurpose::GuildInvite);
@@ -109,12 +110,12 @@ fn other_button(
     response: &GumpResponse,
     pressed: openshard_protocol::gump::ButtonId,
 ) {
-    if let Some((row, action)) = row_of(ROSTER_BASE, pressed, context.members.len()) {
+    if let Some((row, action)) = row_of(ROSTER_BASE, ROSTER_ACTIONS, pressed, context.members.len()) {
         roster_row(state, player, context, response, row, action);
         gump::show(state, player, GuildPage::Roster);
         return;
     }
-    if let Some((row, action)) = row_of(DIPLOMACY_BASE, pressed, context.guilds.len()) {
+    if let Some((row, action)) = row_of(DIPLOMACY_BASE, DIPLOMACY_ACTIONS, pressed, context.guilds.len()) {
         let other = context.guilds[row];
         let outcome = match action {
             0 => crate::propose(state, player, other, Relation::War).map(|_| ()),
@@ -147,8 +148,12 @@ fn roster_row(
         // The field beside the row carries the row's own index as its id, so the
         // title comes back with the click that asked for it — one packet, and no
         // "which row was I editing" to remember.
-        0 => crate::set_title(state, player, member, &field(response, row as u32)),
-        1 => crate::dismiss(state, player, member),
+        gump::ROSTER_TITLE => crate::set_title(state, player, member, &field(response, row as u32)),
+        gump::ROSTER_PROMOTE => crate::promote(state, player, member).map(|_| ()),
+        gump::ROSTER_DEMOTE => crate::demote(state, player, member).map(|_| ()),
+        gump::ROSTER_DISMISS => crate::dismiss(state, player, member),
+        // `ROSTER_LEAD`, and anything the stride could produce that is not one
+        // of the five — which nothing draws, and a client is free to send.
         _ => crate::pass_leadership(state, player, member),
     };
     if let Err(refusal) = outcome {

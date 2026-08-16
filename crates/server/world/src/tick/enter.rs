@@ -296,12 +296,13 @@ impl World {
             // reads a membership naming a guild that is gone as no membership, so
             // a guild dropped by hand from the database orphans nobody, and a
             // check here would instead throw the membership away for good.
-            if let Some((guild, title)) = sheet.guild {
+            if let Some(seat) = sheet.guild {
                 self.state.registry.insert(
                     entity,
                     openshard_state::components::GuildMember {
-                        guild: openshard_state::GuildId(guild),
-                        title,
+                        guild: seat.guild,
+                        title: seat.title,
+                        rank: seat.rank,
                     },
                 );
             }

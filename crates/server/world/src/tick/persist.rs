@@ -869,6 +869,9 @@ impl World {
             guild_title: registry
                 .get::<openshard_state::components::GuildMember>(entity)
                 .map_or_else(String::new, |member| member.title.clone()),
+            guild_rank: registry
+                .get::<openshard_state::components::GuildMember>(entity)
+                .map_or(0, |member| member.rank.number()),
             guild_candidate: registry
                 .get::<openshard_state::components::GuildCandidate>(entity)
                 .map(|invitation| invitation.guild.0),

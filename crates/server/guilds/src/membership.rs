@@ -1,13 +1,16 @@
-//! Founding a guild, joining one, and leaving it.
+//! Founding a guild, joining one, moving up and down inside it, and leaving.
 //!
-//! The old guildstone's model: a leader, and members. Everything a plain member
-//! may not do goes through [`may_lead`](crate::may_lead), which is the single
-//! seam ranks would grow from.
+//! Authority is asked through [`may`](crate::may) — the flag the operation
+//! needs — except for the two things no flag grants, [`disband`] and
+//! [`pass_leadership`], which ask [`may_lead`](crate::may_lead). Where an
+//! operation acts *on* another member there is a second question,
+//! [`outranks`](crate::outranks), and it is a different one: holding
+//! `REMOVE_PLAYERS` says you may dismiss, not that you may dismiss *them*.
 
 use openshard_entities::EntityId;
-use openshard_state::{GuildCandidate, GuildId, GuildMember, WorldState};
+use openshard_state::{GuildCandidate, GuildId, GuildMember, Rank, WorldState};
 
-use crate::{Refusal, announce, may_lead, recolour_guild, roster};
+use crate::{RankFlags, Refusal, announce, may, may_lead, outranks, rank_of, recolour_guild, roster};
 
 /// The longest a guild's name may be. ServUO's `GuildNamePrompt`.
 pub const NAME_LIMIT: usize = 40;
@@ -66,6 +69,11 @@ pub fn found(
         GuildMember {
             guild,
             title: String::new(),
+            // The founder is the Leader, not a Ronin who happens to be first
+            // through the door — ServUO sets `RankDefinition.Leader` on the
+            // `Guild.Leader` setter, and a guild founded with nobody able to
+            // invite would be one nobody could join.
+            rank: Rank::Leader,
         },
     );
     state.broadcast_move(leader);
@@ -79,7 +87,7 @@ pub fn found(
 /// guild: an invitation is one player's to answer, and a guild holding a list of
 /// people it has asked is a list that outlives them.
 pub fn invite(state: &mut WorldState, inviter: EntityId, candidate: EntityId) -> Result<(), Refusal> {
-    let guild = may_lead(state, inviter)?;
+    let (guild, _) = may(state, inviter, RankFlags::CAN_INVITE)?;
     if candidate == inviter {
         return Err(Refusal::Yourself);
     }
@@ -119,6 +127,10 @@ pub fn accept_invitation(state: &mut WorldState, candidate: EntityId) -> Result<
         GuildMember {
             guild,
             title: String::new(),
+            // A Ronin, holding nothing — ServUO's `Guild.AddMember`. A guild
+            // that wants a member out of a newcomer has to promote one, which
+            // is the point of the rank existing.
+            rank: Rank::Ronin,
         },
     );
     recolour_guild(state, guild);
@@ -151,13 +163,31 @@ pub fn leave(state: &mut WorldState, member: EntityId) -> Result<(), Refusal> {
 }
 
 /// Turn a member out of the guild.
-pub fn dismiss(state: &mut WorldState, leader: EntityId, member: EntityId) -> Result<(), Refusal> {
-    let guild = may_lead(state, leader)?;
-    if member == leader {
+///
+/// Two ways to be allowed to, which is ServUO's condition verbatim
+/// (`GuildMemberInfoGump`'s kick arm): `REMOVE_PLAYERS` and outranking them, or
+/// `REMOVE_LOWEST_RANK` and a target who is a [`Rank::Ronin`]. The second is
+/// what lets an ordinary member get rid of a newcomer without being able to
+/// touch anybody else.
+pub fn dismiss(state: &mut WorldState, actor: EntityId, member: EntityId) -> Result<(), Refusal> {
+    let guild = state.guild_of(actor).ok_or(Refusal::NotInAGuild)?.id;
+    if member == actor {
         return Err(Refusal::Yourself);
     }
     if state.guild_of(member).map(|g| g.id) != Some(guild) {
         return Err(Refusal::NotYourMember);
+    }
+    if !crate::may_dismiss(state, actor, member) {
+        // Which of the two refusals is the more useful thing to say: somebody
+        // who holds `REMOVE_PLAYERS` and was stopped was stopped by the target's
+        // rank, and everyone else was stopped by their own.
+        let holds = rank_of(state, actor)
+            .map(crate::rank::flags_of)
+            .is_some_and(|flags| flags.has(RankFlags::REMOVE_PLAYERS));
+        return Err(match holds {
+            true => Refusal::TheyOutrankYou,
+            false => Refusal::NotYourPlaceTo,
+        });
     }
     state.registry.remove::<GuildMember>(member);
     state.system_message(member, "You have been dismissed from your guild.");
@@ -173,13 +203,20 @@ pub fn dismiss(state: &mut WorldState, leader: EntityId, member: EntityId) -> Re
 /// undo a title at all.
 pub fn set_title(
     state: &mut WorldState,
-    leader: EntityId,
+    actor: EntityId,
     member: EntityId,
     title: &str,
 ) -> Result<(), Refusal> {
-    let guild = may_lead(state, leader)?;
+    let (guild, _) = may(state, actor, RankFlags::CAN_SET_GUILD_TITLE)?;
     if state.guild_of(member).map(|g| g.id) != Some(guild) {
         return Err(Refusal::NotYourMember);
+    }
+    // Yourself, or somebody you outrank — ServUO's `playerRank.Rank >
+    // targetRank.Rank || m_Member == player`. Retitling yourself is the arm
+    // worth naming: an Emissary may not touch another Emissary's title, and
+    // would otherwise be unable to change their own either.
+    if member != actor && !outranks(state, actor, member) {
+        return Err(Refusal::TheyOutrankYou);
     }
     let title = clip(title, TITLE_LIMIT);
     if let Some(entry) = state.registry.get_mut::<GuildMember>(member) {
@@ -192,7 +229,83 @@ pub fn set_title(
     Ok(())
 }
 
+/// Move a member one rank up.
+///
+/// # Two ranks below, not one
+///
+/// ServUO's condition is `(playerRank - 1) > targetRank`, or `playerRank >
+/// targetRank` for the Leader alone. So an Emissary may promote a Ronin to
+/// Member and no further: promoting somebody to the rank directly below your own
+/// is already too far, because that rank might hold a flag you do not. Only the
+/// Leader may promote into the rank below theirs — and promoting *to* Leader is
+/// not this function at all, it is [`pass_leadership`], because a guild has one.
+pub fn promote(state: &mut WorldState, actor: EntityId, member: EntityId) -> Result<Rank, Refusal> {
+    let (guild, actor_rank) = may(state, actor, RankFlags::CAN_PROMOTE_DEMOTE)?;
+    if member == actor {
+        return Err(Refusal::Yourself);
+    }
+    if state.guild_of(member).map(|g| g.id) != Some(guild) {
+        return Err(Refusal::NotYourMember);
+    }
+    let target = rank_of(state, member).ok_or(Refusal::NotYourMember)?;
+    let far_enough = match actor_rank {
+        Rank::Leader => actor_rank > target,
+        _ => actor_rank.number().saturating_sub(1) > target.number(),
+    };
+    if !far_enough {
+        return Err(Refusal::TheyOutrankYou);
+    }
+    let next = target.above().ok_or(Refusal::NoFurtherRank)?;
+    // The rung below the top is as far as a promotion goes. Reaching Leader is
+    // handing the guild over, and that is a different act with a different
+    // consequence for the person doing it — see `pass_leadership`.
+    if next == Rank::Leader {
+        return Err(Refusal::NoFurtherRank);
+    }
+    set_rank(state, member, next);
+    state.system_message(member, &format!("You are now a {} of your guild.", next.name()));
+    Ok(next)
+}
+
+/// Move a member one rank down.
+///
+/// Needs only that you outrank them — ServUO's `playerRank.Rank >
+/// targetRank.Rank`, without the promotion's extra rung. A [`Rank::Ronin`] is
+/// the floor: there is nothing below, and the way to be rid of one is
+/// [`dismiss`].
+pub fn demote(state: &mut WorldState, actor: EntityId, member: EntityId) -> Result<Rank, Refusal> {
+    let (guild, _) = may(state, actor, RankFlags::CAN_PROMOTE_DEMOTE)?;
+    if member == actor {
+        return Err(Refusal::Yourself);
+    }
+    if state.guild_of(member).map(|g| g.id) != Some(guild) {
+        return Err(Refusal::NotYourMember);
+    }
+    if !outranks(state, actor, member) {
+        return Err(Refusal::TheyOutrankYou);
+    }
+    let target = rank_of(state, member).ok_or(Refusal::NotYourMember)?;
+    let next = target.below().ok_or(Refusal::NoFurtherRank)?;
+    set_rank(state, member, next);
+    state.system_message(member, &format!("You are now a {} of your guild.", next.name()));
+    Ok(next)
+}
+
+/// Write a member's rank. Silent if they hold no membership — every caller has
+/// already established that they do.
+fn set_rank(state: &mut WorldState, member: EntityId, rank: Rank) {
+    if let Some(entry) = state.registry.get_mut::<GuildMember>(member) {
+        entry.rank = rank;
+    }
+}
+
 /// Hand the guild to one of its members.
+///
+/// The one promotion that reaches [`Rank::Leader`], and it is a trade rather
+/// than a gift: the outgoing leader becomes a [`Rank::Member`], which is
+/// ServUO's `Guild.Leader` setter exactly. Leaving them at Leader would give the
+/// guild two, and dropping them to Ronin would turn a founder out of their own
+/// decisions on the way past.
 pub fn pass_leadership(state: &mut WorldState, leader: EntityId, member: EntityId) -> Result<(), Refusal> {
     let guild = may_lead(state, leader)?;
     if member == leader {
@@ -205,6 +318,8 @@ pub fn pass_leadership(state: &mut WorldState, leader: EntityId, member: EntityI
     if let Some(entry) = state.guilds.get_mut(guild) {
         entry.leader = serial;
     }
+    set_rank(state, leader, Rank::Member);
+    set_rank(state, member, Rank::Leader);
     announce(state, guild, "Your guild has a new leader.");
     Ok(())
 }

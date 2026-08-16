@@ -2335,9 +2335,9 @@ Roughly in dependency order, each script-first:
 - [ ] `housing` — player houses: a multi placed on the map, a door with a real
   lock, decay unless refreshed, friends/co-owners. Wants multis (the client's
   `multi.mul`/UOP format, unread yet), a region concept and the door locks above.
-- [x] `guilds` — **built, minus ranks.** Founding, invitations,
-  leaving, dismissal, titles, leadership, disbanding, and the war and alliance
-  handshake, reached from the paperdoll's Guild button (`0xD7`/`0x28`).
+- [x] `guilds` — **built, with ServUO's five ranks.** Founding, invitations,
+  leaving, dismissal, titles, promotion, leadership, disbanding, and the war and
+  alliance handshake, reached from the paperdoll's Guild button (`0xD7`/`0x28`).
   - **Notoriety became relative, which is the architectural half.** A `0x78`'s
     notoriety byte is not a property of the mobile — it is the answer to "what
     colour does *this client* draw it in". `notoriety_of` stays the mobile's own
@@ -2358,9 +2358,29 @@ Roughly in dependency order, each script-first:
     id counter is in the world row rather than re-derived, because a disbanded
     guild leaves no row and the maximum id in the table is not the maximum ever
     issued.
-  - Deferred: ServUO's five **ranks** and their flag set (the seam is `may_lead`,
-    one predicate), the guildstone as a placeable item, guild chat, and named
-    multi-guild alliances.
+  - **Ranks, and the trap in them.** Ronin, Member, Emissary, Warlord, Leader,
+    with ServUO's flag set per rank (`Scripts/Misc/Guild.cs`). The ranks are
+    ordered and the permissions are **not nested**: an Emissary recruits,
+    dismisses, promotes and titles; a Warlord sits above it and does none of
+    those, and declares wars the Emissary cannot. So authority is three separate
+    questions and each has its own function — `may` for the flag, `outranks` for
+    whether the *target* is reachable, and `may_lead` for the two things no flag
+    grants (disbanding, and handing the guild over). Any of them written as a
+    plain rank comparison gets the Emissary or the Warlord wrong.
+
+    A newcomer joins as a **Ronin**, which holds nothing at all — not the vote,
+    not guild items. That is ServUO's `AddMember`, and it is what a promotion is
+    for. Promoting stops **two** rungs below the promoter (only the Leader may
+    reach the rank below their own), because promoting into the rank directly
+    under you would hand out a flag you may not hold yourself; demoting needs
+    only that you outrank them, and stops at Ronin. Saved as a number, schema
+    v25 — which refuses an older database rather than opening it into a shard
+    where every existing member, leaders included, reads as a Ronin and no guild
+    has a way back out of that.
+  - Deferred: the guildstone as a placeable item, guild chat, and named
+    multi-guild alliances. Guild chat is deliberately held for **party** (`0xBF
+    0x06`, `0xB3`/`0xB5`): both are "a line goes to a set of people who are not
+    the ones nearby", and building one alone builds the router twice.
   - Client-side: the window renders, the health bars take their hue from the
     byte, and the **tooltip** now shows here too — the `[ABBR]` suffix and the
     "Warlord, The Silver Serpent" line both. The `0xD6`/`0xDC` half this client

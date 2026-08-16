@@ -298,7 +298,16 @@ mod optional_serial {
 ///   ([`WorldRecord::guild_high_water`]), which is the one that is not obvious.
 ///   Without the counter a restart hands the next guild founded an id a
 ///   disbanded one already used, and every stale member record silently joins it.
-pub const SCHEMA_VERSION: u32 = 24;
+/// - v25: **guild ranks**. One field,
+///   [`CharacterRecord::guild_rank`], and a version anyway. It defaults to `0` —
+///   Ronin — which is the *safe* reading and the wrong one: every existing
+///   member, the leaders included, would come back holding no permission at all,
+///   and a guild whose leader could not invite, promote or disband is a guild
+///   with no way out of that state. There is no migration that could fix it
+///   either, because which of them led is on the guild and which were Emissaries
+///   was never written down. So the version refuses the old database rather than
+///   opening it into a shard where every guild is inert.
+pub const SCHEMA_VERSION: u32 = 25;
 
 /// An account, as saved.
 ///
@@ -415,10 +424,24 @@ pub struct CharacterRecord {
     /// guild dropped by hand from the database orphans nobody.
     #[serde(default)]
     pub guild: Option<u32>,
-    /// The title the guild knows it by — "Warlord". Empty for a plain member and
-    /// for anyone in no guild.
+    /// The title the guild knows it by — "Master of Arms". Free text a leader
+    /// typed. Empty for a member the guild has not named and for anyone in no
+    /// guild, and **not** the rank — see [`guild_rank`](Self::guild_rank).
     #[serde(default)]
     pub guild_title: String,
+    /// Where it stands in the guild, as
+    /// [`Rank::number`](openshard_state::Rank::number) — 0 Ronin through 4
+    /// Leader.
+    ///
+    /// A number rather than the enum, for the reason every other saved
+    /// discriminant here is one: the record is the format, and a variant
+    /// reordered in the source must not silently repoint every saved row. A
+    /// number outside the five reads as `Ronin` on the way back in
+    /// (`Rank::from_number` answers `None` and the caller takes the floor),
+    /// which is the safe direction — an unreadable rank should not be able to
+    /// grant anything.
+    #[serde(default)]
+    pub guild_rank: u8,
     /// A guild that has asked it to join and is waiting on an answer.
     ///
     /// Saved, and worth saying why: an invitation left for a player who was
@@ -1404,6 +1427,7 @@ mod tests {
             // saved.
             guild: Some(7),
             guild_title: "Warlord".to_owned(),
+            guild_rank: 0,
             guild_candidate: Some(9),
         };
         let json = serde_json::to_string(&record).expect("a record must serialise");
@@ -1440,6 +1464,7 @@ mod tests {
             done_quests: Vec::new(),
             guild: None,
             guild_title: String::new(),
+            guild_rank: 0,
             guild_candidate: None,
             stat_locks: StatLockRecord::default(),
         };

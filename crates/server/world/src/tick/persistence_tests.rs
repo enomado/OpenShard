@@ -648,7 +648,11 @@ fn a_guild_survives_a_restart_and_its_ids_are_not_handed_out_again() {
                 murders: 0,
                 quests: Vec::new(),
                 done_quests: Vec::new(),
-                guild: Some((ours.0, "Warlord".to_owned())),
+                guild: Some(crate::tick::command::GuildSeat {
+                    guild: ours,
+                    title: "Warlord".to_owned(),
+                    rank: openshard_state::Rank::Emissary,
+                }),
                 guild_candidate: Some(theirs.0),
             })),
         }),
@@ -666,6 +670,14 @@ fn a_guild_survives_a_restart_and_its_ids_are_not_handed_out_again() {
             .get::<GuildMember>(entity)
             .map(|m| m.title.as_str()),
         Some("Warlord")
+    );
+    // And the rank, which is the half of this the title looks like and is not:
+    // the record above wears the *title* "Warlord" and holds the **Emissary**
+    // rank, so a restore that read one as the other would come back looking
+    // right and holding the wrong permissions.
+    assert_eq!(
+        restored.registry().get::<GuildMember>(entity).map(|m| m.rank),
+        Some(openshard_state::Rank::Emissary)
     );
     // An invitation left for a player who was offline is exactly the invitation
     // that has to survive a restart.

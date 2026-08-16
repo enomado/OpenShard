@@ -1661,9 +1661,22 @@ pub struct ChasePath {
 pub struct GuildMember {
     /// Which guild.
     pub guild: crate::guild::GuildId,
-    /// The rank shown before the name, if the guild gave it one — "Warlord".
-    /// Empty for a plain member.
+    /// The title shown before the name, if the guild gave it one — "Master of
+    /// Arms". Empty for a member the guild has not named.
+    ///
+    /// **Not the [`rank`](Self::rank), and the two are easy to confuse** because
+    /// a rank's name is a word a guild would plausibly type into the title
+    /// field. A title is free text a leader chose and the engine only clips; a
+    /// rank is one of five and is what every permission is decided by. ServUO
+    /// keeps them apart the same way (`Mobile.GuildTitle` beside
+    /// `PlayerMobile.GuildRank`), and a guild is free to title its Warlord
+    /// "Emissary" if it likes.
     pub title: String,
+    /// Where they stand in it, and what they are therefore allowed to do.
+    ///
+    /// Defaults to [`Rank::Ronin`](crate::guild::Rank::Ronin), which is also
+    /// what a newcomer joins as — see that type.
+    pub rank: crate::guild::Rank,
 }
 
 /// A mobile that has been asked to join a guild and has not yet answered.

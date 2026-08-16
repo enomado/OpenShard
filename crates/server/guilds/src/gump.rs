@@ -27,9 +27,9 @@ use openshard_protocol::gump::{
     ButtonId, CloseGump, GUMP_WHITE, GumpButton, GumpDisplay, GumpId, GumpKey, GumpLayout, GumpPoint,
 };
 use openshard_protocol::server_packet::ServerPacket;
-use openshard_state::{Client, GuildGumpContext, GuildMember, GuildPage, Name, Relation, WorldState};
+use openshard_state::{Client, GuildGumpContext, GuildMember, GuildPage, Name, Rank, Relation, WorldState};
 
-use crate::{may_lead, roster};
+use crate::{RankFlags, may_lead, roster};
 
 /// The gump id the guild window answers under. Distinct from the quest window's
 /// `0x0051_0001` and the admin menu's `0x00AD_0001`, so a reply is never
@@ -83,6 +83,15 @@ pub(crate) mod button {
 pub(crate) const FIELD_NAME: u32 = 1;
 pub(crate) const FIELD_ABBREVIATION: u32 = 2;
 
+/// What a member's row can ask for. Named rather than numbered at the call
+/// sites, because five columns whose meaning is their position is exactly the
+/// arithmetic the admin menu got wrong.
+pub(crate) const ROSTER_TITLE: u32 = 0;
+pub(crate) const ROSTER_PROMOTE: u32 = 1;
+pub(crate) const ROSTER_DEMOTE: u32 = 2;
+pub(crate) const ROSTER_DISMISS: u32 = 3;
+pub(crate) const ROSTER_LEAD: u32 = 4;
+
 /// A row button is its list's base plus the row index times the number of things
 /// a row can ask for.
 ///
@@ -91,23 +100,33 @@ pub(crate) const FIELD_ABBREVIATION: u32 = 2;
 /// went wrong in the admin menu's hand-written layout, and the note there says so.
 pub(crate) const ROSTER_BASE: u32 = 100;
 pub(crate) const DIPLOMACY_BASE: u32 = 1000;
-/// How many buttons a row of either list draws.
-pub(crate) const ROW_ACTIONS: u32 = 3;
+/// How many buttons a member's row can draw: set the title, promote, demote,
+/// turn out, hand over the guild.
+pub(crate) const ROSTER_ACTIONS: u32 = 5;
+/// And a guild's row: declare war, offer an alliance, end either.
+pub(crate) const DIPLOMACY_ACTIONS: u32 = 3;
 
 /// The button id for one action on one row.
-pub(crate) const fn row_button(base: u32, index: usize, action: u32) -> ButtonId {
-    ButtonId(base + (index as u32) * ROW_ACTIONS + action)
+///
+/// `actions` is the *stride*, and the two lists no longer share one — a roster
+/// row draws five and a diplomacy row three. It is passed in rather than read
+/// off the base, so that the drawing side and the reading side name the same
+/// number at the same call: a stride that disagreed between them would resolve
+/// "demote row two" to "declare war on row one" without either side being
+/// obviously wrong.
+pub(crate) const fn row_button(base: u32, actions: u32, index: usize, action: u32) -> ButtonId {
+    ButtonId(base + (index as u32) * actions + action)
 }
 
 /// Which row and which action a button id names, or `None` if it is not one of
 /// this list's.
-pub(crate) fn row_of(base: u32, button: ButtonId, rows: usize) -> Option<(usize, u32)> {
+pub(crate) fn row_of(base: u32, actions: u32, button: ButtonId, rows: usize) -> Option<(usize, u32)> {
     let offset = button.0.checked_sub(base)?;
-    let index = (offset / ROW_ACTIONS) as usize;
+    let index = (offset / actions) as usize;
     if index >= rows {
         return None;
     }
-    Some((index, offset % ROW_ACTIONS))
+    Some((index, offset % actions))
 }
 
 /// Draw the guild window for a player, and remember what it drew.
@@ -198,11 +217,22 @@ fn main_page(layout: &mut GumpLayout, state: &WorldState, player: EntityId) {
     let mut y = ROW_TOP;
     action(layout, 20, y, button::ROSTER, GUMP_WHITE, "Members");
     y += ROW_HEIGHT + 8;
-    if may_lead(state, player).is_ok() {
+    // Row by row on the flag it needs, not on "is this the leader". A Warlord
+    // gets the diplomacy page and not the invite cursor; an Emissary gets the
+    // reverse. Hiding a button is a courtesy either way — `reply` checks the
+    // same flag when one comes back, because a window outlives the rank that
+    // drew it and the gump id is not a secret.
+    if crate::may(state, player, RankFlags::CAN_INVITE).is_ok() {
         action(layout, 20, y, button::INVITE, GUMP_WHITE, "Ask someone to join");
         y += ROW_HEIGHT + 8;
+    }
+    if crate::may(state, player, RankFlags::CONTROL_WAR_STATUS).is_ok()
+        || crate::may(state, player, RankFlags::ALLIANCE_CONTROL).is_ok()
+    {
         action(layout, 20, y, button::DIPLOMACY, GUMP_WHITE, "Wars and alliances");
         y += ROW_HEIGHT + 8;
+    }
+    if may_lead(state, player).is_ok() {
         action(layout, 20, y, button::DISBAND, HUE_WAR, "Disband this guild");
     } else {
         action(layout, 20, y, button::LEAVE, HUE_WAR, "Leave this guild");
@@ -258,8 +288,12 @@ fn roster_page(
     action(layout, 20, 46, button::MAIN, GUMP_WHITE, "Back");
 
     let leads = may_lead(state, player).is_ok();
+    let may_title = crate::may(state, player, RankFlags::CAN_SET_GUILD_TITLE).is_ok();
+    let may_rank = crate::may(state, player, RankFlags::CAN_PROMOTE_DEMOTE).is_ok();
+    let own_rank = crate::rank_of(state, player).unwrap_or_default();
     let members = roster(state, guild);
     let shown = members.len().min(MAX_ROWS);
+    let mut any_buttons = false;
     for &member in members.iter().take(shown) {
         let Some(serial) = state.registry.serial_of(member) else {
             continue;
@@ -272,45 +306,61 @@ fn roster_page(
             .get::<Name>(member)
             .map_or("someone", |name| name.0.as_str());
         layout.label(20, y, GUMP_WHITE, name);
-        let title = state
-            .registry
-            .get::<GuildMember>(member)
-            .map_or("", |entry| entry.title.as_str());
-        if leads {
-            layout.text_entry(140, y, 110, 20, GUMP_WHITE, row as u32, title);
+        let entry = state.registry.get::<GuildMember>(member);
+        let title = entry.map_or("", |entry| entry.title.as_str());
+        let rank = entry.map_or_else(Rank::default, |entry| entry.rank);
+        layout.label(140, y, GUMP_WHITE, rank.name());
+
+        // Each button on the rule that would let it through — the same pair of
+        // questions the operation asks: the flag, and whether this member is
+        // reachable from where the viewer stands. A row about yourself keeps
+        // only the title field, because none of the rest applies to you.
+        let outranked = own_rank > rank;
+        let mut column = 258;
+        let mut cell = |layout: &mut GumpLayout, normal: u32, pressed: u32, action: u32| {
             layout.button(
-                258,
+                column,
                 y,
-                4005,
-                4007,
+                normal,
+                pressed,
                 GumpButton::Reply,
                 0,
-                row_button(ROSTER_BASE, row, 0),
+                row_button(ROSTER_BASE, ROSTER_ACTIONS, row, action),
             );
-            layout.button(
-                288,
-                y,
-                4017,
-                4019,
-                GumpButton::Reply,
-                0,
-                row_button(ROSTER_BASE, row, 1),
-            );
-            layout.button(
-                318,
-                y,
-                4011,
-                4013,
-                GumpButton::Reply,
-                0,
-                row_button(ROSTER_BASE, row, 2),
-            );
+            column += 30;
+            any_buttons = true;
+        };
+        if may_title && (member == player || outranked) {
+            layout.text_entry(190, y, 60, 20, GUMP_WHITE, row as u32, title);
+            cell(layout, 4005, 4007, ROSTER_TITLE);
         } else {
-            layout.label(140, y, GUMP_WHITE, title);
+            layout.label(190, y, GUMP_WHITE, title);
+        }
+        if member != player && may_rank {
+            // Two rungs to promote, one to demote — `membership::promote` says
+            // why they differ. Drawn on the same condition so the button is
+            // absent rather than refused.
+            let can_promote = match own_rank {
+                Rank::Leader => outranked,
+                _ => own_rank.number().saturating_sub(1) > rank.number(),
+            };
+            if can_promote && rank.above().is_some_and(|next| next != Rank::Leader) {
+                cell(layout, 2435, 2436, ROSTER_PROMOTE);
+            }
+            if outranked && rank.below().is_some() {
+                cell(layout, 2437, 2438, ROSTER_DEMOTE);
+            }
+        }
+        if member != player && crate::may_dismiss(state, player, member) {
+            cell(layout, 4017, 4019, ROSTER_DISMISS);
+        }
+        if leads && member != player {
+            cell(layout, 4011, 4013, ROSTER_LEAD);
         }
     }
-    if leads {
-        layout.label(258, ROW_TOP - 22, GUMP_WHITE, "title  out  lead");
+    layout.label(140, ROW_TOP - 22, GUMP_WHITE, "rank");
+    if any_buttons {
+        layout.label(258, ROW_TOP - 22, GUMP_WHITE, "actions");
     }
     cut_notice(layout, members.len(), shown);
 }
@@ -363,7 +413,7 @@ fn diplomacy_page(
             4019,
             GumpButton::Reply,
             0,
-            row_button(DIPLOMACY_BASE, row, 0),
+            row_button(DIPLOMACY_BASE, DIPLOMACY_ACTIONS, row, 0),
         );
         layout.button(
             288,
@@ -372,7 +422,7 @@ fn diplomacy_page(
             4013,
             GumpButton::Reply,
             0,
-            row_button(DIPLOMACY_BASE, row, 1),
+            row_button(DIPLOMACY_BASE, DIPLOMACY_ACTIONS, row, 1),
         );
         layout.button(
             318,
@@ -381,7 +431,7 @@ fn diplomacy_page(
             4007,
             GumpButton::Reply,
             0,
-            row_button(DIPLOMACY_BASE, row, 2),
+            row_button(DIPLOMACY_BASE, DIPLOMACY_ACTIONS, row, 2),
         );
     }
     cut_notice(layout, others.len(), shown);
@@ -398,14 +448,23 @@ fn cut_notice(layout: &mut GumpLayout, total: usize, shown: usize) {
 
 #[cfg(test)]
 mod tests {
-    use super::{DIPLOMACY_BASE, ROSTER_BASE, row_button, row_of};
+    use super::{
+        DIPLOMACY_ACTIONS, DIPLOMACY_BASE, MAX_ROWS, ROSTER_ACTIONS, ROSTER_BASE, row_button, row_of,
+    };
 
     #[test]
     fn a_row_button_reads_back_as_the_row_it_was_drawn_for() {
         for row in 0..8 {
-            for action in 0..3 {
-                let id = row_button(ROSTER_BASE, row, action);
-                assert_eq!(row_of(ROSTER_BASE, id, 8), Some((row, action)));
+            for action in 0..ROSTER_ACTIONS {
+                let id = row_button(ROSTER_BASE, ROSTER_ACTIONS, row, action);
+                assert_eq!(row_of(ROSTER_BASE, ROSTER_ACTIONS, id, 8), Some((row, action)));
+            }
+            for action in 0..DIPLOMACY_ACTIONS {
+                let id = row_button(DIPLOMACY_BASE, DIPLOMACY_ACTIONS, row, action);
+                assert_eq!(
+                    row_of(DIPLOMACY_BASE, DIPLOMACY_ACTIONS, id, 8),
+                    Some((row, action))
+                );
             }
         }
     }
@@ -414,13 +473,47 @@ mod tests {
     fn a_button_past_the_end_of_the_list_names_no_row() {
         // The client sends whatever it likes. A row the window never drew has to
         // resolve to nothing rather than to the row arithmetic's opinion.
-        assert_eq!(row_of(ROSTER_BASE, row_button(ROSTER_BASE, 9, 0), 4), None);
         assert_eq!(
-            row_of(ROSTER_BASE, openshard_protocol::gump::ButtonId(1), 4),
+            row_of(
+                ROSTER_BASE,
+                ROSTER_ACTIONS,
+                row_button(ROSTER_BASE, ROSTER_ACTIONS, 9, 0),
+                4
+            ),
             None
         );
-        // And the two lists do not overlap, which is what keeps a diplomacy
-        // button from dismissing a member.
-        assert!(row_of(ROSTER_BASE, row_button(DIPLOMACY_BASE, 0, 0), 12).is_none());
+        assert_eq!(
+            row_of(
+                ROSTER_BASE,
+                ROSTER_ACTIONS,
+                openshard_protocol::gump::ButtonId(1),
+                4
+            ),
+            None
+        );
+    }
+
+    /// The two lists share one button space and no longer share a stride, so
+    /// "they do not overlap" stopped being obvious the moment the roster grew
+    /// from three actions to five. Asserted against the widest either can be —
+    /// a full page of rows at its own stride — rather than against a sample.
+    #[test]
+    fn a_full_roster_never_reaches_the_diplomacy_numbers() {
+        let last = row_button(ROSTER_BASE, ROSTER_ACTIONS, MAX_ROWS - 1, ROSTER_ACTIONS - 1);
+        assert!(
+            last.0 < DIPLOMACY_BASE,
+            "roster buttons run to {}, and diplomacy starts at {DIPLOMACY_BASE}",
+            last.0
+        );
+        assert!(
+            row_of(
+                ROSTER_BASE,
+                ROSTER_ACTIONS,
+                row_button(DIPLOMACY_BASE, DIPLOMACY_ACTIONS, 0, 0),
+                MAX_ROWS
+            )
+            .is_none(),
+            "and a diplomacy button must not resolve as a member's"
+        );
     }
 }

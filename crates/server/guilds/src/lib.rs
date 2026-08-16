@@ -24,12 +24,20 @@
 //!
 //! # Ranks
 //!
-//! Deferred. ServUO's new guild system has five ranks and a flag set per rank
-//! (`RankFlags::CanInvitePlayer`, `ControlWarStatus`, …); this has a leader and
-//! members, which is the old guildstone's model and what every operation below
-//! gates on. The seam for ranks is [`may_lead`] — one predicate, called by every
-//! operation that needs authority, so growing it into a rank check is one
-//! function rather than nine.
+//! ServUO's five, and its flag set per rank — see [`Rank`] for the ladder and
+//! [`RankFlags`] for what each rung may do. Authority is asked in exactly two
+//! ways and the difference matters:
+//!
+//! - [`may`] — "does this member hold this flag", which is what invite, dismiss,
+//!   set-title, promote, demote and the war operations gate on.
+//! - [`may_lead`] — "is this member *the* leader", for the two things no flag
+//!   grants: disbanding the guild, and handing it to somebody else.
+//!
+//! A rank comparison is a third question again, and it is about the *target*
+//! rather than the actor: a member with `RemovePlayers` may still only turn out
+//! somebody below them. Every one of those comparisons is ServUO's own, copied
+//! rather than reasoned about — see [`RankFlags`]' note on the Emissary and the
+//! Warlord, which is where an intuition about rank order goes wrong.
 //!
 //! # What every change does to the screen
 //!
@@ -44,6 +52,7 @@
 mod diplomacy;
 pub mod gump;
 mod membership;
+mod rank;
 mod reply;
 #[cfg(test)]
 mod tests;
@@ -51,13 +60,14 @@ mod tests;
 pub use diplomacy::{Outcome, make_peace, propose};
 pub use gump::GUILD_GUMP;
 pub use membership::{
-    ABBREVIATION_LIMIT, NAME_LIMIT, TITLE_LIMIT, accept_invitation, decline_invitation, disband, dismiss,
-    found, invite, leave, pass_leadership, set_title,
+    ABBREVIATION_LIMIT, NAME_LIMIT, TITLE_LIMIT, accept_invitation, decline_invitation, demote, disband,
+    dismiss, found, invite, leave, pass_leadership, promote, set_title,
 };
+pub use rank::RankFlags;
 pub use reply::{handle, open};
 
 use openshard_entities::EntityId;
-use openshard_state::{GuildId, WorldState};
+use openshard_state::{GuildId, Rank, WorldState};
 
 /// Why a guild operation was refused.
 ///
@@ -94,6 +104,16 @@ pub enum Refusal {
     /// The leader is not the last member, so the guild would be left without
     /// one.
     PassLeadershipFirst,
+    /// The actor's rank does not hold the flag the operation needs.
+    NotYourPlaceTo,
+    /// The actor holds the flag but the target outranks them, or stands level
+    /// with them. A separate refusal from [`NotYourPlaceTo`](Self::NotYourPlaceTo)
+    /// because it says something different to the player: not "you may not do
+    /// this" but "not to *them*".
+    TheyOutrankYou,
+    /// The target is already a [`Rank::Leader`] and there is nowhere above it,
+    /// or already a [`Rank::Ronin`] and nowhere below.
+    NoFurtherRank,
 }
 
 impl Refusal {
@@ -114,16 +134,19 @@ impl Refusal {
             Self::NotInvited => "Nobody has asked you to join a guild.",
             Self::NoSuchGuild => "There is no such guild.",
             Self::PassLeadershipFirst => "Pass leadership on before you leave.",
+            Self::NotYourPlaceTo => "Your rank does not allow that.",
+            Self::TheyOutrankYou => "They outrank you.",
+            Self::NoFurtherRank => "There is no rank beyond that one.",
         }
     }
 }
 
 /// The guild `actor` leads, or why it does not lead one.
 ///
-/// **The one authority check.** Every operation that a plain member may not do
-/// goes through here, so "what a leader may do" is a list of callers rather than
-/// nine copies of the same two lines — and the day ranks land, this is the
-/// function that grows a flag argument.
+/// **Not the general authority check** — [`may`] is. This is the narrower
+/// question, for the two operations no rank flag grants because no rank but the
+/// Leader may do them at all: [`disband`] and [`pass_leadership`]. Everything
+/// else asks [`may`] for the flag it needs, so that a guild can delegate.
 pub fn may_lead(state: &WorldState, actor: EntityId) -> Result<GuildId, Refusal> {
     let guild = state.guild_of(actor).ok_or(Refusal::NotInAGuild)?;
     let serial = state.registry.serial_of(actor).ok_or(Refusal::NotAMobile)?;
@@ -131,6 +154,74 @@ pub fn may_lead(state: &WorldState, actor: EntityId) -> Result<GuildId, Refusal>
         Ok(guild.id)
     } else {
         Err(Refusal::NotTheLeader)
+    }
+}
+
+/// The rank `actor` holds in the guild they are in.
+///
+/// [`Rank::Ronin`] for a member with no rank recorded, which is also what a
+/// newcomer is — so a membership written before ranks existed reads as the
+/// least trusted rank rather than the most.
+#[must_use]
+pub fn rank_of(state: &WorldState, actor: EntityId) -> Option<Rank> {
+    state
+        .registry
+        .get::<openshard_state::GuildMember>(actor)
+        .filter(|member| state.guilds.get(member.guild).is_some())
+        .map(|member| member.rank)
+}
+
+/// The guild `actor` may exercise `flag` in, and the rank they hold — or why
+/// not.
+///
+/// **The one authority check.** Every operation a member's rank might or might
+/// not permit goes through here, so "what an Emissary may do" is a list of
+/// callers rather than a rule restated at each of them.
+///
+/// The rank comes back with the guild because most callers need it immediately
+/// afterwards for the *other* question: whether they outrank the member they are
+/// acting on. See [`outranks`].
+pub fn may(state: &WorldState, actor: EntityId, flag: RankFlags) -> Result<(GuildId, Rank), Refusal> {
+    let guild = state.guild_of(actor).ok_or(Refusal::NotInAGuild)?.id;
+    let rank = rank_of(state, actor).ok_or(Refusal::NotInAGuild)?;
+    if rank::flags_of(rank).has(flag) {
+        Ok((guild, rank))
+    } else {
+        Err(Refusal::NotYourPlaceTo)
+    }
+}
+
+/// Whether `actor` may turn `target` out of the guild.
+///
+/// The two ways there are, as one predicate: `REMOVE_PLAYERS` and outranking
+/// them, or `REMOVE_LOWEST_RANK` and a target who is a [`Rank::Ronin`]. A
+/// predicate rather than the condition written twice, because
+/// [`dismiss`] enforces it and the roster window decides whether to draw the
+/// button by it — and a window that offered what the operation refuses is worse
+/// than one that offers nothing.
+///
+/// Says nothing about *membership*: both are assumed to be in the same guild,
+/// which is [`dismiss`]'s own check.
+#[must_use]
+pub fn may_dismiss(state: &WorldState, actor: EntityId, target: EntityId) -> bool {
+    let Some(flags) = rank_of(state, actor).map(rank::flags_of) else {
+        return false;
+    };
+    (flags.has(RankFlags::REMOVE_PLAYERS) && outranks(state, actor, target))
+        || (flags.has(RankFlags::REMOVE_LOWEST_RANK) && rank_of(state, target) == Some(Rank::Ronin))
+}
+
+/// Whether `actor` stands strictly above `target` in the same guild.
+///
+/// Strictly: two members of the same rank do not outrank each other, so an
+/// Emissary cannot dismiss or retitle another Emissary. That is ServUO's
+/// comparison (`playerRank.Rank > targetRank.Rank`) and it is what stops a rank
+/// from being able to unmake itself.
+#[must_use]
+pub fn outranks(state: &WorldState, actor: EntityId, target: EntityId) -> bool {
+    match (rank_of(state, actor), rank_of(state, target)) {
+        (Some(actor), Some(target)) => actor > target,
+        _ => false,
     }
 }
 

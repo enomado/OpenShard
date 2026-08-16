@@ -23,7 +23,7 @@ use openshard_state::rng::Rng;
 use openshard_state::sectors::Sectors;
 use openshard_state::{
     Client, Dialogue, FacetState, Gameplay, GuildCandidate, GuildGumpContext, GuildId, GuildMember,
-    GuildPage, Obstructions, QuestDefs, Regions, Relation, TargetPurpose, WorldState,
+    GuildPage, Obstructions, QuestDefs, Rank, Regions, Relation, TargetPurpose, WorldState,
 };
 
 use crate::{Outcome, Refusal, may_lead, roster};
@@ -183,21 +183,29 @@ fn a_guild_may_not_conscript() {
 }
 
 #[test]
-fn only_a_leader_asks() {
+fn a_newcomer_asks_nobody_and_dismisses_nobody() {
     let mut state = world();
     let (leader, _) = a_guild(&mut state);
     let member = mobile(&mut state);
     crate::invite(&mut state, leader, member).unwrap();
     crate::accept_invitation(&mut state, member).unwrap();
+    assert_eq!(
+        crate::rank_of(&state, member),
+        Some(Rank::Ronin),
+        "and a newcomer is a Ronin, not a Member"
+    );
 
     let stranger = mobile(&mut state);
+    // `NotYourPlaceTo` and not `NotTheLeader`, which is what this asserted while
+    // a guild was a leader and everybody else: the refusal is about the rank
+    // now, and an Emissary would pass both of these.
     assert_eq!(
         crate::invite(&mut state, member, stranger),
-        Err(Refusal::NotTheLeader)
+        Err(Refusal::NotYourPlaceTo)
     );
     assert_eq!(
         crate::dismiss(&mut state, member, leader),
-        Err(Refusal::NotTheLeader)
+        Err(Refusal::NotYourPlaceTo)
     );
     assert_eq!(
         crate::invite(&mut state, stranger, member),
@@ -430,7 +438,10 @@ fn a_diplomacy_row_declares_on_the_guild_that_row_drew() {
     let drawn = context(&state, leader).expect("a window");
     assert_eq!(drawn.guilds, vec![theirs], "the page listed its own guild");
 
-    let war = reply(crate::gump::row_button(crate::gump::DIPLOMACY_BASE, 0, 0), &[]);
+    let war = reply(
+        crate::gump::row_button(crate::gump::DIPLOMACY_BASE, crate::gump::DIPLOMACY_ACTIONS, 0, 0),
+        &[],
+    );
     crate::handle(&mut state, connection, &war);
     assert_eq!(
         state.guilds.get(own).unwrap().offered(theirs),
@@ -449,7 +460,10 @@ fn a_row_the_window_never_drew_names_nobody() {
 
     crate::gump::show(&mut state, leader, GuildPage::Diplomacy);
     // One guild was listed; row four is a number the client made up.
-    let forged = reply(crate::gump::row_button(crate::gump::DIPLOMACY_BASE, 4, 0), &[]);
+    let forged = reply(
+        crate::gump::row_button(crate::gump::DIPLOMACY_BASE, crate::gump::DIPLOMACY_ACTIONS, 4, 0),
+        &[],
+    );
     crate::handle(&mut state, connection, &forged);
     assert!(
         state.guilds.iter().all(|guild| guild.proposals.is_empty()),
@@ -475,7 +489,7 @@ fn a_roster_row_sets_the_title_typed_beside_it() {
         .expect("the member was drawn");
 
     let set = reply(
-        crate::gump::row_button(crate::gump::ROSTER_BASE, row, 0),
+        crate::gump::row_button(crate::gump::ROSTER_BASE, crate::gump::ROSTER_ACTIONS, row, 0),
         &[(row as u16, "Warlord")],
     );
     crate::handle(&mut state, connection, &set);
@@ -509,4 +523,206 @@ fn the_invite_button_raises_a_cursor_only_for_a_leader() {
         &reply(crate::gump::button::INVITE, &[]),
     );
     assert_eq!(state.take_target(member), None, "a member raised a cursor");
+}
+
+/// A guild with a leader and a member at `rank`, for the rank rules below.
+fn a_guild_with(state: &mut WorldState, rank: Rank) -> (EntityId, EntityId) {
+    let (leader, _) = a_guild(state);
+    let member = mobile(state);
+    crate::invite(state, leader, member).unwrap();
+    crate::accept_invitation(state, member).unwrap();
+    if let Some(entry) = state.registry.get_mut::<GuildMember>(member) {
+        entry.rank = rank;
+    }
+    (leader, member)
+}
+
+#[test]
+fn the_founder_leads_and_a_new_leader_trades_places_with_the_old() {
+    let mut state = world();
+    let (leader, member) = a_guild_with(&mut state, Rank::Member);
+    assert_eq!(crate::rank_of(&state, leader), Some(Rank::Leader));
+
+    crate::pass_leadership(&mut state, leader, member).expect("a leader may hand it over");
+    assert_eq!(crate::rank_of(&state, member), Some(Rank::Leader));
+    assert_eq!(
+        crate::rank_of(&state, leader),
+        Some(Rank::Member),
+        "and the old leader steps down to Member, not out of the guild"
+    );
+    assert!(may_lead(&state, member).is_ok());
+    assert_eq!(may_lead(&state, leader), Err(Refusal::NotTheLeader));
+}
+
+/// ServUO's promotion condition, which is two rungs and not one. The Emissary
+/// case is the whole point: promoting into the rank directly below your own
+/// would let you make somebody a Warlord, who may declare wars you may not.
+#[test]
+fn a_promotion_stops_two_rungs_below_the_promoter() {
+    let mut state = world();
+    let (_, emissary) = a_guild_with(&mut state, Rank::Emissary);
+    let recruit = mobile(&mut state);
+    crate::invite(&mut state, emissary, recruit).expect("an Emissary recruits");
+    crate::accept_invitation(&mut state, recruit).unwrap();
+
+    assert_eq!(crate::promote(&mut state, emissary, recruit), Ok(Rank::Member));
+    assert_eq!(
+        crate::promote(&mut state, emissary, recruit),
+        Err(Refusal::TheyOutrankYou),
+        "an Emissary may not make an Emissary, nor a Warlord"
+    );
+}
+
+#[test]
+fn only_the_leader_promotes_into_the_rank_below_their_own() {
+    let mut state = world();
+    let (leader, member) = a_guild_with(&mut state, Rank::Member);
+    assert_eq!(crate::promote(&mut state, leader, member), Ok(Rank::Emissary));
+    assert_eq!(crate::promote(&mut state, leader, member), Ok(Rank::Warlord));
+    // And no further: reaching Leader is `pass_leadership`, which is a trade
+    // rather than a promotion — see that function.
+    assert_eq!(
+        crate::promote(&mut state, leader, member),
+        Err(Refusal::NoFurtherRank)
+    );
+}
+
+#[test]
+fn a_ronin_is_the_floor_and_is_turned_out_rather_than_demoted() {
+    let mut state = world();
+    let (leader, member) = a_guild_with(&mut state, Rank::Member);
+    assert_eq!(crate::demote(&mut state, leader, member), Ok(Rank::Ronin));
+    assert_eq!(
+        crate::demote(&mut state, leader, member),
+        Err(Refusal::NoFurtherRank)
+    );
+    assert_eq!(crate::dismiss(&mut state, leader, member), Ok(()));
+}
+
+/// The `REMOVE_LOWEST_RANK` arm. An ordinary member may get rid of a newcomer
+/// and nobody else — which is the only thing their rank lets them do to another
+/// player, and the reason the flag exists apart from `REMOVE_PLAYERS`.
+#[test]
+fn an_ordinary_member_may_turn_out_a_ronin_and_no_one_else() {
+    let mut state = world();
+    let (leader, member) = a_guild_with(&mut state, Rank::Member);
+    let ronin = mobile(&mut state);
+    crate::invite(&mut state, leader, ronin).unwrap();
+    crate::accept_invitation(&mut state, ronin).unwrap();
+
+    let other = mobile(&mut state);
+    crate::invite(&mut state, leader, other).unwrap();
+    crate::accept_invitation(&mut state, other).unwrap();
+    crate::promote(&mut state, leader, other).expect("to Member");
+
+    assert_eq!(crate::dismiss(&mut state, member, ronin), Ok(()));
+    assert_eq!(
+        crate::dismiss(&mut state, member, other),
+        Err(Refusal::NotYourPlaceTo),
+        "a Member holds no REMOVE_PLAYERS, so an equal is out of reach"
+    );
+}
+
+/// The trap this whole file's rank order is written around: the Warlord is the
+/// higher rank and may do less. Asserted end to end rather than only on the flag
+/// table, because a check written as a rank comparison would pass that table's
+/// test and fail here.
+#[test]
+fn a_warlord_declares_wars_and_an_emissary_recruits_and_neither_does_the_other() {
+    let mut state = world();
+    let (leader, warlord) = a_guild_with(&mut state, Rank::Warlord);
+    let emissary = mobile(&mut state);
+    crate::invite(&mut state, leader, emissary).unwrap();
+    crate::accept_invitation(&mut state, emissary).unwrap();
+    if let Some(entry) = state.registry.get_mut::<GuildMember>(emissary) {
+        entry.rank = Rank::Emissary;
+    }
+
+    let rival_leader = mobile(&mut state);
+    let rival = crate::found(&mut state, rival_leader, "The Black Rose", "TBR").unwrap();
+
+    assert_eq!(
+        crate::propose(&mut state, warlord, rival, Relation::War),
+        Ok(Outcome::Offered)
+    );
+    assert_eq!(
+        crate::propose(&mut state, emissary, rival, Relation::War),
+        Err(Refusal::NotYourPlaceTo),
+        "an Emissary may not declare a war"
+    );
+
+    let stranger = mobile(&mut state);
+    assert_eq!(crate::invite(&mut state, emissary, stranger), Ok(()));
+    let another = mobile(&mut state);
+    assert_eq!(
+        crate::invite(&mut state, warlord, another),
+        Err(Refusal::NotYourPlaceTo),
+        "and a Warlord may not recruit"
+    );
+}
+
+/// An alliance is the Leader's alone, and a war is not — so the two halves of
+/// `propose` do not gate the same way even though they are one function.
+#[test]
+fn an_alliance_is_out_of_a_warlords_reach() {
+    let mut state = world();
+    let (_, warlord) = a_guild_with(&mut state, Rank::Warlord);
+    let rival_leader = mobile(&mut state);
+    let rival = crate::found(&mut state, rival_leader, "The Black Rose", "TBR").unwrap();
+    assert_eq!(
+        crate::propose(&mut state, warlord, rival, Relation::Ally),
+        Err(Refusal::NotYourPlaceTo)
+    );
+}
+
+/// `make_peace` reads the flag off *what is being ended*, because the button is
+/// one button. A Warlord ends the war and is stopped at the alliance.
+#[test]
+fn ending_a_relation_takes_the_flag_that_relation_wanted() {
+    let mut state = world();
+    let (leader, warlord) = a_guild_with(&mut state, Rank::Warlord);
+    let rival_leader = mobile(&mut state);
+    let rival = crate::found(&mut state, rival_leader, "The Black Rose", "TBR").unwrap();
+
+    crate::propose(&mut state, warlord, rival, Relation::War).unwrap();
+    assert_eq!(crate::make_peace(&mut state, warlord, rival), Ok(()));
+
+    crate::propose(&mut state, leader, rival, Relation::Ally).unwrap();
+    assert_eq!(
+        crate::make_peace(&mut state, warlord, rival),
+        Err(Refusal::NotYourPlaceTo),
+        "the same call, refused because the standing offer is an alliance"
+    );
+}
+
+/// Retitling yourself is its own arm of the rule. Without it an Emissary could
+/// name every Ronin and never their own title, because they do not outrank
+/// themselves.
+#[test]
+fn a_title_reaches_yourself_and_everybody_you_outrank() {
+    let mut state = world();
+    let (leader, emissary) = a_guild_with(&mut state, Rank::Emissary);
+    let ronin = mobile(&mut state);
+    crate::invite(&mut state, leader, ronin).unwrap();
+    crate::accept_invitation(&mut state, ronin).unwrap();
+
+    assert_eq!(crate::set_title(&mut state, emissary, ronin, "Recruit"), Ok(()));
+    assert_eq!(
+        crate::set_title(&mut state, emissary, emissary, "Master of Arms"),
+        Ok(())
+    );
+    assert_eq!(
+        crate::set_title(&mut state, emissary, leader, "Nobody"),
+        Err(Refusal::TheyOutrankYou)
+    );
+    // And the title is not the rank: the Emissary now wears a title that says
+    // something else entirely, and still holds an Emissary's permissions.
+    assert_eq!(crate::rank_of(&state, emissary), Some(Rank::Emissary));
+    assert_eq!(
+        state
+            .registry
+            .get::<GuildMember>(emissary)
+            .map(|m| m.title.as_str()),
+        Some("Master of Arms")
+    );
 }

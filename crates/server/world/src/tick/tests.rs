@@ -189,6 +189,7 @@ pub(super) fn on_file(
         done_quests: Vec::new(),
         guild: None,
         guild_title: String::new(),
+        guild_rank: 0,
         guild_candidate: None,
     }])
 }
@@ -8542,6 +8543,7 @@ fn a_guildmate_is_green_and_a_guild_at_war_is_orange() {
     let member = |guild: GuildId| GuildMember {
         guild,
         title: String::new(),
+        rank: openshard_state::Rank::Member,
     };
     world.state.registry.insert(one, member(ours));
     world.state.registry.insert(two, member(ours));
@@ -8597,6 +8599,7 @@ fn a_murderer_stays_red_inside_a_guild_tabard() {
             GuildMember {
                 guild: ours,
                 title: String::new(),
+                rank: openshard_state::Rank::Member,
             },
         );
     }

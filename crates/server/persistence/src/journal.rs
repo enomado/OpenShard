@@ -356,6 +356,7 @@ mod tests {
             done_quests: Vec::new(),
             guild: None,
             guild_title: String::new(),
+            guild_rank: 0,
             guild_candidate: None,
             stat_locks: StatLockRecord::default(),
         }

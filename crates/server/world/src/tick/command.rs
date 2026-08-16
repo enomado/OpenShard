@@ -73,12 +73,29 @@ pub struct CharacterSheet {
     pub quests: Vec<openshard_persistence::QuestRecord>,
     /// Quests already finished, with the wait before each may be taken again.
     pub done_quests: Vec<openshard_persistence::DoneQuestRecord>,
-    /// The guild it belongs to and the title it wears there, by the guild's own
-    /// id. `None` for the unguilded, which is most characters.
-    pub guild: Option<(u32, String)>,
+    /// Where it stands in a guild, if it is in one. `None` for the unguilded,
+    /// which is most characters.
+    pub guild: Option<GuildSeat>,
     /// A guild that asked it to join while it was away, still waiting on an
     /// answer.
     pub guild_candidate: Option<u32>,
+}
+
+/// A character's place in a guild, as it comes off the record.
+///
+/// Three fields and not a tuple because two of them are easy to swap in the
+/// reader's head: the **title** is free text a leader typed, the **rank** is one
+/// of five and is what every permission is decided by. See
+/// [`GuildMember`](openshard_state::GuildMember), which this is rebuilt into
+/// unchanged.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct GuildSeat {
+    /// Which guild, by its own id.
+    pub guild: openshard_state::GuildId,
+    /// The title it wears there. Often empty.
+    pub title: String,
+    /// Where it stands.
+    pub rank: openshard_state::Rank,
 }
 
 impl CharacterSheet {
@@ -213,9 +230,17 @@ impl StoredCharacter {
                 murders: record.murders,
                 quests: record.quests.clone(),
                 done_quests: record.done_quests.clone(),
-                // The two halves ride together: a title with no guild is a title
-                // nothing draws, so the `Option` is over the pair.
-                guild: record.guild.map(|id| (id, record.guild_title.clone())),
+                // The three ride together: a title or a rank with no guild is a
+                // fact about nothing, so the `Option` is over all of them.
+                guild: record.guild.map(|id| GuildSeat {
+                    guild: openshard_state::GuildId(id),
+                    title: record.guild_title.clone(),
+                    // The floor, for a number the five ranks do not name. A
+                    // saved row this engine did not write must not be able to
+                    // grant a permission — see `CharacterRecord::guild_rank`.
+                    rank: openshard_state::Rank::from_number(record.guild_rank)
+                        .unwrap_or(openshard_state::Rank::Ronin),
+                }),
                 guild_candidate: record.guild_candidate,
             },
         })

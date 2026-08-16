@@ -166,6 +166,8 @@ CREATE TABLE IF NOT EXISTS characters (
     -- guild, and a constraint would turn that into a refused write instead.
     guild         INTEGER,
     guild_title   TEXT NOT NULL DEFAULT '',
+    -- Where in the guild: 0 Ronin through 4 Leader. See CharacterRecord.
+    guild_rank    INTEGER NOT NULL DEFAULT 0,
     guild_candidate INTEGER
 );
 -- Every guild on the shard. The relations and the standing offers are JSON, like
@@ -395,9 +397,9 @@ impl Store for SqliteStore {
                         "INSERT OR REPLACE INTO characters \
                          (serial, account, name, body, hue, facet, x, y, z, facing, \
                           strength, dexterity, intelligence, skills, effects, dead, fame, karma, murders, \
-                           quests, done_quests, stat_locks, guild, guild_title, guild_candidate) \
+                           quests, done_quests, stat_locks, guild, guild_title, guild_rank, guild_candidate) \
                          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, \
-                                 ?19, ?20, ?21, ?22, ?23, ?24, ?25)",
+                                 ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26)",
                         params![
                             record.serial.raw(),
                             record.account.0,
@@ -423,6 +425,7 @@ impl Store for SqliteStore {
                             stat_locks,
                             record.guild,
                             record.guild_title,
+                            record.guild_rank,
                             record.guild_candidate,
                         ],
                     )
@@ -674,7 +677,7 @@ impl Store for SqliteStore {
                 .prepare(
                     "SELECT serial, account, name, body, hue, facet, x, y, z, facing, \
                      strength, dexterity, intelligence, skills, effects, dead, fame, karma, \
-                     murders, quests, done_quests, stat_locks, guild, guild_title, guild_candidate \
+                     murders, quests, done_quests, stat_locks, guild, guild_title, guild_rank, guild_candidate \
                      FROM characters ORDER BY serial",
                 )
                 .map_err(database)?;
@@ -711,7 +714,8 @@ impl Store for SqliteStore {
                             stat_locks: StatLockRecord::default(),
                             guild: row.get(22)?,
                             guild_title: row.get(23)?,
-                            guild_candidate: row.get(24)?,
+                            guild_rank: row.get(24)?,
+                            guild_candidate: row.get(25)?,
                         },
                         skills,
                         effects,
@@ -1128,6 +1132,7 @@ mod tests {
             done_quests: Vec::new(),
             guild: None,
             guild_title: String::new(),
+            guild_rank: 0,
             guild_candidate: None,
             stat_locks: StatLockRecord::default(),
         }

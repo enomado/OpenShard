@@ -45,6 +45,129 @@ pub enum Relation {
     War,
 }
 
+/// Where a member stands inside their guild.
+///
+/// ServUO's `RankDefinition.Ranks` (`Scripts/Misc/Guild.cs`), the five of the new
+/// guild system, in its order. What each rank may *do* is not here — see
+/// `openshard_guilds::RankFlags`: this crate has to store which rank a member
+/// holds because the component is saved with them, and the rules crate above is
+/// the only thing that reads a permission out of it.
+///
+/// # It is an order, and it is not a permission order
+///
+/// [`Emissary`](Self::Emissary) may invite, dismiss, promote and set titles;
+/// [`Warlord`](Self::Warlord) sits *above* it and may do none of those — it may
+/// declare war, which an Emissary may not. Comparing two ranks answers "who
+/// outranks whom", which is the question promote, demote and dismiss ask about
+/// their target; it never answers "may this one do that".
+///
+/// # Nobody joins as a Member
+///
+/// A newcomer is a [`Ronin`](Self::Ronin), which holds no flag at all — not even
+/// the vote. ServUO's `Guild.AddMember` is explicit about it (`RankDefinition.Lowest`)
+/// and so is the demotion floor: a Ronin cannot be demoted further, only turned
+/// out. It is a probationary rank, and a guild that wants a member has to promote
+/// one.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Default)]
+pub enum Rank {
+    /// Cliloc `1062963`. In the guild and trusted with nothing yet.
+    #[default]
+    Ronin,
+    /// Cliloc `1062962`. The ordinary member: votes, reaches guild items, and
+    /// may turn out a Ronin.
+    Member,
+    /// Cliloc `1062961`. Recruits, dismisses, promotes and names titles.
+    Emissary,
+    /// Cliloc `1062960`. Declares and ends wars, and nothing else an ordinary
+    /// member cannot do.
+    Warlord,
+    /// Cliloc `1062959`. Everything, including the alliances.
+    Leader,
+}
+
+impl Rank {
+    /// Every rank, lowest first — the array ServUO indexes by rank number.
+    pub const ALL: [Self; 5] = [
+        Self::Ronin,
+        Self::Member,
+        Self::Emissary,
+        Self::Warlord,
+        Self::Leader,
+    ];
+
+    /// Its number, 0 for [`Ronin`](Self::Ronin) through 4 for
+    /// [`Leader`](Self::Leader). What is saved, and what the promote and demote
+    /// comparisons are written in.
+    #[must_use]
+    pub const fn number(self) -> u8 {
+        match self {
+            Self::Ronin => 0,
+            Self::Member => 1,
+            Self::Emissary => 2,
+            Self::Warlord => 3,
+            Self::Leader => 4,
+        }
+    }
+
+    /// The rank a number names, or `None` past the fifth.
+    ///
+    /// `None` rather than a clamp: a saved number outside the five is a record
+    /// this engine did not write, and reading it as `Leader` because it was large
+    /// would hand a guild away.
+    #[must_use]
+    pub const fn from_number(number: u8) -> Option<Self> {
+        match number {
+            0 => Some(Self::Ronin),
+            1 => Some(Self::Member),
+            2 => Some(Self::Emissary),
+            3 => Some(Self::Warlord),
+            4 => Some(Self::Leader),
+            _ => None,
+        }
+    }
+
+    /// The next rank up, or `None` at [`Leader`](Self::Leader).
+    #[must_use]
+    pub const fn above(self) -> Option<Self> {
+        Self::from_number(self.number() + 1)
+    }
+
+    /// The next rank down, or `None` at [`Ronin`](Self::Ronin) — which is the
+    /// demotion floor rather than an error to be worked around.
+    #[must_use]
+    pub const fn below(self) -> Option<Self> {
+        match self.number() {
+            0 => None,
+            number => Self::from_number(number - 1),
+        }
+    }
+
+    /// The localized string the client draws for this rank.
+    #[must_use]
+    pub const fn cliloc(self) -> openshard_protocol::wire::ClilocId {
+        openshard_protocol::wire::ClilocId(match self {
+            Self::Ronin => 1_062_963,
+            Self::Member => 1_062_962,
+            Self::Emissary => 1_062_961,
+            Self::Warlord => 1_062_960,
+            Self::Leader => 1_062_959,
+        })
+    }
+
+    /// The English name, for a system message and for this engine's own gump —
+    /// which draws its own text rather than sending cliloc numbers.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Ronin => "Ronin",
+            Self::Member => "Member",
+            Self::Emissary => "Emissary",
+            Self::Warlord => "Warlord",
+            Self::Leader => "Leader",
+        }
+    }
+}
+
 /// One guild.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Guild {

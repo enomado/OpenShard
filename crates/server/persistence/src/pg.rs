@@ -97,6 +97,8 @@ CREATE TABLE IF NOT EXISTS characters (
     -- constraint would turn that into a refused write instead.
     guild           INTEGER,
     guild_title     TEXT NOT NULL DEFAULT '',
+    -- Where in the guild: 0 Ronin through 4 Leader. See CharacterRecord.
+    guild_rank      INTEGER NOT NULL DEFAULT 0,
     guild_candidate INTEGER
 );
 -- Every guild. Relations and standing offers are JSON, and both are written on
@@ -321,9 +323,9 @@ impl Store for PgStore {
                     "INSERT INTO characters \
                      (serial, account, name, body, hue, facet, x, y, z, facing, \
                       strength, dexterity, intelligence, skills, effects, dead, fame, karma, murders, \
-                       quests, done_quests, stat_locks, guild, guild_title, guild_candidate) \
+                       quests, done_quests, stat_locks, guild, guild_title, guild_rank, guild_candidate) \
                      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, \
-                             $17, $18, $19, $20, $21, $22, $23, $24, $25) \
+                             $17, $18, $19, $20, $21, $22, $23, $24, $25, $26) \
                      ON CONFLICT (serial) DO UPDATE SET \
                      account = EXCLUDED.account, name = EXCLUDED.name, \
                      body = EXCLUDED.body, hue = EXCLUDED.hue, facet = EXCLUDED.facet, \
@@ -334,7 +336,7 @@ impl Store for PgStore {
                      fame = EXCLUDED.fame, karma = EXCLUDED.karma, murders = EXCLUDED.murders, \
                      quests = EXCLUDED.quests, done_quests = EXCLUDED.done_quests, \
                      stat_locks = EXCLUDED.stat_locks, guild = EXCLUDED.guild, \
-                     guild_title = EXCLUDED.guild_title, \
+                     guild_title = EXCLUDED.guild_title, guild_rank = EXCLUDED.guild_rank, \
                      guild_candidate = EXCLUDED.guild_candidate",
                     &[
                         &i64::from(record.serial.raw()),
@@ -361,6 +363,7 @@ impl Store for PgStore {
                         &stat_locks,
                         &record.guild.map(u32::cast_signed),
                         &record.guild_title,
+                        &i32::from(record.guild_rank),
                         &record.guild_candidate.map(u32::cast_signed),
                     ],
                 )
@@ -553,7 +556,7 @@ impl Store for PgStore {
             .query(
                 "SELECT serial, account, name, body, hue, facet, x, y, z, facing, \
                  strength, dexterity, intelligence, skills, effects, dead, fame, karma, murders, \
-                 quests, done_quests, stat_locks, guild, guild_title, guild_candidate \
+                 quests, done_quests, stat_locks, guild, guild_title, guild_rank, guild_candidate \
                  FROM characters ORDER BY serial",
                 &[],
             )
@@ -745,7 +748,8 @@ fn character_from_row(row: &Row) -> Result<CharacterRecord, StoreError> {
             .map_err(|e| StoreError::Corrupt(e.to_string()))?,
         guild: row.get::<_, Option<i32>>(22).map(i32::cast_unsigned),
         guild_title: row.get::<_, String>(23),
-        guild_candidate: row.get::<_, Option<i32>>(24).map(i32::cast_unsigned),
+        guild_rank: u8::try_from(row.get::<_, i32>(24)).unwrap_or(0),
+        guild_candidate: row.get::<_, Option<i32>>(25).map(i32::cast_unsigned),
     })
 }
 
@@ -1064,6 +1068,7 @@ mod tests {
             done_quests: Vec::new(),
             guild: None,
             guild_title: String::new(),
+            guild_rank: 0,
             guild_candidate: None,
             stat_locks: StatLockRecord::default(),
         }
