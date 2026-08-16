@@ -33,6 +33,7 @@ pub mod gumpart;
 pub mod hues;
 pub mod image;
 pub mod map;
+pub mod multi;
 pub mod skillgrp;
 pub mod skills;
 pub mod sound;

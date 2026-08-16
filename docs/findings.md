@@ -427,6 +427,45 @@ at whatever install the operator already has; the tests that need one read
 machine, and do not name whose files you tested against — this crate reads a
 *format*, not a particular shard's data.
 
+**A multi's "draw me" flag runs opposite ways in the two files that hold it, and
+nothing in either says so.** `multi.mul` stores a tile-flag word per component,
+and the value that marks a component the client actually draws is `Background`
+(`0x01`) — the *skip* value is zero, which reads backwards from the name. On the
+shipped file that is 57,784 drawn components against 2,030 skipped. Both
+references agree (ServUO's `i == 0 || m_Flags != 0`, ClassicUO's `if (flags == 0)
+continue`).
+
+`MultiCollection.uop` stores a **small enum instead**: `0` drawn, `1` skipped,
+`257` generic. So `0` means *draw* in one file and *skip* in the other, and
+ServUO's `UOPLoad` quietly translates between them in a `switch` with no comment
+on it.
+
+This is invisible from one side. Both readers parse cleanly, both produce
+plausible houses, and the mistake only shows when the same multi is read out of
+both files: it was 309 of the 326 they share, with the same graphics at the same
+offsets and every flag inverted. `client_files.rs`'s cross-check is that
+comparison, and the threshold in it is set to tell a *convention* error (nine in
+ten disagree) from the files honestly drifting apart (a couple of dozen do,
+because one is from 2021 and the other from 2024).
+
+**And the two files are not the same size.** 326 multis in the `.mul`, 862 in the
+UOP, on one install. The UOP is the newer and it wins where both exist — the
+opposite of `map0.mul`'s trap, where the stale file is *zeroed* and therefore
+loud. A stale `multi.mul` is simply older, and a house read out of it has walls
+in places the client, which read the UOP, does not draw them.
+
+**A shipped `multi.mul` has multis that draw nothing at all.** Five of the 326:
+`0x03E8`–`0x03EB` are the `treasure` tiles a dug-up map site is decorated with,
+and `0x0FAB` is a stack of hanging poles. Markers, not buildings. Any check of
+the form "every multi has at least one drawn component" fails on a real file.
+
+**High Seas widened the multi component too, and the arithmetic still settles
+it.** Same problem `tiledata.mul` has and the same answer: a component is 12
+bytes or 16, so a table of index lengths that divides by 16 and not by 12 cannot
+be the old layout. On the shipped file every one of the 326 divides by 16 and
+only 115 divide by 12 — decisive, and better than ServUO's `PostHSFormat`, a
+static somebody has to remember to set.
+
 ## Traps in tests and benchmarks
 
 **A benchmark where nothing moves measures nothing.** A player who does not walk is

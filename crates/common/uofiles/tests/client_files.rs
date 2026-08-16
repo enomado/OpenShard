@@ -1011,3 +1011,113 @@ fn every_shipped_skill_is_filed_under_a_group_that_has_a_name() {
         );
     }
 }
+
+/// Both multi readers, against a shipped install, and held against each other.
+///
+/// A modern install ships `multi.mul` and `MultiCollection.uop` both, and they do
+/// **not** say quite the same thing: this one's `.mul` is from 2021 and its UOP
+/// from 2024, 326 multis against 862. What they must agree on is what a shared
+/// multi *is*, and that is only checkable against a real pair — a fixture is
+/// written by the understanding that wrote both parsers, so a misread flag
+/// convention agrees with itself perfectly.
+///
+/// The flag convention is the whole point. It runs opposite ways in the two
+/// formats and neither file says so; reading one backwards leaves both parsers
+/// looking correct and 309 of 326 multis disagreeing.
+#[test]
+fn the_two_multi_readers_agree_with_each_other() {
+    use openshard_uofiles::multi::{MultiFormat, Multis};
+
+    let Some(dir) = client_dir() else {
+        return;
+    };
+    let mul = Multis::load_mul(dir.join("multi.idx"), dir.join("multi.mul"))
+        .expect("a client ships a readable multi.mul");
+    assert!(!mul.is_empty(), "the index named no multis at all");
+    assert_eq!(
+        mul.format(),
+        Some(MultiFormat::HighSeas),
+        "a modern install's multi.mul is the wide-flag layout"
+    );
+
+    // A house is not one tile and not a thousand: the sizes are the check that
+    // the component stride is right, because a stride one word out reads offsets
+    // out of the middle of an id and the boxes come back absurd.
+    for multi in mul.iter() {
+        let (width, height) = multi.size;
+        assert!(
+            (1..=64).contains(&width) && (1..=64).contains(&height),
+            "multi {:#06x} is {width}x{height}, which is a stride error",
+            multi.id
+        );
+    }
+
+    // Not "every multi draws something", which is what this asserted first and
+    // is untrue of a shipped file: five of the 326 have the skip flag on every
+    // component. Four are the `treasure` tiles a dug-up map site is decorated
+    // with and the fifth is a stack of hanging poles — markers, not buildings.
+    // What must hold is that the drawn set is not *systematically* empty, which
+    // is what a flag convention read backwards would look like.
+    let silent = mul.iter().filter(|multi| multi.drawn().count() == 0).count();
+    assert!(
+        silent < mul.len() / 10,
+        "{silent} of {} multis draw nothing, so the flag convention is inverted",
+        mul.len()
+    );
+
+    let uop_path = dir.join("MultiCollection.uop");
+    if !uop_path.exists() {
+        return;
+    }
+    let uop = Multis::load_uop(&uop_path).expect("a readable MultiCollection.uop");
+    assert!(!uop.is_empty(), "the container held no multis");
+    assert!(
+        uop.len() >= mul.len(),
+        "the newer file knows fewer multis ({}) than the older one ({}), which is \
+         a container half-read rather than a client that shipped both",
+        uop.len(),
+        mul.len()
+    );
+
+    // Not "every drawn tile is identical". The two files are written at
+    // different times — this install's `.mul` is from 2021 and its UOP from 2024
+    // — and they genuinely drift: 326 multis against 862, and a couple of dozen
+    // of the shared ones carry one component more in the newer file.
+    //
+    // What this is really gating is the **flag convention**, which runs opposite
+    // ways in the two formats and is invisible from either side alone. Read one
+    // of them backwards and the disagreement is not a handful of multis: it is
+    // 309 of 326, with the same graphics at the same offsets and every flag
+    // inverted. That is the failure this threshold catches, and it is nothing
+    // like content drift in size.
+    let mut compared = 0;
+    let mut differ = 0;
+    for from_uop in uop.iter() {
+        let Some(from_mul) = mul.get(from_uop.id) else {
+            continue;
+        };
+        compared += 1;
+        let uop_drawn: Vec<(u16, i16, i16, i16)> =
+            from_uop.drawn().map(|c| (c.graphic, c.dx, c.dy, c.dz)).collect();
+        let mul_drawn: Vec<(u16, i16, i16, i16)> =
+            from_mul.drawn().map(|c| (c.graphic, c.dx, c.dy, c.dz)).collect();
+        assert!(
+            !uop_drawn.is_empty() || mul_drawn.is_empty(),
+            "multi {:#06x} draws nothing out of the UOP and something out of the mul, \
+             which is the flag enum read the wrong way round",
+            from_uop.id
+        );
+        if uop_drawn != mul_drawn {
+            differ += 1;
+        }
+    }
+    assert!(
+        compared > 100,
+        "only {compared} multis were in both files, which is too few to have proved anything"
+    );
+    assert!(
+        differ * 10 < compared,
+        "{differ} of {compared} shared multis describe different buildings, which is a \
+         parse disagreement rather than the files drifting apart"
+    );
+}
