@@ -727,6 +727,40 @@ Both callers change: `gm::place_house` (`world/src/gm.rs:488`) already has the
 actor in hand, and `houses::place_house_from_deed` (`tick/houses.rs:138`) has it
 as the mobile whose deed is being spent.
 
+> **D11 is not implementable as written, and the check that found it is the one
+> this phase exists to institutionalise.** `Regions`' whole public surface is
+> `new`, `set`, `clear`, `at`, `get`, `iter`, `len`, `is_empty` — **there is no
+> runtime insertion or removal**, and `set` is replace-all by design: its own doc
+> argues for that, because "a registration carries the whole set, so registering
+> twice cannot leave a stale half behind". D11 contradicts a stated property
+> rather than filling a gap.
+>
+> Four blockers, and the third is decisive on its own:
+>
+> 1. **`RegionId` is a `Vec` index and `at()` indexes it unchecked.** A removal
+>    that shifts the vector renumbers everything above it, silently invalidating
+>    every live `InRegion` and every saved `RegionRecord::id`. Removal has to be a
+>    tombstone, which changes the type rather than adding a method.
+> 2. **The save sweep would write the house's region.** `region_records` maps
+>    `regions.iter()` straight out, so a derived region is saved, restored, *and*
+>    re-derived — two regions over one house, and the saved one outlives the
+>    demolition for ever as a no-recall zone in an empty field. That is the exact
+>    failure D11's own test list names.
+> 3. **The boot order destroys it.** `restore_houses` rides inside
+>    `restore_guilds` at `boot.rs:263`; `restore_regions` runs at `:270` and ends
+>    in `Regions::set`, which replaces everything. Any house region registered at
+>    restore is wiped seven lines later, on every boot, silently.
+> 4. `reindex()` is a full rebuild, so an insert either pays it per placement or
+>    re-implements the grid fill.
+>
+> **So D11 stays deferred, and what it needs first is a decision rather than
+> code**: how a derived region gets an id that `InRegion`'s crossing diff and
+> `RegionRecord` can both live with. The shape that keeps every property D11
+> states is a second, house-keyed layer inside `Regions` — consulted by `at()`,
+> invisible to `iter()`, with ids from a range that is not a `regions` index. That
+> belongs in this document before it is in the tree, which is the whole lesson of
+> the note under D4.
+
 **D11 — a house's own region is derived from its footprint, not stored beside
 it.** D4 said a house *is* a region and left the shape open. The shape follows
 from H1's own rule: what is saved is where a house stands and which multi it is,
@@ -751,9 +785,13 @@ make the yard rule unreachable.
 1. `no_housing` gets its reader — D9's footprint walk, a `Refusal` variant, and
    the twenty-one dungeons close.
 2. `place` takes the actor and D3's exemption becomes true — D10.
-3. A house registers and unregisters its own region — D11, and D4 becomes built.
+3. ~~A house registers and unregisters its own region~~ — **blocked**, see the
+   note under D11. It needs a decision about `Regions`' shape, not a session of
+   typing.
 
-Each stands alone. The first is worth having with neither of the others.
+Each stands alone. The first is worth having with neither of the others, and the
+third turned out to want a design pass of its own — which is D4's lesson
+arriving a second time, at one level down.
 
 #### What a test would pin
 

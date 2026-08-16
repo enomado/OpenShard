@@ -102,10 +102,11 @@ pub struct RegionFlags {
     /// No teleporting in, out or within — the staff `.tele` and the Teleport
     /// spell both refuse.
     pub no_teleport: bool,
-    /// No Recall or Gate. Nothing reads this yet: travel is not built, and the
-    /// flag is here so the converted data does not have to be re-read when it is.
+    /// No Recall or Gate — `magic::travel::may_travel` refuses both, and marking
+    /// a rune inside one too.
     pub no_recall: bool,
-    /// No house may be placed. Likewise waiting for `housing`.
+    /// No house may be placed — `housing::place`'s sixth rule, asked over every
+    /// tile the house would cover. Twenty-one of the shipped regions set it.
     pub no_housing: bool,
     /// A safe zone — no player may harm another. Waiting for its consumer too.
     pub safe: bool,

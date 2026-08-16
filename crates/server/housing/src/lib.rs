@@ -83,6 +83,9 @@ pub enum Refusal {
     BadGround,
     /// Another house's yard. Every house keeps five tiles to itself.
     TooCloseToAHouse,
+    /// A region that does not take houses — ServUO's `no_housing`, which the
+    /// shipped dataset sets on twenty-one dungeons. See H6's D9.
+    NoHousingHere,
     /// The serial pool is dry, which is a shard in trouble rather than a bad spot.
     NoSerials,
 }
@@ -100,6 +103,7 @@ impl Refusal {
             Self::OnARoad => "A house may not be built on a road.",
             Self::BadGround => "The ground will not take a house here.",
             Self::TooCloseToAHouse => "That is too close to another house.",
+            Self::NoHousingHere => "Houses may not be built here.",
             Self::NoSerials => "The shard is out of item serials.",
         }
     }
@@ -141,6 +145,16 @@ pub fn place(
     if footprint.is_empty() {
         return Err(Refusal::DrawsNothing);
     }
+    // Every tile the house *covers*, hoisted: the region check walks it, and so
+    // does the lockdown allowance below. One derivation, two readers — it was
+    // already being computed here, one line further down.
+    let covered = tiles_of(state, at, facet, multi);
+    // **First of the judgements**, and that ordering is the *message*. Every
+    // other refusal here means "try a tile over" — `Occupied` as much as
+    // `BadGround` — and inside Deceit that is a lie a player spends ten minutes
+    // proving. This is the only one that is a statement about the *place*. See
+    // H6's D9b.
+    check_region(state, facet, at, &covered)?;
     if occupied_tile(state, facet, &footprint).is_some() {
         return Err(Refusal::Occupied);
     }
@@ -173,10 +187,7 @@ pub fn place(
             // The tiles are counted here because this is the one moment the multi
             // table is in hand.
             age: 0,
-            lockdowns: u32::try_from(
-                storage::allowance_for(tiles_of(state, at, facet, multi).len()).lockdowns,
-            )
-            .unwrap_or(u32::MAX),
+            lockdowns: u32::try_from(storage::allowance_for(covered.len()).lockdowns).unwrap_or(u32::MAX),
         },
     );
     state.registry.insert(entity, facet);
@@ -665,6 +676,38 @@ pub const YARD: u16 = 5;
 /// wall and thin air are the same refusal from its point of view — and it asks
 /// them against the *map's* statics, which is the half `occupied_tile` cannot
 /// see. And rule five, the road, which is a land-tile id rather than a shape.
+/// ServUO's sixth rule, which this engine had the data for and never read: a
+/// region may refuse houses outright.
+///
+/// # Every covered tile, at the house's own height
+///
+/// **The tiles, not the footprint.** A floor is inside a dungeon as surely as a
+/// wall is, and `footprint_of` deliberately drops everything that does not
+/// block. And not the origin either: `at` is the multi's origin, which
+/// [`Multi::center`](openshard_uofiles::multi::Multi::center) says is *not* the
+/// corner of its box — a multi whose components all sit at positive offsets has
+/// an origin outside its own drawn area, so an origin test can test a tile no
+/// wall stands on.
+///
+/// **The house's `z`, once, and never the component's.** A `RegionRect` carries
+/// a height band and 247 of the shipped rects use one, which is what keeps the
+/// sky above a dungeon open. A villa's roof stands twenty units above its
+/// foundation, so testing each tile at its component's z would read the top half
+/// of a house in Covetous as *not* in Covetous. A house is sited at one height.
+/// See H6's D9a.
+fn check_region(state: &WorldState, facet: Facet, at: Point, covered: &[Tile]) -> Result<(), Refusal> {
+    for tile in covered {
+        let point = Point::new(tile.x, tile.y, at.z);
+        if state
+            .region_at(facet, point)
+            .is_some_and(|region| region.flags.no_housing)
+        {
+            return Err(Refusal::NoHousingHere);
+        }
+    }
+    Ok(())
+}
+
 fn check_ground(state: &WorldState, facet: Facet, footprint: &[Footprint]) -> Result<(), Refusal> {
     let Some(terrain) = state.facet_state(facet).terrain.as_deref() else {
         return Ok(()); // no map, no opinion — every other check here says the same

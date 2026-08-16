@@ -420,6 +420,17 @@ arithmetic slip, and needs a decision rather than a silent patch: exempting
 `Movement.cs`, and wants a repro against real client files (a pier whose shore
 tiles are dry land, not water) confirming the fall before touching it.
 
+**Re-evaluated 2026-08-16 and kept**, so the next reader knows it was looked at
+rather than merely untouched. Two things changed around it and neither moves the
+decision. [`boats.md`](boats.md)'s B5 found that the repro **does not need client
+files** after all — a synthetic multi carrying a climbable platform component at
+a known z over land of known height reproduces the shore-end case, and
+`Multi::new` is public. And it found a second consequence: turning
+`MapTerrain::swimming` on would fire this same guard under every boat deck and
+drop a boarding player into the sea, which is why that flag stays false. The
+deviation is still a deviation, and taking it is still a decision nobody has
+taken.
+
 ### Backlog: a mobile is not an obstacle
 
 The step check asks two things — `MapTerrain::check` for the client's files, and

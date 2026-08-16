@@ -47,6 +47,19 @@ on both ends. Zlib-compressed, and `Feature::CompressedGumps`
 (`protocol/src/feature.rs:78`, gated to 5.0.0.0) is this codebase's precedent for
 a compressed payload behind a version gate.
 
+**The gate itself already exists and is read by nothing**:
+`Feature::CustomMulti` — *"Custom (player-designed) house packets. Since
+4.0.0a."* — at `protocol/src/feature.rs:74`. That is the second time this plan
+has found its own version boundary already named and unwired, after `0x99`'s and
+`SmoothShip`'s; whoever wrote the feature table wrote the whole table.
+
+**And the compression has a home**: `miniz_oxide` is already a workspace
+dependency (root `Cargo.toml:150`), pulled in directly rather than through
+`flate2` because that crate's C backend is ruled out by `unsafe_code = "deny"`.
+`uofiles` uses it for gumpart's zlib and — fittingly — for the UOP multi reader.
+So `0xD8` costs one manifest line in `openshard-protocol`, not a dependency
+decision.
+
 ## Why `Terrain::multi_components` cannot be the answer
 
 `Terrain::multi_components(&self, id: u16) -> &[Component]`
@@ -87,10 +100,19 @@ whether or not any of this is built.
 `HouseDesign { components: Vec<Component>, revision: u32 }` in `openshard-state`,
 beside `House`.
 
-Nothing new enters the dependency graph, which was worth checking before deciding
-rather than after: `openshard-state` already depends on `openshard-movement`,
-which depends on `openshard-uofiles`, and `Component`'s fields are all public. Had
-it not been reachable, D2a's rule would have forced a different design entirely.
+`Component`'s fields are all public and the type is reachable —
+`openshard-state` depends on `openshard-movement`, which depends on
+`openshard-uofiles`. Had it not been reachable, D2a's rule would have forced a
+different design entirely, which is why it was checked before deciding.
+
+**But the manifest does not have that edge yet**, and this document's first draft
+said "nothing new enters the dependency graph" without distinguishing the two.
+`crates/server/state/Cargo.toml` names six `openshard-*` crates and `uofiles` is
+not among them; `openshard-movement` re-exports only `LandTile` from it, not
+`Component`. So C1 adds `openshard-uofiles.workspace = true` to that manifest —
+one line, and a real new edge in the graph a reader checks, which this repo
+comments rather than leaves bare. `crates/server/housing/Cargo.toml` has the same
+edge with a three-line justification, and that comment is the model.
 
 **C2 — one chooser, not three.** `sign_spot` (`housing/src/lib.rs:363`),
 `tiles_of` (`:518`) and `footprint_of` (`:592`) each call

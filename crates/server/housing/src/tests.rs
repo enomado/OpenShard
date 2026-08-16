@@ -110,6 +110,25 @@ fn world_with(components: Vec<Component>) -> WorldState {
     ground_of(components, 0, true)
 }
 
+/// A world the size of Felucca, for the one test that uses the shipped region
+/// data rather than a fixture.
+///
+/// `SIZE` is 32 and Covetous is at x 5376, so the small world cannot hold the
+/// coordinate the data names. `Regions::bucket_of` *clamps* rather than failing,
+/// which means a test placed off the edge of a small world would pass by
+/// accident — the clamp would fold the point back into a bucket that happens to
+/// hold the region. The real extent is what makes the coordinate mean what it
+/// says.
+fn britannia_with(components: Vec<Component>) -> WorldState {
+    let mut state = ground_of(components, 0, true);
+    let facet = state.facet_state_mut(Facet(0));
+    facet.width = 7168;
+    facet.height = 4096;
+    facet.sectors = Sectors::new(7168, 4096);
+    facet.regions = Regions::new(7168, 4096);
+    state
+}
+
 fn ground_of(components: Vec<Component>, land: u16, fits: bool) -> WorldState {
     let mut facets = BTreeMap::new();
     facets.insert(
@@ -1266,4 +1285,184 @@ fn an_empty_house_leaves_no_crate() {
             .is_none(),
         "an empty house left a crate to stand in the road"
     );
+}
+
+/// Lay a `no_housing` region over a box, so a placement has something to be
+/// refused by.
+///
+/// A fixture rather than the shipped dataset, and that is the trade this file
+/// already makes everywhere: what is under test is the *arithmetic* — which
+/// tiles are asked about, and at what z — and `regions.json`'s Covetous would
+/// test the same arithmetic against a rectangle nobody can hold in their head.
+/// The shipped data is exercised by the world crate's own boot, where a region
+/// set is registered for real.
+fn forbid_housing(state: &mut WorldState, rect: openshard_state::RegionRect) {
+    state
+        .facet_state_mut(Facet(0))
+        .regions
+        .set(vec![openshard_state::Region {
+            id: openshard_state::RegionId(0),
+            name: "a dungeon".into(),
+            priority: 0,
+            rects: vec![rect],
+            flags: openshard_state::RegionFlags {
+                no_housing: true,
+                ..Default::default()
+            },
+            music: None,
+            light: None,
+        }]);
+}
+
+/// A house does not go up in Covetous.
+///
+/// **Against the shipped dataset, by name**, so the data and the reader are
+/// tested together. Every other test in this file is right to use a fixture —
+/// what they check is arithmetic — but this one checks that a flag twenty-one
+/// real rows carry actually reaches the rule, and a fixture cannot say that: the
+/// flag was plumbed from JSON through codegen to the save and back for five
+/// phases while nothing read it, and only real data catches the sixth way that
+/// could go wrong.
+#[test]
+fn a_shipped_no_housing_region_refuses_a_house() {
+    let mut state = britannia_with(cottage());
+    let owner = an_owner(&mut state);
+    let felucca = openshard_state::region::shipped()
+        .into_iter()
+        .find(|set| set.facet == Facet(0))
+        .expect("the shard ships one region set");
+    let covetous = felucca
+        .regions
+        .iter()
+        .find(|region| region.name == "Covetous")
+        .expect("Covetous is in the shipped data")
+        .clone();
+    assert!(covetous.flags.no_housing, "Covetous stopped refusing houses");
+    let inside = covetous.rects[0];
+    state.facet_state_mut(Facet(0)).regions.set(felucca.regions);
+
+    let at = Point::new(inside.x + 5, inside.y + 5, 0);
+    assert_eq!(
+        place(&mut state, at, Facet(0), COTTAGE, owner),
+        Err(Refusal::NoHousingHere)
+    );
+    // And nothing was left behind by the refusal — the serial is spent after the
+    // checks, so a refused placement costs a click and no more.
+    assert!(state.registry.query::<House>().next().is_none());
+}
+
+/// The same rule against a fixture, which is what the other cases build on.
+#[test]
+fn a_house_is_refused_inside_a_no_housing_region() {
+    let mut state = world_with(cottage());
+    let owner = an_owner(&mut state);
+    let at = Point::new(10, 10, 0);
+    forbid_housing(&mut state, openshard_state::RegionRect::new(5, 5, 12, 12));
+
+    assert_eq!(
+        place(&mut state, at, Facet(0), COTTAGE, owner),
+        Err(Refusal::NoHousingHere)
+    );
+}
+
+/// **The specification.** A house whose origin is outside the region and whose
+/// wall reaches in is refused.
+///
+/// The test that fails if the check reads `at` instead of the covered tiles, and
+/// the reason D9 walks the whole footprint: a region boundary is a rectangle
+/// edge, and a player standing one tile outside Deceit with their east wall
+/// inside it has built a house in Deceit.
+#[test]
+fn a_house_whose_wall_reaches_a_no_housing_region_is_refused() {
+    let mut state = world_with(cottage());
+    let owner = an_owner(&mut state);
+    let at = Point::new(10, 10, 0);
+    // The cottage's box runs from -1 to +1, so it covers x 9..=11. A region
+    // starting at x 11 contains the east wall and not the origin.
+    forbid_housing(&mut state, openshard_state::RegionRect::new(11, 5, 12, 12));
+
+    assert!(
+        state
+            .region_at(Facet(0), at)
+            .is_none_or(|region| !region.flags.no_housing),
+        "the origin is inside the region, so this test proves nothing"
+    );
+    assert_eq!(
+        place(&mut state, at, Facet(0), COTTAGE, owner),
+        Err(Refusal::NoHousingHere),
+        "the east wall stands inside a region that refuses houses"
+    );
+}
+
+/// A house is judged at its own height, not at each component's.
+///
+/// A banded region — the shape 247 of the shipped rects have, and what keeps the
+/// sky above a dungeon open — refuses a house placed at its floor. Testing each
+/// tile at its component's z would read a roof as being above the band and
+/// answer "not in the dungeon" for the top half of a house that is
+/// unambiguously in it. D9a.
+#[test]
+fn a_house_is_judged_at_its_own_height_not_its_roof() {
+    let mut state = world_with(cottage());
+    let owner = an_owner(&mut state);
+    let at = Point::new(10, 10, 0);
+    // A band that contains the foundation and stops well below any roof.
+    forbid_housing(
+        &mut state,
+        openshard_state::RegionRect::new(5, 5, 12, 12).with_z(-5, 5),
+    );
+
+    assert_eq!(
+        place(&mut state, at, Facet(0), COTTAGE, owner),
+        Err(Refusal::NoHousingHere)
+    );
+}
+
+/// The region refusal is given before the ground refusal.
+///
+/// The order of the checks is the *message*. `BadGround` means "try a tile
+/// over", and inside a dungeon that is a lie — so a spot that is both refuses
+/// for the reason a player can act on. D9b, which is invisible otherwise.
+#[test]
+fn the_region_refusal_comes_before_the_ground_refusal() {
+    // `fits: false` makes every tile bad ground, so both rules would fire.
+    let mut state = ground_of(cottage(), 0, false);
+    let owner = an_owner(&mut state);
+    let at = Point::new(10, 10, 0);
+    forbid_housing(&mut state, openshard_state::RegionRect::new(5, 5, 12, 12));
+
+    assert_eq!(
+        place(&mut state, at, Facet(0), COTTAGE, owner),
+        Err(Refusal::NoHousingHere),
+        "the ground answered first, and told the player to try a tile over"
+    );
+}
+
+/// A region with the flag off does not refuse anything.
+///
+/// The other half of the base case: it would be easy to write a check that
+/// refuses inside *any* region, and 51 of the shipped 128 are guarded towns
+/// where a house is perfectly legal.
+#[test]
+fn an_ordinary_region_takes_a_house() {
+    let mut state = world_with(cottage());
+    let owner = an_owner(&mut state);
+    let at = Point::new(10, 10, 0);
+    state
+        .facet_state_mut(Facet(0))
+        .regions
+        .set(vec![openshard_state::Region {
+            id: openshard_state::RegionId(0),
+            name: "a town".into(),
+            priority: 0,
+            rects: vec![openshard_state::RegionRect::new(5, 5, 12, 12)],
+            flags: openshard_state::RegionFlags {
+                guarded: true,
+                ..Default::default()
+            },
+            music: None,
+            light: None,
+        }]);
+
+    assert!(place(&mut state, at, Facet(0), COTTAGE, owner).is_ok());
 }

@@ -81,10 +81,10 @@ pub fn quest_log_request(serial: RawEncodedSerial) -> Vec<u8> {
 /// The paperdoll's Guild button — `0xD7` subcommand `0x28`, and the `0x0A`
 /// `Send_GuildMenuRequest` writes after it.
 ///
-/// This shard does not act on it yet (`guilds` is a stub, and the dispatch says
-/// so where it names the subcommand), which is the server's half to fill in. The
-/// button sends the request a real client sends either way: a packet that never
-/// leaves is a defect the day the stub is filled, and one nobody would look for.
+/// The shard opens its own guild window on this — founding, the roster, wars and
+/// alliances. The button was written before `guilds` existed, on the argument
+/// that a packet which never leaves is a defect the day the system lands and one
+/// nobody would look for; the system landed, and it was.
 #[must_use]
 pub fn guild_menu_request(serial: RawEncodedSerial) -> Vec<u8> {
     EncodedCommand::encode(serial, EncodedSubcommand::GUILD_GUMP_REQUEST, 0x0A)
@@ -123,7 +123,7 @@ pub enum EncodedSubcommand {
     /// Set a weapon's special ability (AoS). Not acted on: combat has no
     /// abilities yet. Named so the byte layout is not re-derived when it does.
     SetAbility,
-    /// The paperdoll's Guild button. Not acted on: `guilds` is a stub.
+    /// The paperdoll's Guild button — the shard answers it with the guild window.
     GuildGumpRequest,
     /// The paperdoll's Quest button — open the quest log.
     QuestGumpRequest,
