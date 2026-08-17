@@ -102,7 +102,7 @@ impl World {
             self.state.registry.insert(entity, facet);
             self.state.facet_state_mut(facet).sectors.insert(entity, at);
 
-            match openshard_housing::footprint_of(&self.state, at, facet, record.multi) {
+            match openshard_housing::footprint_of(&self.state, at, facet, record.multi, None) {
                 Ok(footprint) => {
                     openshard_housing::block(&mut self.state, entity, facet, &footprint);
                 }

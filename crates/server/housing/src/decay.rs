@@ -242,7 +242,7 @@ pub fn demolish(state: &mut WorldState, house: EntityId) -> Option<EntityId> {
     // where it stood. A house restored with no client files has none to remove,
     // and `unblock` over an empty list is the right no-op for it.
     let multi = state.registry.get::<House>(house).map_or(0, |entry| entry.multi);
-    let footprint = crate::footprint_of(state, at, facet, multi).unwrap_or_default();
+    let footprint = crate::footprint_of(state, at, facet, multi, None).unwrap_or_default();
     crate::unblock(state, house, facet, &footprint);
     take_off_the_ground(state, house);
     crate_entity

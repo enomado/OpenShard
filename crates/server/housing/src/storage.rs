@@ -134,7 +134,7 @@ fn house_tiles(state: &WorldState, house: EntityId) -> Vec<Tile> {
     ) else {
         return Vec::new();
     };
-    crate::tiles_of(state, at, state.facet_of(house), entry.multi)
+    crate::tiles_of(state, at, state.facet_of(house), entry.multi, None)
 }
 
 /// Everything locked down in a house, secures included.

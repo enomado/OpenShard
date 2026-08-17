@@ -2276,6 +2276,39 @@ pub struct HouseDoor {
     pub house: openshard_protocol::serial::Serial,
 }
 
+/// A house whose shape nobody shipped: the components it is made of, made on
+/// this shard.
+///
+/// # Why it cannot live where every other house's shape lives
+///
+/// A classic house's components come from
+/// [`Terrain::multi_components`](openshard_movement::Terrain::multi_components),
+/// keyed by a `u16` and borrowed out of a table fixed at boot. A design is per
+/// *house* — two houses on one foundation id have two designs and one key — and
+/// it is world state, which that seam is documented as deliberately not being.
+/// So it is a component, and the three readers of a house's shape take it as a
+/// parameter instead. See `docs/customisation.md`'s D1 and C1.
+///
+/// # What is never saved, said accurately
+///
+/// Housing's rule is that components are never saved, because a multi's shape is
+/// a pure function of its id and a copy goes stale the day the operator updates
+/// their install. A design has no file behind it, so the rule as written cannot
+/// cover it — and does not need to be abandoned, only stated precisely: **what
+/// is never saved is a copy of something the client's files already state.** A
+/// design says nothing they say. It *is* the original, with nothing to go stale
+/// against, so it is saved.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct HouseDesign {
+    /// What the house is made of, in the shape a multi's own list has.
+    pub components: Vec<openshard_uofiles::multi::Component>,
+    /// Bumped on every commit, so a client can cache the design by
+    /// `(serial, revision)` and ask for the whole thing only when what it holds
+    /// is stale. Not an optimisation: without it every client walking into an
+    /// area re-fetches every design in it, on every approach.
+    pub revision: u32,
+}
+
 /// The sign standing outside a house — the thing you double-click to see who
 /// owns it and to change who may come in.
 ///

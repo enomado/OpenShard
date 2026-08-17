@@ -2901,6 +2901,7 @@ dependencies = [
  "openshard-gateway",
  "openshard-movement",
  "openshard-protocol",
+ "openshard-uofiles",
  "serde",
  "serde_json",
 ]

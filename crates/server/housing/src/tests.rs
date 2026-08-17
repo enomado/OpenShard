@@ -391,7 +391,7 @@ fn unblocking_gives_the_ground_back() {
     let (actor, owner) = an_actor(&mut state);
     let at = Point::new(10, 10, 0);
     let house = place(&mut state, actor, at, Facet(0), COTTAGE, owner).expect("a legal spot");
-    let footprint = footprint_of(&state, at, Facet(0), COTTAGE).expect("the same footprint");
+    let footprint = footprint_of(&state, at, Facet(0), COTTAGE, None).expect("the same footprint");
 
     unblock(&mut state, house, Facet(0), &footprint);
     assert!(
@@ -785,7 +785,7 @@ fn a_house_hangs_its_sign_on_the_corner_of_its_box() {
     let serial = state.registry.serial_of(house).expect("the house's serial");
 
     assert_eq!(
-        sign_spot(&state, at, Facet(0), COTTAGE),
+        sign_spot(&state, at, Facet(0), COTTAGE, None),
         Some(Point::new(9, 11, 7))
     );
     let signs: Vec<_> = state
@@ -824,7 +824,7 @@ fn a_house_with_no_multi_table_hangs_no_sign() {
     let mut state = world_with(cottage());
     let owner = an_owner(&mut state);
     assert_eq!(
-        sign_spot(&state, Point::new(10, 10, 0), Facet(0), COTTAGE + 1),
+        sign_spot(&state, Point::new(10, 10, 0), Facet(0), COTTAGE + 1, None),
         None,
         "an id the table does not hold got a spot anyway"
     );
@@ -920,7 +920,7 @@ fn a_house_gets_its_allowance_from_its_own_footprint() {
     let at = Point::new(10, 10, 0);
     let house = place(&mut state, actor, at, Facet(0), COTTAGE, owner).expect("a legal spot");
 
-    let tiles = tiles_of(&state, at, Facet(0), COTTAGE).len();
+    let tiles = tiles_of(&state, at, Facet(0), COTTAGE, None).len();
     assert_eq!(tiles, 5, "the cottage draws five tiles");
     assert_eq!(
         state.registry.get::<House>(house).map(|entry| entry.lockdowns),

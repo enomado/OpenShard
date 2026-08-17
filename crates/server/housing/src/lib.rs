@@ -42,6 +42,7 @@ use openshard_protocol::wire::{Graphic, Hue};
 use openshard_protocol::world::{Facet, Point};
 use openshard_state::components::{Drawn, House, Position};
 use openshard_state::{Obstructions, WorldState};
+use openshard_uofiles::multi::Component;
 
 /// The bit that turns a multi id into the graphic the wire carries.
 ///
@@ -109,6 +110,45 @@ impl Refusal {
     }
 }
 
+/// Every tile a component list draws on, deduped — the shape `tiles_of` returns
+/// once it has a list, so the two branches cannot answer differently.
+fn drawn_tiles(components: &[Component], at: Point) -> Vec<Tile> {
+    let mut out: Vec<Tile> = components
+        .iter()
+        .filter(|component| component.drawn())
+        .filter_map(|component| {
+            let x = u16::try_from(i32::from(at.x) + i32::from(component.dx)).ok()?;
+            let y = u16::try_from(i32::from(at.y) + i32::from(component.dy)).ok()?;
+            Some(Tile::new(x, y))
+        })
+        .collect();
+    out.sort_unstable_by_key(|tile| (tile.x, tile.y));
+    out.dedup();
+    out
+}
+
+/// A house's shape, from wherever this house's comes from.
+///
+/// **One chooser, not three.** [`sign_spot`], [`tiles_of`] and [`footprint_of`]
+/// each read a house's components, and the choice they now have to make is the
+/// same choice — so it is written once rather than copied into each and left to
+/// drift apart. See `docs/customisation.md`'s C2.
+///
+/// `None` is the terrain's fixed multi: every classic house, still a borrow, so
+/// the common path allocates nothing. `Some` is this house's own design.
+///
+/// `Option` rather than a modelled state, and `style.md`'s rule that an `Option`
+/// means *absent* and not *unknown* is what makes that right: a classic house
+/// genuinely has no design. A foundation with no design is a different thing, and
+/// C3 makes it unrepresentable rather than letting it hide in here.
+fn shape_of<'a>(
+    design: Option<&'a [Component]>,
+    terrain: &'a (dyn openshard_movement::Terrain + Send + Sync),
+    multi: u16,
+) -> &'a [Component] {
+    design.unwrap_or_else(|| terrain.multi_components(multi))
+}
+
 /// One tile of a house's footprint, already in world coordinates.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Footprint {
@@ -172,14 +212,14 @@ pub fn place(
     if FOUNDATION_IDS.contains(&multi) {
         return Err(Refusal::NeedsCustomisation);
     }
-    let footprint = footprint_of(state, at, facet, multi)?;
+    let footprint = footprint_of(state, at, facet, multi, None)?;
     if footprint.is_empty() {
         return Err(Refusal::DrawsNothing);
     }
     // Every tile the house *covers*, hoisted: the region check walks it, and so
     // does the lockdown allowance below. One derivation, two readers — it was
     // already being computed here, one line further down.
-    let covered = tiles_of(state, at, facet, multi);
+    let covered = tiles_of(state, at, facet, multi, None);
     // The four judgements about the plot, and the one row of D10's table staff
     // skip. Everything above this stays: those refusals are facts about the id
     // or a shard in trouble, and a bypass that reopened `NeedsCustomisation`
@@ -405,10 +445,16 @@ const SIGN_Z: i16 = 7;
 /// a bracket and does nothing, and one more entity per house is one more to
 /// save, restore and take down.
 #[must_use]
-pub fn sign_spot(state: &WorldState, at: Point, facet: Facet, multi: u16) -> Option<Point> {
+pub fn sign_spot(
+    state: &WorldState,
+    at: Point,
+    facet: Facet,
+    multi: u16,
+    design: Option<&[Component]>,
+) -> Option<Point> {
     let multi = multi & !MULTI_FLAG;
     let terrain = state.facet_state(facet).terrain.as_deref()?;
-    let box_ = openshard_uofiles::multi::bounds(terrain.multi_components(multi))?;
+    let box_ = openshard_uofiles::multi::bounds(shape_of(design, terrain, multi))?;
     let x = u16::try_from(i32::from(at.x) + i32::from(box_.min_x)).ok()?;
     let y = u16::try_from(i32::from(at.y) + i32::from(box_.max_y)).ok()?;
     let z = i8::try_from(i32::from(at.z) + i32::from(SIGN_Z)).ok()?;
@@ -429,7 +475,7 @@ pub fn hang_sign(
     multi: u16,
 ) -> Option<EntityId> {
     let serial = state.registry.serial_of(house)?;
-    let spot = sign_spot(state, at, facet, multi)?;
+    let spot = sign_spot(state, at, facet, multi, None)?;
     let (sign, _) = state
         .registry
         .spawn_with_serial(openshard_protocol::serial::SerialKind::Item)
@@ -475,7 +521,7 @@ pub fn adopt_doors(state: &mut WorldState, house: EntityId, facet: Facet, at: Po
     // *doorway*, which is by construction a gap in the walls — the one place the
     // footprint does not reach. Using it here adopted nothing, which a test
     // caught rather than a player.
-    let area = tiles_of(state, at, facet, multi);
+    let area = tiles_of(state, at, facet, multi, None);
     let inside: Vec<EntityId> = state
         .registry
         .query::<openshard_state::components::Door>()
@@ -506,7 +552,7 @@ pub fn adopt_doors(state: &mut WorldState, house: EntityId, facet: Facet, at: Po
 /// outside, on the side the box ends" is the same intent from data that exists.
 #[must_use]
 pub fn doorstep(state: &WorldState, at: Point, facet: Facet, multi: u16) -> Point {
-    let tiles = tiles_of(state, at, facet, multi);
+    let tiles = tiles_of(state, at, facet, multi, None);
     let west = tiles.iter().map(|tile| tile.x).min().unwrap_or(at.x);
     Point::new(west.saturating_sub(1), at.y, at.z)
 }
@@ -527,7 +573,7 @@ pub fn evict_the_banned(state: &mut WorldState, house: EntityId) -> Vec<EntityId
         return Vec::new();
     };
     let facet = state.facet_of(house);
-    let area = tiles_of(state, at, facet, entry.multi);
+    let area = tiles_of(state, at, facet, entry.multi, None);
     let out = doorstep(state, at, facet, entry.multi);
 
     let caught: Vec<EntityId> = state
@@ -557,13 +603,21 @@ pub fn evict_the_banned(state: &mut WorldState, house: EntityId) -> Vec<EntityId
 /// tile" and "does this house block this tile" are two questions with two
 /// answers.
 #[must_use]
-pub fn tiles_of(state: &WorldState, at: Point, facet: Facet, multi: u16) -> Vec<Tile> {
+pub fn tiles_of(
+    state: &WorldState,
+    at: Point,
+    facet: Facet,
+    multi: u16,
+    design: Option<&[Component]>,
+) -> Vec<Tile> {
     let multi = multi & !MULTI_FLAG;
     let Some(terrain) = state.facet_state(facet).terrain.as_deref() else {
-        return Vec::new();
+        // A designed house still has a shape without a terrain, but no caller
+        // has one to give yet — C1's `.hdesign` is what changes that, and it
+        // will read this branch again.
+        return design.map_or_else(Vec::new, |design| drawn_tiles(design, at));
     };
-    let mut out: Vec<Tile> = terrain
-        .multi_components(multi)
+    let mut out: Vec<Tile> = shape_of(design, terrain, multi)
         .iter()
         .filter(|component| component.drawn())
         .filter_map(|component| {
@@ -594,7 +648,7 @@ pub fn house_at(state: &WorldState, at: Point, facet: Facet) -> Option<EntityId>
                 .registry
                 .get::<Position>(*entity)
                 .is_some_and(|&Position(origin)| {
-                    tiles_of(state, origin, facet, house.multi).contains(&Tile::new(at.x, at.y))
+                    tiles_of(state, origin, facet, house.multi, None).contains(&Tile::new(at.x, at.y))
                 })
         })
         .map(|(entity, _)| entity)
@@ -632,12 +686,13 @@ pub fn footprint_of(
     at: Point,
     facet: Facet,
     multi: u16,
+    design: Option<&[Component]>,
 ) -> Result<Vec<Footprint>, Refusal> {
     let multi = multi & !MULTI_FLAG;
     let Some(terrain) = state.facet_state(facet).terrain.as_deref() else {
         return Err(Refusal::NoSuchMulti);
     };
-    let components = terrain.multi_components(multi);
+    let components = shape_of(design, terrain, multi);
     if components.is_empty() {
         return Err(Refusal::NoSuchMulti);
     }
@@ -775,7 +830,7 @@ fn check_yard(state: &WorldState, facet: Facet, footprint: &[Footprint]) -> Resu
         let Some(&Position(at)) = state.registry.get::<Position>(entity) else {
             continue;
         };
-        let Ok(theirs) = footprint_of(state, at, facet, house.multi) else {
+        let Ok(theirs) = footprint_of(state, at, facet, house.multi, None) else {
             continue;
         };
         for other in &theirs {
