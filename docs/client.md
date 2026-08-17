@@ -951,10 +951,32 @@ pixel a tile a dot is indistinguishable from a lamp post.
 
 **What is left, and it is the window.** `WindowSubject::Minimap` beside `Skills`
 and `Status` — the two whose *existence* is local UI state rather than something
-the shard opened — its input in `own_windows/minimap.rs`, `Resources` holding
-the colour table, `Screen` holding the pass beside `gump_pass`, and the per-frame
-fill from wherever the player is standing. None of it needs a decision that has
-not been taken here.
+the shard opened — its input in `own_windows/minimap.rs`, `Resources` holding the
+colour table, `Screen` holding the pass beside `gump_pass`, and the per-frame
+fill from wherever the player is standing.
+
+**And one decision it turns out to need, which is not taken.** Every other window
+here is hit-tested against the `Vec<Picture>` its layout produced: `Drawn` holds
+gump art, and dragging, raising and closing all ask which *picture* the pointer
+is on. The radar has no gump art. Its map is a texture of this client's own, so
+its `Drawn` would be an empty list — and an empty list is a window the pointer can
+never find, cannot drag and cannot close.
+
+Three ways out, and they are not equivalent:
+
+- **Give it a gump frame**, the way `status::window` opens with one
+  `Picture::plain(GumpArt::Gump(FRAME), at)`. Then the frame is the hit
+  rectangle and nothing else changes. It wants a real gump id out of a client
+  file, chosen the way `FRAME` was rather than guessed.
+- **Give `Drawn` a rectangle that is not a picture.** Honest about what the
+  window is, and it changes the shape of every hit test that currently assumes
+  art.
+- **Draw the map through the gump pass after all**, which is the decision
+  `radar_pass` already refused, and for a reason that has not changed.
+
+A first attempt at the wiring was reverted rather than landed half-built: the
+enum variant and its five match arms are mechanical, and stopping at the one
+question they lead to is cheaper than answering it in passing.
 
 ### Where everybody is: the facet map
 
