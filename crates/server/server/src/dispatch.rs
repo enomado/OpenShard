@@ -208,6 +208,13 @@ pub(crate) fn dispatch_world_packet(packet: ClientPacket, id: ConnectionId) -> O
                 connection: id,
                 request,
             }),
+            // The serial is not validated here: whether it names a house this
+            // player may see is the tick's question, and it has to look the
+            // entity up either way.
+            ExtendedRequest::DesignDetails(request) => Some(Command::DesignDetails {
+                connection: id,
+                serial: request.serial,
+            }),
             ExtendedRequest::Unknown(subcommand) => {
                 debug!(%id, subcommand = format!("0x{subcommand:02X}"), "unhandled 0xBF");
                 None

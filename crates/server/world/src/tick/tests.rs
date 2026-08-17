@@ -15227,3 +15227,157 @@ fn a_deed_raises_the_house_cursor_and_answering_it_builds() {
         "the house has no walls"
     );
 }
+
+/// **The whole design conversation, through the tick.**
+///
+/// Three packets and every one of them fails quietly on its own: a revision
+/// nobody sends leaves a client redrawing a house it already has, a request with
+/// no handler is a house that never draws, and a `0xD8` that never goes out is a
+/// building whose walls are right and whose picture is somebody else's.
+///
+/// C1 wrote both packets on both ends and wired neither, so its own "done when"
+/// could not be demonstrated. This is that demonstration.
+#[test]
+fn a_designed_house_announces_its_revision_and_answers_the_ask() {
+    use openshard_movement::Terrain;
+    use openshard_uofiles::multi::Component;
+
+    struct Ground;
+    const COTTAGE: u16 = 0x64;
+    const WALL: u16 = 0x0006;
+    const VILLA_WALL: u16 = 0x0007;
+    impl Terrain for Ground {
+        fn can_step(&self, _from: Point, to: Point) -> Option<Point> {
+            Some(to)
+        }
+        fn multi_components(&self, id: u16) -> &[Component] {
+            const COMPONENTS: [Component; 1] = [Component {
+                graphic: WALL,
+                dx: 1,
+                dy: 0,
+                dz: 0,
+                flags: 1,
+            }];
+            if id == COTTAGE { &COMPONENTS } else { &[] }
+        }
+        fn item_blocks(&self, graphic: Graphic) -> bool {
+            graphic.0 == WALL || graphic.0 == VILLA_WALL
+        }
+        fn item_height(&self, graphic: Graphic) -> u8 {
+            if graphic.0 == WALL || graphic.0 == VILLA_WALL {
+                20
+            } else {
+                0
+            }
+        }
+        fn can_fit(&self, _tile: openshard_movement::Tile, _z: i32, _height: i32) -> bool {
+            true
+        }
+    }
+
+    /// Every `0xBF` the connection was sent, by subcommand.
+    fn extended(packets: &[Vec<u8>]) -> Vec<u16> {
+        packets
+            .iter()
+            .filter(|packet| packet[0] == 0xBF && packet.len() >= 5)
+            .map(|packet| u16::from_be_bytes([packet[3], packet[4]]))
+            .collect()
+    }
+
+    let now = Instant::now();
+    let mut world = world();
+    world.state.facet_state_mut(Facet(0)).terrain = Some(Box::new(Ground));
+    let connection = enter(&mut world, now);
+    let player = world.state.players[&connection];
+
+    gm::run(&mut world.state, player, "house 0x64");
+    world.tick(now);
+    let house = world
+        .state
+        .registry
+        .query::<openshard_state::components::House>()
+        .map(|(entity, _)| entity)
+        .next()
+        .expect("the staff verb built a house");
+    let serial = world.state.registry.serial_of(house).expect("a house serial");
+    let _ = packets_for(&mut world, connection);
+
+    // A *classic* house announces nothing: its picture is in the client's own
+    // files and has no revision. This is the half that costs nothing on the
+    // overwhelmingly common shard.
+    world.state.show(player, house);
+    world.tick(now);
+    assert!(
+        !extended(&packets_for(&mut world, connection)).contains(&0x1D),
+        "a house with no design announced a revision it does not have"
+    );
+
+    // Give it one, the way `.hdesign` does.
+    openshard_housing::design::redesign(
+        &mut world.state,
+        player,
+        house,
+        vec![openshard_uofiles::multi::Component {
+            graphic: VILLA_WALL,
+            dx: 2,
+            dy: 0,
+            dz: 0,
+            flags: 1,
+        }],
+    )
+    .expect("the owner may redesign");
+    world.tick(now);
+
+    // The commit told whoever was looking. The draw's copy cannot reach a client
+    // already standing there, which is why this broadcast exists at all.
+    assert!(
+        extended(&packets_for(&mut world, connection)).contains(&0x1D),
+        "the design committed and nobody was told"
+    );
+
+    // And it rides with the draw for anyone arriving later.
+    world.state.seen.clear();
+    world.state.show(player, house);
+    world.tick(now);
+    assert!(
+        extended(&packets_for(&mut world, connection)).contains(&0x1D),
+        "the revision did not ride along with the draw"
+    );
+
+    // The ask, and the answer.
+    world.queue(Command::DesignDetails {
+        connection,
+        serial: RawSerial(serial.raw()),
+    });
+    world.tick(now);
+    let answer = packets_for(&mut world, connection);
+    let detail = answer
+        .iter()
+        .find(|packet| packet[0] == 0xD8)
+        .expect("the shard was asked for a design and sent none");
+
+    // It is the design, not the multi: read it back through the decoder rather
+    // than trusting the length, because a `0xD8` full of the wrong tiles is the
+    // exact failure this whole track exists to stop.
+    let bounds = openshard_protocol::design::DesignBounds {
+        x_min: 2,
+        y_min: 0,
+        width: 1,
+        height: 1,
+    };
+    let back = openshard_protocol::design::DesignDetail::decode(detail, bounds)
+        .expect("the shard sent a design its own decoder refuses");
+    assert_eq!(back.serial.0, serial.raw());
+    assert_eq!(back.revision, openshard_protocol::design::Revision(1));
+    assert!(back.response, "an answer to an ask is flagged as one");
+    assert_eq!(
+        back.tiles,
+        vec![openshard_protocol::design::DesignTile {
+            graphic: Graphic(VILLA_WALL),
+            dx: 2,
+            dy: 0,
+            dz: 0,
+        }],
+        "the shard sent the foundation's shape instead of the design's"
+    );
+}

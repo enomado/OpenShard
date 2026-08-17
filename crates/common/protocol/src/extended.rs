@@ -12,6 +12,7 @@
 
 use crate::casting::CastSpellRequest;
 use crate::context::{ContextMenuRequest, ContextMenuSelect};
+use crate::design::DesignDetailsRequest;
 use crate::error::{DecodeError, expect_id};
 use crate::mobile::StatLockRequest;
 use crate::party::PartyRequest;
@@ -32,6 +33,9 @@ pub enum ExtendedRequest {
     ContextMenuSelect(ContextMenuSelect),
     /// Subcommand `0x1A` — a stat's lock arrow moved.
     StatLock(StatLockRequest),
+    /// Subcommand `0x1E` — "send me that house's design". The middle of the
+    /// three-packet design conversation; see [`DesignDetailsRequest`].
+    DesignDetails(DesignDetailsRequest),
     /// Subcommand `0x06` — everything a party does. Which of the seven it is
     /// lives in the body's first byte, not in the subcommand — see
     /// [`PartyRequest`].
@@ -63,6 +67,9 @@ impl ExtendedRequest {
                 Self::ContextMenuSelect(ContextMenuSelect::decode_body(&mut reader)?)
             }
             StatLockRequest::SUBCOMMAND => Self::StatLock(StatLockRequest::decode_body(&mut reader)?),
+            DesignDetailsRequest::SUBCOMMAND => {
+                Self::DesignDetails(DesignDetailsRequest::decode_body(&mut reader)?)
+            }
             crate::party::SUBCOMMAND => Self::Party(PartyRequest::decode_body(&mut reader)?),
             other => Self::Unknown(other),
         })

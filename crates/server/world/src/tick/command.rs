@@ -891,6 +891,16 @@ pub enum Command {
         /// The object, as the client named it.
         serial: RawSerial,
     },
+    /// A client asked for a designed house's picture (`0xBF` `0x1E`).
+    ///
+    /// The middle of the three-packet design conversation: the shard announced a
+    /// revision with the draw, the client did not hold it, and this is the ask.
+    DesignDetails {
+        /// Which connection asked.
+        connection: ConnectionId,
+        /// The house, as the client named it.
+        serial: RawSerial,
+    },
     /// A client picked a context-menu entry (`0xBF` `0x15`).
     ContextMenuSelect {
         /// Which connection asked.

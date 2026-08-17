@@ -1832,6 +1832,143 @@ impl WorldState {
                 packet: tooltip,
             });
         }
+        // And a designed house's *picture* revision, which is the same shape one
+        // question along: the client knows its cached walls are stale and can ask
+        // for a fresh `0xD8`. The reference does exactly this and in exactly this
+        // place — `HouseFoundation.SendInfoTo` overrides the item's own "show
+        // yourself" and appends the general-info packet after it.
+        if let Some(design) = self.design_revision_packet(other, version) {
+            self.outbox.push(Outbound {
+                connection,
+                packet: design,
+            });
+        }
+    }
+
+    /// The `0xBF 0x1D` that says which revision a designed house's picture is
+    /// at, to send *alongside* its draw — or `None` for anything that is not a
+    /// designed house, and for a client too old to speak the design packets.
+    ///
+    /// [`tooltip_packet`](Self::tooltip_packet)'s twin, and the parallel is
+    /// exact: both are a cheap "what you have cached may be stale" that rides
+    /// with the draw so the client can ask for the expensive thing only on a
+    /// miss. Without it, every client walking into a neighbourhood would
+    /// re-fetch every design in it on every approach.
+    ///
+    /// A classic multi answers `None` and costs nothing: its picture is in the
+    /// client's own files and has no revision.
+    fn design_revision_packet(&self, entity: EntityId, version: ClientVersion) -> Option<Vec<u8>> {
+        if !version.supports(Feature::CustomMulti) {
+            return None;
+        }
+        let design = self.registry.get::<crate::components::HouseDesign>(entity)?;
+        let serial = self.registry.serial_of(entity)?;
+        Some(
+            openshard_protocol::design::DesignRevision {
+                serial: openshard_protocol::serial::RawSerial(serial.raw()),
+                revision: openshard_protocol::design::Revision(design.revision),
+            }
+            .encode(),
+        )
+    }
+
+    /// The `0xD8` a client asked for, or `None` when the entity is not a
+    /// designed house or this shard has no terrain to answer with.
+    ///
+    /// Built here rather than in `openshard-housing` because everything it needs
+    /// is here: the components are a component, the bounds are arithmetic over
+    /// them, and the *floor* predicate is the facet's terrain. Housing owns the
+    /// rules about who may change a design; this is the drawing substrate, which
+    /// is where [`show`](Self::show) and [`tooltip_packet`](Self::tooltip_packet)
+    /// already live.
+    ///
+    /// `response` is the reference's own flag: set when the design goes out
+    /// because a client asked, clear when the shard volunteered it.
+    #[must_use]
+    pub fn design_detail_packet(&self, house: EntityId, response: bool) -> Option<Vec<u8>> {
+        use openshard_protocol::design::{DesignDetail, DesignTile};
+
+        let design = self.registry.get::<crate::components::HouseDesign>(house)?;
+        let serial = self.registry.serial_of(house)?;
+        let facet = self.facet_of(house);
+        let terrain = self.facet_state(facet).terrain.as_deref()?;
+
+        // Only what the client draws. An undrawn component is not part of the
+        // picture, and the signature tile every multi opens with is one.
+        let tiles: Vec<DesignTile> = design
+            .components
+            .iter()
+            .filter(|component| component.drawn())
+            .filter_map(|component| {
+                Some(DesignTile {
+                    graphic: openshard_protocol::wire::Graphic(component.graphic),
+                    dx: i8::try_from(component.dx).ok()?,
+                    dy: i8::try_from(component.dy).ok()?,
+                    dz: i8::try_from(component.dz).ok()?,
+                })
+            })
+            .collect();
+        if tiles.is_empty() {
+            return None;
+        }
+        Some(
+            DesignDetail {
+                serial: openshard_protocol::serial::RawSerial(serial.raw()),
+                revision: openshard_protocol::design::Revision(design.revision),
+                response,
+                tiles: &tiles,
+            }
+            // A *floor* is a static with no height, which is `tiledata`'s answer
+            // and the one thing `openshard-protocol` refused to guess — C1
+            // recorded the seam and this is the caller that holds a `Terrain`.
+            .encode(|graphic| terrain.item_height(graphic) == 0),
+        )
+    }
+
+    /// Send a designed house's picture to one player, because they asked.
+    pub fn send_design_detail(&mut self, watcher: EntityId, house: EntityId) {
+        let Some((connection, version)) = self.client_of(watcher) else {
+            return;
+        };
+        if !version.supports(Feature::CustomMulti) {
+            return;
+        }
+        let Some(packet) = self.design_detail_packet(house, true) else {
+            return;
+        };
+        self.outbox.push(Outbound { connection, packet });
+    }
+
+    /// Tell everyone who can see a designed house that its picture changed.
+    ///
+    /// [`show`](Self::show)'s packet, sent again on its own when the design
+    /// commits — a client that is already looking at the house will never be
+    /// shown it a second time, so the draw's copy cannot reach it.
+    ///
+    /// Encoded per recipient rather than fanned out as one buffer, because the
+    /// gate is per client version: `Feature::CustomMulti` is 4.0.0a and a shard
+    /// may well have older clients on it.
+    pub fn broadcast_design_revision(&mut self, house: EntityId) {
+        let Some(design) = self.registry.get::<crate::components::HouseDesign>(house) else {
+            return;
+        };
+        let Some(serial) = self.registry.serial_of(house) else {
+            return;
+        };
+        let packet = openshard_protocol::design::DesignRevision {
+            serial: openshard_protocol::serial::RawSerial(serial.raw()),
+            revision: openshard_protocol::design::Revision(design.revision),
+        }
+        .encode();
+        for (connection, version) in self.audience_of(house) {
+            if !version.supports(Feature::CustomMulti) {
+                continue;
+            }
+            self.outbox.push(Outbound {
+                connection,
+                packet: packet.clone(),
+            });
+        }
     }
 
     /// The tooltip packet to send *alongside* a draw, or `None` when tooltips are

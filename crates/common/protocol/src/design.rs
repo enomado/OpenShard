@@ -161,6 +161,50 @@ impl DesignRevision {
     }
 }
 
+/// `0xBF` subcommand `0x1E` — "send me that house's design".
+///
+/// The middle of the three-packet conversation, and the reason
+/// [`DesignRevision`] is worth sending at all: the shard announces a revision,
+/// a client that does not hold it asks with this, and only then does a
+/// [`DesignDetail`] go out. A client that already has the picture sends nothing
+/// and costs nothing.
+///
+/// The reference registers it as an ordinary extended command —
+/// `PacketHandlers.RegisterExtended(0x1E, true, QueryDesignDetails)` in
+/// `HouseFoundation.cs` — whose body is one serial and nothing else.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct DesignDetailsRequest {
+    /// The house being asked about.
+    pub serial: RawSerial,
+}
+
+impl DesignDetailsRequest {
+    /// Which `0xBF` this is.
+    pub const SUBCOMMAND: u16 = 0x1E;
+
+    /// Read the body, `reader` already past the id, length and subcommand.
+    ///
+    /// The serial is not validated here: whether it names a house this player
+    /// may see is the seam that acts on the request, not the decoder's — the
+    /// same split [`StatLockRequest`](crate::mobile::StatLockRequest) makes.
+    pub(crate) fn decode_body(reader: &mut PacketReader<'_>) -> Result<Self, DecodeError> {
+        Ok(Self {
+            serial: RawSerial(reader.u32()?),
+        })
+    }
+
+    /// Encode the whole packet. Our own client sends this; the shard only ever
+    /// decodes it — [`UnicodeTalkRequest`](crate::speech::UnicodeTalkRequest)'s
+    /// split.
+    #[must_use]
+    pub fn encode(self) -> Vec<u8> {
+        frame_body(0xBF, PacketLength::Variable, |out: &mut PacketWriter| {
+            out.u16(Self::SUBCOMMAND);
+            out.u32(self.serial.0);
+        })
+    }
+}
+
 /// The five `dz` values a storey sits at. A tile at any other elevation is a
 /// stair tile — which is what the reference calls them, and where the buffer
 /// gets its name.
@@ -583,6 +627,45 @@ mod tests {
     fn sorted(mut tiles: Vec<DesignTile>) -> Vec<DesignTile> {
         tiles.sort_by_key(|tile| (tile.dz, tile.dx, tile.dy, tile.graphic.0));
         tiles
+    }
+
+    /// The request the shard answers with a `0xD8`, round-tripped through the
+    /// one `0xBF` envelope decoder rather than through a second reader of its
+    /// own — which is the whole point of `ExtendedRequest`.
+    #[test]
+    fn a_design_request_reads_back_through_the_extended_envelope() {
+        use crate::extended::ExtendedRequest;
+
+        let bytes = DesignDetailsRequest {
+            serial: RawSerial(0x4000_0123),
+        }
+        .encode();
+        assert_eq!(bytes.len(), 9, "id, length, subcommand and one serial");
+        assert_eq!(&bytes[..5], &[0xBF, 0x00, 0x09, 0x00, 0x1E]);
+        assert_eq!(
+            ExtendedRequest::decode(&bytes).unwrap(),
+            ExtendedRequest::DesignDetails(DesignDetailsRequest {
+                serial: RawSerial(0x4000_0123),
+            }),
+        );
+    }
+
+    /// A truncated request is refused rather than read as a serial with its top
+    /// bytes missing — which would name a different house.
+    #[test]
+    fn a_truncated_design_request_is_refused_not_panicked() {
+        use crate::extended::ExtendedRequest;
+
+        let full = DesignDetailsRequest {
+            serial: RawSerial(0x4000_0123),
+        }
+        .encode();
+        for cut in 0..full.len() {
+            assert!(
+                ExtendedRequest::decode(&full[..cut]).is_err(),
+                "a {cut}-byte packet must not decode"
+            );
+        }
     }
 
     #[test]

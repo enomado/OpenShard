@@ -15,9 +15,10 @@
 //! a house whose walls came from a file the client no longer has.
 
 use openshard_entities::EntityId;
+use openshard_gateway::ConnectionId;
 use openshard_items as items;
 use openshard_persistence::record::HouseRecord;
-use openshard_protocol::serial::Serial;
+use openshard_protocol::serial::{RawSerial, Serial};
 use openshard_protocol::server_packet::ServerPacket;
 use openshard_protocol::target::{MultiTargetRequest, TargetKind};
 use openshard_protocol::wire::CursorId;
@@ -56,6 +57,32 @@ impl World {
                 })
             })
             .collect()
+    }
+
+    /// Answer a client's `0xBF 0x1E` with the house's design.
+    ///
+    /// The last of the three-packet conversation, and the only expensive one:
+    /// the revision rode out with the draw, the client found it did not hold
+    /// that revision, and this is what it costs when it does not. A client that
+    /// already has the picture never gets here.
+    ///
+    /// Silent on every refusal, including "that is not a house". A client may
+    /// legitimately ask about a multi that has since come down, and there is
+    /// nothing to tell it that it will not learn from the removal anyway.
+    pub(super) fn design_details_request(&mut self, connection: ConnectionId, serial: RawSerial) {
+        let Some(watcher) = self.state.players.get(&connection).copied() else {
+            return;
+        };
+        let Some(house) = serial.validate().and_then(|s| self.state.registry.entity_of(s)) else {
+            return;
+        };
+        // Asked about a house they cannot see. Refused rather than answered:
+        // a design is a few hundred rows, and "send me every house on the shard"
+        // should not be one packet away.
+        if self.state.facet_of(house) != self.state.facet_of(watcher) {
+            return;
+        }
+        self.state.send_design_detail(watcher, house);
     }
 
     /// Every ship as a saveable record.

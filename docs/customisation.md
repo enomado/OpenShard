@@ -34,9 +34,10 @@ reason.
 | piece | server | client (ours) | classic client |
 |---|---|---|---|
 | `0xD7` header decode | **built** — `encoded.rs`, total `Other(u16)` fallthrough | sends two subcommands | speaks it |
+| `0xBF 0x1E` the client's ask | **answered** | — | speaks it |
 | the `0xD7` design subcommands | — | — | speaks them |
-| `0xD8` the design itself | **built** — `design.rs`, nothing sends it yet | **built** — decodes, nothing draws it yet | speaks it |
-| `0xBF 0x1D` the design revision | **built** — `design.rs`, nothing sends it yet | **built** — decodes, nothing caches on it yet | speaks it |
+| `0xD8` the design itself | **sent**, on request | **built** — decodes, nothing draws it yet | speaks it |
+| `0xBF 0x1D` the design revision | **sent**, with the draw and on commit | **built** — decodes, nothing caches on it yet | speaks it |
 | a per-house component list | **nowhere it can live** — D1 | — | n/a |
 | a foundation on the ground | **refused by name** (`Refusal::NeedsCustomisation`) | would draw nothing | draws multis already |
 | the design saved | — | n/a | n/a |

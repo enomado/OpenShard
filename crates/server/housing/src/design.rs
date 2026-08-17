@@ -144,6 +144,10 @@ pub fn redesign(
     if let Some(entry) = state.registry.get_mut::<House>(house) {
         entry.lockdowns = lockdowns;
     }
+    // And tell everyone looking at it that the picture they have is stale. The
+    // draw sends this too, but a client already standing there will never be
+    // shown the house a second time, so the draw's copy cannot reach them.
+    state.broadcast_design_revision(house);
     Ok(revision)
 }
 

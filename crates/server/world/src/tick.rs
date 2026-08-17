@@ -1200,6 +1200,9 @@ impl World {
             Command::ContextMenuRequest { connection, serial } => {
                 self.context_menu_request(connection, serial);
             }
+            Command::DesignDetails { connection, serial } => {
+                self.design_details_request(connection, serial);
+            }
             Command::ContextMenuSelect {
                 connection,
                 serial,
