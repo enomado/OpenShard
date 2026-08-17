@@ -7,9 +7,8 @@
 //! Pulled out of [`crate::App`] for the same reason [`crate::picking::Picking`]
 //! and [`crate::input::Input`] were, and unlike those two the fields here
 //! *are* read together — `dragging` and `held_doll` are checked side by side
-//! on every press, `skills` and `held_skill` answer one gesture, and
-//! `own_windows`/`dialogs`/`skills` are all asked in the same breath to
-//! decide which window kind a click landed on.
+//! on every press, and `own_windows` and `dialogs` are asked in the same
+//! breath to decide which window kind a click landed on.
 
 use std::collections::HashSet;
 use std::time::Instant;
@@ -101,11 +100,17 @@ pub enum WindowSubject {
     /// there is one skill window and it is always about the body at this end
     /// of the connection — see `view::Player::skills`.
     ///
-    /// The one window kind whose *existence* is not in the view. A container
-    /// window is open because the shard opened it and a dialog because the
-    /// shard drew it, so `sync_own_windows` can read both off the view; this
-    /// one is open because the player pressed Skills, and
-    /// [`Windows::skills`] is where that fact lives.
+    /// One of the two window kinds whose *existence* is not in the view. A
+    /// container window is open because the shard opened it and a dialog
+    /// because the shard drew it, so `sync_own_windows` can read both off the
+    /// view; this one is open because the player pressed Skills, and **being
+    /// in [`Windows::own_windows`] is the whole of that fact** — see
+    /// [`open_local_window`], which is the only thing that puts it there.
+    ///
+    /// It used to be `Windows::skills` being `Some`, which was the tree and
+    /// the openness in one field: closing the window and forgetting which
+    /// headings were shut were one write, and four files did it. The tree is
+    /// a field of `panes::skills::SkillsPane` now.
     Skills,
     /// This character's status window. Like skills, its presence is local UI
     /// state: `0x11` updates its values but does not ask the client to open it.
@@ -340,35 +345,49 @@ pub struct Windows {
     /// pair has to be two clicks on the same picture of the same window
     /// rather than two clicks anywhere.
     pub last_scroll: Option<(Instant, WindowSubject, paperdoll::DollButton)>,
-    /// The skill window, when it is open: which headings are shut and how
-    /// far down it is scrolled.
-    ///
-    /// `Some` *is* the window being open. Two facts in one field on purpose:
-    /// every other window kind is open because the view holds its subject,
-    /// and this one has no subject in the view to be open because of — so a
-    /// separate `skills_open: bool` beside a `Tree` would be a second answer
-    /// to the same question, able to say the window is shut while its
-    /// scroll position stands.
-    pub skills: Option<skills::Tree>,
     /// Whether the player's status window is open.
     ///
     /// A status reply refreshes numbers but does not open a window: the shard
     /// sends one at world entry, so only the Status button may set this true.
     pub status: bool,
-    /// What the mouse went down on in the skill window, if anything.
-    ///
-    /// [`held_doll`](Windows::held_doll)'s twin, and keyed the same way — by
-    /// what was pressed rather than by which picture, because the window is
-    /// laid out afresh every frame and an index would name a different row
-    /// by the time the button came up. A held [`skills::Hit::Thumb`] is also
-    /// what makes the bar follow the pointer: see
-    /// [`crate::App::drag_thumb`].
-    pub held_skill: Option<skills::Hit>,
     /// What every open `0xB0` dialog is holding that no packet carries: the
     /// page it is showing, the switches the player has set, what has been
     /// typed into its fields and which button the finger is on. See
     /// [`crate::gump`].
     pub dialogs: gump::Dialogs,
+}
+
+/// Open one of the windows the shard does not know about, if it is not open
+/// already.
+///
+/// The skill sheet and the status frame: nothing in the view asks for either,
+/// so nothing in [`reconcile_own_windows`] can put them there — the player
+/// pressed a button on their paperdoll, and this is that press arriving. See
+/// [`crate::panes::LocalWindow`], which is the effect a pane asks for.
+///
+/// **Idempotent, and that is the contract**: pressing Skills a second time
+/// while the sheet is up must leave the window it finds alone, scroll position,
+/// shut headings and all. A window is its pane, so re-opening one would be
+/// throwing that away — which is exactly what the old
+/// `skills.get_or_insert_with(Tree::default)` was careful not to do, in two
+/// places that each had to remember.
+///
+/// Cascaded like a bag, for want of anywhere better: the reference client
+/// remembers where each window was left, which is the backlog entry every kind
+/// here shares.
+pub fn open_local_window(own_windows: &mut Vec<OwnWindow>, subject: WindowSubject) {
+    if own_windows.iter().any(|window| window.subject == subject) {
+        return;
+    }
+    let step = own_windows.len() as i32 % CONTAINER_CASCADE_LENGTH;
+    own_windows.push(OwnWindow {
+        subject,
+        at: GumpPixel::new(
+            CONTAINER_ORIGIN.x + CONTAINER_CASCADE.x * step,
+            CONTAINER_ORIGIN.y + CONTAINER_CASCADE.y * step,
+        ),
+        pane: crate::panes::AnyPane::of(subject),
+    });
 }
 
 /// [`crate::App::sync_own_windows`]'s membership logic, pulled out to a free
@@ -378,7 +397,7 @@ pub struct Windows {
 ///
 /// Opens a window for everything `view` has that `own_windows` does not, and
 /// drops every window whose subject `view` (and, for the one kind it cannot
-/// answer for, `skills_open`) no longer has — except a subject in
+/// answer for, `status_open`) no longer has — except a subject in
 /// `locally_closed`, which stays dropped and stays un-reopened regardless of
 /// what `view` says, until `view` itself agrees the subject is gone. That is
 /// the reconciliation: an overlay entry survives only until the view it is
@@ -386,11 +405,16 @@ pub struct Windows {
 /// mispredicted step in `link.rs`, one layer down. A subject the view never
 /// lists in the first place (`Skills`) has nothing to reconcile against and
 /// is not put in the overlay at all.
+///
+/// The skill window is not passed in at all any more, in either direction:
+/// it is opened by [`open_local_window`] and closed by the `retain` in
+/// `App::close_window`, so its presence in `own_windows` *is* the fact and
+/// there is no second copy of it here to disagree. The status window still
+/// has the `bool` this one had, until step 3 of `docs/window_components.md`.
 pub fn reconcile_own_windows(
     view: &openshard_client_net::view::WorldView,
     own_windows: &mut Vec<OwnWindow>,
     locally_closed: &mut HashSet<WindowSubject>,
-    skills_open: bool,
     status_open: bool,
 ) {
     locally_closed.retain(|subject| match *subject {
@@ -416,10 +440,12 @@ pub fn reconcile_own_windows(
             }
             WindowSubject::Paperdoll(serial) => view.paperdolls.contains_key(&serial),
             WindowSubject::Dialog(gump_id) => view.gumps.iter().any(|gump| gump.gump_id == gump_id),
-            // The one kind the view cannot answer for — see the variant's
-            // docs. Closing it is what empties `skills`, so this is that fact
-            // read back rather than a second copy of it.
-            WindowSubject::Skills => skills_open,
+            // Nothing to reconcile against, and nothing to ask: the window is
+            // open because it is here. `close_window`'s own `retain` is what
+            // takes it away, and anything here would be a second opinion about
+            // that — the field this replaced could say the window was shut
+            // while the window was still in this list.
+            WindowSubject::Skills => true,
             WindowSubject::Status => status_open,
         }
     });
@@ -464,42 +490,13 @@ pub fn reconcile_own_windows(
             pane: crate::panes::AnyPane::of(subject),
         });
     }
-    // The skill window, which nothing in the view asked for: the player did,
-    // by pressing Skills. Cascaded like a bag, for want of anywhere better —
-    // the reference remembers where this one was left, which is the backlog
-    // entry every window kind here shares.
-    if skills_open
-        && !own_windows
-            .iter()
-            .any(|window| window.subject == WindowSubject::Skills)
-    {
-        let step = own_windows.len() as i32 % CONTAINER_CASCADE_LENGTH;
-        own_windows.push(OwnWindow {
-            subject: WindowSubject::Skills,
-            at: GumpPixel::new(
-                CONTAINER_ORIGIN.x + CONTAINER_CASCADE.x * step,
-                CONTAINER_ORIGIN.y + CONTAINER_CASCADE.y * step,
-            ),
-            pane: crate::panes::AnyPane::of(WindowSubject::Skills),
-        });
-    }
-    // The status window has the skills window's ownership shape: the values
-    // are authoritative, but the decision to look at them is local. A `0x11`
-    // is sent at entry, so opening on data would surprise every login.
-    if status_open
-        && !own_windows
-            .iter()
-            .any(|window| window.subject == WindowSubject::Status)
-    {
-        let step = own_windows.len() as i32 % CONTAINER_CASCADE_LENGTH;
-        own_windows.push(OwnWindow {
-            subject: WindowSubject::Status,
-            at: GumpPixel::new(
-                CONTAINER_ORIGIN.x + CONTAINER_CASCADE.x * step,
-                CONTAINER_ORIGIN.y + CONTAINER_CASCADE.y * step,
-            ),
-            pane: crate::panes::AnyPane::of(WindowSubject::Status),
-        });
+    // The status window has the skill window's ownership shape — the values
+    // are authoritative, but the decision to look at them is local, and a
+    // `0x11` is sent at entry, so opening on data would surprise every login —
+    // and it still keeps that fact in a `bool` of its own. Step 3 is where it
+    // becomes what the skill window's is: being in this list.
+    if status_open {
+        open_local_window(own_windows, WindowSubject::Status);
     }
     // A dialog is placed where the shard asked for it, and it is the only
     // window kind that is: a `0xB0` carries a coordinate and a `0x24` does

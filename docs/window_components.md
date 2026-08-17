@@ -29,8 +29,8 @@ that the next window kind is free to get wrong again.
 **No window has private state.** `Windows` (`crates/client/app/src/windows.rs`)
 holds `vendor_scrolls`, `vendor_amounts`, `skills`, `held_skill`, `held_doll`,
 `last_scroll`, `last_container_click` and `dialogs` as public fields. (The first
-two left with S1 — the paragraph is what the plan was written against, and the
-Steps below are what has gone.)
+two left with S1 and the next two with S2 — the paragraph is what the plan was
+written against, and the Steps below are what has gone.)
 `own_windows.rs` writes them from the press path, `render_passes.rs` reads
 *and* writes them while laying the frame out (`vendor_amounts.entry(..)` at
 `render_passes.rs:190`), and `close_window` has to remember `vendor_scrolls
@@ -320,12 +320,69 @@ never a half-routed frame.
       Confirm sold the player's own goods, for a serial in both maps. And the
       order is zipped against the *lines*, so a quantity left over from a
       catalogue that has since shrunk cannot travel.
-- [ ] **S2. Skills.** `skills`/`held_skill` follow. `Windows::skills` being
-      `Some` is what "the window is open" means today (see its doc comment);
-      that fact becomes the pane's presence in the list, which is where every
-      other kind already keeps it.
+- [x] **S2. Skills.** ✅ `panes/skills.rs`: `SkillsPane { tree, held }`, an
+      `impl Pane` with all three methods, and `own_windows/skills.rs` deleted
+      whole — `skill_hit_under_pointer`, `skill_content`, `skill_clicked`,
+      `drag_thumb` and `scroll_skills` with it, along with the skills arms of
+      `press_on_own_window` and `release_on_own_window`, the skills arm of
+      `render_passes.rs`'s layout loop, and `Link::set_skill_lock`/`use_skill`.
+      `legacy_window_input`'s wheel arm is **empty**, which is the milestone
+      this plan was commissioned for: the `||` chain that made a notch over a
+      window a zoom of the map has no terms left.
+      **Five things landed differently from the shape above:**
+      - **`Windows::skills` did not become a field of the pane; it stopped
+        existing.** The `Option<Tree>` was the tree *and* the openness, so this
+        step had to answer both. The tree is `SkillsPane::tree`, and the
+        openness is the window being in `own_windows` — which means
+        `reconcile_own_windows` lost its `skills_open` argument rather than
+        having it renamed: its `Skills` arm is now `true`, because a window is
+        open by being in the list it is being asked about. Four writers of the
+        old field (`close_window`, `sync_own_windows`, the disconnect arm,
+        the paperdoll's button) are down to two callers of one door.
+      - **That door is `windows::open_local_window`, and it is a free
+        function.** `Effect::Open(LocalWindow::Skills)` performs it, and the
+        paperdoll's Skills button — legacy until S5 — calls the same one, so
+        there is no second way to open the sheet while the migration is half
+        done. Its contract is that it is **idempotent**: pressing Skills again
+        leaves the window it finds alone, which is what the old
+        `get_or_insert_with(Tree::default)` was carefully spelling in two
+        places. The status window's cascade in `reconcile_own_windows` is the
+        same call now, so S3 is a `bool` to delete rather than a block to
+        write.
+      - **🚨 A local window has to be closed by name where the view is not the
+        authority.** Everything else is dropped by `reconcile_own_windows`
+        because the view stopped listing its subject; a skill sheet has no
+        subject in the view, so the disconnect arm of `net_command.rs` retains
+        it out of the list explicitly. That is the price of "presence is the
+        fact" for a kind the view cannot answer for, and it is the honest
+        version of the old `windows.skills = None`. S3 inherits the same line.
+      - **The wheel's answer changed, and it is the only behaviour this step
+        did not merely move.** `scroll_skills` returned one `bool` and returned
+        it `true`, so a sheet at the bottom of its list took the notch *and*
+        asked for a frame with nothing new on it. `SkillsPane::wheel` answers
+        `consumed` there and `changed` otherwise — the harmless half of the
+        conflation whose other half was the vendor's visible defect.
+      - **The sheet's layout is unconditional, unlike a shop's.** A vendor pane
+        answers `None` for a catalogue that has left the view, so
+        `render_passes.rs` keeps a reachable arm for it; a skill sheet draws its
+        own frame with nothing at all in the view, so its arm is unreachable and
+        says so.
+
+      **One ordering this step changed, and why it is safe.** The sheet's
+      release used to be the *last* question asked on the way up — the third
+      term of `release_container_item() || release_container_press() ||
+      release_on_own_window()` — and it is now the first, because panes are
+      offered an input ahead of the legacy chain. Nothing can be held by both:
+      a press only reaches a pane while the hand is empty (the manager's gate,
+      S1), and the press that fills the hand is a press on a container, so
+      `SkillsPane::held` and an item transaction cannot be live at the same
+      time. Any later kind that keeps a press of its own inherits this
+      question, and S6's container is where it stops being trivially true.
 - [ ] **S3. Status.** The smallest kind, and the one that proves a pane with no
-      input at all is still a pane.
+      input at all is still a pane. S2 left it half done on purpose:
+      `open_local_window` already places it, so what is left is the layout, and
+      deleting `Windows::status` in favour of the same fact the skill sheet now
+      keeps — being in the list.
 - [ ] **S4. Dialog.** `gump::Dialogs` is already close to a pane — it owns the
       page, the switches, the typed text and the held button. Mostly a move.
 - [ ] **S5. Paperdoll.** `held_doll`, `last_scroll`, `doll_clicked`, and the
@@ -334,16 +391,20 @@ never a half-routed frame.
       first pane to own a `Pressed` of its own, to read `ctx.hand` for a drop
       onto itself, and to emit both halves of D7's transfer as separate effects.
 - [ ] **S7. Delete the branches.** `press_on_own_window`,
-      `release_on_own_window`, `scroll_vendor`, `scroll_skills`,
-      `hover_container_item`, `hover_paperdoll_item` and the `WindowSubject`
-      matches inside them stop existing. `App` no longer knows what a vendor is.
+      `release_on_own_window`, `hover_container_item`, `hover_paperdoll_item`
+      and the `WindowSubject` matches inside them stop existing. `App` no longer
+      knows what a vendor is. (`scroll_vendor` and `scroll_skills` were named
+      here too and are already gone, with S1 and S2 — the wheel arm they were
+      the two terms of is empty.)
 - [ ] **S8. The test the wheel defect would have failed.** A pane exercised with
       a `PaneCtx` and no `App`: scroll a catalogue to its end, offer one more
       notch, assert `taken` and `!redraw`.
-      **Half of it exists as of S1** and is three tests in `panes/vendor.rs`:
-      `VendorPane::wheel` is asked for a `Response` directly, and the assertion
-      is the defect — `taken` at the last row, `!redraw` beside it. Injecting
-      `Response::ignored()` there turns all three red.
+      **Half of it exists as of S1, and twice over as of S2**: three tests in
+      `panes/vendor.rs` and three more in `panes/skills.rs`, each asking its
+      pane's `wheel` for a `Response` directly, and each asserting the defect —
+      `taken` at the end of the list, `!redraw` beside it. Injecting
+      `Response::ignored()` into either turns that pane's three red, which is
+      how both sets were checked.
       What is still missing is the same assertion *through* `handle`, which is
       what proves the pointer tests in front of it agree. That needs a
       `PaneCtx`, which needs a `&Resources` — and `Resources` is built in one
@@ -362,9 +423,10 @@ never a half-routed frame.
 - **The vendor window and the skill window disagree about what a wheel over a
   window means.** Skills claims its whole frame; the vendor claims only its
   catalogue viewport (`catalogue_contains`), so a notch over the shop's buttons
-  still reaches the camera. Panes make this a per-pane decision that is *visible*
-  as a decision, but it does not settle it — somebody has to say which is right.
-  ClassicUO claims the whole window.
+  still reaches the camera. Both are panes now (S1, S2), so this is a per-pane
+  decision that is *visible* as a decision — two `handle` arms, four lines
+  apart in shape — but that does not settle it: somebody has to say which is
+  right. ClassicUO claims the whole window.
 - **`if let Some(window) = self.window.as_ref() { window.window.request_redraw() }`,
   twenty times.** `event_loop.rs` asks for a frame that way in every arm, and S0
   left the idiom alone rather than sweeping it while it was also changing what
@@ -403,6 +465,20 @@ never a half-routed frame.
   depends on the pointer owes a `Response::stale()`, and that needs the pane to
   remember what the tint was. Cheap, and worth doing with S5's paperdoll, which
   has the same shape and an `App::hover_paperdoll_item` to delete.
+- **A local window is closed by name in one place and by a `retain` in
+  another.** `App::close_window` drops any window with the same `retain`, and
+  the disconnect arm of `net_command.rs` has to name `WindowSubject::Skills`
+  because the view holds nothing for `reconcile_own_windows` to drop it by. S3
+  adds `Status` to that line, and two names is where it should become a
+  predicate — "every window whose existence is local" — rather than a list to
+  keep in step. Cheap, and worth doing *with* S3 rather than after it.
+- **A scroll that could not move still asks for a frame.** `SkillsPane::wheel`
+  answers `consumed` at either end, and the arrows and the track beside it
+  answer `changed` unconditionally: pressing Up at the top of the list is a
+  redraw of a picture that has not changed. The wheel is the one that mattered
+  — it is the one whose answer decides whether the camera hears the event — and
+  the buttons are the same conflation with nothing riding on it. One line each,
+  and the shape is already there to copy.
 - **`Drawn` is produced by a pane but consumed by a pass that knows all six
   kinds.** After S7 the pass's `match` is the last place with a per-kind branch.
   It is a drawing question rather than an input one, so it is out of scope here,
@@ -410,28 +486,33 @@ never a half-routed frame.
 
 ## Status
 
-**S0 and S1 built** (2026-08-17). The router is real and every input the window
-layer sees goes through it. **One kind has moved in**: a shop owns its scroll
-position, its chosen quantities, its art, its layout and its input, and `App` no
-longer knows what a vendor is except to close one. The other five behave exactly
-as they did — the third rung of `App::deliver` is their old handlers, called only
-when no pane answered, and `render_passes.rs` still lays their five kinds out.
+**S0, S1 and S2 built** (2026-08-17). The router is real and every input the
+window layer sees goes through it. **Two kinds have moved in**: a shop owns its
+scroll position, its chosen quantities, its art, its layout and its input, and
+the skill sheet owns its tree, the control the mouse is holding, its layout and
+its input. `App` no longer knows what a vendor or a skill window is except to
+close one. The other four behave exactly as they did — the third rung of
+`App::deliver` is their old handlers, called only when no pane answered, and
+`render_passes.rs` still lays their four kinds out.
 
 What this changed for a player, in one line each. **The wheel** (S0): `taken`
 rather than "did anything move" decides whether the camera hears a notch — the
 defect this plan grew out of, stated as a type instead of as a convention.
 **A shop that is in both catalogues** (S1): what is drawn and what Confirm sends
-are now the same list; they were not.
+are now the same list; they were not. **Nothing at all** (S2): the skill sheet
+behaves as it did, minus a frame it used to ask for at the end of its list.
 
-S0's four `#[expect(dead_code)]` are five, and that is the checklist getting
-*finer* rather than longer: the one that covered the whole of `PaneCtx` is now
-three, one per field still unread (`PaneFrame::hand`, `PaneCtx::modifiers`,
-`PaneCtx::now` — the container's and the paperdoll's), and the one that covered
-the whole of `Effect` is down to its `Open` arm, with `LocalWindow` beside it.
-Both of the ones S1 was owed are gone: `Response`'s, and `Effect`'s other four
-arms, which the vendor asks for.
+The `||` chain the plan was written against is **gone**.
+`legacy_window_input`'s wheel arm has no terms left, because both windows with a
+wheel own it, and each answers the two questions as two fields.
 
-Next is S2, the skills sheet: `Windows::skills` being `Some` is what "the window
-is open" means today, and that fact becomes the pane's presence in the list.
-It is also the second reader of `scroll_skills`, which is the last term left in
-`legacy_window_input`'s wheel arm — after S2 that arm is empty.
+The `#[expect(dead_code)]` checklist is four: three fields nothing reads yet
+(`PaneFrame::hand`, `PaneCtx::modifiers`, `PaneCtx::now` — the container's and
+the paperdoll's) and `Effect::Open` with `LocalWindow` beside it, which is
+*performed* but not yet asked for by a pane. The paperdoll asks for it at S5,
+through the same `windows::open_local_window` its legacy button already calls.
+
+Next is S3, the status frame: the smallest kind, and half of it is already done
+— `open_local_window` places it. What is left is the layout and deleting
+`Windows::status`, which is the last field that says "this window is open"
+anywhere but in the list of open windows.

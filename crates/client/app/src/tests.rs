@@ -102,7 +102,7 @@ fn a_closed_paperdoll_does_not_reopen_on_an_unrelated_world_change() {
     let mut locally_closed = HashSet::new();
 
     // The window opens, same as any other frame's sync.
-    reconcile_own_windows(&view, &mut own_windows, &mut locally_closed, false, false);
+    reconcile_own_windows(&view, &mut own_windows, &mut locally_closed, false);
     assert!(
         own_windows.iter().any(|window| window.subject == subject),
         "the paperdoll opened"
@@ -118,7 +118,7 @@ fn a_closed_paperdoll_does_not_reopen_on_an_unrelated_world_change() {
     // enough — and is folded into a snapshot that is still, itself,
     // built from the link thread's pre-close copy: `view` here is
     // unchanged, standing in for exactly that clone.
-    reconcile_own_windows(&view, &mut own_windows, &mut locally_closed, false, false);
+    reconcile_own_windows(&view, &mut own_windows, &mut locally_closed, false);
     assert!(
         !own_windows.iter().any(|window| window.subject == subject),
         "the closed paperdoll must not reopen just because an unrelated \
@@ -136,7 +136,7 @@ fn a_closed_paperdoll_does_not_reopen_on_an_unrelated_world_change() {
     // never involved, and the `Command::CloseWindow` this comment used to name
     // has not existed since S2 in `docs/client_window_state.md`.
     view.paperdolls.remove(&serial);
-    reconcile_own_windows(&view, &mut own_windows, &mut locally_closed, false, false);
+    reconcile_own_windows(&view, &mut own_windows, &mut locally_closed, false);
     assert!(
         !locally_closed.contains(&subject),
         "the overlay clears once the view it was ahead of agrees"
@@ -178,8 +178,11 @@ fn a_window_carries_a_pane_of_its_own_kind_and_loses_it_with_the_window() {
 
     // Opened with the skills window beside it, so that two kinds are in the
     // list at once and each has to have got its *own* pane rather than the
-    // first kind's.
-    reconcile_own_windows(&view, &mut own_windows, &mut locally_closed, true, false);
+    // first kind's. The skill sheet is put there by hand because nothing in
+    // the view asks for one — being in this list is the whole of "it is open",
+    // which is what step 2 of the plan made true.
+    crate::windows::open_local_window(&mut own_windows, WindowSubject::Skills);
+    reconcile_own_windows(&view, &mut own_windows, &mut locally_closed, false);
     let paned: Vec<(WindowSubject, bool)> = own_windows
         .iter()
         .map(|window| {
@@ -203,7 +206,7 @@ fn a_window_carries_a_pane_of_its_own_kind_and_loses_it_with_the_window() {
     // `retain` that drops the window is what drops it, which is the whole point
     // of the pane living in the record.
     view.paperdolls.remove(&serial);
-    reconcile_own_windows(&view, &mut own_windows, &mut locally_closed, true, false);
+    reconcile_own_windows(&view, &mut own_windows, &mut locally_closed, false);
     assert!(
         own_windows
             .iter()
@@ -218,10 +221,10 @@ fn a_status_window_is_opened_by_local_intent_not_by_the_status_reply() {
     let mut own_windows = Vec::new();
     let mut locally_closed = HashSet::new();
 
-    reconcile_own_windows(&view, &mut own_windows, &mut locally_closed, false, false);
+    reconcile_own_windows(&view, &mut own_windows, &mut locally_closed, false);
     assert!(own_windows.is_empty(), "entry data alone opens no local window");
 
-    reconcile_own_windows(&view, &mut own_windows, &mut locally_closed, false, true);
+    reconcile_own_windows(&view, &mut own_windows, &mut locally_closed, true);
     assert_eq!(
         own_windows
             .iter()
@@ -231,7 +234,7 @@ fn a_status_window_is_opened_by_local_intent_not_by_the_status_reply() {
         "the status button's local state opens exactly one window"
     );
 
-    reconcile_own_windows(&view, &mut own_windows, &mut locally_closed, false, false);
+    reconcile_own_windows(&view, &mut own_windows, &mut locally_closed, false);
     assert!(own_windows.is_empty(), "closing is local too");
 }
 
@@ -255,7 +258,7 @@ fn a_trade_gump_and_own_paperdoll_stay_open_together() {
     let mut own_windows = Vec::new();
     let mut locally_closed = HashSet::new();
 
-    reconcile_own_windows(&view, &mut own_windows, &mut locally_closed, false, false);
+    reconcile_own_windows(&view, &mut own_windows, &mut locally_closed, false);
 
     assert_eq!(
         own_windows

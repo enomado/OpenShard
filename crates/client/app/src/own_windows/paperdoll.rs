@@ -2,7 +2,7 @@
 
 use std::time::Instant;
 
-use openshard_client_render::{gump as gump_art, paperdoll, skills};
+use openshard_client_render::{gump as gump_art, paperdoll};
 use openshard_protocol::mobile::Equipment;
 use openshard_protocol::wire::Layer;
 
@@ -82,7 +82,11 @@ impl App {
             _ => {}
         }
         if opened_skills {
-            self.windows.skills.get_or_insert_with(skills::Tree::default);
+            // The same door `Effect::Open(LocalWindow::Skills)` goes through,
+            // and it will *be* that effect once the paperdoll is a pane of its
+            // own (step 5). Idempotent, so a second press leaves the sheet's
+            // scroll and shut headings where the player left them.
+            crate::windows::open_local_window(&mut self.windows.own_windows, WindowSubject::Skills);
         }
         if opened_status {
             self.windows.status = true;

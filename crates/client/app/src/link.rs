@@ -531,19 +531,11 @@ impl Link {
         self.send(Command::Outgoing(Outgoing::Virtue(mobile)));
     }
 
-    /// Ask to set a skill's lock. See [`Outgoing::SkillLock`].
-    pub fn set_skill_lock(
-        &self,
-        skill: openshard_protocol::wire::RawSkillId,
-        lock: openshard_protocol::skill::SkillLock,
-    ) {
-        self.send(Command::Outgoing(Outgoing::SkillLock { skill, lock }));
-    }
-
-    /// Ask to use a skill — its own button, not the lock arrow.
-    pub fn use_skill(&self, skill: openshard_protocol::wire::RawSkillId) {
-        self.send(Command::Outgoing(Outgoing::UseSkill(skill)));
-    }
+    // No `set_skill_lock` and no `use_skill`: the skill sheet asks for both as
+    // `Effect::Net(Outgoing::SkillLock | UseSkill)` and the router sends them
+    // through `Link::act`, the same way the vendor's two went at step 1. A
+    // named wrapper for an `Outgoing` a pane already names is a second spelling
+    // of one packet.
 
     /// Ask for the tooltips of these objects, in one `0xD6`.
     ///

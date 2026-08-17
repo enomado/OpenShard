@@ -28,7 +28,6 @@ use crate::windows::{Drawn, WindowSubject};
 use crate::{DOUBLE_CLICK, chat, gump, link};
 
 mod paperdoll;
-mod skills;
 mod sync;
 
 const MAX_STACK: u16 = 60_000;
@@ -840,18 +839,9 @@ impl App {
                 }
             }
         }
-        // The skill window's own furniture: a heading's arrow, the two ends of
-        // the bar, the track and the thumb. The same gesture again, and the same
-        // reason for taking the press away from the drag — the bar runs down the
-        // inside of the scroll, and a thumb that also picked the window up would
-        // move both at once.
-        if subject == WindowSubject::Skills {
-            if let Some(hit) = self.skill_hit_under_pointer() {
-                self.windows.held_skill = Some(hit);
-                self.windows.dragging = None;
-                return true;
-            }
-        }
+        // No skills arm either, for the vendor's reason above: the sheet
+        // answers its own press in `panes::skills::SkillsPane`, which the
+        // router offers it to before this is reached.
         let grab = self
             .windows
             .own_windows
@@ -874,15 +864,6 @@ impl App {
     /// the button comes back up on the way out either way, and a page button
     /// changes what the window is showing without a packet leaving.
     pub(crate) fn release_on_own_window(&mut self) -> bool {
-        if let Some(hit) = self.windows.held_skill.take() {
-            // The same "still on the same picture" rule the doll's buttons
-            // follow. The thumb is the exception that needs no arm: it has
-            // already done its work, on every mouse move since the press.
-            if self.skill_hit_under_pointer() == Some(hit) {
-                self.skill_clicked(hit);
-            }
-            return true;
-        }
         if let Some((subject, button)) = self.windows.held_doll.take() {
             // Only if the pointer is still on the same button. A press that
             // slid off one is not a click on it — the reference's own rule for
@@ -1046,14 +1027,12 @@ impl App {
             // Nothing in the view to tell and so nothing to overlay: the
             // skills stay where they are, the way a paperdoll's equipment
             // does. What closing takes away is the tree — which headings were
-            // shut and where the list was scrolled to — and that is
-            // deliberate: the reference's window does not remember either,
-            // and a window with no memory is the backlog entry both kinds
-            // already share.
-            WindowSubject::Skills => {
-                self.windows.skills = None;
-                self.windows.held_skill = None;
-            }
+            // shut and where the list was scrolled to — and the `retain` at
+            // the end of this is what takes it, because the tree is a field of
+            // the window's pane. That is deliberate and not a loss: the
+            // reference's window does not remember either, and a window with
+            // no memory is the backlog entry every kind here shares.
+            WindowSubject::Skills => {}
             WindowSubject::Status => self.windows.status = false,
             WindowSubject::Dialog(_) => unreachable!("answered above"),
         }

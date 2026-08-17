@@ -1007,10 +1007,9 @@ pub fn run<D: Dial + Send + 'static>(
             held_doll: None,
             // Shut until the player presses Skills on their own paperdoll:
             // the shard sends the whole list at world entry, and a window
-            // that opened on the packet would open itself at every login.
-            skills: None,
+            // that opened on the packet would open itself at every login. The
+            // skill sheet says the same thing by not being in `own_windows`.
             status: false,
-            held_skill: None,
             last_scroll: None,
             dialogs: gump::Dialogs::default(),
         },

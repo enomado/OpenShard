@@ -19,7 +19,7 @@ use openshard_client_render::outline::{self, Ring};
 use openshard_client_render::renderer::Target;
 use openshard_client_render::select::{self, Selection};
 use openshard_client_render::sprite::SpriteQuad;
-use openshard_client_render::{container, paperdoll, skills, solids, status};
+use openshard_client_render::{container, paperdoll, solids, status};
 use openshard_protocol::containers::ContainedItem;
 use std::time::{Duration, Instant};
 
@@ -248,50 +248,11 @@ pub(crate) fn draw_gump_windows(
                             Drawn::Dialog(windows.dialogs.layout(gump, open.at, &resources.gump_atlas)),
                         ));
                     }
-                    WindowSubject::Skills => {
-                        let Some(tree) = windows.skills.as_ref() else {
-                            continue;
-                        };
-                        // The three sources meet here and nowhere else: the
-                        // names and the tree out of the client's files, the
-                        // numbers out of the view, and how wide a string
-                        // came out of the font atlas — which is what puts a
-                        // value's right edge where it belongs and starts a
-                        // heading's rule at the end of its name.
-                        //
-                        // The wire's `u8` becomes a `SkillId` here, at the
-                        // one seam that holds both: `view::Player::skills`
-                        // is keyed by what the shard said, and the files'
-                        // numbering is the type the window is written
-                        // against. A skill the files do not name has no row
-                        // to put a number on, and is dropped by `names.get`
-                        // inside the layout rather than here.
-                        drawn_windows.push((
-                            open.subject,
-                            Drawn::Skills(skills::window(
-                                &resources.skill_names,
-                                &resources.skill_groups,
-                                tree,
-                                |id| {
-                                    view.player.skills.get(&id.0).map(|line| skills::Standing {
-                                        skill: *line,
-                                        // The player's own click, held over
-                                        // the shard's line — see
-                                        // `Tree::lock_of`'s doc.
-                                        lock: tree.lock_of(id, line.lock),
-                                    })
-                                },
-                                |text, font| {
-                                    openshard_client_render::text::gump_width(
-                                        text,
-                                        font,
-                                        &resources.font_atlas,
-                                    )
-                                },
-                                open.at,
-                            )),
-                        ));
-                    }
+                    // Laid out by `panes::skills::SkillsPane` above, the same
+                    // as a vendor's: reaching here is impossible, because a
+                    // sheet always has a layout — it draws its own frame with
+                    // nothing at all in the view.
+                    WindowSubject::Skills => {}
                     WindowSubject::Status => {
                         let (Some(status), Some(hits)) = (view.player.status.as_ref(), view.player.hits)
                         else {

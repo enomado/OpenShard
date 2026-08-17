@@ -11,17 +11,14 @@
 //!
 //! # What is here, and what is not yet
 //!
-//! The vocabulary and the router are complete; the panes are not. Every
-//! [`AnyPane`] variant declines every input, and the six kinds' input is still
-//! answered by the `App` methods in [`crate::own_windows`], which
-//! [`crate::app::App::deliver`] calls once every pane has passed. That is the
-//! plan's own migration order — step 1 moves the vendor in, and until a kind
-//! has moved its window behaves exactly as it did before this module existed.
-//!
-//! [`Pane`] therefore has only its input half. `art` and `layout` (decision 6)
-//! join the trait with the first pane that has a layout of its own: a pane with
-//! no state cannot lay anything out, and `render_passes.rs` still lays out all
-//! six kinds from the view.
+//! The vocabulary and the router are complete; the panes are not. **Two kinds
+//! have moved in** — the vendor (step 1) and the skill sheet (step 2) — and
+//! each owns its state, its layout and its input. The other four decline every
+//! question here, and their input is still answered by the `App` methods in
+//! [`crate::own_windows`], which [`crate::app::App::deliver`] calls once every
+//! pane has passed, while `render_passes.rs` still lays them out from the view.
+//! That is the plan's own migration order: until a kind has moved, its window
+//! behaves exactly as it did before this module existed.
 //!
 //! # Two names that differ from the plan's
 //!
@@ -42,6 +39,7 @@ use crate::resources::Resources;
 use crate::windows::{Drawn, ItemDrag, WindowSubject};
 
 mod route;
+mod skills;
 mod vendor;
 
 /// Which mouse button an input is about.
@@ -380,7 +378,7 @@ pub enum AnyPane {
     Vendor(vendor::VendorPane),
     Paperdoll(PaperdollPane),
     Dialog(DialogPane),
-    Skills(SkillsPane),
+    Skills(skills::SkillsPane),
     Status(StatusPane),
 }
 
@@ -398,7 +396,7 @@ impl AnyPane {
             WindowSubject::Vendor(serial) => Self::Vendor(vendor::VendorPane::new(serial)),
             WindowSubject::Paperdoll(_) => Self::Paperdoll(PaperdollPane::default()),
             WindowSubject::Dialog(_) => Self::Dialog(DialogPane::default()),
-            WindowSubject::Skills => Self::Skills(SkillsPane::default()),
+            WindowSubject::Skills => Self::Skills(skills::SkillsPane::default()),
             WindowSubject::Status => Self::Status(StatusPane::default()),
         }
     }
@@ -454,12 +452,6 @@ pub struct PaperdollPane {}
 /// here — the page, the switches, the typed text and the held button.
 #[derive(Debug, Default)]
 pub struct DialogPane {}
-
-/// This character's skill sheet. Step 2 moves the `skills::Tree` and
-/// `held_skill` here, and `Windows::skills` being `Some` stops being what "the
-/// window is open" means: the pane's presence in the list is.
-#[derive(Debug, Default)]
-pub struct SkillsPane {}
 
 /// This character's status frame. Step 3, and the one that proves a pane with
 /// no input at all is still a pane.
@@ -531,25 +523,6 @@ impl Pane for DialogPane {
 
     /// Still `gump::Dialogs::press`/`release`, reached from
     /// `App::press_on_own_window` — step 4.
-    fn handle(&mut self, _input: Input, _ctx: &PaneCtx<'_>) -> Response {
-        Response::ignored()
-    }
-}
-
-impl Pane for SkillsPane {
-    /// The skill sheet packs nothing of its own even today: its frame is one of
-    /// the gumps the atlas is grown with elsewhere — step 2.
-    fn art(&self, _frame: &PaneFrame<'_>) -> Vec<GumpArt> {
-        Vec::new()
-    }
-
-    /// Still `skills::window`, laid out by `render_passes` — step 2.
-    fn layout(&self, _frame: &PaneFrame<'_>) -> Option<Drawn> {
-        None
-    }
-
-    /// Still `App::skill_hit_under_pointer`, `App::drag_thumb` and
-    /// `App::scroll_skills` — step 2.
     fn handle(&mut self, _input: Input, _ctx: &PaneCtx<'_>) -> Response {
         Response::ignored()
     }

@@ -21,10 +21,12 @@ impl App {
         let Some(view) = self.world.authoritative.view.as_ref() else {
             // No world, no windows: a map viewer has no shard to have opened
             // one, and anything left over is from a session that has ended.
+            // Including the local windows, whose state must not leak into a
+            // login — and, for the skill sheet, that is the *same* line: the
+            // tree and the press it was holding are fields of its pane, which
+            // the clear above drops with the window. Status still keeps its
+            // openness outside the list, until step 3.
             self.windows.own_windows.clear();
-            // Including local windows, whose state must not leak to a login.
-            self.windows.skills = None;
-            self.windows.held_skill = None;
             self.windows.status = false;
             self.windows.stack_pass = None;
             self.windows.split_pending = false;
@@ -38,7 +40,6 @@ impl App {
             view,
             &mut self.windows.own_windows,
             &mut self.windows.locally_closed,
-            self.windows.skills.is_some(),
             self.windows.status,
         );
         self.advance_stack_pass();

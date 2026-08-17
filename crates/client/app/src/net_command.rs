@@ -181,8 +181,12 @@ impl App {
                 // Windows over a world that is gone, and the presses they were
                 // holding: the reconcile drops them from the view's side, and
                 // these are the local halves it cannot answer for.
-                self.windows.skills = None;
-                self.windows.held_skill = None;
+                // The skill sheet is not in the view for the reconcile to drop,
+                // so it goes here by name — and with it its pane, which is the
+                // tree and whatever the mouse was holding.
+                self.windows
+                    .own_windows
+                    .retain(|window| window.subject != crate::windows::WindowSubject::Skills);
                 self.windows.held_doll = None;
                 self.windows.status = false;
                 self.windows.item_drag = None;

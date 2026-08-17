@@ -22,8 +22,6 @@
 
 use std::time::Instant;
 
-use openshard_client_render::skills;
-
 use crate::app::App;
 use crate::panes::{Button, Effect, Input, LocalWindow, Modifiers, Pane, PaneCtx, PaneFrame, Response};
 use crate::windows::{ItemDragTransaction, WindowSubject};
@@ -202,10 +200,11 @@ impl App {
                     link.act(action);
                 }
             }
-            // `get_or_insert_with`, not an assignment: pressing Skills twice
-            // must not scroll the sheet back to the top.
+            // Idempotent, and that is the point: pressing Skills twice must not
+            // scroll the sheet back to the top — see `open_local_window`, which
+            // leaves a window it finds alone.
             Effect::Open(LocalWindow::Skills) => {
-                self.windows.skills.get_or_insert_with(skills::Tree::default);
+                crate::windows::open_local_window(&mut self.windows.own_windows, WindowSubject::Skills);
             }
             Effect::Open(LocalWindow::Status) => self.windows.status = true,
         }
@@ -256,13 +255,12 @@ impl App {
                 }
             }
             Input::Release(Button::Right) => Response::ignored(),
-            // All of these run, and none of them is exclusive: a thumb being
-            // dragged, an item leaving a bag and two hover tints are four
-            // different windows' business and the pointer moved past all of
-            // them.
+            // All of these run, and none of them is exclusive: an item leaving
+            // a bag and two hover tints are three different windows' business
+            // and the pointer moved past all of them. The thumb that used to be
+            // the fourth is `SkillsPane`'s own, offered above.
             Input::Move => {
-                let mut stale = self.drag_thumb();
-                stale |= self.drag_container_item();
+                let mut stale = self.drag_container_item();
                 stale |= self.hover_container_item();
                 stale |= self.hover_paperdoll_item();
                 if stale {
@@ -271,20 +269,15 @@ impl App {
                     Response::ignored()
                 }
             }
-            // **The wheel defect's own line.** This answers "was the notch
-            // taken" and not "did the list move" — a sheet at its last row
-            // swallows the notch — and the zoom that used to be the third term
-            // of this `||` is now the caller's business, reached only when this
-            // says the notch was nobody's. The catalogue that was the second
-            // term has moved into `VendorPane`, where the same distinction is
-            // two fields of its answer rather than a convention.
-            Input::Wheel(notches) => {
-                if self.scroll_skills(notches) {
-                    Response::changed()
-                } else {
-                    Response::ignored()
-                }
-            }
+            // **Empty, and that is the plan's own milestone.** This arm was
+            // `scroll_skills() || scroll_vendor() || zoom()` — the `||` chain
+            // the whole of `docs/window_components.md` was written about, whose
+            // one `bool` answered "the notch was taken" and "the list moved" at
+            // the same time. Both windows own their wheel now, each answering
+            // the two questions as two fields, and the zoom is the caller's
+            // business, reached only when nothing above said the notch was its.
+            // No kind that is left has a wheel at all.
+            Input::Wheel(_) => Response::ignored(),
         }
     }
 }
