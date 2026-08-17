@@ -6,7 +6,7 @@
 //! last frame laid out for it and what a press on it is currently holding.
 //! Pulled out of [`crate::App`] for the same reason [`crate::picking::Picking`]
 //! and [`crate::input::Input`] were, and unlike those two the fields here
-//! *are* read together — `dragging` and `held_doll` are checked side by side
+//! *are* read together — `dragging` and `item_drag` are checked side by side
 //! on every press, and `own_windows` and `drawn_windows` are asked in the same
 //! breath to decide which window a click landed on.
 //!
@@ -19,7 +19,6 @@ use std::collections::HashSet;
 use std::time::Instant;
 
 use openshard_client_render::gump::{self as gump_art, GumpPixel};
-use openshard_client_render::paperdoll;
 use openshard_client_render::skills;
 use openshard_client_render::vendor;
 use openshard_protocol::containers::ContainedItem;
@@ -159,8 +158,10 @@ pub enum Drawn {
     /// A container: the background and every icon in it.
     Container(Vec<gump_art::Picture>),
     Vendor(vendor::Window),
-    /// A paperdoll: the frame, its furniture and the doll.
-    Paperdoll(paperdoll::Doll),
+    /// A paperdoll: the frame, its furniture and the doll, and the text
+    /// resolved over them — see [`crate::panes::paperdoll::Window`], which is
+    /// why this is not the render crate's `paperdoll::Doll` alone.
+    Paperdoll(crate::panes::paperdoll::Window),
     /// The skill window: the scroll, the rows inside its viewport, and the
     /// bar.
     Skills(skills::Sheet),
@@ -270,7 +271,7 @@ impl Drawn {
             Self::Dialog(window) => &window.art.pictures,
             Self::Container(pictures) => pictures,
             Self::Vendor(window) => &window.pictures,
-            Self::Paperdoll(doll) => &doll.pictures,
+            Self::Paperdoll(window) => &window.doll.pictures,
             Self::Skills(sheet) => &sheet.pictures,
             Self::Status(status) => &status.pictures,
         }
@@ -336,10 +337,6 @@ pub struct Windows {
     pub dragging: Option<(WindowSubject, GumpPixel)>,
     /// The container item currently under the pointer, tinted on the next frame.
     pub hovered_container_item: Option<Serial>,
-    /// The worn layer under the pointer, used to tint its paperdoll picture.
-    pub hovered_equipment: Option<(Serial, openshard_protocol::wire::Layer)>,
-    /// A held wearable projected onto the paperdoll currently under the cursor.
-    pub preview_equipment: Option<(Serial, ContainedItem)>,
     /// The one local item-transfer transaction, from mouse press through
     /// authoritative confirmation or cancellation.
     pub item_drag: Option<ItemDragTransaction>,
@@ -349,31 +346,6 @@ pub struct Windows {
     pub stack_pass: Option<StackPass>,
     /// The first click of a potential double-click use inside a container.
     pub last_container_click: Option<(Instant, Serial)>,
-    /// The paperdoll button the mouse went down on, and whose doll it is.
-    ///
-    /// [`DialogPane::held`](crate::panes::dialog)'s counterpart for the one
-    /// window kind that is not a layout, and the same three things it buys: the
-    /// pressed
-    /// picture is drawn while the finger is down, the release acts only if
-    /// the pointer is still on the *same* button, and a press on a button
-    /// does not also drag the frame under it.
-    ///
-    /// Keyed by subject, not by picture index: the doll is laid out afresh
-    /// every frame — a hat coming off changes how many pictures are in front
-    /// of the buttons — so an index taken at the press names a different
-    /// picture by the time the button comes up. The button itself is stable.
-    pub held_doll: Option<(WindowSubject, paperdoll::DollButton)>,
-    /// The last completed click on one of a paperdoll's three scrolls, and
-    /// when.
-    ///
-    /// The scrolls answer a *double* click where the seven buttons answer a
-    /// single one (`GumpPic.MouseDoubleClick` against `Button`'s
-    /// `OnButtonClick`), and this is that pair. Separate from
-    /// [`last_click`](crate::input::Input::last_click), which pairs clicks
-    /// on the *world*: a click on a window never reaches that one, and a
-    /// pair has to be two clicks on the same picture of the same window
-    /// rather than two clicks anywhere.
-    pub last_scroll: Option<(Instant, WindowSubject, paperdoll::DollButton)>,
     /// Which window the keys are going to, or `None` for the world.
     ///
     /// **One resource with one owner**, the shape decision 7 gives the hand and

@@ -9,7 +9,7 @@
 use super::*;
 use crate::presentation::write_frame_dump;
 use crate::ui_command::{ask_between, on_screen};
-use crate::windows::reconcile_own_windows;
+use crate::windows::{WindowSubject, reconcile_own_windows};
 use openshard_client_render::camera;
 use openshard_client_render::mobiles;
 use openshard_movement::{Heading, Lean};
@@ -318,48 +318,11 @@ fn a_trade_gump_and_own_paperdoll_stay_open_together() {
     );
 }
 
-/// The three scrolls answer a double click, and this is what makes two
-/// clicks one: the same picture, on the same window, inside the same 350ms
-/// a door is opened in.
-#[test]
-fn two_clicks_on_one_scroll_are_a_pair_and_two_scrolls_are_not() {
-    let first = Instant::now();
-    let soon = first + DOUBLE_CLICK / 2;
-    let profile = paperdoll::DollButton::Profile;
-
-    assert!(
-        !scroll_pairs(None, first, doll(0x2A), profile),
-        "the first click of all has nothing to pair with"
-    );
-    assert!(scroll_pairs(
-        Some((first, doll(0x2A), profile)),
-        soon,
-        doll(0x2A),
-        profile
-    ));
-    assert!(
-        !scroll_pairs(
-            Some((first, doll(0x2A), profile)),
-            soon,
-            doll(0x2A),
-            paperdoll::DollButton::Party
-        ),
-        "the manifest sits fourteen pixels along, and is not the same scroll"
-    );
-    assert!(
-        !scroll_pairs(Some((first, doll(0x2A), profile)), soon, doll(0xFF), profile),
-        "nor is the same scroll on somebody else's doll"
-    );
-    assert!(
-        !scroll_pairs(
-            Some((first, doll(0x2A), profile)),
-            first + DOUBLE_CLICK + std::time::Duration::from_millis(1),
-            doll(0x2A),
-            profile
-        ),
-        "and a click a breath too late is a first click"
-    );
-}
+// The scroll-pairing rule lives in `panes::paperdoll` since step 5 of
+// `docs/window_components.md`, and so do its tests — including the half the
+// old rule had to compare and the new shape answers by construction: two
+// clicks on two different dolls cannot pair, because each pane keeps its own
+// `last_scroll`.
 
 /// The screen bearings of the eight directions, as the isometric actually
 /// draws them — and they are not the grid's. On screen the diamond is

@@ -51,14 +51,14 @@ use std::collections::{BTreeSet, HashMap};
 use openshard_client_net::action::GumpReply;
 use openshard_client_net::view::{OpenGump, WorldView};
 use openshard_client_render::gump::{self as gump_art, CAPTION_FONT, CaptionSource, GumpArt, GumpPixel, Hit};
-use openshard_client_render::text::{self, GumpLabel};
+use openshard_client_render::text;
 use openshard_protocol::gump::layout::{Element, Flag, Switch};
 use openshard_protocol::gump::{GumpId, RawButtonId, RawGumpId, RawGumpKey, RawSwitchId};
 use openshard_protocol::localized;
-use openshard_protocol::wire::{ClilocId, Hue};
+use openshard_protocol::wire::ClilocId;
 use openshard_uofiles::cliloc::ClilocNumber;
 
-use crate::panes::{Button, Effect, Input, Key, Pane, PaneCtx, PaneFrame, Response};
+use crate::panes::{Button, Effect, Input, Key, Line, Pane, PaneCtx, PaneFrame, Response};
 use crate::windows::Drawn;
 
 /// One open dialog: the page it is showing, what the player has set on it, and
@@ -167,39 +167,6 @@ pub struct Window {
     pub art: gump_art::Window,
     /// The text over them, already resolved to strings.
     pub lines: Vec<Line>,
-}
-
-/// One line of text on a laid-out dialog.
-///
-/// Owned rather than borrowed for the reason every other window kind's line is
-/// (`vendor::Line`, `status::Line`, `skills::Line`): a
-/// [`Drawn`](crate::windows::Drawn) outlives the frame that built it — it is
-/// what the *next* frame's pointer is tested against — so it cannot hold a
-/// reference into the view.
-#[derive(Clone, PartialEq, Eq, Debug)]
-pub struct Line {
-    /// Its top-left corner, in absolute gump pixels.
-    pub at: GumpPixel,
-    /// The hue the layout asked for.
-    pub hue: Hue,
-    /// The box it is cropped to — `{ croppedtext }` and a field — or `None` for
-    /// anything else, which overflows rather than clipping.
-    pub clip: Option<(i32, i32)>,
-    /// The line itself.
-    pub text: String,
-}
-
-impl Line {
-    /// Draw it in the face every gump caption is drawn in.
-    pub fn label(&self) -> GumpLabel<'_> {
-        GumpLabel {
-            at: self.at,
-            text: &self.text,
-            font: CAPTION_FONT,
-            hue: self.hue,
-            clip: self.clip,
-        }
-    }
 }
 
 /// What the window flags in a layout ask for.
@@ -553,6 +520,7 @@ impl DialogPane {
                 };
                 Some(Line {
                     at: caption.at,
+                    font: CAPTION_FONT,
                     hue: caption.hue,
                     clip: caption.clip,
                     text: text.to_owned(),
@@ -564,6 +532,7 @@ impl DialogPane {
             let typed = self.typed(id, gump, field.line);
             lines.push(Line {
                 at: field.at,
+                font: CAPTION_FONT,
                 hue: field.hue,
                 clip: Some(field.size),
                 text: typed.to_owned(),
@@ -578,6 +547,7 @@ impl DialogPane {
                         text::gump_width(typed, CAPTION_FONT, &frame.resources.font_atlas),
                         0,
                     )),
+                    font: CAPTION_FONT,
                     hue: field.hue,
                     clip: None,
                     text: CARET.to_owned(),

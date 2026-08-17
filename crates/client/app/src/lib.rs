@@ -159,7 +159,6 @@ use openshard_client_render::gump::{GumpAtlas, GumpPixel};
 use openshard_client_render::hue::HueRamp;
 use openshard_client_render::mobiles::Mobile;
 use openshard_client_render::occlusion;
-use openshard_client_render::paperdoll;
 use openshard_client_render::sprite::SpriteQuad;
 use openshard_client_render::text::{self, GumpLabel};
 use openshard_movement::{Leeway, Tile};
@@ -183,7 +182,6 @@ use openshard_uofiles::skills::Skills as SkillNames;
 use openshard_uofiles::texmaps::TexMaps;
 use openshard_uofiles::tiledata::TileData;
 use openshard_uofiles::ttf_font::TtfFont;
-use windows::WindowSubject;
 use winit::event_loop::{ControlFlow, EventLoop};
 
 /// Where the camera starts: Britain, by the bank.
@@ -264,27 +262,6 @@ pub(crate) const GLIDE_INTERVAL: std::time::Duration = std::time::Duration::from
 /// either, and a mouse that slips a pixel between two clicks has not stopped
 /// double-clicking.
 pub(crate) const DOUBLE_CLICK: std::time::Duration = std::time::Duration::from_millis(350);
-
-/// Whether a click on `button` of `subject` at `now` is the second of a pair —
-/// [`App::scroll_paired`]'s rule, with the state passed in.
-///
-/// A free function because the rule is the part worth pinning and an [`App`] is
-/// a window, a GPU surface and a connection: `last` is everything it reads.
-///
-/// **Both halves of "the same picture" are compared.** A pair is two clicks on
-/// one scroll of one window; the profile scroll and the party manifest sit
-/// fourteen pixels apart on the same frame, and a rule that only looked at the
-/// time would open a profile because the hand slipped between two clicks.
-pub(crate) fn scroll_pairs(
-    last: Option<(Instant, WindowSubject, paperdoll::DollButton)>,
-    now: Instant,
-    subject: WindowSubject,
-    button: paperdoll::DollButton,
-) -> bool {
-    last.is_some_and(|(at, window, picture)| {
-        window == subject && picture == button && now.duration_since(at) <= DOUBLE_CLICK
-    })
-}
 
 /// How near the body the cursor may sit while the steering button is held
 /// without asking for anything — in **world pixels**, measured from the body's
@@ -994,14 +971,10 @@ pub fn run<D: Dial + Send + 'static>(
             drawn_windows: Vec::new(),
             dragging: None,
             hovered_container_item: None,
-            hovered_equipment: None,
-            preview_equipment: None,
             item_drag: None,
             split_pending: false,
             stack_pass: None,
             last_container_click: None,
-            held_doll: None,
-            last_scroll: None,
             keyboard: None,
         },
         tooltips: tooltips::Tooltips::default(),

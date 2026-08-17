@@ -302,15 +302,13 @@ impl App {
                     Response::ignored()
                 }
             }
-            // Three questions on the way up, in this order: a held item is
-            // committed to whatever is under the pointer, a press that never
-            // became a drag is dropped, and a button that was pushed down is let
-            // back up.
+            // Two questions on the way up, in this order: a held item is
+            // committed to whatever is under the pointer, and a press that
+            // never became a drag is dropped. The third — a paperdoll button
+            // let back up — went with step 5: `PaperdollPane::handle` answers
+            // its own release, offered above.
             Input::Release(Button::Left) => {
-                if self.release_container_item()
-                    || self.release_container_press()
-                    || self.release_on_own_window()
-                {
+                if self.release_container_item() || self.release_container_press() {
                     Response::changed()
                 } else {
                     Response::ignored()
@@ -328,14 +326,14 @@ impl App {
                 }
             }
             Input::Release(Button::Right) => Response::ignored(),
-            // All of these run, and none of them is exclusive: an item leaving
-            // a bag and two hover tints are three different windows' business
-            // and the pointer moved past all of them. The thumb that used to be
-            // the fourth is `SkillsPane`'s own, offered above.
+            // Both of these run, and neither is exclusive: an item leaving a
+            // bag and a bag's hover tint are two windows' business and the
+            // pointer moved past both. The thumb that used to be third is
+            // `SkillsPane`'s own, and the paperdoll's tint that used to be
+            // fourth is `PaperdollPane`'s — each offered above.
             Input::Move => {
                 let mut stale = self.drag_container_item();
                 stale |= self.hover_container_item();
-                stale |= self.hover_paperdoll_item();
                 if stale {
                     Response::stale()
                 } else {

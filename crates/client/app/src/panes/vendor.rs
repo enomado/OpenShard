@@ -60,6 +60,16 @@ pub struct VendorPane {
     /// can reach — the order is built by zipping against the *lines*, never
     /// against this.
     amounts: Vec<u16>,
+    /// The action plate the pointer was resting on when the last frame was
+    /// drawn, or `None` for neither.
+    ///
+    /// Remembered for one reason: the tint on ACCEPT and CLEAR is decided in
+    /// the layout from the cursor, so it is right whenever a frame is drawn —
+    /// and what draws one is the animation clock, not the move that changed
+    /// the answer. A pane whose picture depends on the pointer owes a
+    /// [`Response::stale`] for that move, and saying it needs knowing what the
+    /// picture was. The same shape as the paperdoll's hover, moved in with it.
+    tint: Option<vendor::Action>,
 }
 
 /// Which of the two catalogues this window is showing, and everything the rows
@@ -159,7 +169,29 @@ impl VendorPane {
             vendor,
             scroll: 0,
             amounts: Vec::new(),
+            tint: None,
         }
+    }
+
+    /// Keep [`VendorPane::tint`] honest against the pointer, and ask for a
+    /// frame exactly when the answer changed.
+    ///
+    /// The predicate is the layout's own — [`vendor::Window::action_at`] on
+    /// the window as it was drawn — so what this remembers and what the next
+    /// frame tints cannot disagree. Deliberately not gated on
+    /// [`PaneCtx::under_pointer`]: the layout is not either, so a plate under
+    /// a covering window still tints, and a memory that said otherwise would
+    /// ask for no frame while the picture changed.
+    fn hover(&mut self, ctx: &PaneCtx<'_>) -> Response {
+        let over = match ctx.drawn {
+            Some(Drawn::Vendor(window)) => window.action_at(ctx.frame.cursor),
+            _ => None,
+        };
+        if self.tint == over {
+            return Response::ignored();
+        }
+        self.tint = over;
+        Response::stale()
     }
 
     /// One notch over the catalogue: move the viewport a row, and say what that
@@ -302,10 +334,13 @@ impl Pane for VendorPane {
     /// now: [`PaneCtx::drawn`] is the picture the player is pointing at.
     ///
     /// Everything else is somebody's: the right button is the manager's close,
-    /// a release finishes a gesture this window does not have, and a move
-    /// changes only the tint on the two buttons, which the next frame draws
-    /// anyway.
+    /// and a release finishes a gesture this window does not have. A move is
+    /// the tint's — offered to every window, ahead of the located gate,
+    /// because the tint follows the raw cursor the way the layout reads it.
     fn handle(&mut self, input: Input, ctx: &PaneCtx<'_>) -> Response {
+        if let Input::Move = input {
+            return self.hover(ctx);
+        }
         if !ctx.under_pointer {
             return Response::ignored();
         }

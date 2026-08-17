@@ -500,17 +500,85 @@ never a half-routed frame.
       only takes a press it is the topmost window for, so the difference is a
       button drawn outside its own bag's picture and under a dialog: the visible
       window wins now.
-- [ ] **S5. Paperdoll.** `held_doll`, `last_scroll`, `doll_clicked`, and the
-      seven buttons. First kind whose effects are mostly `Open` and `Net`.
+- [x] **S5. Paperdoll.** ✅ `panes/paperdoll.rs`: `PaperdollPane { mobile, held,
+      last_scroll, hovered, hand_over }`, an `impl Pane` with all three
+      methods, and `own_windows/paperdoll.rs` deleted whole —
+      `doll_button_under_pointer`, `doll_clicked` and `scroll_paired` with it,
+      along with `App::hover_paperdoll_item`, `App::release_on_own_window`
+      (whose last tenant it was), the paperdoll layout and text arms of
+      `render_passes.rs`, `lib.rs`'s `scroll_pairs`, and five `Link` methods
+      (`status`, `skills`, `quest_log`, `guild_menu`, `virtue` — plus
+      `log_out`, whose one remaining caller was a channel-bounds test that now
+      exercises `stop_attacking`). The Skills and Status buttons are the
+      `Effect::Open` that had been waiting under `#[expect(dead_code)]` since
+      S2, so both expects are gone, and so are the ones on `PaneFrame::hand`
+      and `PaneCtx::now` — the pane reads both. **Six things landed
+      differently from the shape above:**
+      - **🚨 One press is declined on purpose, and it is the migration's
+        arrow reversed.** A press on a worn item of the player's own body
+        starts an item transfer, and the transfer machinery — `Pressed`, the
+        slop, the split prompt — is the hand's (D7) and moves at S6 with the
+        container, "the one the hand runs through". The pane answers
+        `ignored` for exactly that press, so the walk falls through to the
+        legacy chain, whose paperdoll arm keeps its worn-item half and lost
+        its button half. Everywhere else the legacy chain answers because a
+        pane has not moved in; here it answers because the pane says so.
+      - **`Drawn::Paperdoll` carries its text, and `Line` moved up a level.**
+        The name on the plate comes out of the view and the hover label out of
+        `tiledata`, so S4's shape applies: `panes::paperdoll::Window { doll,
+        lines }`, resolved in the layout. The owned line type is
+        `panes::Line` now — hoisted out of `panes/dialog.rs` and given a
+        `font` field, because the plate's face is named by the render crate
+        and a `Line` that hardcoded `CAPTION_FONT` would have been right by
+        coincidence. Both app-side kinds share it; the render-side kinds keep
+        their own lines beside their layouts.
+      - **The hover is pane state, and the preview is half of one.**
+        `hovered: Option<Layer>` and `hand_over: bool` are written by
+        `Input::Move` and answered with `Response::stale` exactly when either
+        changed — the Backlog's "a picture that depends on the pointer owes a
+        frame", paid by remembering what the picture was. The preview *item*
+        is deliberately not remembered: layout reads it out of `frame.hand`,
+        so a hand that has emptied takes the preview with it on the next
+        frame whether or not the pointer moves again. `preview_equipment`
+        kept a copy, and the copy could outlive the drag it described.
+      - **`last_scroll` lost its subject key.** The old `scroll_pairs`
+        compared "same window" as a field; per-pane state makes two clicks on
+        two dolls unpairable by construction, so the rule that is left is the
+        picture and the clock. Its tests moved with it, minus the
+        cross-window case, which is now a sentence in a comment rather than
+        an assertion.
+      - **`button_effects` is a free function of what a click actually
+        reads.** `doll_clicked` read the whole `App`; the mapping from a
+        button to its packets and windows takes `(own, war, backpack,
+        paired)` and can be pinned without a view — which is what the pane's
+        five tests do, checked by two mutations (drop the button comparison
+        from the pairing rule, drop the `own` guard from Status/Skills; one
+        named test reddens for each).
+      - **The vendor's tint went with this step, as the Backlog entry said it
+        should.** `VendorPane::tint` remembers which action plate the pointer
+        was on, `Input::Move` answers `stale` on change — and it is handled
+        *ahead of* the `under_pointer` gate, because the layout's own tint
+        predicate (`action_at` on the raw cursor) is not z-gated and a
+        memory that disagreed with the layout would ask for no frame while
+        the picture changed.
+
+      **One ordering changed, the same one every step changes.** A press on a
+      doll's buttons and a release over them are answered by the pane, ahead
+      of the container furniture and of `release_container_item`. Nothing can
+      be held by both sides: a press only reaches a pane while the hand is
+      empty (the manager's gate, S1), and the pane declines the one press
+      that would fill it — so `held` and an item transaction cannot be live
+      at the same time, which is S2's argument with one new case.
 - [ ] **S6. Container.** Last, because it is the one the hand runs through: the
       first pane to own a `Pressed` of its own, to read `ctx.hand` for a drop
       onto itself, and to emit both halves of D7's transfer as separate effects.
 - [ ] **S7. Delete the branches.** `press_on_own_window`,
-      `release_on_own_window`, `hover_container_item`, `hover_paperdoll_item`
-      and the `WindowSubject` matches inside them stop existing. `App` no longer
-      knows what a vendor is. (`scroll_vendor` and `scroll_skills` were named
-      here too and are already gone, with S1 and S2 — the wheel arm they were
-      the two terms of is empty.)
+      `hover_container_item` and the `WindowSubject` matches inside them stop
+      existing. `App` no longer knows what a vendor is. (`scroll_vendor` and
+      `scroll_skills` were named here too and are already gone, with S1 and
+      S2 — the wheel arm they were the two terms of is empty; and
+      `release_on_own_window` and `hover_paperdoll_item` went with S5, whose
+      pane answers both.)
 - [ ] **S8. The test the wheel defect would have failed.** A pane exercised with
       a `PaneCtx` and no `App`: scroll a catalogue to its end, offer one more
       notch, assert `taken` and `!redraw`.
@@ -568,17 +636,20 @@ never a half-routed frame.
   by "whoever is at the top", because the player can raise another window while
   the prompt is up. The same question will be asked again by any other
   client-side modal, so it is worth settling once rather than at S6.
-- **The window under the pointer is worked out up to three times per mouse
-  move, and now up to twice per press.** `offer_to_panes` asks
-  `window_under_pointer` for every input, and the legacy `Move` arm's
-  `hover_container_item` and `hover_paperdoll_item` each ask again — and S4's
-  keyboard release in `manager_gestures` asks it once more on a left press,
-  ahead of the walk that is about to ask it anyway. It was already twice before
-  S1, and each walk is the window list against the pointer through
-  `gump_art::pick`, which reads the atlas per texel. One answer per event,
-  worked out once, when S7 has deleted the other askers — and the manager's own
-  gestures want it handed to them rather than asked, which is what
-  `PaneCtx::under_pointer` already does for a pane.
+- **The window under the pointer is worked out up to twice per mouse move,
+  and up to twice per press.** `offer_to_panes` asks `window_under_pointer`
+  for every input, and the legacy `Move` arm's `hover_container_item` asks
+  again — and S4's keyboard release in `manager_gestures` asks it once more on
+  a left press, ahead of the walk that is about to ask it anyway.
+  (`hover_paperdoll_item` was a third asker per move until S5 moved the hover
+  into the pane, where `under_pointer` is handed over; the press S5's pane
+  *declines* — a worn item on the player's own doll — costs two extra walks
+  through the legacy chain until S6 takes the hand's machinery in.) Each walk
+  is the window list against the pointer through `gump_art::pick`, which reads
+  the atlas per texel. One answer per event, worked out once, when S7 has
+  deleted the other askers — and the manager's own gestures want it handed to
+  them rather than asked, which is what `PaneCtx::under_pointer` already does
+  for a pane.
 - **`close_window`'s dialog arm answers the same `None` to two questions.** It
   asks the window's pane for a dismissal, and `None` means `{ noclose }` — the
   window stays up and the press was still the window's. But the lookup that
@@ -587,14 +658,16 @@ never a half-routed frame.
   into the same arm. Both currently do the harmless thing; a third reason to
   answer `None` would not. Worth splitting when S7 rewrites this door, which is
   the last thing in `App` that knows what a dialog is.
-- **A vendor's ACCEPT and CLEAR tint on hover, and nothing asks for a frame when
-  it changes.** The tint is decided in the layout from `ctx.frame.cursor`, so it
-  is right whenever a frame is drawn — and what draws one is the animation
-  clock, not the move that changed it. `VendorPane` declines `Input::Move`,
-  which is honest about today and is not the answer: a pane whose picture
-  depends on the pointer owes a `Response::stale()`, and that needs the pane to
-  remember what the tint was. Cheap, and worth doing with S5's paperdoll, which
-  has the same shape and an `App::hover_paperdoll_item` to delete.
+- ~~**A vendor's ACCEPT and CLEAR tint on hover, and nothing asks for a frame
+  when it changes.**~~ **Closed by S5, in the pairing the entry itself asked
+  for.** `VendorPane::tint` remembers which plate the pointer was on and
+  `Input::Move` answers `Response::stale` when that changes; the paperdoll's
+  hover moved into its pane the same way (`hovered`, `hand_over`), and
+  `App::hover_paperdoll_item` is gone. One shape worth keeping from how it
+  landed: the pane's memory uses the *layout's own* predicate
+  (`vendor::Window::action_at` on the raw cursor, no z-gate), because a
+  memory computed by a stricter rule than the picture's would ask for no
+  frame while the picture changed.
 - **The press that picks a window up is the manager's, and it lives in the
   legacy chain's tail.** A press that hit no furniture ends
   `press_on_own_window` with `raise_window` and a `dragging`, and that is what
@@ -633,17 +706,21 @@ never a half-routed frame.
 
 ## Status
 
-**S0 through S4 built** (2026-08-17). The router is real and every input the
-window layer sees goes through it. **Four kinds have moved in**: a shop owns its
-scroll position, its chosen quantities, its art, its layout and its input; the
-skill sheet owns its tree and the control the mouse is holding; the status frame
-owns its layout, which is all it has; and a `0xB0` dialog owns its page, its
-switches, what has been typed into it, the button the finger is on and the box
-the keys are going into. `App` no longer knows what a vendor, a skill window, a
-status window or a dialog is, except to close one — and closing a dialog is
-asking its own pane what to answer with. The other two behave exactly as they
-did: the third rung of `App::deliver` is their old handlers, called only when no
-pane answered, and `render_passes.rs` still lays their two kinds out.
+**S0 through S5 built** (2026-08-17). The router is real and every input the
+window layer sees goes through it. **Five kinds have moved in**: a shop owns
+its scroll position, its chosen quantities, its tinted plate, its art, its
+layout and its input; the skill sheet owns its tree and the control the mouse
+is holding; the status frame owns its layout, which is all it has; a `0xB0`
+dialog owns its page, its switches, what has been typed into it, the button
+the finger is on and the box the keys are going into; and a paperdoll owns
+the button the finger is on, its scroll pairs, the worn layer under the
+pointer and the preview of what the hand would put there. `App` no longer
+knows what any of the five is, except to close one — and closing a dialog is
+asking its own pane what to answer with. The container behaves exactly as it
+did: the third rung of `App::deliver` is its old handlers, called only when no
+pane answered, and `render_passes.rs` still lays that one kind out — plus the
+single press the paperdoll pane *declines*, the worn-item lift that is the
+hand's and moves with S6.
 
 What this changed for a player, in one line each. **The wheel** (S0): `taken`
 rather than "did anything move" decides whether the camera hears a notch — the
@@ -656,6 +733,10 @@ frame after it, which is a cascade order and not a picture.
 **Nothing at all** (S4), with one thing that is now true by construction: a
 dialog's answer names every field the shard declared, where it used to name
 every field a sweep had copied into a map.
+**The shop's two plates tint on the move that crosses them** (S5): the hover
+used to be right only when something else — the animation clock, another
+window — happened to draw a frame; a move that changes a tint asks for one
+now, on the shop and on the doll alike.
 
 The `||` chain the plan was written against is **gone**.
 `legacy_window_input`'s wheel arm has no terms left, because both windows with a
@@ -669,24 +750,28 @@ view, the list and the overlay. The two kinds the view cannot answer for say so
 with `WindowSubject::is_local()` rather than by name.
 
 **And no window's private state is kept in a map on `Windows` any more.**
-`Windows::dialogs` was the last of them — a `HashMap<GumpId, Sheet>` keyed by
-the window, which is what a pane in `OwnWindow` *is* — and `crate::gump` went
-with it. What is left on `Windows` is what is true of the layer rather than of
-one window: which windows exist, in what order, where each sits, what the last
-frame drew, and which window the mouse and the keyboard are on. The last two are
-one shape now: `dragging` and `keyboard`, both naming a subject, both because
-there is one pointer and one keyboard (D2, D7).
+`Windows::dialogs` was the last of the maps, and S5 took the last of the
+keyed-by-subject *fields* with it: `held_doll` and `last_scroll` both carried a
+`WindowSubject` because one struct held every doll's press at once, and both
+are plain fields of `PaperdollPane` now, alongside a hover that used to be two
+fields keyed by serial (`hovered_equipment`, `preview_equipment`). What is
+left on `Windows` is what is true of the layer rather than of one window:
+which windows exist, in what order, where each sits, what the last frame drew,
+which window the mouse and the keyboard are on, and the hand
+(`item_drag`) with its container-side furniture (`hovered_container_item`,
+`last_container_click`, `split_pending`, `stack_pass`) that S6 will sort into
+pane and manager along D7's seam.
 
-The `#[expect(dead_code)]` checklist is four: three fields nothing reads yet
-(`PaneFrame::hand`, `PaneCtx::modifiers`, `PaneCtx::now` — the container's and
-the paperdoll's) and `Effect::Open` with `LocalWindow` beside it, which is
-*performed* but not yet asked for by a pane. The paperdoll asks for it at S5,
-through the same `windows::open_local_window` its legacy button already calls.
+The `#[expect(dead_code)]` checklist is one: `PaneCtx::modifiers`, which the
+container's Shift-split reads at S6. `Effect::Open` and `LocalWindow` are
+asked for by the paperdoll's Skills and Status buttons; `PaneFrame::hand`
+feeds the doll's preview and its lifted-layer subtraction; `PaneCtx::now`
+times the scroll pairs.
 
-Next is S5, the paperdoll. It is the first kind whose effects are mostly `Open`
-and `Net`: `held_doll` and `last_scroll` become fields of the pane, the seven
-buttons and the three scrolls become its `handle`, and the Skills and Status
-buttons stop being the legacy calls to `open_local_window` that S2 and S3 left
-standing and become the `Effect::Open` that has been waiting for them. The
-Backlog entry about a hover tint that asks for no frame is worth doing with it,
-because `App::hover_paperdoll_item` is one of the two things S5 deletes.
+Next is S6, the container — last on purpose, because it is the one the hand
+runs through: the first pane to own a `Pressed` of its own, to read `ctx.hand`
+for a drop onto itself, and to emit both halves of D7's transfer as separate
+effects. The paperdoll's declined press — the worn-item lift — is part of the
+same machinery and moves with it, and the Backlog entry about *who a modal's
+answer is addressed to* wants settling on the way in, because the Shift-split
+prompt suspends exactly the state S6 moves into the pane.

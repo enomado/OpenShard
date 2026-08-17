@@ -27,7 +27,6 @@ use crate::app::App;
 use crate::windows::{Drawn, WindowSubject};
 use crate::{DOUBLE_CLICK, chat, link};
 
-mod paperdoll;
 mod sync;
 
 const MAX_STACK: u16 = 60_000;
@@ -335,19 +334,25 @@ impl App {
     }
 
     /// The worn item under the pointer in the paperdoll drawn last frame.
+    ///
+    /// The one paperdoll question still asked on this side of the pane
+    /// boundary, because its caller is the one paperdoll press the pane
+    /// declines: the press that starts an item transfer, which is the hand's
+    /// machinery and moves with step 6 of `docs/window_components.md`. The
+    /// hover tint that used to share this walk is `PaperdollPane`'s own now.
     pub(crate) fn paperdoll_item_under_pointer(&self) -> Option<(Serial, Equipment)> {
         let WindowSubject::Paperdoll(mobile) = self.window_under_pointer()? else {
             return None;
         };
-        let Drawn::Paperdoll(doll) = self.drawn(WindowSubject::Paperdoll(mobile))? else {
+        let Drawn::Paperdoll(window) = self.drawn(WindowSubject::Paperdoll(mobile))? else {
             return None;
         };
         let index = gump_art::pick(
-            &doll.pictures,
+            &window.doll.pictures,
             self.input.pointer_gump,
             &self.resources.gump_atlas,
         )?;
-        let layer = *doll.equipment_hits.get(&index)?;
+        let layer = *window.doll.equipment_hits.get(&index)?;
         let view = self.world.authoritative.view.as_ref()?;
         let equipment = if view.player.serial == mobile {
             &view.player.equipment
@@ -359,34 +364,6 @@ impl App {
             .find(|item| item.layer == layer)
             .copied()
             .map(|item| (mobile, item))
-    }
-
-    /// Refresh the paperdoll's worn-item hover tint.
-    pub(crate) fn hover_paperdoll_item(&mut self) -> bool {
-        let hovered = self
-            .paperdoll_item_under_pointer()
-            .map(|(mobile, item)| (mobile, item.layer));
-        let preview = self
-            .windows
-            .item_drag
-            .and_then(crate::windows::ItemDragTransaction::drag)
-            .and_then(|drag| match self.window_under_pointer() {
-                Some(WindowSubject::Paperdoll(mobile))
-                    if self
-                        .world
-                        .authoritative
-                        .view
-                        .as_ref()
-                        .is_some_and(|view| view.player.serial == mobile) =>
-                {
-                    Some((mobile, drag.item))
-                }
-                _ => None,
-            });
-        let changed = self.windows.hovered_equipment != hovered || self.windows.preview_equipment != preview;
-        self.windows.hovered_equipment = hovered;
-        self.windows.preview_equipment = preview;
-        changed
     }
 
     /// Turn a genuine pointer move into a lift. A press without this movement
@@ -494,7 +471,6 @@ impl App {
         if transaction.pending_drop().is_some() {
             return true;
         }
-        self.windows.preview_equipment = None;
         let target = match self.window_under_pointer() {
             Some(WindowSubject::Paperdoll(mobile)) => {
                 let layer = openshard_protocol::wire::Layer(
@@ -757,18 +733,12 @@ impl App {
         // that is taken and does *not* grab — which was the one shape in this
         // function that the tail below could not express.
         //
-        // A paperdoll's own furniture, which is the same gesture a dialog's
-        // buttons have and none of the machinery: there is no layout to consult,
-        // only the list this window drew and the `hits` beside it. Taking the
-        // press away from the drag is the point — the column of buttons runs
-        // down the middle of the frame, and pressing one used to pick the whole
-        // doll up.
+        // The paperdoll's buttons and scrolls are `panes::paperdoll`'s too.
+        // What is left of its arm is the one press that pane *declines*: a worn
+        // item on the player's own body, which is the hand's press — the start
+        // of an item transfer — and the hand's machinery is this function's and
+        // its callers' until step 6 of `docs/window_components.md` moves it.
         if let WindowSubject::Paperdoll(_) = subject {
-            if let Some(button) = self.doll_button_under_pointer(subject) {
-                self.windows.held_doll = Some((subject, button));
-                self.windows.dragging = None;
-                return true;
-            }
             if let Some((mobile, item)) = self.paperdoll_item_under_pointer() {
                 if self
                     .world
@@ -824,31 +794,6 @@ impl App {
             })
             .unwrap_or_default();
         self.windows.dragging = Some((subject, grab));
-        true
-    }
-
-    /// The release that finishes a press on a paperdoll's button.
-    ///
-    /// Answers whether anything happened, so the caller can ask for a redraw:
-    /// the button comes back up on the way out either way.
-    ///
-    /// The dialog half of this went with step 4 — `DialogPane::handle` answers
-    /// its own release, and the reply a button produces is an
-    /// [`Effect::Answer`](crate::panes::Effect::Answer), which is the `0xB1` and
-    /// the close as one act.
-    pub(crate) fn release_on_own_window(&mut self) -> bool {
-        let Some((subject, button)) = self.windows.held_doll.take() else {
-            return false;
-        };
-        // Only if the pointer is still on the same button. A press that slid off
-        // one is not a click on it — the reference's own rule for every control
-        // it draws — and it is not a click on whatever the finger landed on
-        // either.
-        if self.doll_button_under_pointer(subject) == Some(button) {
-            self.doll_clicked(subject, button);
-        }
-        // True whatever it landed on: the button was drawn pressed and has to
-        // come back up.
         true
     }
 

@@ -11,16 +11,19 @@
 //!
 //! # What is here, and what is not yet
 //!
-//! The vocabulary and the router are complete; the panes are not. **Four kinds
-//! have moved in** — the vendor (step 1), the skill sheet (step 2), the status
-//! frame (step 3) and the `0xB0` dialog (step 4) — and each owns its state, its
-//! layout and its input.
-//! The other two decline every question here, and their input is still
+//! The vocabulary and the router are complete; the panes are almost so. **Five
+//! kinds have moved in** — the vendor (step 1), the skill sheet (step 2), the
+//! status frame (step 3), the `0xB0` dialog (step 4) and the paperdoll
+//! (step 5) — and each owns its state, its layout and its input.
+//! The container declines every question here, and its input is still
 //! answered by the `App` methods in
 //! [`crate::own_windows`], which [`crate::app::App::deliver`] calls once every
-//! pane has passed, while `render_passes.rs` still lays them out from the view.
+//! pane has passed, while `render_passes.rs` still lays it out from the view.
 //! That is the plan's own migration order: until a kind has moved, its window
-//! behaves exactly as it did before this module existed.
+//! behaves exactly as it did before this module existed. The one exception
+//! runs the other way — a press on a worn item of the player's own doll is
+//! *declined by the paperdoll pane* so the legacy chain can answer it, because
+//! that press belongs to the hand and the hand's machinery moves at step 6.
 //!
 //! # Two names that differ from the plan's
 //!
@@ -36,11 +39,15 @@ use std::time::Instant;
 use openshard_client_net::action::{GumpReply, Outgoing};
 use openshard_client_net::view::WorldView;
 use openshard_client_render::gump::{GumpArt, GumpPixel};
+use openshard_client_render::text::GumpLabel;
+use openshard_protocol::speech::Font;
+use openshard_protocol::wire::Hue;
 
 use crate::resources::Resources;
 use crate::windows::{Drawn, ItemDrag, WindowSubject};
 
 pub(crate) mod dialog;
+pub(crate) mod paperdoll;
 mod route;
 mod skills;
 mod status;
@@ -170,10 +177,6 @@ pub struct PaneFrame<'a> {
     /// wearable's preview, and no pane may fill or empty it. The two halves of
     /// a transfer are two ordinary [`Effect::Net`]s, possibly from two
     /// different panes, possibly with a walk between them.
-    #[expect(
-        dead_code,
-        reason = "the container reads it for a drop onto itself at step 6, the paperdoll for a preview at step 5"
-    )]
     pub hand: Option<ItemDrag>,
     /// The keys are coming to this window.
     ///
@@ -234,10 +237,6 @@ pub struct PaneCtx<'a> {
     /// reason the tick's `Rng` is owned rather than ambient: a pair of clicks
     /// is a *timing* rule, and a rule that reads an ambient clock cannot be
     /// exercised by a test.
-    #[expect(
-        dead_code,
-        reason = "the container's double-click use reads it at step 6, the paperdoll's scrolls at step 5"
-    )]
     pub now: Instant,
 }
 
@@ -372,10 +371,6 @@ pub enum Effect {
     /// client-wide struct kept.
     ReleaseKeyboard,
     /// Make one of the two windows the shard does not know about exist.
-    #[expect(
-        dead_code,
-        reason = "performed by App::perform; the paperdoll's Skills button asks for one at step 5"
-    )]
     Open(LocalWindow),
 }
 
@@ -387,10 +382,6 @@ pub enum Effect {
 /// container or a paperdoll cannot be here: asking for one of those is
 /// [`Effect::Net`], and the window appears when the view grows the entry that
 /// `reconcile_own_windows` turns into one (decision 8).
-#[expect(
-    dead_code,
-    reason = "performed by App::perform; the paperdoll's Skills button asks for one at step 5"
-)]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum LocalWindow {
     Skills,
@@ -409,6 +400,45 @@ impl LocalWindow {
         match self {
             Self::Skills => WindowSubject::Skills,
             Self::Status => WindowSubject::Status,
+        }
+    }
+}
+
+/// One line of text on a laid-out window, resolved to a string.
+///
+/// Owned rather than borrowed for the reason every other window kind's line is
+/// (`vendor::Line`, `status::Line`, `skills::Line`): a [`Drawn`] outlives the
+/// frame that built it — it is what the *next* frame's pointer is tested
+/// against — so it cannot hold a reference into the view.
+///
+/// Shared by the two kinds whose text is resolved on this side of the crate
+/// boundary — a dialog's captions and fields, a paperdoll's name plate and
+/// hover label — where the other kinds' lines are resolved in `client/render`,
+/// beside the layouts that produce them.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct Line {
+    /// Its top-left corner, in absolute gump pixels.
+    pub at: GumpPixel,
+    /// The face it is written in.
+    pub font: Font,
+    /// The hue the layout asked for.
+    pub hue: Hue,
+    /// The box it is cropped to, or `None` for a line that overflows rather
+    /// than clipping.
+    pub clip: Option<(i32, i32)>,
+    /// The line itself.
+    pub text: String,
+}
+
+impl Line {
+    /// Draw it.
+    pub fn label(&self) -> GumpLabel<'_> {
+        GumpLabel {
+            at: self.at,
+            text: &self.text,
+            font: self.font,
+            hue: self.hue,
+            clip: self.clip,
         }
     }
 }
@@ -466,7 +496,7 @@ pub trait Pane {
 pub enum AnyPane {
     Container(ContainerPane),
     Vendor(vendor::VendorPane),
-    Paperdoll(PaperdollPane),
+    Paperdoll(paperdoll::PaperdollPane),
     Dialog(dialog::DialogPane),
     Skills(skills::SkillsPane),
     Status(status::StatusPane),
@@ -484,7 +514,7 @@ impl AnyPane {
         match subject {
             WindowSubject::Container(_) => Self::Container(ContainerPane::default()),
             WindowSubject::Vendor(serial) => Self::Vendor(vendor::VendorPane::new(serial)),
-            WindowSubject::Paperdoll(_) => Self::Paperdoll(PaperdollPane::default()),
+            WindowSubject::Paperdoll(serial) => Self::Paperdoll(paperdoll::PaperdollPane::new(serial)),
             WindowSubject::Dialog(gump_id) => Self::Dialog(dialog::DialogPane::new(gump_id)),
             WindowSubject::Skills => Self::Skills(skills::SkillsPane::default()),
             WindowSubject::Status => Self::Status(status::StatusPane),
@@ -534,23 +564,14 @@ impl Pane for AnyPane {
 #[derive(Debug, Default)]
 pub struct ContainerPane {}
 
-/// A body's paperdoll. Step 5 moves `held_doll` and `last_scroll` here.
-#[derive(Debug, Default)]
-pub struct PaperdollPane {}
-
-// Every kind that has not moved in yet declines all three questions. Each of
-// these is replaced whole by the pane that step moves in; until then the `App`
-// method named in each comment still answers that kind's input, and
-// `App::deliver` calls it after the panes have all passed, while
-// `render_passes::draw_gump_windows` still packs and lays that kind out from
-// the view. A shim that answered anything at all would be a second opinion
-// about the same click, and a pane that packed its own art while the pass still
-// laid it out would be two answers about the same picture.
-//
-// Written out per kind rather than left to a defaulted trait method: a default
-// saying "no art, no layout" is exactly what a pane that has moved in and
-// forgotten to implement one would silently get, and the failure mode of that
-// is a window that draws nothing.
+// The one kind that has not moved in yet declines all three questions. It is
+// replaced whole by the pane its step moves in; until then the `App` methods
+// named below still answer its input, and `App::deliver` calls them after the
+// panes have all passed, while `render_passes::draw_gump_windows` still packs
+// and lays it out from the view. A shim that answered anything at all would be
+// a second opinion about the same click, and a pane that packed its own art
+// while the pass still laid it out would be two answers about the same
+// picture.
 
 impl Pane for ContainerPane {
     /// Still `container::art_of`, called from `render_passes` — step 6.
@@ -566,24 +587,6 @@ impl Pane for ContainerPane {
 
     /// Still `App::press_on_own_window`, `App::release_container_item` and
     /// `App::hover_container_item` — step 6.
-    fn handle(&mut self, _input: Input, _ctx: &PaneCtx<'_>) -> Response {
-        Response::ignored()
-    }
-}
-
-impl Pane for PaperdollPane {
-    /// Still `paperdoll::art_of`, called from `render_passes` — step 5.
-    fn art(&self, _frame: &PaneFrame<'_>) -> Vec<GumpArt> {
-        Vec::new()
-    }
-
-    /// Still `paperdoll::doll`, laid out by `render_passes` — step 5.
-    fn layout(&self, _frame: &PaneFrame<'_>) -> Option<Drawn> {
-        None
-    }
-
-    /// Still `App::press_on_own_window`, `App::release_on_own_window` and
-    /// `App::hover_paperdoll_item` — step 5.
     fn handle(&mut self, _input: Input, _ctx: &PaneCtx<'_>) -> Response {
         Response::ignored()
     }

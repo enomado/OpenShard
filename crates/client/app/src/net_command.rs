@@ -180,7 +180,10 @@ impl App {
                 }
                 // Windows over a world that is gone, and the presses they were
                 // holding: the reconcile drops them from the view's side, and
-                // these are the local halves it cannot answer for.
+                // these are the local halves it cannot answer for. A press a
+                // pane was holding — a doll's button, a dialog's — goes with
+                // its window, since `shard_lost` above empties everything the
+                // reconcile reads.
                 //
                 // **The local windows go by predicate and not by name.** A
                 // skill sheet and a status frame are open because the player
@@ -192,7 +195,6 @@ impl App {
                 self.windows
                     .own_windows
                     .retain(|window| !window.subject.is_local());
-                self.windows.held_doll = None;
                 self.windows.item_drag = None;
                 self.windows.dragging = None;
                 self.tooltips.reset();

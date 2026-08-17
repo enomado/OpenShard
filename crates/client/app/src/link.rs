@@ -501,35 +501,12 @@ impl Link {
         self.send(Command::Outgoing(Outgoing::StopAttacking));
     }
 
-    /// Announce that the player is leaving.
-    pub fn log_out(&self) {
-        self.send(Command::Outgoing(Outgoing::LogOut));
-    }
-
-    /// Ask for a mobile's status bar.
-    pub fn status(&self, mobile: Serial) {
-        self.send(Command::Outgoing(Outgoing::Status(mobile)));
-    }
-
-    /// Ask for a mobile's skill list.
-    pub fn skills(&self, mobile: Serial) {
-        self.send(Command::Outgoing(Outgoing::Skills(mobile)));
-    }
-
-    /// Ask for our own quest log.
-    pub fn quest_log(&self) {
-        self.send(Command::Outgoing(Outgoing::QuestLog));
-    }
-
-    /// Ask for our own guild menu.
-    pub fn guild_menu(&self) {
-        self.send(Command::Outgoing(Outgoing::GuildMenu));
-    }
-
-    /// Ask about a mobile's virtues.
-    pub fn virtue(&self, mobile: Serial) {
-        self.send(Command::Outgoing(Outgoing::Virtue(mobile)));
-    }
+    // No `log_out`, `status`, `skills`, `quest_log`, `guild_menu` and no
+    // `virtue`: every request a paperdoll's furniture makes is asked for by
+    // `panes::paperdoll::PaperdollPane` as an `Effect::Net` and sent through
+    // [`Link::act`], the way the vendor's two went at step 1 of
+    // `docs/window_components.md`. `war_mode` stays because it has a caller
+    // that is not a window: Tab.
 
     // No `set_skill_lock` and no `use_skill`: the skill sheet asks for both as
     // `Effect::Net(Outgoing::SkillLock | UseSkill)` and the router sends them
@@ -1080,12 +1057,12 @@ mod tests {
     fn command_delivery_has_a_fixed_bound() {
         let (commands, mut received) = tokio::sync::mpsc::channel(1);
         let link = Link { commands };
-        link.log_out();
-        link.log_out();
+        link.stop_attacking();
+        link.stop_attacking();
 
         assert!(matches!(
             received.try_recv(),
-            Ok(Command::Outgoing(Outgoing::LogOut))
+            Ok(Command::Outgoing(Outgoing::StopAttacking))
         ));
         assert!(
             received.try_recv().is_err(),

@@ -62,7 +62,7 @@ pub(crate) struct WorldPassAudit {
 }
 use crate::panes::Pane;
 use crate::windows::{Drawn, WindowSubject};
-use crate::{crowd, graphics, panes, profile, resources, shell, windows, world};
+use crate::{graphics, panes, profile, resources, shell, windows, world};
 
 /// The shard's dialogs, in the client's own art, packed and drawn — a
 /// container, a paperdoll, the skill sheet, all three through one machinery.
@@ -228,6 +228,12 @@ pub(crate) fn draw_gump_windows(
                     // `0x11` in one press, so a frame or two can pass in which
                     // this client has none of the numbers to write on it.
                     WindowSubject::Status => {}
+                    // Laid out by `panes::paperdoll::PaperdollPane` above, and
+                    // reaching here is the sheet's case rather than the shop's:
+                    // the pane answers `None` only for a client with no gump
+                    // art at all, and this loop runs inside the `Some(files)`
+                    // arm of exactly that question.
+                    WindowSubject::Paperdoll(_) => {}
                     WindowSubject::Container(serial) => {
                         let Some(gump) = view.containers.get(&serial).copied() else {
                             continue;
@@ -271,105 +277,6 @@ pub(crate) fn draw_gump_windows(
                                 &contents,
                                 open.at,
                                 windows.hovered_container_item,
-                            )),
-                        ));
-                    }
-                    WindowSubject::Paperdoll(serial) => {
-                        // Whose body and whose equipment, read off the view
-                        // inline rather than through a method: the
-                        // surface's window is held mutably across this
-                        // loop, and a `&self` call would borrow all of it.
-                        // Nothing else asks these questions — the hit test
-                        // reads the list this builds (`drawn_windows`)
-                        // rather than working out the body a second time,
-                        // which is what used to make a paperdoll whose two
-                        // answers disagreed a window that could not be
-                        // closed.
-                        let own = view.player.serial == serial;
-                        let body = match own {
-                            true => Some((view.player.body, view.player.hue)),
-                            // A paperdoll of a mobile this client has never
-                            // been told the body of: the frame is drawn and
-                            // the doll is not, until the `0x77` arrives.
-                            false => view.mobiles.get(&serial).map(|m| (m.body, m.hue)),
-                        };
-                        // The `0x88` carries no equipment — see
-                        // `WorldView::paperdolls` — so it is read off the
-                        // body the window names.
-                        let equipment = match own {
-                            true => crowd::worn(&view.player.equipment, &resources.tiledata),
-                            false => match view.mobiles.get(&serial) {
-                                Some(mobile) => crowd::worn(&mobile.equipment, &resources.tiledata),
-                                None => Vec::new(),
-                            },
-                        };
-                        let equipment: Vec<_> = equipment
-                            .into_iter()
-                            .filter(|item| {
-                                windows
-                                    .item_drag
-                                    .and_then(crate::windows::ItemDragTransaction::drag)
-                                    .is_none_or(|drag| {
-                                        drag.origin
-                                            != crate::windows::DragOrigin::Equipment {
-                                                mobile: serial,
-                                                layer: item.layer,
-                                            }
-                                    })
-                            })
-                            .collect();
-                        let wearer = body.map(|(body, hue)| paperdoll::Wearer {
-                            body,
-                            hue,
-                            equipment: &equipment,
-                        });
-                        // The stance, off the player and not off the `0x88`
-                        // the window opened on: a `0x72` moves it while
-                        // that packet stands still, and the toggle is the
-                        // one picture on the frame that has to follow. See
-                        // `WorldView::player`'s `war`, which is where both
-                        // packets are folded to.
-                        let whose = match own {
-                            true => paperdoll::Whose::Own { war: view.player.war },
-                            false => paperdoll::Whose::Another,
-                        };
-                        // Which button the finger is on, if it is on one of
-                        // this window's. Held per window rather than per
-                        // client: two dolls can be open and only the pressed
-                        // one draws a pressed picture.
-                        let held = windows
-                            .held_doll
-                            .filter(|(window, _)| *window == open.subject)
-                            .map(|(_, button)| button);
-                        let preview = windows
-                            .preview_equipment
-                            .filter(|(mobile, _)| *mobile == serial)
-                            .and_then(|(_, item)| {
-                                let layer = openshard_protocol::wire::Layer(
-                                    resources.tiledata.static_tile(item.graphic.0).layer,
-                                );
-                                (own && layer.0 > 0
-                                    && layer.0 <= 25
-                                    && !equipment.iter().any(|worn| worn.layer == layer))
-                                .then_some(openshard_client_render::mobiles::EquipmentLayer {
-                                    graphic: resources.tiledata.static_tile(item.graphic.0).anim_id,
-                                    hue: item.hue,
-                                    layer,
-                                })
-                            });
-                        drawn_windows.push((
-                            open.subject,
-                            Drawn::Paperdoll(paperdoll::window(
-                                wearer.as_ref(),
-                                whose,
-                                held,
-                                windows
-                                    .hovered_equipment
-                                    .and_then(|(mobile, layer)| (mobile == serial).then_some(layer)),
-                                preview,
-                                &resources.equip_conv,
-                                files,
-                                open.at,
                             )),
                         ));
                     }
@@ -470,47 +377,13 @@ pub(crate) fn draw_gump_windows(
                 // the typed contents of every field — the second half of the
                 // window, worked out in a different place from the first.
                 (WindowSubject::Dialog(_), Drawn::Dialog(laid_out)) => {
-                    labels.extend(laid_out.lines.iter().map(crate::panes::dialog::Line::label));
+                    labels.extend(laid_out.lines.iter().map(crate::panes::Line::label));
                 }
-                (WindowSubject::Paperdoll(serial), Drawn::Paperdoll(_)) => {
-                    if let (Some(at), Some(doll)) = (
-                        windows
-                            .own_windows
-                            .iter()
-                            .find(|window| window.subject == *subject)
-                            .map(|window| window.at),
-                        world
-                            .authoritative
-                            .view
-                            .as_ref()
-                            .and_then(|view| view.paperdolls.get(serial)),
-                    ) {
-                        labels.push(paperdoll::name(&doll.name, at));
-                    }
-                    if let Some((mobile, layer)) = windows.hovered_equipment {
-                        if mobile == *serial {
-                            let item = world.authoritative.view.as_ref().and_then(|view| {
-                                if view.player.serial == mobile {
-                                    view.player.equipment.iter().find(|item| item.layer == layer)
-                                } else {
-                                    view.mobiles
-                                        .get(&mobile)?
-                                        .equipment
-                                        .iter()
-                                        .find(|item| item.layer == layer)
-                                }
-                            });
-                            if let Some(item) = item {
-                                labels.push(openshard_client_render::text::GumpLabel {
-                                    at: cursor.offset(gump_art::GumpPixel::new(14, 18)),
-                                    text: &resources.tiledata.static_tile(item.graphic.0).name,
-                                    font: openshard_protocol::speech::Font(1),
-                                    hue: openshard_protocol::wire::Hue::LABEL,
-                                    clip: None,
-                                });
-                            }
-                        }
-                    }
+                // A dialog's arm and a shop's: the pane resolved the name and
+                // the hover label when it laid the window out, and this pass
+                // reads what the layout produced and looks nothing up.
+                (WindowSubject::Paperdoll(_), Drawn::Paperdoll(window)) => {
+                    labels.extend(window.lines.iter().map(crate::panes::Line::label));
                 }
                 (WindowSubject::Skills, Drawn::Skills(sheet)) => {
                     for line in &sheet.lines {
