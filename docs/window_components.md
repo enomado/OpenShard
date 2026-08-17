@@ -28,9 +28,10 @@ that the next window kind is free to get wrong again.
 
 **No window has private state.** `Windows` (`crates/client/app/src/windows.rs`)
 holds `vendor_scrolls`, `vendor_amounts`, `skills`, `held_skill`, `held_doll`,
-`last_scroll`, `last_container_click` and `dialogs` as public fields. (The first
-two left with S1, the next two with S2 and `dialogs` with S4 — the paragraph is
-what the plan was written against, and the Steps below are what has gone.)
+`last_scroll`, `last_container_click` and `dialogs` as public fields. (**Every one of them is gone**: the first two with
+S1, the next two with S2, `dialogs` with S4, `held_doll` and `last_scroll` with
+S5, and `last_container_click` with S6. The paragraph is what the plan was
+written against, and the Steps below are what has gone.)
 `own_windows.rs` writes them from the press path, `render_passes.rs` reads
 *and* writes them while laying the frame out (`vendor_amounts.entry(..)` at
 `render_passes.rs:190`), and `close_window` has to remember `vendor_scrolls
@@ -569,16 +570,105 @@ never a half-routed frame.
       empty (the manager's gate, S1), and the pane declines the one press
       that would fill it — so `held` and an item transaction cannot be live
       at the same time, which is S2's argument with one new case.
-- [ ] **S6. Container.** Last, because it is the one the hand runs through: the
-      first pane to own a `Pressed` of its own, to read `ctx.hand` for a drop
-      onto itself, and to emit both halves of D7's transfer as separate effects.
-- [ ] **S7. Delete the branches.** `press_on_own_window`,
-      `hover_container_item` and the `WindowSubject` matches inside them stop
-      existing. `App` no longer knows what a vendor is. (`scroll_vendor` and
-      `scroll_skills` were named here too and are already gone, with S1 and
-      S2 — the wheel arm they were the two terms of is empty; and
-      `release_on_own_window` and `hover_paperdoll_item` went with S5, whose
-      pane answers both.)
+- [x] **S6. Container.** ✅ `panes/container.rs`: `ContainerPane { container,
+      pressed, hovered, last_click }`, an `impl Pane` with all three methods,
+      and the last window kind out of `App` — `press_on_own_window`'s container
+      arm, `container_item_under_pointer`, `hover_container_item`,
+      `paperdoll_item_under_pointer`, `stack_all_button_under_pointer`,
+      `take_all_button_under_pointer`, `take_all_from_container`,
+      `release_container_item`, `release_container_press`,
+      `drag_container_item`, `finish_stack_split` and `split_amount` all gone,
+      along with the container's layout arm, its art loop and its label arm in
+      `render_passes.rs`, and `Link::drop_into`/`Link::equip`. The paperdoll's
+      declined press came in with it, and so did the drop onto a doll.
+      **Seven things landed differently from the shape above:**
+      - **🚨 `ItemDragTransaction` is `Hand`, and the third state left for the
+        panes.** D7 said the press is the pane's and the hand is the manager's;
+        the *type* said all three were one machine, and `owns_cursor` existed
+        to tell them apart. `Hand` is `Held | Dropped` — everything in it owns
+        the cursor by being there, so the manager's gate is the field being
+        `Some` — and the press is `ContainerPane::pressed`,
+        `PaperdollPane::pressed`, or **`Windows::world_press`** for an item
+        lying on the ground, which has no window to keep it in. Three holders,
+        one rule for what a press becomes (`ItemPress::dragged` →
+        `Still | Ask | Lift`), because a policy restated per holder is the
+        second policy this plan keeps meeting.
+      - **`Effect::Lift` and `Effect::Drop`, and they are not the pair D7
+        refused.** What D7 refused is a transfer *transaction* spanning two
+        windows, and there is none: a lift and a drop are unrelated effects,
+        possibly from two panes, possibly with a walk between them. What each
+        one *is* is a wire half and a mirror half **fused**, for
+        `Effect::Answer`'s reason — a hand filled with no packet behind it is
+        an item this end has taken out of a bag nobody else knows about, and a
+        packet with no hand behind it draws the item back in the bag it has
+        left. A pane names only the destination, so `PendingDrop` names its own
+        packet and `Link` lost `drop_into` and `equip`.
+      - **A bare `Net(PickUp)` still exists, and the difference is the
+        cursor.** The wield a double click on a katana is, and the "Take all"
+        sweep, are lift-and-drop pairs the player never *holds* — there is no
+        moment at which anything is on the cursor — so both are ordinary
+        `Effect::Net`s and neither touches the hand. That is exactly how they
+        behaved before; the distinction is now written down where the two
+        effects are declared.
+      - **Who a modal's answer is addressed to — the Backlog entry, settled.**
+        `Windows::prompt: Option<Asking>` says whose press the amount picker is
+        standing over (`Asking::World` or `Asking::Window(subject)`), and
+        `Input::Answered(Answer)` is routed by it, exactly as S4 routes
+        `Input::Key` by `Windows::keyboard`. The pane's half is
+        `PaneFrame::has_prompt`, beside `has_keyboard`: it reads it to leave
+        its own press alone — a move must not lift the pile out from under the
+        number being chosen, and the release that *opened* the prompt must not
+        put the press down. `split_pending` was a `bool`, which is what
+        "whoever is on top" looks like when there has only ever been one
+        presser.
+      - **`Drawn::Container` carries the list its pictures were built from.**
+        A click used to be turned into an item by picking an index out of the
+        pictures and counting that far into a list rebuilt from the view — with
+        the lifted icon filtered out *again*, by hand, in the order the layout
+        had filtered it. Two walks with one subtraction each, and nothing but
+        care keeping them in step. `container::Window { pictures, contents,
+        lines }` makes the hit test a lookup, which is `drawn_windows`' own rule
+        stated properly rather than obeyed twice.
+      - **The two plates are one predicate now** — the Backlog entry about
+        `stack_all_button_under_pointer` and `take_all_button_under_pointer`,
+        answered. Both walked every window and asked `window_under_pointer()`
+        *inside* the loop; what that was reaching for is the router's own rule,
+        that a press stops at the window it landed on, so a pane hit-tests
+        itself and the walk is gone rather than restated. Which plate a window
+        has is `plate_of(container, backpack, shop)`, read by the layout that
+        draws the caption *and* by the press that acts on it — where a text pass
+        and two `App` walks used to have to agree, and a window that drew "Take
+        all" and answered nothing would have looked broken while saying nothing.
+      - **A plate press raises its window, and it did not before.** Every other
+        press on a window's furniture raises; the two plates returned early,
+        ahead of `raise_window`. One line, and it is the only thing on this list
+        a player can see.
+
+      **Two orderings changed.** A press on an icon and a release over a bag are
+      answered by the pane, ahead of the container furniture — which is now the
+      pane's too — and a drop onto a doll is answered by `PaperdollPane`, where
+      `release_container_item`'s `match` on the window kind used to answer for
+      every kind at once. What is left of that function is the ground: a release
+      that no window claimed. Releasing over a shop or a skill sheet still drops
+      on the ground behind it, because neither pane answers a drop and neither
+      is a place to put anything.
+- [ ] **S7. Delete the branches.** *Most of this step happened as its kinds
+      moved.* `hover_container_item` and every `WindowSubject` match inside the
+      old handlers are gone with S6, along with `scroll_vendor`/`scroll_skills`
+      (S1, S2), `release_on_own_window`/`hover_paperdoll_item` (S5) and
+      `release_container_item`'s match on the window kind (S6). `App` does not
+      know what any of the six is.
+
+      **What is actually left is a rung, not a branch.** Three things reach
+      `legacy_window_input` and none of them is a window kind: the press that
+      picks a window up when no pane wanted it (`press_on_own_window`, now the
+      raise-and-grab tail), and the world's own press and drop
+      (`press_world_item`/`drag_world_item`, `drop_hand_on_ground`), which no
+      pane can answer for because the ground is not a window. They have to run
+      *behind* the panes — a shop's Confirm and a sheet's thumb are asked first
+      — so `manager_gestures` cannot take them. The step is to give them a rung
+      named after what they are, and to delete `legacy_window_input` with the
+      word "legacy" in it.
 - [ ] **S8. The test the wheel defect would have failed.** A pane exercised with
       a `PaneCtx` and no `App`: scroll a catalogue to its end, offer one more
       notch, assert `taken` and `!redraw`.
@@ -594,6 +684,12 @@ never a half-routed frame.
       place, out of real client asset files. It is the whole of what blocks
       this step now; "`App` needs asset files" was the old, larger version of
       the same sentence.
+      **S6 showed the way round half of it.** A hit test needs an atlas and not
+      the whole of `Resources`, and a `GumpAtlas` can be packed from two solid
+      blocks in a test — which is what `container::Window::item_at`'s does. The
+      remaining question is whether `PaneFrame` wants the two or three fields a
+      pane actually reads instead of the whole `Resources`, which would make
+      every pane's `handle` reachable from a test without an install.
 
 ## Backlog
 
@@ -617,39 +713,43 @@ never a half-routed frame.
   honest shape is one `App::ask_redraw()` and arms that call it — or, better, an
   arm that returns its `Response` to one place that acts on it. Mechanical, and
   worth doing when S7 has finished moving what the arms *say*.
-- **`stack_all_button_under_pointer` and `take_all_button_under_pointer` walk the
-  window list and then ask `window_under_pointer()` inside the loop.** Which
-  means the answer depends on a *second* top-down walk taken per iteration, and
-  reads as "stop if this window is the one the pointer is on" — the opposite of
-  what a control drawn on that window wants. Both are container furniture and go
-  into `ContainerPane` at S6; whatever that predicate was meant to say has to be
-  stated then, because a pane hit-tests itself and has no second walk to consult.
-- **Who a modal's answer is addressed to.** *Half answered by S4, for the
-  keyboard: `Input::Key` is routed to the window `Windows::keyboard` names, by
-  identity and not by z-order, and the split prompt below is the same question
-  about a different answer.* D7 leaves `Pressed` inside the pane,
-  and a Shift-drag suspends exactly that state while the client's own amount
-  prompt is open: `split_pending` is set, and the answer arrives later from the
-  shell as `finish_stack_split(decision)`, which reads `item_drag` back out of
-  `Windows`. Once the press lives in a pane, that answer has to be *delivered* to
-  the pane that asked — an `Input::Answered(..)` routed by identity rather than
-  by "whoever is at the top", because the player can raise another window while
-  the prompt is up. The same question will be asked again by any other
-  client-side modal, so it is worth settling once rather than at S6.
-- **The window under the pointer is worked out up to twice per mouse move,
-  and up to twice per press.** `offer_to_panes` asks `window_under_pointer`
-  for every input, and the legacy `Move` arm's `hover_container_item` asks
-  again — and S4's keyboard release in `manager_gestures` asks it once more on
-  a left press, ahead of the walk that is about to ask it anyway.
-  (`hover_paperdoll_item` was a third asker per move until S5 moved the hover
-  into the pane, where `under_pointer` is handed over; the press S5's pane
-  *declines* — a worn item on the player's own doll — costs two extra walks
-  through the legacy chain until S6 takes the hand's machinery in.) Each walk
-  is the window list against the pointer through `gump_art::pick`, which reads
-  the atlas per texel. One answer per event, worked out once, when S7 has
-  deleted the other askers — and the manager's own gestures want it handed to
-  them rather than asked, which is what `PaneCtx::under_pointer` already does
-  for a pane.
+- ~~**`stack_all_button_under_pointer` and `take_all_button_under_pointer` walk
+  the window list and then ask `window_under_pointer()` inside the loop.**~~
+  **Closed by S6.** What that predicate was reaching for is the router's own
+  rule — a located input stops at the window it landed on — so both walks are
+  gone rather than restated, and a pane hit-tests itself. The plate a window has
+  is one predicate (`plate_of`) read by the layout that draws its caption and by
+  the press that acts on it; there were three readers and they had to agree.
+  *One shape worth keeping from how it landed:* the plates hang **below** the
+  window's own art, so a pane is offered that press with `under_pointer` false —
+  which is the same fact the old walks were computing, arrived at by the router
+  rather than by asking a second time.
+- ~~**Who a modal's answer is addressed to.**~~ **Closed by S6, the way the
+  entry itself proposed.** `Windows::prompt: Option<Asking>` records whose press
+  the amount picker went up over — `Asking::World` for an item on the ground,
+  `Asking::Window(subject)` for a bag — and `Input::Answered(Answer)` is routed
+  by it, by identity and never by z-order. It is S4's keyboard split one device
+  over: the manager owns *which* presser the answer belongs to, the presser owns
+  what it means, and the pane reads its half as `PaneFrame::has_prompt` beside
+  `has_keyboard`. A second client-side modal adds an `Answer` arm and nothing
+  else.
+
+  *What this cost, and it is the shape to expect next time:* the answer arrives
+  from the shell rather than from the event loop, so `App::apply` delivers it —
+  an input is an input, and this one is addressed — and the record is cleared
+  **after** the walk, because the walk is what reads it to find the addressee.
+- **The window under the pointer is worked out once per move and twice per
+  press.** `offer_to_panes` asks `window_under_pointer` for every input, which
+  is the answer every pane is handed as `PaneCtx::under_pointer`. The second
+  asker on a press is `manager_gestures`' keyboard release (S4), which runs
+  ahead of the walk that is about to ask it anyway — and the third, on a press
+  that no pane wanted, is `press_on_own_window`'s own first line. *The per-move
+  askers are gone: `hover_paperdoll_item` went with S5 and
+  `hover_container_item` with S6, and the press S5's pane declined — which cost
+  two extra walks through the legacy chain — is answered by a pane as of S6.*
+  Each walk is the window list against the pointer through `gump_art::pick`,
+  which reads the atlas per texel. One answer per event, handed to whoever needs
+  it, when S7 writes the manager's fallback rung — which is the last asker.
 - **`close_window`'s dialog arm answers the same `None` to two questions.** It
   asks the window's pane for a dismissal, and `None` means `{ noclose }` — the
   window stays up and the press was still the window's. But the lookup that
@@ -679,6 +779,26 @@ never a half-routed frame.
   rather than the precondition — or `deliver` learns to run one after the
   chain has passed. Worth settling when S7 writes it, and worth knowing now
   that "delete the branches" leaves one behind that is not a branch.
+
+  **S6 gave it two neighbours**, and they want the same rung: the world's own
+  item press (`press_world_item`, `drag_world_item`, `release_world_press`) and
+  the drop of a held item onto a tile (`drop_hand_on_ground`). Neither is a
+  window's — the ground has no pane — and both have to be asked *after* every
+  window has declined, which is the same rung and the same reason.
+
+  One wart to fix while writing it: that tail reads the grab offset off
+  `own_windows.last()` rather than off the window it is picking up, and it is
+  right only because `raise_window` has just moved that window to the end.
+- **A press on a bag over a window over another bag is offered a plate it
+  cannot see.** The plates hang below a window's own art, so a pane is offered
+  their press with `under_pointer` false — and the walk only stops *after* the
+  window the pointer is on, so a plate belonging to a window **above** that one
+  still answers even when a window is drawn over the plate itself. That is
+  exactly what the two old walks did (they tested the plate before bailing at
+  the pointed-at window), so S6 preserved it deliberately; it is worth deciding
+  whether it is right rather than inherited. The honest fix is for a plate to be
+  part of the window's picture — pixels rather than a box — which is also what
+  would let it tint on hover like every other control this client draws.
 - **A scroll that could not move still asks for a frame.** `SkillsPane::wheel`
   answers `consumed` at either end, and the arrows and the track beside it
   answer `changed` unconditionally: pressing Up at the top of the list is a
@@ -706,21 +826,23 @@ never a half-routed frame.
 
 ## Status
 
-**S0 through S5 built** (2026-08-17). The router is real and every input the
-window layer sees goes through it. **Five kinds have moved in**: a shop owns
-its scroll position, its chosen quantities, its tinted plate, its art, its
-layout and its input; the skill sheet owns its tree and the control the mouse
-is holding; the status frame owns its layout, which is all it has; a `0xB0`
-dialog owns its page, its switches, what has been typed into it, the button
-the finger is on and the box the keys are going into; and a paperdoll owns
-the button the finger is on, its scroll pairs, the worn layer under the
-pointer and the preview of what the hand would put there. `App` no longer
-knows what any of the five is, except to close one — and closing a dialog is
-asking its own pane what to answer with. The container behaves exactly as it
-did: the third rung of `App::deliver` is its old handlers, called only when no
-pane answered, and `render_passes.rs` still lays that one kind out — plus the
-single press the paperdoll pane *declines*, the worn-item lift that is the
-hand's and moves with S6.
+**S0 through S6 built** (2026-08-17). The router is real, every input the
+window layer sees goes through it, and **all six kinds have moved in**: a shop
+owns its scroll position, its chosen quantities and its tinted plate; the
+skill sheet owns its tree and the control the mouse is holding; the status
+frame owns its layout, which is all it has; a `0xB0` dialog owns its page, its
+switches, what has been typed into it, the button the finger is on and the box
+the keys are going into; a paperdoll owns the button the finger is on, its
+scroll pairs, the worn layer under the pointer, the preview of what the hand
+would put there and the press that lifts a worn item off it; and a container
+owns its icons, the press on one, the pair that makes two clicks a use, the
+tint under the pointer and the plate below the frame. Each owns its art, its
+layout and its input, and `App` knows what none of them is — except to close
+one, and closing a dialog is asking its own pane what to answer with.
+
+`render_passes.rs` lays out **no window kind at all** any more. It packs what
+the panes ask for, draws what they laid out, and writes the lines they
+resolved.
 
 What this changed for a player, in one line each. **The wheel** (S0): `taken`
 rather than "did anything move" decides whether the camera hears a notch — the
@@ -737,41 +859,43 @@ every field a sweep had copied into a map.
 used to be right only when something else — the animation clock, another
 window — happened to draw a frame; a move that changes a tint asks for one
 now, on the shop and on the doll alike.
+**A bag's plate raises its window** (S6): pressing "Take all" or "Stack all"
+puts that bag on top, which every other press on a window's furniture already
+did.
 
-The `||` chain the plan was written against is **gone**.
-`legacy_window_input`'s wheel arm has no terms left, because both windows with a
-wheel own it, and each answers the two questions as two fields. Its release arm
-lost a term with S4 and is down to the container's two.
+The `||` chain the plan was written against is **gone**, and so is the last
+window kind behind it. `legacy_window_input` answers no window at all now: its
+wheel and key arms are empty, its press arm is the raise-and-grab tail, and its
+release and move arms are the world's — an item on the ground has no pane to
+keep its press in.
 
-**No window's openness is kept outside the list of open windows any more.**
+**No window's openness is kept outside the list of open windows.**
 `Windows::skills` went with S2 and `Windows::status` with S3, and
-`reconcile_own_windows` — which took one `bool` per local kind — now takes the
-view, the list and the overlay. The two kinds the view cannot answer for say so
-with `WindowSubject::is_local()` rather than by name.
+`reconcile_own_windows` takes the view, the list and the overlay. The two kinds
+the view cannot answer for say so with `WindowSubject::is_local()`.
 
-**And no window's private state is kept in a map on `Windows` any more.**
-`Windows::dialogs` was the last of the maps, and S5 took the last of the
-keyed-by-subject *fields* with it: `held_doll` and `last_scroll` both carried a
-`WindowSubject` because one struct held every doll's press at once, and both
-are plain fields of `PaperdollPane` now, alongside a hover that used to be two
-fields keyed by serial (`hovered_equipment`, `preview_equipment`). What is
-left on `Windows` is what is true of the layer rather than of one window:
+**And no window's state is kept on `Windows` at all.** `Windows::dialogs` was
+the last of the maps (S4), `held_doll` and `last_scroll` the last of the
+keyed-by-subject fields (S5), and S6 took the container's four —
+`hovered_container_item`, `last_container_click`, the `Pressed` half of
+`item_drag`, and `split_pending`. What is left is what is true of the *layer*:
 which windows exist, in what order, where each sits, what the last frame drew,
-which window the mouse and the keyboard are on, and the hand
-(`item_drag`) with its container-side furniture (`hovered_container_item`,
-`last_container_click`, `split_pending`, `stack_pass`) that S6 will sort into
-pane and manager along D7's seam.
+and who holds each of the three things there is one of on a screen — the
+pointer (`dragging`), the keyboard (`keyboard`) and the cursor (`hand`, with
+`prompt` for the press a modal is standing over). Plus one that is not about a
+window at all and says so: `world_press`, the press on an item lying on the
+ground.
 
-The `#[expect(dead_code)]` checklist is one: `PaneCtx::modifiers`, which the
-container's Shift-split reads at S6. `Effect::Open` and `LocalWindow` are
-asked for by the paperdoll's Skills and Status buttons; `PaneFrame::hand`
-feeds the doll's preview and its lifted-layer subtraction; `PaneCtx::now`
-times the scroll pairs.
+The `#[expect(dead_code)]` checklist is **empty**. `PaneCtx::modifiers` is read
+by the bag's Shift-split, which was the last entry on it.
 
-Next is S6, the container — last on purpose, because it is the one the hand
-runs through: the first pane to own a `Pressed` of its own, to read `ctx.hand`
-for a drop onto itself, and to emit both halves of D7's transfer as separate
-effects. The paperdoll's declined press — the worn-item lift — is part of the
-same machinery and moves with it, and the Backlog entry about *who a modal's
-answer is addressed to* wants settling on the way in, because the Shift-split
-prompt suspends exactly the state S6 moves into the pane.
+Next is S7, and it is smaller than its name: "delete the branches" mostly
+happened as each kind moved. What is left is one *rung* — the manager's own
+gestures that run behind the panes rather than ahead of them (the press that
+picks a window up, the world's item press, the drop onto the ground) — and the
+`window_under_pointer` walks that would be handed an answer instead of asking
+for one. S8 is still the test through `handle`, and still blocked on the same
+thing: a `PaneCtx` needs a `&Resources`, which is built out of real client
+asset files. *S6 narrowed that*: `container::Window::item_at` is exercised
+against a real `GumpAtlas` built from two blocks, so the hit test at least is
+pinned without an install.
