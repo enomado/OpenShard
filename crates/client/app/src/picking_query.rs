@@ -1063,12 +1063,17 @@ impl crate::App {
             return;
         };
         let at = openshard_protocol::world::Point::new(tile.at.x, tile.at.y, tile.stand_z.0);
-        self.world.presentation.multi_preview = crate::net_command::multi_pieces(
+        // `Unknown` and `NotAMulti` both draw nothing here, and for once that is
+        // the same answer: a preview this client has no shape for is a preview it
+        // cannot show, and the cursor is still up either way.
+        self.world.presentation.multi_preview = match crate::net_command::multi_pieces(
             self.resources.multis.as_deref(),
             multi.graphic(),
             at,
             openshard_protocol::wire::Hue::NONE,
-        )
-        .unwrap_or_default();
+        ) {
+            crate::net_command::MultiDraw::Pieces(pieces) => pieces,
+            crate::net_command::MultiDraw::Unknown | crate::net_command::MultiDraw::NotAMulti => Vec::new(),
+        };
     }
 }

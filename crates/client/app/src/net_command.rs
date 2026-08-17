@@ -543,24 +543,36 @@ impl App {
                     // Every component takes the *house's* serial, which is what
                     // makes clicking any wall pick the house: `item_serials`
                     // runs parallel to `items` and picking reads it by index.
-                    if let Some(pieces) = multi_pieces(
+                    match multi_pieces(
                         self.resources.multis.as_deref(),
                         item.graphic,
                         item.position,
                         item.hue,
                     ) {
-                        for piece in pieces {
-                            self.world.presentation.items.push(piece);
+                        MultiDraw::Pieces(pieces) => {
+                            for piece in pieces {
+                                self.world.presentation.items.push(piece);
+                                self.world.presentation.item_serials.push(*serial);
+                            }
+                        }
+                        // Drawn as nothing, and picked as nothing with it: the
+                        // two lists run parallel and pushing to neither is what
+                        // keeps them so. A house this client has no shape for is
+                        // one it cannot show, and one unrelated static in its
+                        // place is worse than an empty tile.
+                        MultiDraw::Unknown => {}
+                        MultiDraw::NotAMulti => {
+                            self.world.presentation.items.push(GroundItem {
+                                at: item.position,
+                                graphic: openshard_client_render::items::displayed_graphic(
+                                    item.graphic,
+                                    amount,
+                                ),
+                                hue: item.hue,
+                            });
                             self.world.presentation.item_serials.push(*serial);
                         }
-                        continue;
                     }
-                    self.world.presentation.items.push(GroundItem {
-                        at: item.position,
-                        graphic: openshard_client_render::items::displayed_graphic(item.graphic, amount),
-                        hue: item.hue,
-                    });
-                    self.world.presentation.item_serials.push(*serial);
                 }
             }
         }
@@ -770,38 +782,65 @@ fn resolve_localized_message(cliloc: Option<&Cliloc>, message: &LocalizedMessage
     resolve_cliloc_arguments(template, &message.arguments)
 }
 
-/// A house, as the pieces a renderer draws — or `None` when the graphic is an
-/// ordinary item.
+/// What to draw for one world item, once a multi has been considered.
+///
+/// # Three answers, and `Option` could only carry two
+///
+/// This used to be an `Option<Vec<GroundItem>>`, and the doc under it claimed
+/// that answering `None` was what stopped a house drawing "as whatever static
+/// happened to sit there". It did not, because `None` meant **three** different
+/// things and the caller could only act on one of them: not a multi at all, no
+/// multi table, and a multi id this client's table does not hold. The first
+/// falls through to the ordinary item path correctly; the other two fell through
+/// too, and drew `0x4000 | id` out of the static art — the exact failure the
+/// comment said had been fixed.
+///
+/// It is live today for any multi the client's table lacks: an install whose
+/// `multi.mul` is older than the shard's, and **every foundation id**, which is
+/// what made a designed house the case that found it. See
+/// `docs/customisation.md`'s C8.
+#[derive(Clone, PartialEq, Debug)]
+pub(crate) enum MultiDraw {
+    /// Not a multi. The caller draws the item the ordinary way.
+    NotAMulti,
+    /// A multi this client can draw, expanded into its pieces.
+    Pieces(Vec<GroundItem>),
+    /// A multi this client **cannot** draw — no table, or an id the table does
+    /// not hold. Nothing is drawn and nothing is picked, which is the honest
+    /// answer: a house whose shape this client does not have is a house it
+    /// cannot show, and showing one unrelated static in its place is worse than
+    /// showing nothing, because nothing is visibly nothing.
+    Unknown,
+}
+
+/// A house, as the pieces a renderer draws.
 ///
 /// A multi is one item on the wire and a hundred statics on screen. This is the
 /// seam where that expansion happens, so the renderer never learns what a multi
 /// is: it is handed more items and nothing else changes.
 ///
-/// Three things it gets right and a caller writing it inline would not:
+/// Two things it gets right and a caller writing it inline would not:
 ///
 /// - **The flag test comes first.** Almost every item is not a house, and the
 ///   table is only consulted for the graphics that could be one.
 /// - **Only the drawn components.** A multi's list carries tiles the client never
 ///   draws, and the flag saying so reads backwards from its name — see
 ///   [`openshard_uofiles::multi`].
-/// - **`None` when there is no table**, which is not the same as an empty list.
-///   Falling through to the ordinary item path would draw the house's *graphic*
-///   out of the static art, where `0x4064` is a perfectly valid id for something
-///   that is not a house — silently, with no error anywhere. That was this
-///   client's behaviour before this function existed.
 pub(crate) fn multi_pieces(
     multis: Option<&openshard_uofiles::multi::Multis>,
     graphic: Graphic,
     at: Point,
     hue: Hue,
-) -> Option<Vec<GroundItem>> {
+) -> MultiDraw {
     use openshard_protocol::wire::MultiId;
 
     if graphic.0 & MultiId::FLAG == 0 {
-        return None;
+        return MultiDraw::NotAMulti;
     }
-    let multi = multis?.get(MultiId::from_graphic(graphic).0)?;
-    Some(
+    let Some(multi) = multis.and_then(|multis| multis.get(MultiId::from_graphic(graphic).0)) else {
+        return MultiDraw::Unknown;
+    };
+    MultiDraw::Pieces(
         multi
             .drawn()
             .map(|component| GroundItem {
@@ -1003,8 +1042,10 @@ mod tests {
             Graphic(0x4064),
             Point::new(100, 200, 5),
             Hue(0x1234),
-        )
-        .expect("a multi expands");
+        );
+        let MultiDraw::Pieces(pieces) = pieces else {
+            panic!("a multi the table holds did not expand");
+        };
         assert_eq!(pieces.len(), 2, "the undrawn signature tile was drawn");
         assert_eq!(pieces[0].at, Point::new(99, 202, 5), "the offset is signed");
         assert_eq!(pieces[0].graphic, Graphic(0x0006));
@@ -1018,21 +1059,56 @@ mod tests {
 
     /// An ordinary item is not a house, and the table is not even consulted.
     #[test]
-    fn an_item_below_the_multi_flag_expands_into_nothing() {
-        assert!(
-            multi_pieces(None, Graphic(0x0EED), Point::new(1, 1, 0), Hue(0)).is_none(),
+    fn an_item_below_the_multi_flag_is_not_a_multi() {
+        assert_eq!(
+            multi_pieces(None, Graphic(0x0EED), Point::new(1, 1, 0), Hue(0)),
+            MultiDraw::NotAMulti,
             "a pile of gold went looking for a house"
         );
     }
 
-    /// `None` and an empty list are different answers, and the difference is the
-    /// bug this function exists to stop: falling through would draw the house's
-    /// own graphic out of the static art.
+    /// **A multi this client cannot draw is not the same answer as an item.**
+    ///
+    /// This test used to assert `is_none()` for both, and passed — while the
+    /// caller fell through on `None` and drew the house's own graphic out of the
+    /// static art, which is the bug its own name says it prevents. It tested the
+    /// return value rather than the behaviour, and the two had come apart.
     #[test]
     fn a_client_with_no_multi_table_draws_no_house_rather_than_the_wrong_sprite() {
-        assert!(
-            multi_pieces(None, Graphic(0x4064), Point::new(1, 1, 0), Hue(0)).is_none(),
+        assert_eq!(
+            multi_pieces(None, Graphic(0x4064), Point::new(1, 1, 0), Hue(0)),
+            MultiDraw::Unknown,
             "with no table this must still be recognised as a multi"
+        );
+    }
+
+    /// A multi id the table does not hold is `Unknown`, not an item.
+    ///
+    /// The case a designed house made unavoidable: `FOUNDATION_IDS` runs
+    /// `0x13EC..0x1D00` and a shipped `multi.mul` holds 326 entries, so nearly
+    /// every foundation is an id this client has never heard of. It is also the
+    /// case for any install whose files are older than the shard's, which has
+    /// been true since houses existed and drew a static nobody chose.
+    #[test]
+    fn a_multi_id_the_table_does_not_hold_draws_nothing() {
+        use openshard_uofiles::multi::{Component, Multi, Multis};
+
+        let known = Multi::new(
+            0x64,
+            vec![Component {
+                graphic: 0x0006,
+                dx: 0,
+                dy: 0,
+                dz: 0,
+                flags: 1,
+            }],
+        );
+        let multis = Multis::of([known]);
+
+        assert_eq!(
+            multi_pieces(Some(&multis), Graphic(0x53EC), Point::new(1, 1, 0), Hue(0)),
+            MultiDraw::Unknown,
+            "a foundation this install has no shape for fell through to the static art"
         );
     }
 }

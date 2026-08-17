@@ -254,11 +254,32 @@ as a panic rather than as a missing feature.
 
 **C8 — our own client draws a designed house as nothing, and it is the old bug in
 a new colour.** `net_command::multi_pieces` expands `0x4000 | id` against the
-client's own table. A designed house has no id there, so it falls through to the
-ordinary item path — which is *precisely* the "a villa drew as whatever static
-happened to sit there" failure `housing.md`'s backlog records as fixed. It must
-answer `None`, and the phase that first puts a designed house on the ground is
-the phase that owes the fix.
+client's own table. A designed house's foundation id is almost never in it —
+`FOUNDATION_IDS` runs `0x13EC..0x1D00` and a shipped `multi.mul` holds 326
+entries — so it falls through to the ordinary item path, which is *precisely* the
+"a villa drew as whatever static happened to sit there" failure `housing.md`'s
+backlog records as fixed.
+
+> **Built, and it was live already.** The fix is not the one this paragraph
+> describes, because the diagnosis was half wrong in a way worth recording.
+> `multi_pieces` *did* answer `None` for an unknown id — and `None` meant **three
+> different things**: not a multi, no table, and a multi the table does not hold.
+> The caller could only act on one, so it fell through on all three and drew the
+> static. **The bug the comment claimed to prevent was live the whole time**, for
+> every multi any client's files lack — an install older than the shard's as much
+> as a foundation.
+>
+> Its own test asserted `is_none()` and passed, because it tested the return
+> value rather than the behaviour its name claims. That is the failure mode to
+> take away: a test can pin a function's answer and say nothing about what the
+> caller does with it.
+>
+> So the return type is an enum with the three answers named — `NotAMulti`,
+> `Pieces`, `Unknown` — and `Unknown` draws nothing *and picks nothing*, since
+> `items` and `item_serials` run parallel and pushing to neither is what keeps
+> them so. A house this client has no shape for is one it cannot show, and one
+> unrelated static in its place is worse than an empty tile, because an empty
+> tile is visibly empty.
 
 ## The phases
 
