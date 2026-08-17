@@ -922,6 +922,19 @@ pub fn server_packet_length(id: u8, version: ClientVersion) -> Option<PacketLeng
         // sends one of these per stocked item, which is how a purchase used to
         // take the whole session down with it.
         0xD6 => Variable,
+        // A designed house's picture, and the second id here with no
+        // `ServerPacket` variant behind it: `WorldState::design_detail_packet`
+        // writes it as bytes through `DesignDetail::encode`, so nothing in the
+        // enum would ever have put it here either.
+        //
+        // It belongs here for `0xD6`'s reason exactly, and the reason is worth
+        // restating because this table has now been short an id twice: a length
+        // this table does not know is **not a packet skipped, it is a connection
+        // ended**. The shard that sends one and the client that cannot frame one
+        // are the same workspace, so the first designed house in view would have
+        // dropped every one of our own clients that walked past it — while the
+        // classic client, which has its own table, drew it perfectly.
+        0xD8 => Variable,
         0xDC => TooltipRevision::LENGTH,
         0xE2 => NewAnimation::LENGTH,
         _ => return None,
@@ -1425,6 +1438,51 @@ mod tests {
         );
     }
 
+    /// **A designed house's picture, framed — and it was not, for one commit.**
+    ///
+    /// `0xD8` is the second packet a shard writes as bytes with no
+    /// `ServerPacket` variant behind it, and it went in without this table
+    /// gaining a row. The failure that would have caused is worth naming
+    /// exactly, because it is not the one it looks like: the *classic* client
+    /// has its own table and would have drawn the house perfectly, while every
+    /// one of **our own** clients walking past the first designed house on the
+    /// shard would have dropped its connection — a bug that reads as "our client
+    /// is broken" and lives entirely in the shard's protocol crate.
+    ///
+    /// The same shape as the `0xD6` failure the roadmap records, in the same
+    /// table, one id along.
+    #[test]
+    fn a_design_is_framed_even_though_no_variant_carries_it() {
+        use crate::design::{DesignDetail, DesignTile, Revision};
+        use crate::serial::RawSerial;
+        use crate::wire::Graphic;
+
+        let tiles = [DesignTile {
+            graphic: Graphic(0x0006),
+            dx: 0,
+            dy: 0,
+            dz: 0,
+        }];
+        let bytes = DesignDetail {
+            serial: RawSerial(0x4000_0001),
+            revision: Revision(1),
+            response: true,
+            tiles: &tiles,
+        }
+        .encode(|_| false);
+
+        assert_eq!(bytes[0], DesignDetail::ID);
+        assert_eq!(
+            server_packet_length(DesignDetail::ID, version()),
+            Some(PacketLength::Variable),
+            "a length this table does not know ends the connection"
+        );
+        assert_eq!(
+            frame_server_packet(&bytes, version()),
+            Ok(Frame::Complete(bytes.len()))
+        );
+    }
+
     #[test]
     fn an_id_this_engine_never_sends_is_fatal() {
         // Not a silent skip: without a length there is no way to find where the
@@ -1444,9 +1502,13 @@ mod tests {
 
     /// The half of the table that is not the enum: a shard writes some packets
     /// as bytes, and the framer has to know their length even though no
-    /// `ServerPacket` variant ever will. The property list is the whole of that
-    /// set today, and it took a session down before it was in the table —
-    /// opening a vendor's window sends one per stocked item.
+    /// `ServerPacket` variant ever will. The property list took a session down
+    /// before it was in the table — opening a vendor's window sends one per
+    /// stocked item.
+    ///
+    /// **It is no longer the whole of that set**, which is the point of the
+    /// sibling test below: this comment used to say it was, and the next
+    /// byte-written packet was added without anyone re-reading it.
     #[test]
     fn a_property_list_is_framed_even_though_no_variant_carries_it() {
         let mut list = crate::properties::PropertyList::new(Serial::new(0x4000_0001).unwrap());
