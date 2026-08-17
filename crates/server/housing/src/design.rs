@@ -31,6 +31,107 @@ use openshard_state::WorldState;
 use openshard_state::components::{House, HouseDesign, HouseSign, Position, Standing};
 use openshard_uofiles::multi::Component;
 
+/// The floor a foundation is finished in, as four graphics.
+///
+/// ServUO's `GetFoundationGraphics`, and it is a **material** table rather than
+/// a per-house-type one — eight rows keyed by what the owner chose it to look
+/// like, not thirty keyed by which house it is. That is the distinction that
+/// kept the door positions and the sign offsets out of this engine, and this
+/// falls on the other side of it.
+///
+/// Only the reference's own `default` arm is here. Which material a player picks
+/// is the editor's question and the editor is C3; a foundation placed today is
+/// dark wood, and the constant says so rather than a table with seven rows
+/// nothing can reach.
+mod floor {
+    /// The north-west post.
+    pub const POST: u16 = 0x0017;
+    /// The north and south edges.
+    pub const SOUTH: u16 = 0x0016;
+    /// The east and west edges.
+    pub const EAST: u16 = 0x0015;
+    /// The south-east corner.
+    pub const CORNER: u16 = 0x0014;
+    /// One step of the stair strip along the south edge — ServUO's
+    /// `GetEmptyFoundation`, which lays this and not the `0x63` its *placement
+    /// preview* uses.
+    pub const STAIR: u16 = 0x0751;
+}
+
+/// The design a foundation is placed with: its own platform, a floor, and a
+/// strip of stairs along the south edge.
+///
+/// # Why this is here rather than in C3
+///
+/// `Refusal::NeedsCustomisation` exists for one reason — a foundation's
+/// component list has no stairs, so one placed as-is is a house nobody can get
+/// into. `customisation.md`'s C2 calls the fix "C3's initial design at
+/// placement", and C3 is the editor. The editor is not what makes a foundation
+/// enterable; this is.
+///
+/// # It is a derivation, not a table
+///
+/// ServUO's `GetEmptyFoundation` copies the foundation's own components, grows
+/// the box **one row south**, lays the four floor graphics around the perimeter
+/// and a stair along the new row. Every position falls out of the box, so there
+/// is no per-house-type table to port and nothing to invent — which is the
+/// answer this phase went looking for.
+///
+/// `None` when the shard has no client files or the id is not a multi it knows:
+/// a foundation whose own platform cannot be read is one there is nothing to
+/// build a design out of.
+#[must_use]
+pub fn initial_foundation(state: &WorldState, facet: Facet, multi: u16) -> Option<Vec<Component>> {
+    let multi = multi & !crate::MULTI_FLAG;
+    let terrain = state.facet_state(facet).terrain.as_deref()?;
+    let platform = terrain.multi_components(multi);
+    if platform.is_empty() {
+        return None;
+    }
+    let box_ = openshard_uofiles::multi::bounds(platform)?;
+    let (min_x, min_y) = (box_.min_x, box_.min_y);
+    let (max_x, max_y) = (box_.max_x, box_.max_y);
+    let width = i32::from(max_x) - i32::from(min_x) + 1;
+    // The row the stairs go on: one south of the platform's own last row, which
+    // is what `Resize(Width, Height + 1)` buys.
+    let stair_y = i16::try_from(i32::from(max_y) + 1).ok()?;
+
+    let mut out: Vec<Component> = platform.to_vec();
+    let mut put = |graphic: u16, dx: i16, dy: i16| {
+        out.push(Component {
+            graphic,
+            dx,
+            dy,
+            dz: 0,
+            flags: 1,
+        });
+    };
+
+    put(floor::POST, min_x, min_y);
+    put(floor::CORNER, max_x, max_y);
+    for x in 1..width {
+        let Ok(dx) = i16::try_from(i32::from(min_x) + x) else {
+            continue;
+        };
+        put(floor::SOUTH, dx, min_y);
+        if x < width - 1 {
+            put(floor::SOUTH, dx, max_y);
+        }
+        put(floor::STAIR, dx, stair_y);
+    }
+    // The east and west edges, between the two rows the loop above laid.
+    let mut y = i32::from(min_y) + 1;
+    while y <= i32::from(max_y) {
+        let Ok(dy) = i16::try_from(y) else { break };
+        put(floor::EAST, min_x, dy);
+        if y < i32::from(max_y) {
+            put(floor::EAST, max_x, dy);
+        }
+        y += 1;
+    }
+    Some(out)
+}
+
 /// Why a change of design was refused.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum DesignRefusal {

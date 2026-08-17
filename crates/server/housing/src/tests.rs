@@ -30,6 +30,9 @@ use openshard_state::{Dialogue, FacetState, Gameplay, QuestDefs, Regions};
 /// A small world, and the multi id everything here places.
 const SIZE: u32 = 32;
 const COTTAGE: u16 = 0x64;
+/// A customisable foundation the fixture terrain knows the platform of. Any id
+/// inside [`FOUNDATION_IDS`] would do; this is its first.
+const FOUNDATION: u16 = 0x13EC;
 
 /// A wall: impassable, twenty tall — the classic UO wall the door height was
 /// taken from.
@@ -67,7 +70,13 @@ impl Terrain for Ground {
     }
 
     fn multi_components(&self, id: u16) -> &[Component] {
-        if id == COTTAGE { &self.components } else { &[] }
+        // The same shape answers for the cottage and for the one foundation id
+        // the fixture knows, so a test can ask either without a second terrain.
+        if id == COTTAGE || id == FOUNDATION {
+            &self.components
+        } else {
+            &[]
+        }
     }
 
     fn item_blocks(&self, graphic: Graphic) -> bool {
@@ -328,15 +337,14 @@ fn a_multi_nobody_can_build_is_refused_by_name() {
         Err(Refusal::NoSuchMulti),
         "an id the client has never heard of"
     );
-    assert_eq!(
-        place(&mut state, actor, at, Facet(0), FOUNDATION_IDS.start, owner),
-        Err(Refusal::NeedsCustomisation),
-        "a customisable foundation has no stairs without a design system"
-    );
+    // A foundation is placeable now — but only one whose platform this shard can
+    // actually read, because the design is built *out of* that platform. An id
+    // inside the range that the client files do not hold has nothing to build
+    // from, and the refusal it existed for still stands there.
     assert_eq!(
         place(&mut state, actor, at, Facet(0), FOUNDATION_IDS.end - 1, owner),
         Err(Refusal::NeedsCustomisation),
-        "and the far end of the range"
+        "a foundation whose platform this shard cannot read has nothing to build a design from"
     );
 
     // A multi that is in the table and blocks nothing — the treasure-site markers
@@ -1526,9 +1534,10 @@ fn staff_are_still_refused_what_is_not_a_house() {
         "staff placed a multi no client knows"
     );
     assert_eq!(
-        place(&mut state, actor, at, Facet(0), FOUNDATION_IDS.start, owner),
+        place(&mut state, actor, at, Facet(0), FOUNDATION_IDS.end - 1, owner),
         Err(Refusal::NeedsCustomisation),
-        "staff placed a foundation with no stairs — the failure that refusal exists to prevent"
+        "staff placed a foundation whose platform this shard cannot read, so it has no stairs \
+         — the failure that refusal exists to prevent"
     );
 }
 
@@ -1759,4 +1768,101 @@ fn a_redesign_adopts_a_door_its_new_walls_now_stand_around() {
         state.registry.has::<openshard_state::components::HouseDoor>(door),
         "the lean-to stands over the door and did not adopt it"
     );
+}
+
+// -- C2: a foundation is placeable -------------------------------------------
+
+/// **A foundation goes down, and it goes down with stairs.**
+///
+/// The whole of what `Refusal::NeedsCustomisation` was waiting for. Its own
+/// doc named the reason exactly — a foundation's component list has no stairs,
+/// so one placed bare is a house nobody can get into — and the fix is not
+/// deleting the refusal but building the design ServUO's `GetEmptyFoundation`
+/// derives.
+#[test]
+fn a_foundation_is_placed_with_a_design_that_has_stairs() {
+    let mut state = world_with(cottage());
+    let (actor, owner) = an_actor(&mut state);
+    let at = Point::new(10, 10, 0);
+
+    let house = place(&mut state, actor, at, Facet(0), FOUNDATION, owner)
+        .expect("a foundation this shard can read the platform of");
+
+    let shape = design::shape_of_house(&state, house).expect("a foundation is placed designed");
+    assert!(
+        shape.iter().any(|component| component.graphic == 0x0751),
+        "the design has no stairs, which is the whole reason the refusal existed"
+    );
+    // One row further south than the platform reaches. The cottage's own box
+    // ends at +1, so the stairs are at +2.
+    assert!(
+        shape
+            .iter()
+            .filter(|component| component.graphic == 0x0751)
+            .all(|component| component.dy == 2),
+        "the stairs are not on the row the box was grown by"
+    );
+}
+
+/// And the shape it stands as is the design's, not the platform's — which is
+/// what makes the walls, the sign and the lockdown allowance agree with the
+/// picture the client is sent.
+#[test]
+fn a_foundation_blocks_where_its_design_says_and_not_where_its_platform_does() {
+    let mut state = world_with(cottage());
+    let (actor, owner) = an_actor(&mut state);
+    let at = Point::new(10, 10, 0);
+
+    place(&mut state, actor, at, Facet(0), FOUNDATION, owner).expect("open ground");
+
+    // The cottage fixture's walls are at ±1, and the design keeps them: a
+    // design is the platform *plus* a floor and stairs, never a replacement.
+    assert!(
+        state.facet_state(Facet(0)).obstructions.is_blocked(9, 9),
+        "the platform's own components were dropped from the design"
+    );
+}
+
+/// A shard with no client files cannot read a foundation's platform, so it has
+/// nothing to build a design out of — and the refusal still stands, for
+/// everybody. The same bargain every other client-file question makes.
+#[test]
+fn a_shard_with_no_client_files_still_refuses_a_foundation() {
+    let mut state = world_with(cottage());
+    state.facet_state_mut(Facet(0)).terrain = None;
+    let (actor, owner) = an_actor(&mut state);
+
+    assert_eq!(
+        place(
+            &mut state,
+            actor,
+            Point::new(10, 10, 0),
+            Facet(0),
+            FOUNDATION,
+            owner
+        ),
+        Err(Refusal::NeedsCustomisation),
+    );
+}
+
+/// The design a foundation is placed with is revision 1, not 0.
+///
+/// Zero is what `design::revision` answers for a house that has never been
+/// designed, so a foundation sitting at zero would be indistinguishable from a
+/// classic house — and a client would never be told its picture had arrived.
+#[test]
+fn a_placed_foundation_starts_at_revision_one() {
+    let mut state = world_with(cottage());
+    let (actor, owner) = an_actor(&mut state);
+    let house = place(
+        &mut state,
+        actor,
+        Point::new(10, 10, 0),
+        Facet(0),
+        FOUNDATION,
+        owner,
+    )
+    .expect("open ground");
+
+    assert_eq!(design::revision(&state, house), 1);
 }

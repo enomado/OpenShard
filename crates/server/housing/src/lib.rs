@@ -210,17 +210,27 @@ pub fn place(
     // asking again.
     let staff = state.is_staff(actor);
     let multi = multi & !MULTI_FLAG;
-    if FOUNDATION_IDS.contains(&multi) {
-        return Err(Refusal::NeedsCustomisation);
-    }
-    let footprint = footprint_of(state, at, facet, multi, None)?;
+    // A foundation is placed **with a design**, and that is the whole of what
+    // `NeedsCustomisation` was waiting for: its own component list has no
+    // stairs, so one placed bare is a house nobody can get into. The refusal
+    // stands only where the design cannot be built — a shard with no client
+    // files has no platform to build one out of either.
+    let design = if FOUNDATION_IDS.contains(&multi) {
+        match design::initial_foundation(state, facet, multi) {
+            Some(design) => Some(design),
+            None => return Err(Refusal::NeedsCustomisation),
+        }
+    } else {
+        None
+    };
+    let footprint = footprint_of(state, at, facet, multi, design.as_deref())?;
     if footprint.is_empty() {
         return Err(Refusal::DrawsNothing);
     }
     // Every tile the house *covers*, hoisted: the region check walks it, and so
     // does the lockdown allowance below. One derivation, two readers — it was
     // already being computed here, one line further down.
-    let covered = tiles_of(state, at, facet, multi, None);
+    let covered = tiles_of(state, at, facet, multi, design.as_deref());
     // The four judgements about the plot, and the one row of D10's table staff
     // skip. Everything above this stays: those refusals are facts about the id
     // or a shard in trouble, and a bypass that reopened `NeedsCustomisation`
@@ -269,6 +279,17 @@ pub fn place(
         },
     );
     state.registry.insert(entity, facet);
+    // Before the walls go in and before the sign hangs: both read the house's
+    // *own* shape now, and a foundation's is its design rather than its multi.
+    if let Some(components) = design {
+        state.registry.insert(
+            entity,
+            openshard_state::components::HouseDesign {
+                components,
+                revision: 1,
+            },
+        );
+    }
     // On the sector grid like any item, so a client entering the area is told
     // about it by the ordinary interest sweep rather than by a path of its own.
     state.facet_state_mut(facet).sectors.insert(entity, at);
