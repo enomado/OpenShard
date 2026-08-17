@@ -377,6 +377,28 @@ pub struct AuthoritativeWorld {
     /// `App::entered`: once, because it cannot change without a `0xBF 0x08`
     /// nothing here reads yet.
     pub facet_checked: bool,
+    /// The shape of every **designed** house this client has been sent, by the
+    /// house's own serial.
+    ///
+    /// It is here rather than in `WorldView` because a design is a list of
+    /// `Component`s — a client-file type — and `client/net` is the wire and has
+    /// never depended on `openshard-uofiles`. The view holds the *revision* the
+    /// shard named; this holds what was made of it, and the two together are
+    /// what says whether to ask again.
+    ///
+    /// Empty on every shard where nobody has designed a house, which is every
+    /// shard today.
+    pub designs: std::collections::HashMap<Serial, HouseShape>,
+}
+
+/// A designed house's picture, as this client holds it.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct HouseShape {
+    /// The revision the `0xD8` that filled this carried. Compared against the
+    /// one `WorldView::designs` holds to decide whether to ask again.
+    pub revision: u32,
+    /// The tiles the house draws as.
+    pub components: Vec<openshard_uofiles::multi::Component>,
 }
 
 /// The player movement coordinator.

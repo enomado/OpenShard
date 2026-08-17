@@ -477,7 +477,9 @@ impl App {
                 sweep.server_updates.new_animations += 1;
                 true
             }
-            crate::link::Update::Prediction { .. } | crate::link::Update::Lost(_) => false,
+            crate::link::Update::Prediction { .. }
+            | crate::link::Update::Design(_)
+            | crate::link::Update::Lost(_) => false,
         };
         let freeze = sweep.freeze_server && is_server_update;
         if freeze {

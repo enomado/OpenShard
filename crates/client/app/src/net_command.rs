@@ -139,6 +139,7 @@ impl App {
             ),
             link::Update::Animation(_) => ("animation", String::new()),
             link::Update::NewAnimation(_) => ("new animation", String::new()),
+            link::Update::Design(bytes) => ("design", format!("bytes={}", bytes.len())),
             link::Update::Lost(_) => ("lost", String::new()),
         };
         match update {
@@ -168,6 +169,10 @@ impl App {
             // arrows still walked because the map viewer's own arm answers to
             // "no link". Whoever adds a fourth reason to end a connection needs
             // none of that repeated: it is the one arm.
+            // A designed house's picture, decoded here because here is where the
+            // client's own files are: a `0xD8` carries no width or height, and
+            // the box comes out of the foundation's own multi.
+            link::Update::Design(bytes) => self.fold_design(&bytes),
             link::Update::Lost(reason) => {
                 eprintln!("disconnected: {reason}");
                 if let Some(view) = self.world.authoritative.view.as_mut() {
@@ -510,6 +515,16 @@ impl App {
         // folded in is part of that.
         let mut items: Vec<_> = view.items.iter().collect();
         items.sort_unstable_by_key(|(serial, _)| serial.raw());
+        // Every house the shard has named a revision for that this client does
+        // not hold the shape of. Asked here, where both halves of the comparison
+        // are in hand, and once per fold rather than once per frame — the answer
+        // sets `designs`, so a house asked about stops being stale the moment it
+        // arrives.
+        self.ask_for_stale_designs(&view);
+        // Bound once outside the loop: a designed house's shape lives here
+        // rather than in the view, because a `Component` is a client-file type
+        // and the view is the wire. See `AuthoritativeWorld::designs`.
+        let designs = &self.world.authoritative.designs;
         self.world.presentation.items.clear();
         self.world.presentation.item_serials.clear();
         self.world.presentation.corpses.clear();
@@ -545,6 +560,7 @@ impl App {
                     // runs parallel to `items` and picking reads it by index.
                     match multi_pieces(
                         self.resources.multis.as_deref(),
+                        designs.get(serial).map(|shape| shape.components.as_slice()),
                         item.graphic,
                         item.position,
                         item.hue,
@@ -782,6 +798,120 @@ fn resolve_localized_message(cliloc: Option<&Cliloc>, message: &LocalizedMessage
     resolve_cliloc_arguments(template, &message.arguments)
 }
 
+impl App {
+    /// Fold a `0xD8` into the client's own store of designed houses.
+    ///
+    /// **The box has to come from somewhere, and this is the somewhere.** A
+    /// `0xD8` carries no width or height — the grid stride *is* the height — so
+    /// a receiver has to know the house's box before a byte of the planes means
+    /// anything. A designed house is drawn as `0x4000 | foundation`, and a
+    /// foundation is a real multi in every client's own files, so the box is
+    /// the foundation's. That is also the answer for the classic client, which
+    /// does exactly this.
+    ///
+    /// Silent on every refusal. A design for a house this client has not been
+    /// shown, or whose foundation its files lack, is one it cannot place — and
+    /// there is nothing to tell the player that an empty tile does not already
+    /// say.
+    pub(crate) fn fold_design(&mut self, bytes: &[u8]) {
+        use openshard_protocol::design::{DesignBounds, DesignDetail};
+
+        // The header first, for the serial — which is what says whose box to
+        // look up. Read with a placeholder box, because the header is before
+        // every plane and needs none.
+        let peek = DesignBounds {
+            x_min: 0,
+            y_min: 0,
+            width: 1,
+            height: 1,
+        };
+        let Ok(header) = DesignDetail::decode(bytes, peek) else {
+            return;
+        };
+        let Some(serial) = header.serial.validate() else {
+            return;
+        };
+        let Some(bounds) = self.house_bounds(serial) else {
+            return;
+        };
+        // And again, properly. The first read's tiles are discarded rather than
+        // trusted: with the wrong stride every grid plane lands on the wrong
+        // tile, which is worse than not drawing at all because it looks
+        // deliberate.
+        let Ok(design) = DesignDetail::decode(bytes, bounds) else {
+            return;
+        };
+        self.world.authoritative.designs.insert(
+            serial,
+            crate::world::HouseShape {
+                revision: design.revision.0,
+                components: design
+                    .tiles
+                    .into_iter()
+                    .map(|tile| openshard_uofiles::multi::Component {
+                        graphic: tile.graphic.0,
+                        dx: i16::from(tile.dx),
+                        dy: i16::from(tile.dy),
+                        dz: i16::from(tile.dz),
+                        // Every tile on the wire is one the client draws: the
+                        // undrawn ones never went into the packet.
+                        flags: 1,
+                    })
+                    .collect(),
+            },
+        );
+    }
+
+    /// Ask the shard for every designed house whose shape this client does not
+    /// hold at the revision the shard last named.
+    ///
+    /// The other half of the two-packet bargain, and it is the half that makes
+    /// the first one worth sending: without this the revision would be a fact
+    /// nobody acted on, and with it a client that already has the picture asks
+    /// for nothing at all.
+    fn ask_for_stale_designs(&self, view: &WorldView) {
+        let Some(link) = self.world.shard.link() else {
+            return;
+        };
+        for (&house, &revision) in &view.designs {
+            if self
+                .world
+                .authoritative
+                .designs
+                .get(&house)
+                .is_some_and(|held| held.revision == revision)
+            {
+                continue;
+            }
+            link.query_design(house);
+        }
+    }
+
+    /// The box a designed house's planes were laid out on — its foundation's own
+    /// multi, out of this client's files.
+    fn house_bounds(
+        &self,
+        house: openshard_protocol::serial::Serial,
+    ) -> Option<openshard_protocol::design::DesignBounds> {
+        use openshard_protocol::wire::MultiId;
+
+        let view = self.world.authoritative.view.as_ref()?;
+        let item = view.items.get(&house)?;
+        if item.graphic.0 & MultiId::FLAG == 0 {
+            return None;
+        }
+        let multis = self.resources.multis.as_deref()?;
+        let multi = multis.get(MultiId::from_graphic(item.graphic).0)?;
+        let box_ = openshard_uofiles::multi::bounds(&multi.components)?;
+        Some(openshard_protocol::design::DesignBounds {
+            x_min: i8::try_from(box_.min_x).ok()?,
+            y_min: i8::try_from(box_.min_y).ok()?,
+            width: usize::from(box_.max_x.abs_diff(box_.min_x)) + 1,
+            height: usize::from(box_.max_y.abs_diff(box_.min_y)) + 1,
+        })
+    }
+}
+
 /// What to draw for one world item, once a multi has been considered.
 ///
 /// # Three answers, and `Option` could only carry two
@@ -828,6 +958,7 @@ pub(crate) enum MultiDraw {
 ///   [`openshard_uofiles::multi`].
 pub(crate) fn multi_pieces(
     multis: Option<&openshard_uofiles::multi::Multis>,
+    design: Option<&[openshard_uofiles::multi::Component]>,
     graphic: Graphic,
     at: Point,
     hue: Hue,
@@ -837,23 +968,36 @@ pub(crate) fn multi_pieces(
     if graphic.0 & MultiId::FLAG == 0 {
         return MultiDraw::NotAMulti;
     }
+    // The house's own shape first, when the shard has sent one. A designed house
+    // *is* its design — the foundation multi under it is a bare platform, and
+    // drawing that instead is the same wrong-picture failure as drawing an
+    // unrelated static, one step less obvious.
+    if let Some(design) = design {
+        return MultiDraw::Pieces(laid_out(design, at, hue));
+    }
     let Some(multi) = multis.and_then(|multis| multis.get(MultiId::from_graphic(graphic).0)) else {
         return MultiDraw::Unknown;
     };
-    MultiDraw::Pieces(
-        multi
-            .drawn()
-            .map(|component| GroundItem {
-                at: Point::new(
-                    at.x.wrapping_add_signed(component.dx),
-                    at.y.wrapping_add_signed(component.dy),
-                    at.z.saturating_add(component.dz as i8),
-                ),
-                graphic: Graphic(component.graphic),
-                hue,
-            })
-            .collect(),
-    )
+    MultiDraw::Pieces(laid_out(multi.components.as_slice(), at, hue))
+}
+
+/// A component list, placed at an origin. The one piece of arithmetic a multi
+/// and a design share, written once so the two cannot come to disagree about
+/// what an offset means.
+fn laid_out(components: &[openshard_uofiles::multi::Component], at: Point, hue: Hue) -> Vec<GroundItem> {
+    components
+        .iter()
+        .filter(|component| component.drawn())
+        .map(|component| GroundItem {
+            at: Point::new(
+                at.x.wrapping_add_signed(component.dx),
+                at.y.wrapping_add_signed(component.dy),
+                at.z.saturating_add(component.dz as i8),
+            ),
+            graphic: Graphic(component.graphic),
+            hue,
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -1039,6 +1183,7 @@ mod tests {
 
         let pieces = multi_pieces(
             Some(&multis),
+            None,
             Graphic(0x4064),
             Point::new(100, 200, 5),
             Hue(0x1234),
@@ -1061,7 +1206,7 @@ mod tests {
     #[test]
     fn an_item_below_the_multi_flag_is_not_a_multi() {
         assert_eq!(
-            multi_pieces(None, Graphic(0x0EED), Point::new(1, 1, 0), Hue(0)),
+            multi_pieces(None, None, Graphic(0x0EED), Point::new(1, 1, 0), Hue(0)),
             MultiDraw::NotAMulti,
             "a pile of gold went looking for a house"
         );
@@ -1076,7 +1221,7 @@ mod tests {
     #[test]
     fn a_client_with_no_multi_table_draws_no_house_rather_than_the_wrong_sprite() {
         assert_eq!(
-            multi_pieces(None, Graphic(0x4064), Point::new(1, 1, 0), Hue(0)),
+            multi_pieces(None, None, Graphic(0x4064), Point::new(1, 1, 0), Hue(0)),
             MultiDraw::Unknown,
             "with no table this must still be recognised as a multi"
         );
@@ -1106,9 +1251,78 @@ mod tests {
         let multis = Multis::of([known]);
 
         assert_eq!(
-            multi_pieces(Some(&multis), Graphic(0x53EC), Point::new(1, 1, 0), Hue(0)),
+            multi_pieces(Some(&multis), None, Graphic(0x53EC), Point::new(1, 1, 0), Hue(0)),
             MultiDraw::Unknown,
             "a foundation this install has no shape for fell through to the static art"
         );
+    }
+
+    /// **A designed house draws as its design, not as its foundation.**
+    ///
+    /// The foundation under a customised house is a bare platform, so falling
+    /// back to it is the same wrong-picture failure as drawing an unrelated
+    /// static — one step less obvious, because a platform at least looks like a
+    /// building.
+    #[test]
+    fn a_design_wins_over_the_multi_table() {
+        use openshard_uofiles::multi::{Component, Multi, Multis};
+
+        let foundation = Multi::new(
+            0x64,
+            vec![Component {
+                graphic: 0x0006,
+                dx: 0,
+                dy: 0,
+                dz: 0,
+                flags: 1,
+            }],
+        );
+        let multis = Multis::of([foundation]);
+        let design = [Component {
+            graphic: 0x1234,
+            dx: 2,
+            dy: 3,
+            dz: 4,
+            flags: 1,
+        }];
+
+        let MultiDraw::Pieces(pieces) = multi_pieces(
+            Some(&multis),
+            Some(&design),
+            Graphic(0x4064),
+            Point::new(10, 10, 0),
+            Hue(0),
+        ) else {
+            panic!("a designed house drew nothing");
+        };
+        assert_eq!(pieces.len(), 1);
+        assert_eq!(
+            pieces[0].graphic,
+            Graphic(0x1234),
+            "the foundation was drawn instead"
+        );
+        assert_eq!(pieces[0].at, Point::new(12, 13, 4), "the design's own offsets");
+    }
+
+    /// And a design is drawn even when this client's files have no such multi at
+    /// all — which is the case that matters, because a foundation id is exactly
+    /// what an install is most likely to be missing.
+    #[test]
+    fn a_design_draws_without_the_multi_table() {
+        use openshard_uofiles::multi::Component;
+
+        let design = [Component {
+            graphic: 0x1234,
+            dx: 0,
+            dy: 0,
+            dz: 0,
+            flags: 1,
+        }];
+        let MultiDraw::Pieces(pieces) =
+            multi_pieces(None, Some(&design), Graphic(0x53EC), Point::new(1, 1, 0), Hue(0))
+        else {
+            panic!("a design this client holds was not drawn");
+        };
+        assert_eq!(pieces.len(), 1);
     }
 }

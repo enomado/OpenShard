@@ -804,6 +804,7 @@ pub fn run<D: Dial + Send + 'static>(
         // borrows both.
         world: world::WorldState {
             authoritative: world::AuthoritativeWorld {
+                designs: std::collections::HashMap::new(),
                 view: None,
                 facet_checked: false,
             },

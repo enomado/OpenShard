@@ -152,6 +152,14 @@ pub enum Update {
     Animation(Animation),
     /// The server asked one mobile to play a modern, body-agnostic animation.
     NewAnimation(NewAnimation),
+    /// A designed house's picture, still as bytes.
+    ///
+    /// The one packet that crosses this seam undecoded, and it has a reason:
+    /// reading a `0xD8` needs the house's width and height, which no field on
+    /// the wire carries and which come out of the foundation's own multi. This
+    /// thread has a socket and no client files; the window has the files. So the
+    /// bytes travel and the decode happens where the box is knowable.
+    Design(Vec<u8>),
     /// The connection ended, and why. Nothing further will arrive.
     ///
     /// The window stays open on one of these: a client that vanished when a
@@ -536,6 +544,15 @@ impl Link {
     pub fn query_properties(&self, serials: Vec<Serial>) {
         self.send(Command::Outgoing(Outgoing::QueryProperties(serials)));
     }
+
+    /// Ask for a designed house's picture, in a `0xBF 0x1E`.
+    ///
+    /// Driven by the revision the shard named rather than by anything on
+    /// screen: a house whose shape this client already holds is never asked
+    /// about, which is the whole reason the revision is a packet of its own.
+    pub fn query_design(&self, house: Serial) {
+        self.send(Command::Outgoing(Outgoing::QueryDesign(house)));
+    }
 }
 
 /// Log in on a thread of its own, and report back through `proxy`.
@@ -628,6 +645,14 @@ async fn play<D: Dial, F: Fn(Update) + Send>(
             event = socket.next_event() => {
                 let packet = match event {
                     Ok(Some(Event::Packet(packet))) => packet,
+                    // A designed house's picture. It cannot be decoded here —
+                    // see `Update::Design` — so it crosses whole.
+                    Ok(Some(Event::Undecoded { id, body }))
+                        if id.0 == openshard_protocol::design::DesignDetail::ID =>
+                    {
+                        report(Update::Design(body));
+                        continue;
+                    }
                     // A packet with no decoder yet, or one added since this was
                     // written: framing already said where the next one starts.
                     Ok(Some(_)) => continue,

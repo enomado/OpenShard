@@ -98,6 +98,12 @@ pub enum Outgoing {
     PartyDecline,
     /// Leave the party, or turn out the member named.
     PartyRemove(Serial),
+    /// Ask for a designed house's picture, in a `0xBF 0x1E`.
+    ///
+    /// Sent only when this client holds no shape for the revision the shard
+    /// named — a design is a few hundred tiles, and the whole point of the
+    /// revision riding with the draw is that the ask is rare.
+    QueryDesign(Serial),
 }
 
 impl Outgoing {
@@ -140,6 +146,10 @@ impl Outgoing {
             Self::PartyAccept => crate::party::accept(),
             Self::PartyDecline => crate::party::decline(),
             Self::PartyRemove(member) => crate::party::remove(member),
+            Self::QueryDesign(house) => openshard_protocol::design::DesignDetailsRequest {
+                serial: openshard_protocol::serial::RawSerial(house.raw()),
+            }
+            .encode(),
         }
     }
 }

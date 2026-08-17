@@ -1068,6 +1068,10 @@ impl crate::App {
         // cannot show, and the cursor is still up either way.
         self.world.presentation.multi_preview = match crate::net_command::multi_pieces(
             self.resources.multis.as_deref(),
+            // A placement preview is never a designed house: the cursor draws a
+            // multi the player is about to put down, and a design belongs to one
+            // that already stands.
+            None,
             multi.graphic(),
             at,
             openshard_protocol::wire::Hue::NONE,
