@@ -1121,3 +1121,66 @@ fn the_two_multi_readers_agree_with_each_other() {
          parse disagreement rather than the files drifting apart"
     );
 }
+
+/// **The radar table, against a real install.**
+///
+/// Neither reference server reads `radarcol.mul` — both are shards and this is
+/// a render file — so the split between its two halves could not be ported. It
+/// was confirmed here instead, and this is the confirmation: a handful of ids
+/// whose colour anybody can check by eye.
+///
+/// Grass is green, deep water is blue, a wall is brown. If the split were
+/// anywhere but `LAND_TILE_COUNT` these would come out as each other's
+/// neighbours, which is a failure a size check alone would never catch.
+#[test]
+fn radar_colours_are_the_colours_the_things_are() {
+    use openshard_uofiles::radarcol::RadarColors;
+
+    let Some(dir) = client_dir() else {
+        return;
+    };
+    let colors = RadarColors::load(dir.join("radarcol.mul")).expect("a client ships radarcol.mul");
+
+    // The land half must at least cover every land tile the tile table has.
+    assert!(
+        colors.len() >= openshard_uofiles::tiledata::LAND_TILE_COUNT,
+        "the table is shorter than the land tiles it is indexed by"
+    );
+
+    /// Which channel is the largest, so a colour can be judged without pinning
+    /// an exact value that varies between installs.
+    fn dominant(color: openshard_uofiles::color::Color16) -> &'static str {
+        let rgb = color.rgb8();
+        if rgb.green > rgb.red && rgb.green >= rgb.blue {
+            "green"
+        } else if rgb.blue > rgb.red && rgb.blue > rgb.green {
+            "blue"
+        } else {
+            "red"
+        }
+    }
+
+    let grass = colors.land(openshard_uofiles::map::LandTile(0x0003));
+    assert_eq!(dominant(grass), "green", "land 0x0003 is grass and is not green");
+
+    let water = colors.land(openshard_uofiles::map::LandTile(0x00A8));
+    assert_eq!(
+        dominant(water),
+        "blue",
+        "land 0x00A8 is deep water and is not blue"
+    );
+
+    // And the static half is reached at all: a wall has a colour, and it is not
+    // the land tile that shares its low bits.
+    let wall = colors.statik(openshard_protocol::wire::Graphic(0x0006));
+    assert_ne!(
+        wall,
+        openshard_uofiles::color::Color16::TRANSPARENT,
+        "static 0x0006 has no colour, so the static half was not reached"
+    );
+    assert_ne!(
+        wall,
+        colors.land(openshard_uofiles::map::LandTile(0x0006)),
+        "a static read the land half, so the split is in the wrong place"
+    );
+}

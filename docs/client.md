@@ -1755,8 +1755,9 @@ own understanding had written.
 - ~~**`hues` and `art` are missing.**~~ Written. `hues.mul` is 3,000 ramps of 32
   colours; `artLegacyMUL.uop` holds the land diamonds and the run-length encoded
   statics in one index space. `texmaps` followed, for the slopes. What is still
-  missing: `gumpart`, `anim`, `unifont`, `cliloc`, `multi`, `light`, `radarcol`,
-  `sound`, `verdata`. The first picture no longer needs any of them.
+  missing: `unifont`, `light`, `sound`, `verdata`. `gumpart`, `anim`, `cliloc`
+  and `multi` were written for M4 and M5; `radarcol` for the radar. The first
+  picture no longer needs any of them.
 - **Gump art is deflated and nothing here can inflate it.** Every one of
   `gumpartLegacyMUL.uop`'s 5,556 entries has compression flag 3, where the map
   and art containers have none. `UopError::Compressed` says so rather than
