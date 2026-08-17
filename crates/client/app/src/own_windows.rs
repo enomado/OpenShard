@@ -244,6 +244,12 @@ impl App {
     /// fixed viewport rather than growing past the screen.  The row offset is
     /// local UI state, like a skill tree's scroll position; stock and selected
     /// quantities remain authoritative on the shard and in `WorldView`.
+    ///
+    /// The answer is whether the notch was *taken*, not whether the list moved:
+    /// a catalogue already at either end still swallows the wheel, the same way
+    /// [`App::scroll_skills`] does. Answering by the offset would hand the notch
+    /// on to the camera the moment the list ran out of rows, and the wheel would
+    /// silently turn into a map zoom under a pointer that never left the window.
     pub(crate) fn scroll_vendor(&mut self, notches: f32) -> bool {
         let Some(WindowSubject::Vendor(vendor)) = self.window_under_pointer() else {
             return false;
@@ -271,14 +277,13 @@ impl App {
             })
             .unwrap_or_default();
         let offset = self.windows.vendor_scrolls.entry(vendor).or_default();
-        let before = *offset;
         let maximum = rows.saturating_sub(openshard_client_render::vendor::VISIBLE_ROWS);
         if notches > 0.0 {
             *offset = offset.saturating_sub(1);
         } else {
             *offset = (*offset + 1).min(maximum);
         }
-        *offset != before
+        true
     }
 
     /// Remember a world item's press so a following pointer move can lift it.
