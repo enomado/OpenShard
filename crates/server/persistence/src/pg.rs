@@ -143,6 +143,17 @@ CREATE TABLE IF NOT EXISTS houses (
     -- how long it has stood unrefreshed, in ticks. See the sqlite schema.
     age BIGINT NOT NULL DEFAULT 0
 );
+-- Every component of a designed house. See the sqlite schema's own note.
+CREATE TABLE IF NOT EXISTS house_designs (
+    house    BIGINT NOT NULL,
+    revision INTEGER NOT NULL,
+    graphic  INTEGER NOT NULL,
+    dx       INTEGER NOT NULL,
+    dy       INTEGER NOT NULL,
+    dz       INTEGER NOT NULL,
+    flags    BIGINT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS house_designs_house ON house_designs (house);
 CREATE TABLE IF NOT EXISTS items (
     serial    BIGINT PRIMARY KEY,
     owner     BIGINT NOT NULL,
@@ -562,6 +573,33 @@ impl Store for PgStore {
                     .map_err(database)?;
             }
         }
+        // Replace-all, like the houses and for a sharper reason: a commit
+        // rewrites a house's whole component list, so a merge would leave the
+        // previous design's walls standing beside the new ones.
+        if let Some(designs) = &snapshot.designs {
+            transaction
+                .execute("DELETE FROM house_designs", &[])
+                .await
+                .map_err(database)?;
+            for row in designs {
+                transaction
+                    .execute(
+                        "INSERT INTO house_designs (house, revision, graphic, dx, dy, dz, flags) \
+                         VALUES ($1, $2, $3, $4, $5, $6, $7)",
+                        &[
+                            &i64::from(row.house.raw()),
+                            &row.revision.cast_signed(),
+                            &i32::from(row.graphic),
+                            &i32::from(row.dx),
+                            &i32::from(row.dy),
+                            &i32::from(row.dz),
+                            &row.flags.cast_signed(),
+                        ],
+                    )
+                    .await
+                    .map_err(database)?;
+            }
+        }
         if let Some(houses) = &snapshot.houses {
             transaction
                 .execute("DELETE FROM houses", &[])
@@ -772,6 +810,35 @@ impl Store for PgStore {
                 })
             })
             .collect()
+    }
+
+    async fn designs(&self) -> Result<Vec<crate::record::HouseDesignRecord>, StoreError> {
+        let client = self.client.lock().await;
+        let rows = client
+            .query(
+                "SELECT house, revision, graphic, dx, dy, dz, flags \
+                 FROM house_designs ORDER BY house",
+                &[],
+            )
+            .await
+            .map_err(database)?;
+        Ok(rows
+            .iter()
+            .filter_map(|row| {
+                // A serial this engine did not write drops the row — a component
+                // belonging to no house is one nothing could ever draw.
+                let house = Serial::new(u32::try_from(row.get::<_, i64>(0)).ok()?)?;
+                Some(crate::record::HouseDesignRecord {
+                    house,
+                    revision: row.get::<_, i32>(1).cast_unsigned(),
+                    graphic: u16::try_from(row.get::<_, i32>(2)).ok()?,
+                    dx: i16::try_from(row.get::<_, i32>(3)).ok()?,
+                    dy: i16::try_from(row.get::<_, i32>(4)).ok()?,
+                    dz: i16::try_from(row.get::<_, i32>(5)).ok()?,
+                    flags: row.get::<_, i64>(6).cast_unsigned(),
+                })
+            })
+            .collect())
     }
 
     async fn houses(&self) -> Result<Vec<crate::record::HouseRecord>, StoreError> {
@@ -1274,6 +1341,7 @@ mod tests {
             guilds: None,
             alliances: None,
             houses: None,
+            designs: None,
             world: None,
         }
     }
@@ -1517,6 +1585,7 @@ mod tests {
             guilds: None,
             alliances: None,
             houses: None,
+            designs: None,
             world: None,
         };
         let error = store.save(&future).await.expect_err("must refuse");

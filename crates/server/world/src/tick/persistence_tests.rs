@@ -856,7 +856,7 @@ fn a_house_survives_a_restart_with_its_walls() {
     // The shard comes back up on that save, with the same terrain.
     let mut restored = World::new(START);
     restored.state.facet_state_mut(Facet(0)).terrain = Some(Box::new(Ground));
-    restored.restore_houses(houses);
+    restored.restore_houses(houses, Vec::new());
 
     let back = restored
         .state
@@ -903,22 +903,25 @@ fn a_houses_access_lists_survive_a_restart() {
     let friend = Serial::new(0x0000_0003).expect("a mobile serial");
     let banned = Serial::new(0x0000_0004).expect("a mobile serial");
 
-    world.restore_houses(vec![HouseRecord {
-        serial,
-        multi: 0x64,
-        x: START.0 + 5,
-        y: START.1 + 5,
-        z: 0,
-        facet: 0,
-        owner,
-        co_owners: vec![co_owner.raw()],
-        friends: vec![friend.raw()],
-        // A serial no pool can produce, to prove the filter is a filter and not
-        // a silent zero: a name this engine cannot read is one it cannot act on.
-        bans: vec![banned.raw(), 0],
-        lockdowns: 208,
-        age: 0,
-    }]);
+    world.restore_houses(
+        vec![HouseRecord {
+            serial,
+            multi: 0x64,
+            x: START.0 + 5,
+            y: START.1 + 5,
+            z: 0,
+            facet: 0,
+            owner,
+            co_owners: vec![co_owner.raw()],
+            friends: vec![friend.raw()],
+            // A serial no pool can produce, to prove the filter is a filter and not
+            // a silent zero: a name this engine cannot read is one it cannot act on.
+            bans: vec![banned.raw(), 0],
+            lockdowns: 208,
+            age: 0,
+        }],
+        Vec::new(),
+    );
 
     let entity = world.state.registry.entity_of(serial).expect("the house");
     let house = world
@@ -965,20 +968,23 @@ fn a_house_restored_without_client_files_stands_but_stops_nobody() {
     let mut world = World::new(START);
     let serial = Serial::new(0x4000_0099).expect("an item serial");
     let owner = Serial::new(0x0000_0001).expect("a mobile serial");
-    world.restore_houses(vec![HouseRecord {
-        serial,
-        multi: 0x64,
-        x: START.0 + 5,
-        y: START.1 + 5,
-        z: 0,
-        facet: 0,
-        owner,
-        co_owners: Vec::new(),
-        friends: Vec::new(),
-        bans: Vec::new(),
-        lockdowns: 0,
-        age: 0,
-    }]);
+    world.restore_houses(
+        vec![HouseRecord {
+            serial,
+            multi: 0x64,
+            x: START.0 + 5,
+            y: START.1 + 5,
+            z: 0,
+            facet: 0,
+            owner,
+            co_owners: Vec::new(),
+            friends: Vec::new(),
+            bans: Vec::new(),
+            lockdowns: 0,
+            age: 0,
+        }],
+        Vec::new(),
+    );
 
     let back = world
         .state
@@ -1022,20 +1028,23 @@ fn a_house_and_its_sign_are_not_also_ground_items() {
     let mut world = World::new(START);
     let serial = Serial::new(0x4000_00BB).expect("an item serial");
     let owner = Serial::new(0x0000_0001).expect("a mobile serial");
-    world.restore_houses(vec![HouseRecord {
-        serial,
-        multi: 0x64,
-        x: START.0 + 5,
-        y: START.1 + 5,
-        z: 0,
-        facet: 0,
-        owner,
-        co_owners: Vec::new(),
-        friends: Vec::new(),
-        bans: Vec::new(),
-        lockdowns: 0,
-        age: 0,
-    }]);
+    world.restore_houses(
+        vec![HouseRecord {
+            serial,
+            multi: 0x64,
+            x: START.0 + 5,
+            y: START.1 + 5,
+            z: 0,
+            facet: 0,
+            owner,
+            co_owners: Vec::new(),
+            friends: Vec::new(),
+            bans: Vec::new(),
+            lockdowns: 0,
+            age: 0,
+        }],
+        Vec::new(),
+    );
 
     let ground = world.ground_items();
     assert!(
@@ -1054,4 +1063,111 @@ fn a_house_and_its_sign_are_not_also_ground_items() {
             "the sign was saved as an item"
         );
     }
+}
+
+/// A designed house restores with **its own** walls, on a shard with no client
+/// files at all.
+///
+/// This is the one place H1's stated bargain gets *better* rather than worse.
+/// H1 accepted that a shard booted without client files restores its houses and
+/// gives them no walls, because the walls come from a file. A design does not
+/// come from a file — it is the original — so it needs no terrain to be read
+/// back, and this world has none.
+///
+/// `World::new` installs no terrain, which is what makes the assertion mean
+/// something: a classic house here would have no footprint at all.
+#[test]
+fn a_designed_house_restores_its_own_walls_with_no_client_files() {
+    use openshard_persistence::record::{HouseDesignRecord, HouseRecord};
+
+    let mut world = World::new(START);
+    let serial = Serial::new(0x4000_00CC).expect("an item serial");
+    let owner = Serial::new(0x0000_0001).expect("a mobile serial");
+    let at = (START.0 + 5, START.1 + 5);
+
+    // One wall, one tile east of the origin. `flags` non-zero is "drawn" — the
+    // reader normalises both multi formats' opposite senses before a design is
+    // ever built from one.
+    let wall = HouseDesignRecord {
+        house: serial,
+        revision: 7,
+        graphic: 0x0006,
+        dx: 1,
+        dy: 0,
+        dz: 0,
+        flags: 1,
+    };
+    world.restore_houses(
+        vec![HouseRecord {
+            serial,
+            multi: 0x64,
+            x: at.0,
+            y: at.1,
+            z: 0,
+            facet: 0,
+            owner,
+            co_owners: Vec::new(),
+            friends: Vec::new(),
+            bans: Vec::new(),
+            lockdowns: 0,
+            age: 0,
+        }],
+        vec![wall],
+    );
+
+    let entity = world.state.registry.entity_of(serial).expect("the house");
+    let design = world
+        .state
+        .registry
+        .get::<openshard_state::components::HouseDesign>(entity)
+        .expect("its design came back");
+    assert_eq!(design.revision, 7, "the cache key did not survive the restart");
+    assert_eq!(design.components.len(), 1);
+    assert_eq!(design.components[0].graphic, 0x0006);
+    assert_eq!(design.components[0].dx, 1);
+}
+
+/// A classic house carries no design, and writes no design rows.
+///
+/// The other half, and the one that keeps the common case free: every house on
+/// every shard today is a classic multi, and the design table must stay empty
+/// for all of them rather than filling with a copy of what the client files
+/// already say.
+#[test]
+fn a_classic_house_writes_no_design_rows() {
+    use openshard_persistence::record::HouseRecord;
+
+    let mut world = World::new(START);
+    let serial = Serial::new(0x4000_00CD).expect("an item serial");
+    let owner = Serial::new(0x0000_0001).expect("a mobile serial");
+    world.restore_houses(
+        vec![HouseRecord {
+            serial,
+            multi: 0x64,
+            x: START.0 + 5,
+            y: START.1 + 5,
+            z: 0,
+            facet: 0,
+            owner,
+            co_owners: Vec::new(),
+            friends: Vec::new(),
+            bans: Vec::new(),
+            lockdowns: 0,
+            age: 0,
+        }],
+        Vec::new(),
+    );
+
+    let entity = world.state.registry.entity_of(serial).expect("the house");
+    assert!(
+        !world
+            .state
+            .registry
+            .has::<openshard_state::components::HouseDesign>(entity),
+        "a classic house was given a design"
+    );
+    assert!(
+        world.house_design_records().is_empty(),
+        "a classic house wrote design rows"
+    );
 }

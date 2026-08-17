@@ -1080,6 +1080,7 @@ mod tests {
             guilds: None,
             alliances: None,
             houses: None,
+            designs: None,
             world: None,
         }
     }

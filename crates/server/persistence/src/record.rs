@@ -342,7 +342,57 @@ mod optional_serial {
 ///   `0`, so every house on the shard silently becomes freshly refreshed on the
 ///   first save, and nothing ever collapses again. The reader's side is harmless
 ///   by comparison, which is why the bump is about the other one.
-pub const SCHEMA_VERSION: u32 = 30;
+/// - v31: **house designs**, and for once the *reader's* case. The last four
+///   bumps were about stopping an older writer; this one is about an older
+///   reader being confidently wrong. A v30 build opens the database, does not
+///   know the `house_designs` table so does not drop it, reads a house, sees a
+///   foundation multi id, and computes the footprint from `multi_components` —
+///   which for a foundation is a bare platform. The shard comes up with a
+///   customised house wearing the foundation's walls, and nothing says so. That
+///   is worse than a house with no walls, which is at least visible.
+pub const SCHEMA_VERSION: u32 = 31;
+
+/// One component of a house whose shape nobody shipped.
+///
+/// # Why components are saved here and nowhere else
+///
+/// [`HouseRecord`]'s own note says the components are deliberately absent: a
+/// multi's shape is a pure function of its id and lives in the client's files,
+/// so a copy goes stale the day the operator updates their install. That rule
+/// holds and it needed saying more precisely — **what is never saved is a copy
+/// of something the client's files already state.** A design says nothing they
+/// say. It *is* the original, with nothing to go stale against.
+///
+/// # A table, not a column
+///
+/// One row per component, keyed by the house's serial. A `HouseRecord` is small
+/// and swept for every house on every save; a design is a few hundred rows. And a
+/// classic house writes **no rows at all**, so the overwhelmingly common case
+/// pays nothing. The cost, named: a second query on restore, joined by serial.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub struct HouseDesignRecord {
+    /// Which house, by its item serial.
+    #[serde(with = "serial")]
+    pub house: Serial,
+    /// Bumped on every commit, so a client can cache the design by
+    /// `(serial, revision)`. Repeated on every row of one house rather than kept
+    /// beside the house, because the design is what it versions and a house with
+    /// no design has no revision to store.
+    pub revision: u32,
+    /// The static this component draws as.
+    pub graphic: u16,
+    /// East of the house's origin.
+    pub dx: i16,
+    /// South of it.
+    pub dy: i16,
+    /// And above.
+    pub dz: i16,
+    /// Whether the client draws it. A `u64` because the two multi formats
+    /// disagree about the field's width *and* its sense — see
+    /// `openshard_uofiles::multi` — and the reader has already normalised both
+    /// into "non-zero is drawn" by the time a design is built from one.
+    pub flags: u64,
+}
 
 /// A player's house, as saved.
 ///

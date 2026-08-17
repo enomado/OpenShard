@@ -222,6 +222,20 @@ CREATE TABLE IF NOT EXISTS houses (
     -- deadline: the tick counter is not saved. See `housing::decay`.
     age INTEGER NOT NULL DEFAULT 0
 );
+-- Every component of a house whose shape nobody shipped. The one place
+-- components are saved, and the table above says why they are not saved there:
+-- a classic multi's shape is a pure function of its id, and a design is the
+-- original with nothing to go stale against. A classic house writes no rows.
+CREATE TABLE IF NOT EXISTS house_designs (
+    house    INTEGER NOT NULL,
+    revision INTEGER NOT NULL,
+    graphic  INTEGER NOT NULL,
+    dx       INTEGER NOT NULL,
+    dy       INTEGER NOT NULL,
+    dz       INTEGER NOT NULL,
+    flags    INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS house_designs_house ON house_designs (house);
 CREATE TABLE IF NOT EXISTS items (
     serial    INTEGER PRIMARY KEY,
     owner     INTEGER NOT NULL,
@@ -422,6 +436,7 @@ impl Store for SqliteStore {
         let guilds = snapshot.guilds.clone();
         let alliances = snapshot.alliances.clone();
         let houses = snapshot.houses.clone();
+        let designs = snapshot.designs.clone();
         let world = snapshot.world;
         blocking(move || {
             let mut guard = connection
@@ -711,6 +726,33 @@ impl Store for SqliteStore {
                             "INSERT INTO alliances (id, name, leader, members, pending) \
                              VALUES (?1, ?2, ?3, ?4, ?5)",
                             params![alliance.id, alliance.name, alliance.leader, members, pending],
+                        )
+                        .map_err(database)?;
+                }
+            }
+            // The designs, replace-all: a commit rewrites a house's whole
+            // component list, so a merge would leave the previous design's walls
+            // standing beside the new ones.
+            if let Some(designs) = &designs {
+                transaction
+                    .execute("DELETE FROM house_designs", [])
+                    .map_err(database)?;
+                for row in designs {
+                    transaction
+                        .execute(
+                            "INSERT INTO house_designs (house, revision, graphic, dx, dy, dz, flags) \
+                             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                            params![
+                                row.house.raw(),
+                                row.revision,
+                                row.graphic,
+                                row.dx,
+                                row.dy,
+                                row.dz,
+                                // SQLite has no unsigned 64-bit; bit-cast, and
+                                // read back the same way.
+                                row.flags.cast_signed(),
+                            ],
                         )
                         .map_err(database)?;
                 }
@@ -1094,6 +1136,53 @@ impl Store for SqliteStore {
         .await
     }
 
+    async fn designs(&self) -> Result<Vec<crate::record::HouseDesignRecord>, StoreError> {
+        let connection = Arc::clone(&self.connection);
+        blocking(move || {
+            let guard = connection.lock().expect("the sqlite mutex is never poisoned");
+            let mut statement = guard
+                .prepare(
+                    "SELECT house, revision, graphic, dx, dy, dz, flags \
+                     FROM house_designs ORDER BY house",
+                )
+                .map_err(database)?;
+            let rows = statement
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, u32>(0)?,
+                        row.get::<_, u32>(1)?,
+                        row.get::<_, u16>(2)?,
+                        row.get::<_, i16>(3)?,
+                        row.get::<_, i16>(4)?,
+                        row.get::<_, i16>(5)?,
+                        row.get::<_, i64>(6)?,
+                    ))
+                })
+                .map_err(database)?;
+            let mut out = Vec::new();
+            for row in rows {
+                let (house, revision, graphic, dx, dy, dz, flags) = row.map_err(database)?;
+                // A serial this engine did not write drops the row, the houses
+                // reader's reasoning: a component belonging to no house is one
+                // nothing could ever draw.
+                let Some(house) = Serial::new(house) else {
+                    continue;
+                };
+                out.push(crate::record::HouseDesignRecord {
+                    house,
+                    revision,
+                    graphic,
+                    dx,
+                    dy,
+                    dz,
+                    flags: flags.cast_unsigned(),
+                });
+            }
+            Ok(out)
+        })
+        .await
+    }
+
     async fn houses(&self) -> Result<Vec<crate::record::HouseRecord>, StoreError> {
         let connection = Arc::clone(&self.connection);
         blocking(move || {
@@ -1372,6 +1461,7 @@ mod tests {
             guilds: None,
             alliances: None,
             houses: None,
+            designs: None,
             world: None,
         }
     }
@@ -1766,6 +1856,7 @@ mod tests {
             guilds: None,
             alliances: None,
             houses: None,
+            designs: None,
             world: None,
         };
         let error = store.save(&future).await.expect_err("must refuse");

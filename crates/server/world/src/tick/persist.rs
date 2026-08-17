@@ -166,6 +166,7 @@ impl World {
             guilds: None,
             alliances: None,
             houses: None,
+            designs: None,
             world: None,
         });
 
@@ -222,6 +223,9 @@ impl World {
         snapshot.guilds = Some(self.guild_records());
         snapshot.alliances = Some(self.alliance_records());
         snapshot.houses = Some(self.house_records());
+        // Beside the houses and swept on the same pass, because a design that
+        // survived a save its house did not would come back attached to nothing.
+        snapshot.designs = Some(self.house_design_records());
         snapshot.world = Some(WorldRecord {
             clock_minutes: self.clock_minutes(),
             rng_state: self.rng_state(),

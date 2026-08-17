@@ -458,7 +458,21 @@ async fn restore_guilds(store: &dyn Store, world: &mut World) {
     // And the houses, after the facets exist — restoring one asks the terrain for
     // its footprint, and a terrain that is not there yet answers no walls.
     match store.houses().await {
-        Ok(houses) => world.restore_houses(houses),
+        Ok(houses) => {
+            // The designs come with them rather than in a pass of their own: a
+            // design is only meaningful joined to its house, and a house whose
+            // design failed to read must not come back wearing the foundation's
+            // walls without anything saying so. An unreadable design table is
+            // logged and the houses restore classic, which is visible.
+            let designs = match store.designs().await {
+                Ok(designs) => designs,
+                Err(error) => {
+                    error!(%error, "could not read saved house designs; those houses restore unshaped");
+                    Vec::new()
+                }
+            };
+            world.restore_houses(houses, designs);
+        }
         Err(error) => error!(%error, "could not read saved houses; starting with none"),
     }
     match store.alliances().await {

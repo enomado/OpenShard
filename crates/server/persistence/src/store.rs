@@ -136,6 +136,17 @@ pub trait Store: Send + Sync {
     /// If the store cannot be read.
     async fn houses(&self) -> Result<Vec<crate::record::HouseRecord>, StoreError>;
 
+    /// Every designed house's components, in serial order.
+    ///
+    /// A second read rather than a join into [`houses`](Self::houses), and that
+    /// is the cost `HouseDesignRecord` names: a design is a few hundred rows and
+    /// a house record is one, so they do not travel together. On the
+    /// overwhelmingly common shard this answers an empty vector.
+    ///
+    /// # Errors
+    /// If the store cannot be read.
+    async fn designs(&self) -> Result<Vec<crate::record::HouseDesignRecord>, StoreError>;
+
     /// The world's own scalars, as last saved — the clock and where the roll
     /// generator got to. One read for the one row, so a scalar added to
     /// [`WorldRecord`] does not add a method here and a query to every backend.
@@ -182,6 +193,7 @@ pub struct MemoryStore {
     guilds: Mutex<HashMap<u32, GuildRecord>>,
     alliances: Mutex<HashMap<u32, crate::record::AllianceRecord>>,
     houses: Mutex<HashMap<u32, crate::record::HouseRecord>>,
+    designs: Mutex<Vec<crate::record::HouseDesignRecord>>,
     /// The world's own scalars: the clock, and where the rolls got to. `None` until
     /// a snapshot carries them.
     world: Mutex<Option<WorldRecord>>,
@@ -301,6 +313,14 @@ impl Store for MemoryStore {
                 alliances.insert(record.id, record.clone());
             }
         }
+        // A design is replace-all like the houses, and for a sharper reason: a
+        // commit rewrites a house's whole component list, so a merge would leave
+        // the walls of the design before it standing beside the new ones.
+        if let Some(records) = &snapshot.designs {
+            let mut designs = self.designs.lock().expect("the mutex is never poisoned");
+            designs.clear();
+            designs.extend(records.iter().copied());
+        }
         // And the houses, on the same terms: a demolition is an absence.
         if let Some(records) = &snapshot.houses {
             let mut houses = self.houses.lock().expect("the mutex is never poisoned");
@@ -406,6 +426,12 @@ impl Store for MemoryStore {
         Ok(alliances)
     }
 
+    async fn designs(&self) -> Result<Vec<crate::record::HouseDesignRecord>, StoreError> {
+        let mut designs = self.designs.lock().expect("the mutex is never poisoned").clone();
+        designs.sort_by_key(|row| row.house.raw());
+        Ok(designs)
+    }
+
     async fn houses(&self) -> Result<Vec<crate::record::HouseRecord>, StoreError> {
         let mut houses: Vec<_> = self
             .houses
@@ -504,6 +530,7 @@ mod tests {
             guilds: None,
             alliances: None,
             houses: None,
+            designs: None,
             world: None,
         }
     }
@@ -588,6 +615,7 @@ mod tests {
             guilds: None,
             alliances: None,
             houses: None,
+            designs: None,
             world: None,
         };
         let error = store.save(&future).await.expect_err("must refuse");
@@ -678,6 +706,7 @@ mod tests {
                 guilds: None,
                 alliances: None,
                 houses: None,
+                designs: None,
                 world: None,
             })
             .await
@@ -700,6 +729,7 @@ mod tests {
                 guilds: None,
                 alliances: None,
                 houses: None,
+                designs: None,
                 world: None,
             })
             .await
@@ -773,6 +803,7 @@ mod tests {
                 guilds: None,
                 alliances: None,
                 houses: None,
+                designs: None,
                 world: None,
             })
             .await
@@ -794,6 +825,7 @@ mod tests {
                 guilds: None,
                 alliances: None,
                 houses: None,
+                designs: None,
                 world: None,
             })
             .await
@@ -830,6 +862,7 @@ mod tests {
                 guilds: None,
                 alliances: None,
                 houses: None,
+                designs: None,
                 world: None,
             })
             .await
@@ -850,6 +883,7 @@ mod tests {
                 guilds: None,
                 alliances: None,
                 houses: None,
+                designs: None,
                 world: None,
             })
             .await

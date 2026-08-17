@@ -24,7 +24,9 @@ use openshard_protocol::wire::CursorId;
 use openshard_protocol::wire::{Graphic, Hue};
 use openshard_protocol::world::{Facet, Point};
 use openshard_state::TargetPurpose;
-use openshard_state::components::{Client, Contained, Drawn, House, HouseDeed, HouseSign, Position};
+use openshard_state::components::{
+    Client, Contained, Drawn, House, HouseDeed, HouseDesign, HouseSign, Position,
+};
 use tracing::{info, warn};
 
 use super::World;
@@ -56,6 +58,33 @@ impl World {
             .collect()
     }
 
+    /// Every designed house's components, flattened into one list.
+    ///
+    /// One row per component of every house carrying a
+    /// [`HouseDesign`]. A shard where every house is a classic multi answers an
+    /// empty vector, which is every shard until somebody designs one.
+    pub(super) fn house_design_records(&self) -> Vec<openshard_persistence::record::HouseDesignRecord> {
+        self.state
+            .registry
+            .query::<HouseDesign>()
+            .filter_map(|(entity, design)| {
+                let house = self.state.registry.serial_of(entity)?;
+                Some(design.components.iter().map(move |component| {
+                    openshard_persistence::record::HouseDesignRecord {
+                        house,
+                        revision: design.revision,
+                        graphic: component.graphic,
+                        dx: component.dx,
+                        dy: component.dy,
+                        dz: component.dz,
+                        flags: component.flags,
+                    }
+                }))
+            })
+            .flatten()
+            .collect()
+    }
+
     /// Put the houses back at boot, walls and all.
     ///
     /// Call once, before anyone connects. Not through `openshard_housing::place`:
@@ -63,7 +92,27 @@ impl World {
     /// legal when it was built stays built even if the rules have since tightened
     /// — otherwise a shard that changed its yard size would silently demolish
     /// half of Britannia at the next restart.
-    pub fn restore_houses(&mut self, records: Vec<HouseRecord>) {
+    pub fn restore_houses(
+        &mut self,
+        records: Vec<HouseRecord>,
+        designs: Vec<openshard_persistence::record::HouseDesignRecord>,
+    ) {
+        // Grouped by house once, rather than scanned per house: a shard with a
+        // hundred designed houses would otherwise walk the whole list a hundred
+        // times.
+        let mut by_house: std::collections::HashMap<Serial, (u32, Vec<openshard_uofiles::multi::Component>)> =
+            std::collections::HashMap::new();
+        for row in designs {
+            let entry = by_house.entry(row.house).or_insert((row.revision, Vec::new()));
+            entry.0 = row.revision;
+            entry.1.push(openshard_uofiles::multi::Component {
+                graphic: row.graphic,
+                dx: row.dx,
+                dy: row.dy,
+                dz: row.dz,
+                flags: row.flags,
+            });
+        }
         let mut restored = 0;
         let mut wall_less = 0;
         for record in records {
@@ -101,8 +150,17 @@ impl World {
             );
             self.state.registry.insert(entity, facet);
             self.state.facet_state_mut(facet).sectors.insert(entity, at);
+            // The design, if this house has one. Put on before the footprint is
+            // computed, because the footprint is computed *from* it.
+            let design = by_house.remove(&record.serial);
+            if let Some((revision, components)) = design.clone() {
+                self.state
+                    .registry
+                    .insert(entity, HouseDesign { components, revision });
+            }
+            let shape = design.as_ref().map(|(_, components)| components.as_slice());
 
-            match openshard_housing::footprint_of(&self.state, at, facet, record.multi, None) {
+            match openshard_housing::footprint_of(&self.state, at, facet, record.multi, shape) {
                 Ok(footprint) => {
                     openshard_housing::block(&mut self.state, entity, facet, &footprint);
                 }

@@ -67,8 +67,8 @@ use openshard_entities::EntityId;
 use openshard_protocol::serial::Serial;
 
 use crate::record::{
-    CharacterRecord, DecorationRecord, GuildRecord, HouseRecord, Inventory, ItemRecord, MobileRecord,
-    RegionRecord, SCHEMA_VERSION, SpawnerRecord, WorldRecord,
+    CharacterRecord, DecorationRecord, GuildRecord, HouseDesignRecord, HouseRecord, Inventory, ItemRecord,
+    MobileRecord, RegionRecord, SCHEMA_VERSION, SpawnerRecord, WorldRecord,
 };
 
 /// A consistent picture of everything that changed, taken at one tick.
@@ -130,6 +130,13 @@ pub struct Snapshot {
     /// its id and lives in the client's files, so what is saved is where the
     /// house stands and which multi it is; the footprint is recomputed at boot.
     pub houses: Option<Vec<HouseRecord>>,
+    /// Every component of every *designed* house, keyed by the house's serial.
+    ///
+    /// The one place components are saved, and [`HouseDesignRecord`] says why:
+    /// a design has no file behind it to go stale against. `None` in a snapshot
+    /// that swept no houses; empty on a shard where every house is a classic
+    /// multi, which is every shard until somebody designs one.
+    pub designs: Option<Vec<HouseDesignRecord>>,
     /// The world's own scalars — the clock and the roll generator's position — when
     /// this snapshot swept them. `None` in a snapshot that carried only character
     /// changes; the stored row stands.
@@ -170,6 +177,7 @@ impl Snapshot {
             + self.guilds.as_ref().map_or(0, Vec::len)
             + self.alliances.as_ref().map_or(0, Vec::len)
             + self.houses.as_ref().map_or(0, Vec::len)
+            + self.designs.as_ref().map_or(0, Vec::len)
     }
 }
 
@@ -335,6 +343,7 @@ impl Journal {
             guilds: None,
             alliances: None,
             houses: None,
+            designs: None,
             world: None,
         })
     }
