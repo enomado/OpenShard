@@ -311,6 +311,20 @@ never a half-routed frame.
   still reaches the camera. Panes make this a per-pane decision that is *visible*
   as a decision, but it does not settle it — somebody has to say which is right.
   ClassicUO claims the whole window.
+- **`if let Some(window) = self.window.as_ref() { window.window.request_redraw() }`,
+  twenty times.** `event_loop.rs` asks for a frame that way in every arm, and S0
+  left the idiom alone rather than sweeping it while it was also changing what
+  decides the ask. Now that a `Response` says whether the frame is stale, the
+  honest shape is one `App::ask_redraw()` and arms that call it — or, better, an
+  arm that returns its `Response` to one place that acts on it. Mechanical, and
+  worth doing when S7 has finished moving what the arms *say*.
+- **`stack_all_button_under_pointer` and `take_all_button_under_pointer` walk the
+  window list and then ask `window_under_pointer()` inside the loop.** Which
+  means the answer depends on a *second* top-down walk taken per iteration, and
+  reads as "stop if this window is the one the pointer is on" — the opposite of
+  what a control drawn on that window wants. Both are container furniture and go
+  into `ContainerPane` at S6; whatever that predicate was meant to say has to be
+  stated then, because a pane hit-tests itself and has no second walk to consult.
 - **Who a modal's answer is addressed to.** D7 leaves `Pressed` inside the pane,
   and a Shift-drag suspends exactly that state while the client's own amount
   prompt is open: `split_pending` is set, and the answer arrives later from the
