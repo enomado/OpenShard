@@ -21,11 +21,13 @@
 //! subtracts, and a deck is somewhere to stand over water that is otherwise not
 //! ground at all — `docs/boats.md`'s B3, argued in `openshard_state::boat`.
 //!
-//! # What this phase is not
+//! # And it sails
 //!
-//! It does not move. B1 is a ship at a mooring you can walk the deck of; the
-//! step, the manifest of who moves with it, and the wire for a hull that
-//! changes tiles are B2, and none of them needs a decision taken here.
+//! [`step`] moves the hull a tile and takes whoever is standing on the deck with
+//! it. What is still B2's is the **wire**: nothing tells a client the ship has
+//! moved, so one that already has it on screen keeps drawing it where it was
+//! until something else refreshes that screen. Everyone aboard is redrawn
+//! correctly, because each of them is relocated through the ordinary move path.
 
 use openshard_entities::EntityId;
 use openshard_movement::Tile;
@@ -34,7 +36,7 @@ use openshard_protocol::wire::{Graphic, Hue};
 use openshard_protocol::world::{Facet, Point};
 use openshard_state::WorldState;
 use openshard_state::boat::Plank;
-use openshard_state::components::{Boat, Drawn, Position};
+use openshard_state::components::{Boat, Drawn, Movement, Position};
 
 /// The bit a multi's graphic carries on the wire.
 ///
@@ -212,6 +214,145 @@ fn check_berth(state: &WorldState, facet: Facet, berth: &[((u16, u16), Plank)]) 
         }
     }
     Ok(())
+}
+
+/// Sail one tile, carrying whoever is aboard.
+///
+/// `World::step`'s structure — decide, then apply — with the terrain check
+/// replaced by *does the whole translated berth fit*. Nothing is written until
+/// every question has been asked, so a refused course leaves the ship exactly
+/// where it was with everybody still standing on it.
+///
+/// # The manifest is derived, never stored
+///
+/// Who moves with the ship is worked out here, per move, from the tiles it
+/// covers and the sector grid — `docs/boats.md`'s B1a. An `OnDeck` component
+/// would be a second copy of a fact [`Position`] already holds, and the two
+/// would disagree the first time anything moved a body without going through
+/// this function.
+///
+/// # And each of them is moved absolutely
+///
+/// B1's refusal of a parent transform, on the engine's own evidence: this world
+/// has no way to carry one entity by moving another — mounting *deletes* the
+/// mount rather than carrying it. So the deck's occupants are relocated one by
+/// one through [`WorldState::move_to`], which is the **fourth** caller of the
+/// `disrupt` → position → `refresh_around` → `broadcast_move` sequence after
+/// `npc::live`, `quests::advance_escorts` and the tick's own `step`, and the
+/// point `docs/boats.md:384` names as when that tail wants a name of its own.
+///
+/// # What this does not do yet
+///
+/// **The hull is not redrawn.** A client that already has the ship on its screen
+/// keeps drawing it where it was until something else refreshes it; the
+/// forget-then-reveal that fixes it is B2's fourth step, and the number of
+/// packets a move costs is owed with it.
+pub fn step(
+    state: &mut WorldState,
+    boat: EntityId,
+    direction: openshard_protocol::direction::Direction,
+) -> Result<Point, Refusal> {
+    let facet = state.facet_of(boat);
+    let (Some(&Position(at)), Some(&Boat { multi, .. })) = (
+        state.registry.get::<Position>(boat),
+        state.registry.get::<Boat>(boat),
+    ) else {
+        return Err(Refusal::NoSuchMulti);
+    };
+    let Some(to) = openshard_movement::step_from(at, direction) else {
+        return Err(Refusal::OffTheMap);
+    };
+
+    // Decide. The new berth is derived before anything is written and checked
+    // against the water and against every *other* ship — a hull is not in
+    // `Obstructions`, so nothing else in this engine would notice two of them in
+    // one tile.
+    let berth = planks_of(state, boat, to, facet, multi)?;
+    check_course(state, facet, boat, &berth)?;
+    let manifest = aboard(state, boat, facet);
+
+    // Apply. The index first, so a body relocated below lands on a deck that is
+    // already where the ship is going rather than on the one it is leaving.
+    state.facet_state_mut(facet).boats.moor(boat, berth);
+    state.registry.insert(boat, Position(to));
+    state.facet_state_mut(facet).sectors.insert(boat, to);
+
+    let (dx, dy) = (
+        i32::from(to.x) - i32::from(at.x),
+        i32::from(to.y) - i32::from(at.y),
+    );
+    for (occupant, was) in manifest {
+        let (Ok(x), Ok(y)) = (
+            u16::try_from(i32::from(was.x) + dx),
+            u16::try_from(i32::from(was.y) + dy),
+        ) else {
+            // The berth fits, so this cannot happen for anyone standing inside
+            // it — but a body at the edge of the coordinate space is left where
+            // it is rather than wrapped to the far side of the world.
+            continue;
+        };
+        state.disrupt(occupant);
+        state.move_to(occupant, facet, Point { x, y, z: was.z });
+    }
+
+    Ok(to)
+}
+
+/// The two questions a course has to answer: it is all sea, and no *other* ship
+/// is in it.
+///
+/// Not [`check_berth`]: that one refuses any boat at all in the tile, which for
+/// a move is the ship itself in the berth it is leaving. The difference is one
+/// comparison and it is the whole of why a ship can sail forward.
+fn check_course(state: &WorldState, facet: Facet, boat: EntityId, berth: &[Berth]) -> Result<(), Refusal> {
+    let facet_state = state.facet_state(facet);
+    let Some(terrain) = facet_state.terrain.as_deref() else {
+        return Err(Refusal::NoSuchMulti);
+    };
+    for &((x, y), _) in berth {
+        if !terrain.land_is_water(Tile::new(x, y)) {
+            return Err(Refusal::NotOnWater);
+        }
+        if facet_state.boats.at(x, y).iter().any(|plank| plank.boat != boat) {
+            return Err(Refusal::Occupied);
+        }
+    }
+    Ok(())
+}
+
+/// Everyone standing on the deck right now, and the tile each is standing on.
+///
+/// A mobile is aboard when it is on a tile the ship covers **and its feet are on
+/// a plank** — the second half matters, because a swimmer beside the hull and a
+/// body on a pier the ship is moored against are both on a covered tile and
+/// neither is a passenger.
+///
+/// Mobiles only. A crate lying on the deck is cargo and stays where it is until
+/// B4 gives the ship a hold; carrying it would need the item move path rather
+/// than [`WorldState::move_to`], which is a mobile's.
+fn aboard(state: &WorldState, boat: EntityId, facet: Facet) -> Vec<(EntityId, Point)> {
+    let facet_state = state.facet_state(facet);
+    let covered = facet_state.boats.covered_by(boat);
+    let Some(&first) = covered.first() else {
+        return Vec::new();
+    };
+    // One sector query for the whole ship rather than one per tile: the berth is
+    // a handful of tiles and `nearby` is a block sweep, so asking it four times
+    // for a sloop would walk the same statics four times.
+    let centre = Point::new(first.0, first.1, 0);
+    let reach = covered
+        .iter()
+        .map(|&(x, y)| u32::from(x.abs_diff(first.0)).max(u32::from(y.abs_diff(first.1))))
+        .max()
+        .unwrap_or(0);
+
+    facet_state
+        .sectors
+        .nearby(centre, reach)
+        .filter(|&(entity, _)| entity != boat)
+        .filter(|(entity, _)| state.registry.has::<Movement>(*entity))
+        .filter(|&(_, at)| facet_state.boats.deck_at(at.x, at.y, i32::from(at.z)) == Some(i32::from(at.z)))
+        .collect()
 }
 
 /// Take a ship off the water: out of the boat index, off the sector grid, and

@@ -10,7 +10,8 @@ use std::collections::{BTreeMap, HashMap};
 
 use openshard_entities::Registry;
 use openshard_events::EventBus;
-use openshard_movement::{LandTile, Terrain};
+use openshard_movement::{LandTile, Terrain, Walker};
+use openshard_protocol::direction::{Direction, Facing};
 use openshard_protocol::serial::SerialKind;
 use openshard_state::harvest::Banks;
 use openshard_state::rng::Rng;
@@ -138,6 +139,21 @@ fn a_sea() -> WorldState {
 
 fn a_captain(state: &mut WorldState) -> (EntityId, Serial) {
     state.registry.spawn_with_serial(SerialKind::Mobile).unwrap()
+}
+
+/// A mobile standing at `at`, on the sector grid where the manifest looks for
+/// it. `Movement` is what makes it a body rather than a crate: the manifest
+/// carries mobiles, and cargo waits for B4's hold.
+fn a_walker(state: &mut WorldState, at: Point) -> EntityId {
+    let (entity, _) = state.registry.spawn_with_serial(SerialKind::Mobile).unwrap();
+    state.registry.insert(entity, Position(at));
+    state.registry.insert(entity, Facet(0));
+    state.registry.insert(
+        entity,
+        openshard_state::components::Movement(Walker::new(at, Facing::walking(Direction::North))),
+    );
+    state.facet_state_mut(Facet(0)).sectors.insert(entity, at);
+    entity
 }
 
 /// A ship is an item whose graphic is the multi, exactly as a house is — so
@@ -338,6 +354,153 @@ fn a_shard_with_no_client_files_launches_nothing() {
     assert_eq!(
         place(&mut state, actor, Point::new(20, 20, 0), Facet(0), SLOOP, owner),
         Err(Refusal::NoSuchMulti),
+    );
+}
+
+/// A ship sails, and its index and its position agree about where it went.
+#[test]
+fn a_ship_sails_a_tile() {
+    let mut state = a_sea();
+    let (actor, owner) = a_captain(&mut state);
+    let boat = place(&mut state, actor, Point::new(20, 20, 0), Facet(0), SLOOP, owner).expect("open water");
+
+    assert_eq!(
+        step(&mut state, boat, Direction::South),
+        Ok(Point::new(20, 21, 0)),
+    );
+
+    assert_eq!(
+        state.registry.get::<Position>(boat).map(|p| p.0),
+        Some(Point::new(20, 21, 0)),
+    );
+    let boats = &state.facet_state(Facet(0)).boats;
+    assert_eq!(boats.deck_at(20, 21, 0), Some(3), "the deck came with it");
+    assert!(boats.hull_blocks(19, 21, 0), "and so did the port hull");
+    assert!(
+        boats.at(20, 20).is_empty() && boats.at(19, 20).is_empty(),
+        "the ship left planks behind in the tiles it sailed out of",
+    );
+    assert_eq!(boats.len(), 1, "one ship, moved — not two");
+}
+
+/// **Everyone standing on the deck arrives with it**, moved absolutely rather
+/// than carried: this engine has no parent transform, and B1 refused to invent
+/// one.
+#[test]
+fn the_deck_carries_whoever_is_standing_on_it() {
+    let mut state = a_sea();
+    let (actor, owner) = a_captain(&mut state);
+    let boat = place(&mut state, actor, Point::new(20, 20, 0), Facet(0), SLOOP, owner).expect("open water");
+
+    // Amidships, feet on the deck at z 3.
+    let sailor = a_walker(&mut state, Point::new(20, 20, 3));
+
+    step(&mut state, boat, Direction::South).expect("open water ahead");
+
+    assert_eq!(
+        state.registry.get::<Position>(sailor).map(|p| p.0),
+        Some(Point::new(20, 21, 3)),
+        "the sailor stayed on the tile of the ship they were standing on",
+    );
+    assert_eq!(
+        state.facet_state(Facet(0)).sectors.position_of(sailor),
+        Some(Point::new(20, 21, 3)),
+        "and the sector grid was told, or every nearby query still finds them astern",
+    );
+}
+
+/// A body beside the ship is not aboard it, even when it is on a tile the ship
+/// covers — a swimmer at the waterline is under the gunwale, not on the deck.
+#[test]
+fn someone_in_the_water_beside_the_hull_is_left_behind() {
+    let mut state = a_sea();
+    let (actor, owner) = a_captain(&mut state);
+    let boat = place(&mut state, actor, Point::new(20, 20, 0), Facet(0), SLOOP, owner).expect("open water");
+
+    // On a covered tile, but at the waterline rather than on a plank.
+    let swimmer = a_walker(&mut state, Point::new(20, 20, 0));
+
+    step(&mut state, boat, Direction::South).expect("open water ahead");
+
+    assert_eq!(
+        state.registry.get::<Position>(swimmer).map(|p| p.0),
+        Some(Point::new(20, 20, 0)),
+        "the ship dragged somebody who was not standing on it",
+    );
+}
+
+/// A ship steered into a rock stops, and stops **whole**: nothing is written
+/// until every tile of the course has answered, so a refused move leaves the
+/// crew where they were too.
+#[test]
+fn a_ship_steered_into_the_shore_stops_and_moves_nobody() {
+    let mut state = a_sea();
+    let (actor, owner) = a_captain(&mut state);
+    // Bow one tile off the beach: north is the shore at y = 0.
+    let boat = place(&mut state, actor, Point::new(20, 1, 0), Facet(0), SLOOP, owner).expect("open water");
+    let sailor = a_walker(&mut state, Point::new(20, 1, 3));
+
+    assert_eq!(step(&mut state, boat, Direction::North), Err(Refusal::NotOnWater));
+
+    assert_eq!(
+        state.registry.get::<Position>(boat).map(|p| p.0),
+        Some(Point::new(20, 1, 0)),
+    );
+    assert_eq!(
+        state.registry.get::<Position>(sailor).map(|p| p.0),
+        Some(Point::new(20, 1, 3)),
+        "the crew walked ashore without the ship",
+    );
+    assert_eq!(
+        state.facet_state(Facet(0)).boats.deck_at(20, 1, 0),
+        Some(3),
+        "the berth it was refused out of is still the berth it is in",
+    );
+}
+
+/// **The test this phase owes by name, against a moving hull.** The placement
+/// half is `two_boats_do_not_occupy_one_tile` above; this is the other end of
+/// the same hole. Neither hull is in `Obstructions`, so nothing but the course
+/// check stands between them.
+#[test]
+fn two_boats_do_not_occupy_one_tile_when_one_is_under_way() {
+    let mut state = a_sea();
+    let (actor, owner) = a_captain(&mut state);
+    let under_way =
+        place(&mut state, actor, Point::new(20, 20, 0), Facet(0), SLOOP, owner).expect("open water");
+    // Two tiles south — clear at anchor (the sloops' berths do not touch), and
+    // one step south puts the moving ship's aft deck into the moored one's
+    // midships.
+    place(&mut state, actor, Point::new(20, 22, 0), Facet(0), SLOOP, owner).expect("open water");
+
+    assert_eq!(
+        step(&mut state, under_way, Direction::South),
+        Err(Refusal::Occupied),
+        "one hull sailed straight through another",
+    );
+    assert_eq!(
+        state.registry.get::<Position>(under_way).map(|p| p.0),
+        Some(Point::new(20, 20, 0)),
+    );
+}
+
+/// And a ship is not blocked by *itself*. The course check differs from the
+/// berth check by exactly this comparison, which is what lets a ship move at
+/// all: every step overlaps the tiles it is standing on.
+#[test]
+fn a_ship_is_not_blocked_by_the_tiles_it_is_leaving() {
+    let mut state = a_sea();
+    let (actor, owner) = a_captain(&mut state);
+    let boat = place(&mut state, actor, Point::new(20, 20, 0), Facet(0), SLOOP, owner).expect("open water");
+
+    // South by one is a two-tile overlap with where it already is: the deck at
+    // (20, 21) is both the tile it is moving out of and the tile it is moving
+    // into.
+    assert!(step(&mut state, boat, Direction::South).is_ok());
+    assert!(step(&mut state, boat, Direction::South).is_ok());
+    assert_eq!(
+        state.registry.get::<Position>(boat).map(|p| p.0),
+        Some(Point::new(20, 22, 0)),
     );
 }
 

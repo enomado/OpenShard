@@ -129,6 +129,18 @@ impl Boats {
         self.tiles.get(&(x, y)).map_or(&[], Vec::as_slice)
     }
 
+    /// Which tiles a boat is standing on.
+    ///
+    /// The reverse index read outwards rather than only used by
+    /// [`cast_off`](Self::cast_off) — a move needs to ask *who is aboard*, and
+    /// the answer is whoever is standing on one of these. Deriving the shape a
+    /// second time from the multi would work and would be a second place for it
+    /// to be wrong; this is the shape the world is actually indexed by.
+    #[must_use]
+    pub fn covered_by(&self, boat: EntityId) -> &[(u16, u16)] {
+        self.covered.get(&boat).map_or(&[], Vec::as_slice)
+    }
+
     /// The boat covering `(x, y)`, if one does.
     #[must_use]
     pub fn boat_at(&self, x: u16, y: u16) -> Option<EntityId> {
