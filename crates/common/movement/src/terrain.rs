@@ -559,6 +559,12 @@ where
             .map_or(&[], |multi| &multi.components)
     }
 
+    fn land_is_water(&self, tile: Tile) -> bool {
+        self.map()
+            .land(tile.x, tile.y)
+            .is_some_and(|land| self.tiles().land(land.tile.0).flags.is_water())
+    }
+
     fn item_name(&self, graphic: Graphic) -> Option<&str> {
         // The tiledata placeholder is "NoName"; an unfilled short table pads with
         // an empty string. Neither is worth drawing over a clicked item.

@@ -139,6 +139,9 @@ impl Terrain for CachedTerrain<'_> {
     fn can_fit(&self, tile: Tile, z: i32, height: i32) -> bool {
         self.terrain.can_fit(tile, z, height)
     }
+    fn land_is_water(&self, tile: Tile) -> bool {
+        self.terrain.land_is_water(tile)
+    }
     fn item_blocks(&self, graphic: Graphic) -> bool {
         self.terrain.item_blocks(graphic)
     }
@@ -153,6 +156,9 @@ impl Terrain for CachedTerrain<'_> {
     }
     fn item_layer(&self, graphic: Graphic) -> u8 {
         self.terrain.item_layer(graphic)
+    }
+    fn multi_components(&self, id: u16) -> &[openshard_uofiles::multi::Component] {
+        self.terrain.multi_components(id)
     }
     fn sight_clear(&self, from: Point, to: Point) -> bool {
         self.terrain.sight_clear(from, to)

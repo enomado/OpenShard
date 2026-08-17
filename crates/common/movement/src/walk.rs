@@ -149,6 +149,22 @@ pub trait Terrain {
         &[]
     }
 
+    /// Whether the land at `tile` is water — the tiledata flag, not a guess from
+    /// the land id.
+    ///
+    /// A terrain with no map answers `false`, which is the same bargain every
+    /// other method here makes: a shard with no client files has no sea, so it
+    /// has nowhere to moor a boat, and refusing every mooring is the safe half
+    /// of that answer rather than the surprising one.
+    ///
+    /// The step check already reads this flag — [`can_step`](Self::can_step)
+    /// treats water as ground only for a swimming body — but it reads it *inside*
+    /// a decision and never says so. A boat needs the fact on its own: not "may I
+    /// walk here" but "is this the sea", and the two differ for a swimmer.
+    fn land_is_water(&self, _tile: Tile) -> bool {
+        false
+    }
+
     /// The tiledata name of static art `graphic`, for a single-click label — the
     /// same table as [`item_blocks`](Self::item_blocks), read for its name rather
     /// than its flags. A terrain with no tiledata (an open world) has no names.

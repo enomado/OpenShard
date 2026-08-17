@@ -244,6 +244,49 @@ impl Terrain for LiveTerrain<'_> {
             && self.obstructions.blocker_at_z(tile.x, tile.y, z).is_none()
     }
 
+    fn spawn_z(&self, tile: Tile, near_z: i32) -> Option<i32> {
+        self.map
+            .map_or_else(|| self.stand_z(tile, near_z), |m| m.spawn_z(tile, near_z))
+    }
+
+    // -- the client-file questions, forwarded ------------------------------
+    //
+    // Every one of these used to fall through to the trait's default, so a
+    // caller holding a `LiveTerrain` was told that nothing blocks, everything
+    // is flat, no static has a name or a weight, and no multi exists. The
+    // defaults are the honest answer for a shard with **no** map; they are the
+    // wrong answer for one that has a map and wrapped it in live obstructions,
+    // which is every running shard. Nothing had asked yet — the placement paths
+    // hold the map terrain directly — and B1 is what changes that.
+
+    fn land_is_water(&self, tile: Tile) -> bool {
+        self.map.is_some_and(|m| m.land_is_water(tile))
+    }
+
+    fn item_blocks(&self, graphic: Graphic) -> bool {
+        self.map.is_some_and(|m| m.item_blocks(graphic))
+    }
+
+    fn item_height(&self, graphic: Graphic) -> u8 {
+        self.map.map_or(0, |m| m.item_height(graphic))
+    }
+
+    fn multi_components(&self, id: u16) -> &[openshard_uofiles::multi::Component] {
+        self.map.map_or(&[], |m| m.multi_components(id))
+    }
+
+    fn item_name(&self, graphic: Graphic) -> Option<&str> {
+        self.map.and_then(|m| m.item_name(graphic))
+    }
+
+    fn item_weight(&self, graphic: Graphic) -> u8 {
+        self.map.map_or(0, |m| m.item_weight(graphic))
+    }
+
+    fn item_layer(&self, graphic: Graphic) -> u8 {
+        self.map.map_or(0, |m| m.item_layer(graphic))
+    }
+
     fn sight_clear(&self, from: Point, to: Point) -> bool {
         if !self.map.is_none_or(|m| m.sight_clear(from, to)) {
             return false;
@@ -411,5 +454,71 @@ mod tests {
                 .is_none(),
             "but a ground-level wall still blocks"
         );
+    }
+
+    /// A terrain that answers every client-file question with something
+    /// distinguishable from the trait's default, so a forward that is missing
+    /// reads as the default rather than as a plausible number.
+    struct Charted;
+
+    impl Terrain for Charted {
+        fn can_step(&self, _from: Point, to: Point) -> Option<Point> {
+            Some(to)
+        }
+        fn land_is_water(&self, tile: Tile) -> bool {
+            tile.x >= 100
+        }
+        fn item_blocks(&self, _graphic: Graphic) -> bool {
+            true
+        }
+        fn item_height(&self, _graphic: Graphic) -> u8 {
+            20
+        }
+        fn item_name(&self, _graphic: Graphic) -> Option<&str> {
+            Some("a mast")
+        }
+        fn item_weight(&self, _graphic: Graphic) -> u8 {
+            7
+        }
+        fn item_layer(&self, _graphic: Graphic) -> u8 {
+            2
+        }
+    }
+
+    /// **The forwards, all of them, because a missing one is silent.**
+    ///
+    /// Every question here used to reach the trait's default through
+    /// `LiveTerrain` — nothing blocks, everything is flat, nothing has a name.
+    /// That is the right answer for a shard with no map and the wrong one for a
+    /// shard that has a map and wrapped it, which is every running shard. It
+    /// went unnoticed because the paths that ask these hold the map terrain
+    /// directly; a boat is what asks through the live one.
+    #[test]
+    fn the_live_terrain_answers_the_map_and_not_the_trait_default() {
+        let obstructions = Obstructions::default();
+        let charted = Charted;
+        let live = LiveTerrain::new(Some(&charted), &obstructions, false);
+
+        assert!(live.land_is_water(Tile::new(100, 5)), "the sea");
+        assert!(!live.land_is_water(Tile::new(99, 5)), "and the shore");
+        assert!(live.item_blocks(Graphic(1)), "item_blocks fell through");
+        assert_eq!(live.item_height(Graphic(1)), 20, "item_height fell through");
+        assert_eq!(
+            live.item_name(Graphic(1)),
+            Some("a mast"),
+            "item_name fell through"
+        );
+        assert_eq!(live.item_weight(Graphic(1)), 7, "item_weight fell through");
+        assert_eq!(live.item_layer(Graphic(1)), 2, "item_layer fell through");
+    }
+
+    /// And with no map the defaults are what is wanted: a shard running without
+    /// client files has no sea, so it has nowhere to moor a boat.
+    #[test]
+    fn a_live_terrain_with_no_map_reports_no_water() {
+        let obstructions = Obstructions::default();
+        let live = LiveTerrain::new(None, &obstructions, false);
+        assert!(!live.land_is_water(Tile::new(100, 5)));
+        assert!(!live.item_blocks(Graphic(1)));
     }
 }
