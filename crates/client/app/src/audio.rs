@@ -170,13 +170,26 @@ impl NativeAudio {
         match std::fs::File::open(&path)
             .and_then(|file| rodio::Decoder::try_from(file).map_err(std::io::Error::other))
         {
-            Ok(source) => {
-                self.music.clear();
-                self.music.append(source.repeat_infinite());
-            }
+            Ok(source) => start_track(&self.music, source.repeat_infinite()),
             Err(error) => eprintln!("audio: cannot play {}: {error}", path.display()),
         }
     }
+}
+
+/// Replace whatever the music player is playing with `source`.
+///
+/// The three calls are one operation, and the order is not a style choice.
+/// `Player::clear` *pauses* the player as well as emptying it, and `append`
+/// lifts only the stopped flag — never the paused one. A track handed over
+/// without the closing `play` therefore queues itself behind a pause nothing
+/// ever lifts: the very first `0x6D` of a session silences music for the rest
+/// of it, with no error anywhere to say so, because every layer below did
+/// exactly what it was asked.
+#[cfg(not(target_arch = "wasm32"))]
+fn start_track(player: &rodio::Player, source: impl rodio::Source + Send + 'static) {
+    player.clear();
+    player.append(source);
+    player.play();
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -340,4 +353,35 @@ fn track_names(track: MusicId) -> Vec<String> {
         names.push((*name).to_owned());
     }
     names
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod tests {
+    use std::num::{NonZeroU16, NonZeroU32};
+
+    /// A short buffer of silence — enough to be a source, and nothing is ever
+    /// asked to play it.
+    fn silence() -> rodio::buffer::SamplesBuffer {
+        rodio::buffer::SamplesBuffer::new(
+            NonZeroU16::new(1).expect("one channel"),
+            NonZeroU32::new(22050).expect("the classic rate"),
+            vec![0.0; 32],
+        )
+    }
+
+    /// The regression that made every session silent: `Player::clear` pauses,
+    /// so a track appended after it never plays unless the player is resumed.
+    ///
+    /// `Player::new` builds the queue without touching a device, which is what
+    /// lets the trap be caught on a machine with no sound card at all — the
+    /// condition the whole mixer was written to keep.
+    #[test]
+    fn a_started_track_is_not_left_paused() {
+        let (player, _queue) = rodio::Player::new();
+        super::start_track(&player, silence());
+        assert!(
+            !player.is_paused(),
+            "the music player is paused by `clear` and must be resumed after the track is queued"
+        );
+    }
 }

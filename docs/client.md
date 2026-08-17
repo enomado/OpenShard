@@ -1696,75 +1696,77 @@ mobile `collect` drew there.
 
 ## M6 — sound
 
-The shard has been speaking and the client has never heard a word of it.
-`PlaySound` (`0x54`) is encoded in seventeen places across `crates/server`, and
-nothing in `crates/client` mentions it; `PlayMusic` (`0x6D`) is the same story.
-This is not a gap in the wire, it is a gap in exactly one direction, and it is
-the one the engine's own rule cares about most: **every visible action plays a
-sound and an animation, not just a state change** — a system that changes state
-and nothing else passes its test and feels dead in front of a player. A door
-that swings in silence is the whole complaint.
+Built. The shard's two audio packets reach a device: `0x54 PlaySound` and
+`0x6D PlayMusic` both decode, `crates/client/app/src/audio.rs` is the mixer, and
+what it plays comes out of the player's own installation. The rule this
+milestone existed for — **every visible action plays a sound and an animation,
+not just a state change** — is honoured on the sound half; the picture half is
+in the backlog below, which is the opposite of the order this was planned in.
 
-Five pieces, and the first is the smallest.
+- **The reader is `crates/common/uofiles/src/sound.rs`**, where the plan put it:
+  the shard picks sound ids and may one day want to know an id exists. It opens
+  `soundLegacyMUL.uop` under `build/soundlegacymul/{:08}.dat` when the install
+  has one and falls back to the `soundidx.mul`/`sound.mul` pair, strips the
+  40-byte name, and reads what is left as 22050 Hz mono 16-bit — while still
+  recognising a RIFF/WAVE wrapper when there is one, because a rate read from a
+  file beats a rate assumed about it. `UOSound.Delay` was never ported and its
+  arithmetic never repeated: a length here is a sample count over a rate.
+- **Music is not in the archive**, and is read as the plan said: the id → name
+  map out of `Music/Digital/Config.txt`, the files themselves out of `Music/` —
+  any capitalisation, any depth, mp3, ogg, flac or wav. `Music/Config.txt` is
+  tried as well rather than being chosen by version, so the 4.0.1.1c boundary
+  costs no `Feature::since` here. An install with no config at all falls back to
+  the 67 classic names, and a numbered track is found by its id, which leaves a
+  pack free to ship its own music without teaching the client a new protocol.
+- **The mixer is optional, not a trait with a null sink.** The property the plan
+  wanted is the one that matters and it holds — nothing in the test tree ever
+  asks for a device — but the shape is an `Option<NativeAudio>` decided once at
+  startup rather than an implementation chosen where the renderer is: a missing
+  output or an install with no sound archive prints one line and leaves the
+  world playable. Under `wasm32` the whole of it compiles away.
+- **Two gains, remembered.** `desk::Audio { effects, music }` — sliders on the
+  HUD's Audio tab, persisted beside the light tuning and the window frame, for
+  the same reason: someone who has turned the music down should not have to find
+  the slider again every launch.
+- **The shard's half is the region crossing.** `regions.rs::start_music` sends
+  `0x6D` when a player crosses into a region that names a track, and refuses to
+  re-send the track already playing, because `0x6D` *restarts* one rather than
+  continuing it. 38 of the 128 saved regions carry a track.
 
-- **The packets have to decode.** `ServerPacket::PlaySound` and
-  `ServerPacket::PlayMusic` are variants that can only be *written*:
-  `ServerPacket::decode` is an explicit list of arms and neither is in it,
-  because `feedback.rs` implements `EncodePacket` and no `DecodePacket` at all.
-  So this is M0's move one more time, on a file M0 skipped. **`Animation`
-  (`0x6E`), `NewAnimation` (`0xE2`) and the two effects (`0x70`, `0xC0`) are
-  behind the same hole** and are worth doing in the same pass — the crowd's
-  walk cycles are inferred from position today (`crowd.rs`), and a swing or a
-  bow is a thing the shard *says* and this client cannot yet be told.
-- **The file.** `sound.mul` + `soundidx.mul`, or `soundLegacyMUL.uop` under the
-  pattern `build/soundlegacymul/{:08}.dat` — which is the shape
-  `uofiles::uop` already reads for art, anims and gumps, so this is a new
-  `sounds.rs` beside `gumpart.rs` and not a new format. An entry is a **40-byte
-  name followed by raw PCM**: 22050 Hz, mono, 16-bit, and **no RIFF header** —
-  the reference feeds the bytes straight to a device it has already configured
-  (`ClassicUO.Assets/SoundsLoader.TryGetSound` skips 40;
-  `ClassicUO.IO/Audio/Sound.cs` holds `Frequency = 22050`,
-  `Channels = Mono`). Anything that expects to sniff a WAV header will read the
-  name as a format chunk and produce noise.
-- **Do not port `UOSound.Delay`.** It is
-  `(buffer.Length - 32) / 88.2f` over a buffer whose header the loader has
-  *already* removed, and 22050 Hz mono 16-bit is 44.1 bytes per millisecond, not
-  88.2. Two errors in one line — a header subtracted twice at the wrong size,
-  and a rate for a format this is not — and what comes out is roughly half the
-  true duration. Take the format from the reference and compute the length here,
-  with a test that says a known entry is as long as it sounds.
-- **`Sound.def` is an alias table**, the same shape as the `.def` files
-  `equipconv.rs` already reads: an id whose entry has zero length is redirected
-  to a member of a group, so ids the shard sends legitimately resolve to another
-  id's bytes. Skip it and a working sound id is silently a missing one.
-- **Music is not in the `.mul`.** `Music/Digital/Config.txt` — `Music/Config.txt`
-  before 4.0.1.1c, which is a `Feature::since` boundary and **never** an `Era`
-  check — maps a track id to an mp3 name and an optional `loop` flag, and the
-  files are ordinary mp3s in `Music/`. The reference carries a 67-entry table as
-  the fallback for an install with no config. Music is separable from sound
-  effects and should be, because it needs a decoder and the effects do not: a
-  first pass can be silent on `0x6D` and still be finished on `0x54`.
+**A silence with nothing wrong under it.** The first version of this played
+nothing at all while every layer reported success: the packet decoded, the
+config parsed, the file was found, the mp3 decoded, the volume was 0.45.
+`rodio::Player::clear` *pauses* the player as well as emptying it, and `append`
+lifts only the stopped flag — never the paused one — so the first track of a
+session queued itself behind a pause nothing ever lifted and the client stayed
+mute for the rest of the run. Clear, append and play are now one function,
+`start_track`, with the reason written above it; and the test that holds it needs
+no sound card, because `Player::new` builds the queue without a device. That is
+the same property the null sink was for, arriving where the bug actually was.
 
-**Distance is the client's decision, not the wire's.** A `0x54` carries a world
-location; the reference (`Game/Managers/AudioManager.cs`) takes Chebyshev
-`max(|dx|, |dy|)` from the player — the same metric as everything else here —
-plays nothing at all beyond the view range, and attenuates linearly inside it.
-That is a rule this client owns and can test without a device.
+### What M6 still owes
 
-**What plays it is a decision to take deliberately.** There is no audio
-dependency in this workspace yet, and the thing that must not happen is a client
-that needs a sound card to be tested: the DST runs, the playground and every
-headless session are the majority of how this client is exercised. So the mixer
-sits behind a trait with a **null sink** as a first-class implementation, chosen
-where the renderer is chosen and not discovered at the bottom of a call tree —
-and the reader itself belongs in `crates/common/uofiles`, since the shard picks
-sound ids and may one day want to know an id exists.
-
-Done when: a door opened across the room is heard and one at your feet is
-louder; a sound past the view range is silent; a `Sound.def` alias resolves to
-the bytes it points at; the length of a known entry is asserted rather than
-assumed; and `cargo test --workspace` runs on a machine with no audio device at
-all, because nothing in the test tree ever asks for one.
+- **`Sound.def` is not read.** It is the alias table the plan named — an id
+  whose own archive slot is empty is redirected to another id's bytes — and
+  this install's copy carries 437 live redirects (`654 {487} 0`: id 654 *is*
+  487) beside 351 explicitly dead ones (`{-1}`). Without it a legitimate sound
+  is reported as "absent from this install", which is a working id silently
+  reading as a missing one. Same shape as the `.def` files `equipconv.rs`
+  already reads.
+- **The two effects packets still do not decode.** `0x6E` and `0xE2` do, and the
+  client folds them onto the crowd (`link.rs`), but `0x70` and `0xC0` have no
+  arm in `ServerPacket::decode` at all — so a bolt or a sparkle the shard throws
+  is a packet this client drops. A spell is currently heard and not seen.
+- **Distance is rodio's, not the reference's.** A `0x54` goes through
+  `rodio::source::Spatial` in tile units: an inverse-distance law with no
+  cutoff. ClassicUO (`Game/Managers/AudioManager.cs`) takes Chebyshev
+  `max(|dx|, |dy|)`, attenuates linearly, and plays *nothing* past the view
+  range. What hides the difference today is the shard's own broadcast range —
+  a different number, in a different crate, deciding a client rule the plan said
+  this client owns. Nothing tests it.
+- **A track change blocks the caller.** `Player::clear` calls `sleep_until_end`,
+  so swapping tracks parks the thread that reads the socket until the mixer has
+  drained the previous source. Brief, and on the wrong thread.
 
 ## Decisions to take before they are taken by accident
 
