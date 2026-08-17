@@ -1393,6 +1393,11 @@ impl App {
             &mut self.last_advance,
             started,
         );
+        // A track that has reached its end and is meant to loop starts again
+        // here. The mixer runs on its own thread but owns no clock of its own,
+        // and this is the frame's step for everything that moves without being
+        // asked to.
+        self.audio.advance();
         self.project_player_motion();
         // Whatever scenario is being walked delivers its knots for the span that
         // just passed, before the eye is asked where the body is: a step that
