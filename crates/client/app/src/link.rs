@@ -479,15 +479,12 @@ impl Link {
         }));
     }
 
-    /// Buy the selected quantities from an NPC vendor.
-    pub fn buy(&self, vendor: Serial, purchases: Vec<(Serial, u16)>) {
-        self.send(Command::Outgoing(Outgoing::Buy { vendor, purchases }));
-    }
-
-    /// Sell the selected quantities to an NPC vendor.
-    pub fn sell(&self, vendor: Serial, sales: Vec<(Serial, u16)>) {
-        self.send(Command::Outgoing(Outgoing::Sell { vendor, sales }));
-    }
+    // No `buy` and no `sell`: the shop's order is asked for by
+    // `panes::vendor::VendorPane`, which names an `Outgoing` and hands it to
+    // the manager rather than reaching a `Link` at all (decision 5), and
+    // `App::perform` sends it through [`Link::act`]. A named method here would
+    // be a second door into the same packet, open only to whoever already holds
+    // the link.
 
     /// Ask for a stance. See [`Outgoing::WarMode`].
     pub fn war_mode(&self, war: bool) {

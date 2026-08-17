@@ -11,7 +11,6 @@
 
 use std::time::Instant;
 
-use openshard_client_render::vendor::Hit as VendorHit;
 use openshard_client_render::{
     container,
     gump::{self as gump_art, GumpPixel},
@@ -236,54 +235,6 @@ impl App {
         if let Some(pass) = self.windows.stack_pass.as_mut() {
             pass.awaiting = Some((step.source, Instant::now()));
         }
-    }
-
-    /// Scroll the catalogue under the pointer by one row per wheel gesture.
-    ///
-    /// Vendor packets can contain an entire restock, so their window has a
-    /// fixed viewport rather than growing past the screen.  The row offset is
-    /// local UI state, like a skill tree's scroll position; stock and selected
-    /// quantities remain authoritative on the shard and in `WorldView`.
-    ///
-    /// The answer is whether the notch was *taken*, not whether the list moved:
-    /// a catalogue already at either end still swallows the wheel, the same way
-    /// [`App::scroll_skills`] does. Answering by the offset would hand the notch
-    /// on to the camera the moment the list ran out of rows, and the wheel would
-    /// silently turn into a map zoom under a pointer that never left the window.
-    pub(crate) fn scroll_vendor(&mut self, notches: f32) -> bool {
-        let Some(WindowSubject::Vendor(vendor)) = self.window_under_pointer() else {
-            return false;
-        };
-        let Some(Drawn::Vendor(window)) = self.drawn(WindowSubject::Vendor(vendor)) else {
-            return false;
-        };
-        if !window.catalogue_contains(self.input.pointer_gump) {
-            return false;
-        }
-        let rows = self
-            .world
-            .authoritative
-            .view
-            .as_ref()
-            .and_then(|view| {
-                view.vendor_buys
-                    .get(&vendor)
-                    .map(|catalogue| catalogue.lines.len())
-                    .or_else(|| {
-                        view.vendor_sells
-                            .get(&vendor)
-                            .map(|catalogue| catalogue.lines.len())
-                    })
-            })
-            .unwrap_or_default();
-        let offset = self.windows.vendor_scrolls.entry(vendor).or_default();
-        let maximum = rows.saturating_sub(openshard_client_render::vendor::VISIBLE_ROWS);
-        if notches > 0.0 {
-            *offset = offset.saturating_sub(1);
-        } else {
-            *offset = (*offset + 1).min(maximum);
-        }
-        true
     }
 
     /// Remember a world item's press so a following pointer move can lift it.
@@ -716,19 +667,12 @@ impl App {
     /// Everything else in a dialog — its background, a `{ gumppic }`, a label —
     /// drags it, which is how a gump is moved when it has no title bar to move
     /// it by. See `gump::Dialogs::press`.
+    ///
+    /// The press while the hand is full is **not** asked about here any more:
+    /// it is the manager's first question, ahead of every pane and of this —
+    /// see `App::manager_gestures` and decision 7 in
+    /// `docs/window_components.md`.
     pub(crate) fn press_on_own_window(&mut self) -> bool {
-        // Once a lift has gone to the shard, this transaction is the cursor.
-        // A second press chooses another destination for that same item; it
-        // must never overwrite `item_drag` with a new source while the shard
-        // is still holding the old one.
-        if self
-            .windows
-            .item_drag
-            .is_some_and(crate::windows::ItemDragTransaction::owns_cursor)
-        {
-            self.windows.dragging = None;
-            return true;
-        }
         if let Some(container) = self.stack_all_button_under_pointer() {
             self.start_stack_pass(container);
             self.windows.dragging = None;
@@ -746,70 +690,12 @@ impl App {
             return false;
         };
         self.raise_window(subject);
-        if let WindowSubject::Vendor(vendor) = subject {
-            let hit = self.drawn(subject).and_then(|drawn| match drawn {
-                Drawn::Vendor(window) => window.hit(self.input.pointer_gump),
-                _ => None,
-            });
-            match hit {
-                Some(VendorHit::Row(row)) => {
-                    let limit = self
-                        .world
-                        .authoritative
-                        .view
-                        .as_ref()
-                        .map(|view| {
-                            if let Some(sale) = view.vendor_sells.get(&vendor) {
-                                sale.lines.get(row).map_or(0, |line| line.amount.0)
-                            } else {
-                                view.contents
-                                    .get(&view.vendor_buys[&vendor].container)
-                                    .and_then(|items| items.get(row))
-                                    .map_or(0, |item| item.amount.0)
-                            }
-                        })
-                        .unwrap_or(0);
-                    let amounts = self.windows.vendor_amounts.entry(vendor).or_default();
-                    if amounts.len() <= row {
-                        amounts.resize(row + 1, 0);
-                    }
-                    amounts[row] = if amounts[row] >= limit {
-                        0
-                    } else {
-                        amounts[row] + 1
-                    };
-                    self.windows.dragging = None;
-                    return true;
-                }
-                Some(VendorHit::Confirm) => {
-                    self.confirm_vendor(vendor);
-                    return true;
-                }
-                Some(VendorHit::Remove(row)) => {
-                    if let Some(amount) = self
-                        .windows
-                        .vendor_amounts
-                        .get_mut(&vendor)
-                        .and_then(|amounts| amounts.get_mut(row))
-                    {
-                        *amount = amount.saturating_sub(1);
-                    }
-                    self.windows.dragging = None;
-                    return true;
-                }
-                Some(VendorHit::Clear) => {
-                    if let Some(amounts) = self.windows.vendor_amounts.get_mut(&vendor) {
-                        amounts.fill(0);
-                    }
-                    self.windows.dragging = None;
-                    return true;
-                }
-                // The art's header and empty parchment are deliberately not
-                // actions.  Let the normal window path below pick the gump up
-                // from either of them.
-                None => {}
-            }
-        }
+        // No vendor arm: a shop answers its own press in
+        // `panes::vendor::VendorPane`, which the router offers the press to
+        // before this is reached. A vendor window that gets this far has never
+        // been drawn — there is no layout to hit-test — and the tail below
+        // picks it up by whatever the player grabbed, which is what used to
+        // happen when the hit test found nothing.
         if let WindowSubject::Container(container) = subject {
             if let Some(item) = self.container_item_under_pointer() {
                 let window = self
@@ -1145,9 +1031,12 @@ impl App {
                 self.windows.locally_closed.insert(subject);
                 self.apply_close_window(link::CloseTarget::Container(serial));
             }
-            WindowSubject::Vendor(serial) => {
-                self.windows.vendor_amounts.remove(&serial);
-                self.windows.vendor_scrolls.remove(&serial);
+            // Nothing to forget by hand: what was chosen and how far down the
+            // list the player had got are fields of the pane, and the `retain`
+            // at the end of this drops the window and them with it. There used
+            // to be two `remove` calls here, and a kind that was added without
+            // them would have leaked its state for the life of the client.
+            WindowSubject::Vendor(_) => {
                 self.windows.locally_closed.insert(subject);
             }
             WindowSubject::Paperdoll(serial) => {
@@ -1173,45 +1062,6 @@ impl App {
             .retain(|window| window.subject != subject);
         self.windows.dragging = None;
         true
-    }
-
-    /// Send one atomic catalogue answer. Selecting rows is purely local; only
-    /// this button crosses the wire, so the server remains the authority for
-    /// stock, money and the contents of the player's backpack.
-    fn confirm_vendor(&mut self, vendor: openshard_protocol::serial::Serial) {
-        let Some(view) = self.world.authoritative.view.as_ref() else {
-            return;
-        };
-        let amounts = self
-            .windows
-            .vendor_amounts
-            .get(&vendor)
-            .cloned()
-            .unwrap_or_default();
-        if let Some(catalogue) = view.vendor_sells.get(&vendor) {
-            let sales = catalogue
-                .lines
-                .iter()
-                .zip(amounts)
-                .filter_map(|(line, amount)| (amount > 0).then_some((line.serial, amount)))
-                .collect();
-            if let Some(link) = self.world.shard.link() {
-                link.sell(vendor, sales);
-            }
-        } else if let Some(catalogue) = view.vendor_buys.get(&vendor) {
-            let purchases = view
-                .contents
-                .get(&catalogue.container)
-                .into_iter()
-                .flatten()
-                .zip(amounts)
-                .filter_map(|(item, amount)| (amount > 0).then_some((item.serial, amount)))
-                .collect();
-            if let Some(link) = self.world.shard.link() {
-                link.buy(vendor, purchases);
-            }
-        }
-        self.close_window(WindowSubject::Vendor(vendor));
     }
 
     /// Say a line out loud, if there is a shard to hear it.

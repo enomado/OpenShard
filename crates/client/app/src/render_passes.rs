@@ -19,7 +19,7 @@ use openshard_client_render::outline::{self, Ring};
 use openshard_client_render::renderer::Target;
 use openshard_client_render::select::{self, Selection};
 use openshard_client_render::sprite::SpriteQuad;
-use openshard_client_render::{container, paperdoll, skills, solids, status, vendor};
+use openshard_client_render::{container, paperdoll, skills, solids, status};
 use openshard_protocol::containers::ContainedItem;
 use std::time::{Duration, Instant};
 
@@ -60,8 +60,9 @@ pub(crate) struct WorldPassAudit {
     pub(crate) composite_cpu_bindings: Duration,
     pub(crate) composite_cpu_pass: Duration,
 }
+use crate::panes::Pane;
 use crate::windows::{Drawn, WindowSubject};
-use crate::{crowd, graphics, profile, resources, shell, windows, world};
+use crate::{crowd, graphics, panes, profile, resources, shell, windows, world};
 
 /// The shard's dialogs, in the client's own art, packed and drawn — a
 /// container, a paperdoll, the skill sheet, all three through one machinery.
@@ -155,8 +156,39 @@ pub(crate) fn draw_gump_windows(
                 gumps: files,
                 items: &resources.art,
             };
-            if let Err(error) = resources.gump_atlas.add(art_files, vendor::art_of()) {
-                eprintln!("packing vendor gump art: {error}");
+            // **Decision 6's order, for the kinds that have moved into a pane
+            // of their own:** every pane says what art it needs, all of it is
+            // packed, and only then is anything laid out. Collected into a list
+            // first because a pane reads the whole of `Resources` while it
+            // answers and the atlas is a field of it — packing inside the walk
+            // would be growing the very thing the walk is holding.
+            let hand = windows
+                .item_drag
+                .and_then(crate::windows::ItemDragTransaction::drag);
+            let wanted: Vec<(WindowSubject, Vec<gump_art::GumpArt>)> = windows
+                .own_windows
+                .iter()
+                .map(|open| {
+                    let frame = panes::PaneFrame {
+                        view,
+                        resources,
+                        at: open.at,
+                        cursor,
+                        hand,
+                    };
+                    (open.subject, open.pane.art(&frame))
+                })
+                .collect();
+            for (subject, art) in wanted {
+                let art_files = gump_art::ArtFiles {
+                    gumps: files,
+                    items: &resources.art,
+                };
+                // Said once per window and drawn anyway, for `gump::art_of`'s
+                // reason above.
+                if let Err(error) = resources.gump_atlas.add(art_files, art) {
+                    eprintln!("packing window art for {subject:?}: {error}");
+                }
             }
             for open in &windows.own_windows {
                 let WindowSubject::Container(serial) = open.subject else {
@@ -181,56 +213,27 @@ pub(crate) fn draw_gump_windows(
                 }
             }
             for open in &windows.own_windows {
+                // A kind that has moved into a pane lays itself out, and its
+                // answer is the only one — the same three rungs the input side
+                // has in `panes::route`, and the same reason: two places laying
+                // one window out are two pictures waiting to disagree.
+                let frame = panes::PaneFrame {
+                    view,
+                    resources,
+                    at: open.at,
+                    cursor,
+                    hand,
+                };
+                if let Some(drawn) = open.pane.layout(&frame) {
+                    drawn_windows.push((open.subject, drawn));
+                    continue;
+                }
                 match open.subject {
-                    WindowSubject::Vendor(serial) => {
-                        let Some(catalogue) = view.vendor_buys.get(&serial) else {
-                            let Some(catalogue) = view.vendor_sells.get(&serial) else {
-                                continue;
-                            };
-                            let amounts = windows
-                                .vendor_amounts
-                                .entry(serial)
-                                .or_insert_with(|| vec![0; catalogue.lines.len()]);
-                            if amounts.len() != catalogue.lines.len() {
-                                amounts.resize(catalogue.lines.len(), 0);
-                            }
-                            let scroll = *windows.vendor_scrolls.entry(serial).or_default();
-                            drawn_windows.push((
-                                open.subject,
-                                Drawn::Vendor(vendor::sell(
-                                    serial,
-                                    &catalogue.lines,
-                                    amounts,
-                                    scroll,
-                                    open.at,
-                                    cursor,
-                                    &resources.gump_atlas,
-                                )),
-                            ));
-                            continue;
-                        };
-                        let amounts = windows
-                            .vendor_amounts
-                            .entry(serial)
-                            .or_insert_with(|| vec![0; catalogue.lines.len()]);
-                        if amounts.len() != catalogue.lines.len() {
-                            amounts.resize(catalogue.lines.len(), 0);
-                        }
-                        let scroll = *windows.vendor_scrolls.entry(serial).or_default();
-                        drawn_windows.push((
-                            open.subject,
-                            Drawn::Vendor(vendor::buy(
-                                serial,
-                                &catalogue.lines,
-                                view.contents.get(&catalogue.container).map_or(&[], Vec::as_slice),
-                                amounts,
-                                scroll,
-                                open.at,
-                                cursor,
-                                &resources.gump_atlas,
-                            )),
-                        ));
-                    }
+                    // Laid out by `panes::vendor::VendorPane` above. Reaching
+                    // here is a shop whose catalogue has gone out of the view
+                    // between the packet and the frame, which is nothing to
+                    // draw and nothing to click.
+                    WindowSubject::Vendor(_) => {}
                     WindowSubject::Dialog(gump_id) => {
                         let Some(gump) = view.gumps.iter().find(|gump| gump.gump_id == gump_id) else {
                             continue;

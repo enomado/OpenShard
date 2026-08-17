@@ -28,7 +28,9 @@ that the next window kind is free to get wrong again.
 
 **No window has private state.** `Windows` (`crates/client/app/src/windows.rs`)
 holds `vendor_scrolls`, `vendor_amounts`, `skills`, `held_skill`, `held_doll`,
-`last_scroll`, `last_container_click` and `dialogs` as public fields.
+`last_scroll`, `last_container_click` and `dialogs` as public fields. (The first
+two left with S1 — the paragraph is what the plan was written against, and the
+Steps below are what has gone.)
 `own_windows.rs` writes them from the press path, `render_passes.rs` reads
 *and* writes them while laying the frame out (`vendor_amounts.entry(..)` at
 `render_passes.rs:190`), and `close_window` has to remember `vendor_scrolls
@@ -271,10 +273,53 @@ never a half-routed frame.
       `Effect::Prompt` is not there yet: nothing emits it until S6, and *who a
       modal's answer is addressed to* is a Backlog entry that has to be settled
       first.
-- [ ] **S1. Vendor.** The kind the wheel defect was found in. `vendor_scrolls`
-      and `vendor_amounts` leave `Windows` and become private fields;
-      `render_passes.rs` stops entering those maps; `close_window`'s manual
-      `vendor_scrolls.remove` goes away with them.
+- [x] **S1. Vendor.** ✅ `panes/vendor.rs`: `VendorPane { vendor, scroll,
+      amounts }`, an `impl Pane` with all three methods, and every question
+      about a shop gone from `App` — `scroll_vendor`, `confirm_vendor`, the
+      vendor arm of
+      `press_on_own_window`, the vendor arm of `render_passes.rs`'s layout loop
+      and `Link::buy`/`Link::sell` are all deleted. `close_window`'s two manual
+      `remove`s went with the two maps. **Six things landed differently from
+      the shape above:**
+      - **The context is two structs.** `PaneFrame` is what a pane may read
+        while it is packed and laid out (`view`, `resources`, `at`, `cursor`,
+        `hand`); `PaneCtx` is that plus what is only true of an *event*. D3
+        wrote one, and one does not survive contact with `draw_gump_windows`:
+        that function has the view, the files and the pointer, and would have to
+        invent a clock, a modifier state and a z-order answer to fill fields no
+        layout reads. `PaneCtx { frame, .. }`, so a pane says `ctx.frame.view`.
+      - **`PaneCtx::drawn`** — how this window was laid out on the *last* frame.
+        Not in D3, and it has to be: **what is clicked is what was drawn**
+        (`Windows::drawn_windows`), so a pane that hit-tested a layout it worked
+        out at press time would be asking a second question whose answer is free
+        to differ from the picture the player is pointing at.
+      - **`PaneCtx::under_pointer`** — this window covers the cursor and no
+        window above it does. A pane knows where the cursor is *inside* itself
+        and cannot know what is drawn over it, and z-order is the manager's by
+        D2. It is `App::window_under_pointer`, which every legacy handler opens
+        with, handed over instead of asked again.
+      - **A located input stops at the window the pointer is on.** The walk in
+        `offer_to_panes` breaks after that window for a press and a notch —
+        nothing below it may answer either. Without it a moved-in pane two
+        windows down takes a click that landed on a bag drawn over it, because
+        the kinds that have not moved in decline everything. A release and a
+        move stay unbounded: a release finishes a press wherever the pointer has
+        got to, and a move is offered to every window.
+      - **The hand-full gate moved to the manager**, out of
+        `press_on_own_window`'s first lines and into `manager_gestures` — D7 said
+        it stays with the manager, and it has to run ahead of the *panes* and not
+        only ahead of the legacy chain: a shop that answered a press while the
+        hand was full would count up a row instead of doing nothing.
+      - **A pane knows what it is a pane of.** `AnyPane::of` hands the vendor's
+        serial to `VendorPane::new`: a `0x3B` names the mobile it is addressed
+        to, and that is not the subject, the position or the z-order.
+
+      Two things this fixed by construction rather than on purpose. **The
+      catalogue is chosen once**: `Stall::of` prefers the buy list, and the
+      three old readers disagreed — the frame drew the shop's stock while
+      Confirm sold the player's own goods, for a serial in both maps. And the
+      order is zipped against the *lines*, so a quantity left over from a
+      catalogue that has since shrunk cannot travel.
 - [ ] **S2. Skills.** `skills`/`held_skill` follow. `Windows::skills` being
       `Some` is what "the window is open" means today (see its doc comment);
       that fact becomes the pane's presence in the list, which is where every
@@ -294,8 +339,17 @@ never a half-routed frame.
       matches inside them stop existing. `App` no longer knows what a vendor is.
 - [ ] **S8. The test the wheel defect would have failed.** A pane exercised with
       a `PaneCtx` and no `App`: scroll a catalogue to its end, offer one more
-      notch, assert `taken` and `!redraw`. Impossible to write today at any
-      price — `App` needs client asset files to exist.
+      notch, assert `taken` and `!redraw`.
+      **Half of it exists as of S1** and is three tests in `panes/vendor.rs`:
+      `VendorPane::wheel` is asked for a `Response` directly, and the assertion
+      is the defect — `taken` at the last row, `!redraw` beside it. Injecting
+      `Response::ignored()` there turns all three red.
+      What is still missing is the same assertion *through* `handle`, which is
+      what proves the pointer tests in front of it agree. That needs a
+      `PaneCtx`, which needs a `&Resources` — and `Resources` is built in one
+      place, out of real client asset files. It is the whole of what blocks
+      this step now; "`App` needs asset files" was the old, larger version of
+      the same sentence.
 
 ## Backlog
 
@@ -334,6 +388,21 @@ never a half-routed frame.
   by "whoever is at the top", because the player can raise another window while
   the prompt is up. The same question will be asked again by any other
   client-side modal, so it is worth settling once rather than at S6.
+- **The window under the pointer is worked out up to three times per mouse
+  move.** `offer_to_panes` asks `window_under_pointer` for every input now, and
+  the legacy `Move` arm's `hover_container_item` and `hover_paperdoll_item` each
+  ask again. It was already twice before S1, and each walk is the window list
+  against the pointer through `gump_art::pick`, which reads the atlas per texel.
+  One answer per event, worked out once, when S7 has deleted the two other
+  askers.
+- **A vendor's ACCEPT and CLEAR tint on hover, and nothing asks for a frame when
+  it changes.** The tint is decided in the layout from `ctx.frame.cursor`, so it
+  is right whenever a frame is drawn — and what draws one is the animation
+  clock, not the move that changed it. `VendorPane` declines `Input::Move`,
+  which is honest about today and is not the answer: a pane whose picture
+  depends on the pointer owes a `Response::stale()`, and that needs the pane to
+  remember what the tint was. Cheap, and worth doing with S5's paperdoll, which
+  has the same shape and an `App::hover_paperdoll_item` to delete.
 - **`Drawn` is produced by a pane but consumed by a pass that knows all six
   kinds.** After S7 the pass's `match` is the last place with a per-kind branch.
   It is a drawing question rather than an input one, so it is out of scope here,
@@ -341,21 +410,26 @@ never a half-routed frame.
 
 ## Status
 
-**S0 built** (2026-08-17). The router is real and every input the window layer
-sees goes through it; no pane has moved in yet, so all six kinds still behave
-exactly as they did — the third rung of `App::deliver` is their old handlers,
-called only when no pane answered.
+**S0 and S1 built** (2026-08-17). The router is real and every input the window
+layer sees goes through it. **One kind has moved in**: a shop owns its scroll
+position, its chosen quantities, its art, its layout and its input, and `App` no
+longer knows what a vendor is except to close one. The other five behave exactly
+as they did — the third rung of `App::deliver` is their old handlers, called only
+when no pane answered, and `render_passes.rs` still lays their five kinds out.
 
-What S0 actually changed for a player: the wheel. `taken` rather than "did
-anything move" now decides whether the camera hears a notch, which is the defect
-this plan grew out of stated as a type instead of as a convention. The
-convention fix (`App::scroll_vendor` answering "was the notch taken",
-2026-08-17) is still in place under it and is what the vendor pane inherits at
-S1.
+What this changed for a player, in one line each. **The wheel** (S0): `taken`
+rather than "did anything move" decides whether the camera hears a notch — the
+defect this plan grew out of, stated as a type instead of as a convention.
+**A shop that is in both catalogues** (S1): what is drawn and what Confirm sends
+are now the same list; they were not.
 
-Next is S1, the vendor: `vendor_scrolls` and `vendor_amounts` out of `Windows`
-and into `VendorPane`, `render_passes.rs` off `vendor_amounts.entry(..)`, and
-`close_window`'s two manual `remove`s deleted. It is also the step that adds
-`art` and `layout` to the trait, and the first one that constructs an `Effect` —
-so the four `#[expect(dead_code)]` in `panes.rs` are the checklist for it: each
-one fails the build when the thing it is waiting for arrives.
+S0's four `#[expect(dead_code)]` are down to three, and each of the three still
+names the step that takes it: `PaneFrame::hand`, `PaneCtx::modifiers` and
+`PaneCtx::now` are the container's and the paperdoll's, and `Effect::Open` is the
+paperdoll's Skills button. `LocalWindow` no longer needs one — `Effect::Open`
+carries it.
+
+Next is S2, the skills sheet: `Windows::skills` being `Some` is what "the window
+is open" means today, and that fact becomes the pane's presence in the list.
+It is also the second reader of `scroll_skills`, which is the last term left in
+`legacy_window_input`'s wheel arm — after S2 that arm is empty.

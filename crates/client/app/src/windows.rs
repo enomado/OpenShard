@@ -255,10 +255,6 @@ pub struct Windows {
     /// drawn over the others and the first one picking finds. One list and
     /// not two, because a bag dragged over a paperdoll has to stay over it.
     pub own_windows: Vec<OwnWindow>,
-    /// Selected quantities, by the row order the current catalogue supplied.
-    pub vendor_amounts: std::collections::HashMap<Serial, Vec<u16>>,
-    /// First visible row in each vendor catalogue.
-    pub vendor_scrolls: std::collections::HashMap<Serial, usize>,
     /// A window this end has closed, ahead of the shard thread's own
     /// [`view::WorldView`](openshard_client_net::view::WorldView) agreeing.
     ///

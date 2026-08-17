@@ -47,7 +47,7 @@
 //! needs no shard to look at a hillside, and it is the only one that runs
 //! against a facet nobody is serving.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::Arc;
@@ -994,8 +994,6 @@ pub fn run<D: Dial + Send + 'static>(
         picking: picking::Picking::default(),
         windows: windows::Windows {
             own_windows: Vec::new(),
-            vendor_amounts: HashMap::new(),
-            vendor_scrolls: HashMap::new(),
             locally_closed: HashSet::new(),
             drawn_windows: Vec::new(),
             dragging: None,

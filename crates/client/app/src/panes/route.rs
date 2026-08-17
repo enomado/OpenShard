@@ -25,7 +25,7 @@ use std::time::Instant;
 use openshard_client_render::skills;
 
 use crate::app::App;
-use crate::panes::{Button, Effect, Input, LocalWindow, Modifiers, Pane, PaneCtx, Response};
+use crate::panes::{Button, Effect, Input, LocalWindow, Modifiers, Pane, PaneCtx, PaneFrame, Response};
 use crate::windows::{ItemDragTransaction, WindowSubject};
 
 impl App {
@@ -53,10 +53,11 @@ impl App {
     }
 
     /// The gestures that are the manager's and no pane's: the window being
-    /// dragged follows the pointer, and letting the button go ends that.
+    /// dragged follows the pointer, letting the button go ends that, and a
+    /// press while the hand is full does nothing at all.
     ///
-    /// Neither answer is `taken`. A move is not an exclusive event at all (see
-    /// [`Input::Move`]), and the release that let go of a frame is also the
+    /// Only the last of the three is `taken`. A move is not an exclusive event
+    /// (see [`Input::Move`]), and the release that let go of a frame is also the
     /// release that drops a held item into the bag under it — swallowing it here
     /// would strand the hand.
     fn manager_gestures(&mut self, input: Input) -> Response {
@@ -72,6 +73,22 @@ impl App {
                 self.windows.dragging = None;
                 Response::ignored()
             }
+            // **Decision 7's precondition, and the manager's because the hand
+            // is.** Once a lift has gone to the shard this transaction *is* the
+            // cursor: a second press is choosing a destination for the item
+            // already on it, and it must not reach a window, which would answer
+            // it by starting a second source. Ahead of the panes rather than
+            // inside each of them, because a pane that forgot to ask is a pane
+            // that quietly overwrites the hand.
+            Input::Press(Button::Left)
+                if self
+                    .windows
+                    .item_drag
+                    .is_some_and(ItemDragTransaction::owns_cursor) =>
+            {
+                self.windows.dragging = None;
+                Response::changed()
+            }
             Input::Press(_) | Input::Release(Button::Right) | Input::Wheel(_) => Response::ignored(),
         }
     }
@@ -84,17 +101,42 @@ impl App {
     /// one as the pointer crosses onto the window above it, say. The walk stops
     /// at the first pane that says `taken`, which is what "under this one" means
     /// in [`Response::taken`]'s own doc.
+    ///
+    /// # A located input stops at the window it is on
+    ///
+    /// The walk also stops *after* the window the pointer is over, for the two
+    /// inputs that are somewhere: a press and a notch. Nothing below the window
+    /// under the pointer may answer either, which is the rule every one of the
+    /// legacy handlers opens with (`window_under_pointer`) and would otherwise
+    /// be a rule six panes each had to remember. It matters most while the
+    /// migration is half done: a kind that has not moved in yet declines
+    /// everything, so without this a moved-in pane two windows down would
+    /// happily take a click that landed on a bag drawn over it.
+    ///
+    /// A release and a move are not bounded. A release finishes a press
+    /// wherever the pointer has got to since — a paperdoll's button has to come
+    /// back up even if the finger slid off the window — and a move is offered to
+    /// every window so that a tint left behind can be cleared.
     fn offer_to_panes(&mut self, input: Input) -> Response {
+        // Asked first, because it is a `&self` method and reads the whole of
+        // `App`: the z-order out of `own_windows` and last frame's pictures out
+        // of `drawn_windows`. It is the one question a pane cannot answer about
+        // itself — see [`PaneCtx::under_pointer`].
+        let owner = self.window_under_pointer();
+        let located = matches!(input, Input::Press(_) | Input::Wheel(_));
         // No world, no windows: `sync_own_windows` has already emptied the list,
         // and there is no authoritative picture to build a context out of.
+        //
+        // Field borrows rather than method calls from here down, so that the
+        // context can hold the view, the files and the last frame's layouts
+        // while the pane list is borrowed mutably beside them. They are
+        // disjoint fields of `App`, which is what makes a readonly context and
+        // a `&mut` pane possible in one loop at all.
         let Some(view) = self.world.authoritative.view.as_ref() else {
             return Response::ignored();
         };
-        // Field borrows rather than method calls, so that the context can hold
-        // the view and the files while the pane list is borrowed mutably beside
-        // them. They are disjoint fields of `App`, which is what makes a
-        // readonly context and a `&mut` pane possible in one loop at all.
         let resources = &self.resources;
+        let drawn_windows = &self.windows.drawn_windows;
         let cursor = self.input.pointer_gump;
         let modifiers = Modifiers {
             shift: self.input.shift_held,
@@ -108,14 +150,22 @@ impl App {
         // `&mut self`, and the loop above holds half of `self` borrowed.
         let mut asked: Vec<(WindowSubject, Effect)> = Vec::new();
         for open in self.windows.own_windows.iter_mut().rev() {
+            let under_pointer = owner == Some(open.subject);
             let ctx = PaneCtx {
-                view,
-                resources,
-                at: open.at,
-                cursor,
+                frame: PaneFrame {
+                    view,
+                    resources,
+                    at: open.at,
+                    cursor,
+                    hand,
+                },
+                drawn: drawn_windows
+                    .iter()
+                    .find(|(subject, _)| *subject == open.subject)
+                    .map(|(_, drawn)| drawn),
+                under_pointer,
                 modifiers,
                 now,
-                hand,
             };
             let answer = open.pane.handle(input, &ctx);
             let taken = answer.taken;
@@ -123,7 +173,7 @@ impl App {
             response.taken |= taken;
             response.redraw |= answer.redraw;
             asked.extend(answer.out.into_iter().map(|effect| (subject, effect)));
-            if taken {
+            if taken || (located && under_pointer) {
                 break;
             }
         }
@@ -221,13 +271,15 @@ impl App {
                     Response::ignored()
                 }
             }
-            // **The wheel defect's own line.** Both of these answer "was the
-            // notch taken" and not "did the list move" — a catalogue at its last
-            // row swallows the notch — and the zoom that used to be the third
-            // term of this `||` is now the caller's business, reached only when
-            // this says the notch was nobody's.
+            // **The wheel defect's own line.** This answers "was the notch
+            // taken" and not "did the list move" — a sheet at its last row
+            // swallows the notch — and the zoom that used to be the third term
+            // of this `||` is now the caller's business, reached only when this
+            // says the notch was nobody's. The catalogue that was the second
+            // term has moved into `VendorPane`, where the same distinction is
+            // two fields of its answer rather than a convention.
             Input::Wheel(notches) => {
-                if self.scroll_skills(notches) || self.scroll_vendor(notches) {
+                if self.scroll_skills(notches) {
                     Response::changed()
                 } else {
                     Response::ignored()

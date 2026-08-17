@@ -1,0 +1,477 @@
+//! A shop's catalogue as a component: the first window kind to own its own
+//! state, lay itself out and answer its own input.
+//!
+//! Step 1 of `docs/window_components.md`, and the kind the plan was written
+//! about — the wheel that became a map zoom over a shop scrolled to its last
+//! row was this window. Two maps on `Windows` keyed by the vendor's serial,
+//! `vendor_scrolls` and `vendor_amounts`, are now two fields of this struct,
+//! and the difference is not tidiness: a map entry outlives the window unless
+//! somebody remembers to remove it by hand (`close_window` did, in two lines
+//! that are gone), and a field cannot.
+//!
+//! # What a shop is, on the wire
+//!
+//! Two packets and two directions. A `0x74` says what the vendor *sells* — its
+//! stock lives in a crate of its own, which is why [`Stall::Buy`] carries a
+//! container's contents beside the price list — and a `0x9E` says what it will
+//! *buy*, which is a list of the player's own items. Either one opens the same
+//! window over the same subject, so this pane asks for the first of the two the
+//! view holds, and the layout and the answer read the *same* one — see
+//! [`Stall::of`].
+//!
+//! Choosing rows costs nothing on the wire. The one packet this window sends is
+//! the order, and the shard remains the authority on stock, money and what ends
+//! up in the backpack.
+
+use openshard_client_net::action::Outgoing;
+use openshard_client_net::view::WorldView;
+use openshard_client_render::gump::{GumpArt, GumpPixel};
+use openshard_client_render::vendor;
+use openshard_protocol::containers::ContainedItem;
+use openshard_protocol::serial::Serial;
+use openshard_protocol::vendor::{BuyLine, SellLine};
+
+use crate::panes::{Button, Effect, Input, Pane, PaneCtx, PaneFrame, Response};
+use crate::windows::Drawn;
+
+/// One open shop window.
+#[derive(Debug)]
+pub struct VendorPane {
+    /// The mobile this shop belongs to, which is what the order names.
+    ///
+    /// The one thing the pane is told when it is built rather than reads out of
+    /// its context: a window's *subject* is the manager's, but which vendor a
+    /// `0x3B` is addressed to is this window's own business — see
+    /// [`AnyPane::of`](crate::panes::AnyPane::of).
+    vendor: Serial,
+    /// The first row of the catalogue that is visible.
+    ///
+    /// Clamped downward as it is used rather than as it is set, the way it
+    /// always was: the catalogue can restock between two notches, and a offset
+    /// clamped against yesterday's row count would be clamped against a number
+    /// nothing on the screen still has.
+    scroll: usize,
+    /// How many of each row the player has chosen, in the row order the
+    /// catalogue supplied.
+    ///
+    /// Shorter than the catalogue is ordinary and means "none chosen" for every
+    /// row past its end: both readers ask with `get`, so a restock that grows
+    /// the list costs nothing, and one that shrinks it leaves an entry nothing
+    /// can reach — the order is built by zipping against the *lines*, never
+    /// against this.
+    amounts: Vec<u16>,
+}
+
+/// Which of the two catalogues this window is showing, and everything the rows
+/// are read out of.
+///
+/// Borrowed out of the view for the length of one question. A shop is not
+/// remembered by the pane for the reason no window holds a copy of what is in a
+/// bag: the view is the authoritative picture and a copy is a way to draw a
+/// price that is no longer offered.
+enum Stall<'a> {
+    /// The vendor sells. `stock` is the crate the `0x74` named, whose items are
+    /// what the rows have icons and quantities from — a row is a line and the
+    /// item at the same index.
+    Buy {
+        lines: &'a [BuyLine],
+        stock: &'a [ContainedItem],
+    },
+    /// The vendor buys, out of what this character is carrying.
+    Sell { lines: &'a [SellLine] },
+}
+
+impl<'a> Stall<'a> {
+    /// The catalogue this window is showing, or `None` for a vendor the view no
+    /// longer holds either list for.
+    ///
+    /// **Buy first, because that is what is drawn first.** A serial could in
+    /// principle be in both maps — a player who asked to buy and then to sell —
+    /// and the three places that used to ask this question did not agree on the
+    /// answer: the frame drew the shop's stock while the Confirm button sold the
+    /// player's own goods. One reader is the whole point of the pane, and the
+    /// one it agrees with has to be the picture.
+    fn of(view: &'a WorldView, vendor: Serial) -> Option<Self> {
+        if let Some(catalogue) = view.vendor_buys.get(&vendor) {
+            return Some(Self::Buy {
+                lines: &catalogue.lines,
+                stock: view
+                    .contents
+                    .get(&catalogue.container)
+                    .map_or(&[] as &[ContainedItem], Vec::as_slice),
+            });
+        }
+        let catalogue = view.vendor_sells.get(&vendor)?;
+        Some(Self::Sell {
+            lines: &catalogue.lines,
+        })
+    }
+
+    /// How many rows the catalogue has, which is what the scroll is bounded by.
+    fn rows(&self) -> usize {
+        match self {
+            Self::Buy { lines, .. } => lines.len(),
+            Self::Sell { lines } => lines.len(),
+        }
+    }
+
+    /// The most of one row that can be chosen: the shop's stock of it, or how
+    /// many the player is carrying. Zero for a row the other half of the
+    /// catalogue has no entry for, which makes the next click on it choose
+    /// nothing — the same answer the shard would give.
+    fn limit(&self, row: usize) -> u16 {
+        match self {
+            Self::Buy { stock, .. } => stock.get(row).map_or(0, |item| item.amount.0),
+            Self::Sell { lines } => lines.get(row).map_or(0, |line| line.amount.0),
+        }
+    }
+
+    /// The one packet this window sends: what was chosen, by serial.
+    ///
+    /// Zipped against the catalogue rather than against `amounts`, so a chosen
+    /// quantity whose row has since gone simply does not travel.
+    fn order(&self, vendor: Serial, amounts: &[u16]) -> Outgoing {
+        match self {
+            Self::Buy { stock, .. } => Outgoing::Buy {
+                vendor,
+                purchases: stock
+                    .iter()
+                    .zip(amounts)
+                    .filter_map(|(item, amount)| (*amount > 0).then_some((item.serial, *amount)))
+                    .collect(),
+            },
+            Self::Sell { lines } => Outgoing::Sell {
+                vendor,
+                sales: lines
+                    .iter()
+                    .zip(amounts)
+                    .filter_map(|(line, amount)| (*amount > 0).then_some((line.serial, *amount)))
+                    .collect(),
+            },
+        }
+    }
+}
+
+impl VendorPane {
+    /// A shop window as it opens: nothing chosen and the top of the list.
+    pub const fn new(vendor: Serial) -> Self {
+        Self {
+            vendor,
+            scroll: 0,
+            amounts: Vec::new(),
+        }
+    }
+
+    /// One notch over the catalogue: move the viewport a row, and say what that
+    /// was worth.
+    ///
+    /// **The notch is taken either way, and that is the whole defect.** A
+    /// catalogue already at either end still swallows the wheel, the way every
+    /// list in every client does — so the answer is [`Response::consumed`] and
+    /// not [`Response::ignored`]. Handing the notch on because nothing moved is
+    /// what turned a wheel over a shop into a zoom of the map behind it, and it
+    /// is why a pane answers two questions instead of one `bool`.
+    fn wheel(&mut self, notches: f32, rows: usize) -> Response {
+        let was = self.scroll;
+        self.scroll = if notches > 0.0 {
+            self.scroll.saturating_sub(1)
+        } else {
+            (self.scroll + 1).min(rows.saturating_sub(vendor::VISIBLE_ROWS))
+        };
+        if self.scroll == was {
+            Response::consumed()
+        } else {
+            Response::changed()
+        }
+    }
+
+    /// One more of this row, or back to none once the whole of it is chosen.
+    ///
+    /// A click and not a spinner: the reference client's own catalogue counts up
+    /// by one per press and wraps at what is available, which is the only
+    /// gesture a row has.
+    fn choose(&mut self, row: usize, limit: u16) {
+        if self.amounts.len() <= row {
+            self.amounts.resize(row + 1, 0);
+        }
+        self.amounts[row] = if self.amounts[row] >= limit {
+            0
+        } else {
+            self.amounts[row] + 1
+        };
+    }
+
+    /// One fewer of a row already in the order panel.
+    fn take_back(&mut self, row: usize) {
+        if let Some(amount) = self.amounts.get_mut(row) {
+            *amount = amount.saturating_sub(1);
+        }
+    }
+
+    /// A left press somewhere in this window, against the layout it was drawn
+    /// as.
+    ///
+    /// Every arm raises: a press on a window is what puts it on top, and the
+    /// action it landed on does not change that. The press that landed on
+    /// neither a row nor a button is the one that moves the window — the art's
+    /// header and its empty parchment are deliberately not controls — and that
+    /// is [`Effect::Grab`], not a position this pane writes.
+    fn press(&mut self, window: &vendor::Window, ctx: &PaneCtx<'_>) -> Response {
+        let raised = Response::changed().with(Effect::Raise);
+        // Asked per arm rather than once at the top, because the catalogue can
+        // go out of the view between the frame this window was drawn on and
+        // this press, and the four controls do not mean the same thing without
+        // it: a row with no stock chooses nothing, and the order panel's own
+        // two still empty and close a window whose shop has gone.
+        let stall = Stall::of(ctx.frame.view, self.vendor);
+        match window.hit(ctx.frame.cursor) {
+            Some(vendor::Hit::Row(row)) => {
+                self.choose(row, stall.map_or(0, |stall| stall.limit(row)));
+                raised
+            }
+            Some(vendor::Hit::Remove(row)) => {
+                self.take_back(row);
+                raised
+            }
+            Some(vendor::Hit::Clear) => {
+                self.amounts.fill(0);
+                raised
+            }
+            // The order, and the window with it: the shard answers a `0x3B`
+            // with the goods and a fresh container, not with the shop again.
+            Some(vendor::Hit::Confirm) => {
+                let answer = match stall {
+                    Some(stall) => raised.with(Effect::Net(stall.order(self.vendor, &self.amounts))),
+                    None => raised,
+                };
+                answer.with(Effect::Close)
+            }
+            None => raised.with(Effect::Grab(GumpPixel::new(
+                ctx.frame.cursor.x - ctx.frame.at.x,
+                ctx.frame.cursor.y - ctx.frame.at.y,
+            ))),
+        }
+    }
+}
+
+impl Pane for VendorPane {
+    /// The two parchment panels the window is drawn on, both halves of both
+    /// catalogues.
+    ///
+    /// The row icons are not here: they are items, and every picture of every
+    /// window is offered to the atlas once the frame has been laid out — see
+    /// the sweep at the end of `render_passes::draw_gump_windows`. Naming them
+    /// here as well would be a second answer to "what is in this shop", worked
+    /// out before the layout that decides which four rows are showing.
+    fn art(&self, _frame: &PaneFrame<'_>) -> Vec<GumpArt> {
+        vendor::art_of().collect()
+    }
+
+    fn layout(&self, frame: &PaneFrame<'_>) -> Option<Drawn> {
+        let stall = Stall::of(frame.view, self.vendor)?;
+        let window = match stall {
+            Stall::Buy { lines, stock } => vendor::buy(
+                self.vendor,
+                lines,
+                stock,
+                &self.amounts,
+                self.scroll,
+                frame.at,
+                frame.cursor,
+                &frame.resources.gump_atlas,
+            ),
+            Stall::Sell { lines } => vendor::sell(
+                self.vendor,
+                lines,
+                &self.amounts,
+                self.scroll,
+                frame.at,
+                frame.cursor,
+                &frame.resources.gump_atlas,
+            ),
+        };
+        Some(Drawn::Vendor(window))
+    }
+
+    /// A notch over the catalogue, and a left press anywhere in the window.
+    ///
+    /// Both are located, so both begin by asking whether this window is the one
+    /// the pointer is on — see [`PaneCtx::under_pointer`], and note that a
+    /// window *below* one that is being pointed at is never offered either of
+    /// them at all. Neither is answered against a layout this pane works out
+    /// now: [`PaneCtx::drawn`] is the picture the player is pointing at.
+    ///
+    /// Everything else is somebody's: the right button is the manager's close,
+    /// a release finishes a gesture this window does not have, and a move
+    /// changes only the tint on the two buttons, which the next frame draws
+    /// anyway.
+    fn handle(&mut self, input: Input, ctx: &PaneCtx<'_>) -> Response {
+        if !ctx.under_pointer {
+            return Response::ignored();
+        }
+        let Some(Drawn::Vendor(window)) = ctx.drawn else {
+            // Never drawn, so there is nothing to hit-test against and no
+            // pixels the player can have meant. The window is still raised and
+            // moved by the manager's own path.
+            return Response::ignored();
+        };
+        match input {
+            // Only over the catalogue itself. A notch over the order panel is
+            // deliberately not this window's — see the plan's Backlog, where
+            // this and the skill sheet's whole-frame claim are the two answers
+            // nobody has yet chosen between.
+            Input::Wheel(notches) => {
+                if !window.catalogue_contains(ctx.frame.cursor) {
+                    return Response::ignored();
+                }
+                let rows = Stall::of(ctx.frame.view, self.vendor).map_or(0, |stall| stall.rows());
+                self.wheel(notches, rows)
+            }
+            Input::Press(Button::Left) => self.press(window, ctx),
+            Input::Press(Button::Right) | Input::Release(_) | Input::Move => Response::ignored(),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn pane() -> VendorPane {
+        VendorPane::new(Serial::new(0x0000_002A).unwrap())
+    }
+
+    /// **The defect this plan grew out of, as an assertion.** A catalogue at
+    /// its last row has nothing new to draw and the notch is still its own.
+    ///
+    /// The old chain answered both questions with one `bool`, so the shop said
+    /// "nothing moved", the `||` fell through, and the wheel zoomed the map
+    /// under a pointer that had never left the window.
+    #[test]
+    fn a_catalogue_at_its_last_row_takes_the_notch_and_draws_nothing() {
+        let mut pane = pane();
+        // Nine rows, four visible: five notches reach the bottom and the sixth
+        // has nowhere to go.
+        for step in 0..5 {
+            let answer = pane.wheel(-1.0, 9);
+            assert!(answer.taken, "notch {step} is the window's");
+            assert!(answer.redraw, "notch {step} moved the list");
+        }
+        assert_eq!(pane.scroll, 5);
+
+        let answer = pane.wheel(-1.0, 9);
+        assert!(answer.taken, "the notch is still the window's at the last row");
+        assert!(!answer.redraw, "and there is nothing new to draw");
+        assert_eq!(pane.scroll, 5);
+    }
+
+    /// The top is the other end of the same rule.
+    #[test]
+    fn a_catalogue_at_its_first_row_takes_the_notch_too() {
+        let mut pane = pane();
+        let answer = pane.wheel(1.0, 9);
+        assert!(answer.taken, "already at the top, and still the window's");
+        assert!(!answer.redraw);
+        assert_eq!(pane.scroll, 0);
+
+        assert!(pane.wheel(-1.0, 9).redraw);
+        assert!(pane.wheel(1.0, 9).redraw);
+        assert_eq!(pane.scroll, 0);
+    }
+
+    /// A catalogue that fits in its viewport has no scrolling to do, and the
+    /// notch is *still* not the camera's.
+    #[test]
+    fn a_short_catalogue_does_not_scroll_and_does_not_let_the_notch_past() {
+        let mut pane = pane();
+        let answer = pane.wheel(-1.0, vendor::VISIBLE_ROWS);
+        assert!(answer.taken);
+        assert!(!answer.redraw);
+        assert_eq!(pane.scroll, 0);
+    }
+
+    /// Choosing counts up by one and wraps at what is available, and it does so
+    /// for a row past the end of the list it has chosen so far.
+    #[test]
+    fn a_row_counts_up_to_its_limit_and_then_back_to_none() {
+        let mut pane = pane();
+        pane.choose(2, 2);
+        assert_eq!(pane.amounts, vec![0, 0, 1], "the rows before it are untouched");
+        pane.choose(2, 2);
+        assert_eq!(pane.amounts[2], 2);
+        pane.choose(2, 2);
+        assert_eq!(pane.amounts[2], 0, "the whole of it was chosen, so none of it is");
+    }
+
+    /// A row with nothing behind it cannot be chosen — an empty shelf, or a
+    /// line the other half of the catalogue has no item for.
+    #[test]
+    fn a_row_with_no_stock_chooses_nothing() {
+        let mut pane = pane();
+        pane.choose(0, 0);
+        assert_eq!(pane.amounts, vec![0]);
+    }
+
+    /// The order panel's click takes one back, and stops at none rather than
+    /// wrapping the way the row does.
+    #[test]
+    fn taking_back_stops_at_none() {
+        let mut pane = pane();
+        pane.choose(0, 5);
+        pane.choose(0, 5);
+        pane.take_back(0);
+        assert_eq!(pane.amounts[0], 1);
+        pane.take_back(0);
+        pane.take_back(0);
+        assert_eq!(pane.amounts[0], 0);
+        pane.take_back(7);
+        assert_eq!(
+            pane.amounts,
+            vec![0],
+            "a row nothing was chosen for is not created"
+        );
+    }
+
+    /// Only what was chosen travels, and it travels named by the *catalogue's*
+    /// serials rather than by where it sat in this pane's list.
+    #[test]
+    fn the_order_carries_the_chosen_rows_and_nothing_else() {
+        let vendor = Serial::new(0x0000_002A).unwrap();
+        let lines = [
+            SellLine {
+                serial: Serial::new(0x0000_0100).unwrap(),
+                graphic: openshard_protocol::wire::Graphic(0x0EED),
+                hue: openshard_protocol::wire::Hue::NONE,
+                amount: openshard_protocol::items::ItemAmount(9),
+                price: 3,
+                name: "gold".into(),
+            },
+            SellLine {
+                serial: Serial::new(0x0000_0200).unwrap(),
+                graphic: openshard_protocol::wire::Graphic(0x0EED),
+                hue: openshard_protocol::wire::Hue::NONE,
+                amount: openshard_protocol::items::ItemAmount(9),
+                price: 4,
+                name: "silver".into(),
+            },
+        ];
+        let stall = Stall::Sell { lines: &lines };
+        let Outgoing::Sell { vendor: named, sales } = stall.order(vendor, &[0, 2]) else {
+            panic!("a sell catalogue answers with a sale");
+        };
+        assert_eq!(named, vendor);
+        assert_eq!(sales, vec![(Serial::new(0x0000_0200).unwrap(), 2)]);
+    }
+
+    /// An amount left over from a catalogue that has since shrunk does not
+    /// travel: the zip is against the lines.
+    #[test]
+    fn a_chosen_row_that_no_longer_exists_does_not_travel() {
+        let vendor = Serial::new(0x0000_002A).unwrap();
+        let stall = Stall::Sell { lines: &[] };
+        let Outgoing::Sell { sales, .. } = stall.order(vendor, &[3, 4]) else {
+            panic!("a sell catalogue answers with a sale");
+        };
+        assert!(sales.is_empty());
+    }
+}

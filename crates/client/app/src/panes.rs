@@ -36,12 +36,13 @@ use std::time::Instant;
 
 use openshard_client_net::action::Outgoing;
 use openshard_client_net::view::WorldView;
-use openshard_client_render::gump::GumpPixel;
+use openshard_client_render::gump::{GumpArt, GumpPixel};
 
 use crate::resources::Resources;
-use crate::windows::{ItemDrag, WindowSubject};
+use crate::windows::{Drawn, ItemDrag, WindowSubject};
 
 mod route;
+mod vendor;
 
 /// Which mouse button an input is about.
 ///
@@ -95,18 +96,21 @@ pub struct Modifiers {
     pub ctrl: bool,
 }
 
-/// Everything a pane may read, and nothing it may write.
+/// What a pane may read while it is being packed and laid out.
 ///
-/// Decision 3. No `&mut App`, no [`Link`](crate::link::Link), no
-/// `&mut WorldView`: a pane that could reach any of the three would be able to
-/// answer a click by changing the world, and the whole point of [`Effect`] is
-/// that the answer is *returned* instead — where the manager can order it, log
-/// it, refuse it, or a test can read it.
-#[expect(
-    dead_code,
-    reason = "the router fills every field; the first pane to read one is step 1's vendor"
-)]
-pub struct PaneCtx<'a> {
+/// Decision 3's context, minus the four things that only mean something while
+/// an *input* is being answered — see [`PaneCtx`], which is this plus those.
+/// Split in two because the two callers are two different places: a frame is
+/// laid out from `render_passes::draw_gump_windows`, which has the view, the
+/// files and the pointer and has no business inventing a clock, a modifier
+/// state or a z-order answer to put in a field a layout never reads.
+///
+/// No `&mut App`, no [`Link`](crate::link::Link), no `&mut WorldView`: a pane
+/// that could reach any of the three would be able to answer a click by
+/// changing the world, and the whole point of [`Effect`] is that the answer is
+/// *returned* instead — where the manager can order it, log it, refuse it, or a
+/// test can read it.
+pub struct PaneFrame<'a> {
     /// The authoritative picture. A pane holds no copy of what is in the bag or
     /// on the body; it looks both up here every time it is asked, which is why
     /// a window can never draw or click a stale item.
@@ -119,19 +123,10 @@ pub struct PaneCtx<'a> {
     /// drag that moves a window and the close gesture are all the manager's,
     /// and a pane that wants to be moved declines the press instead. It is
     /// absolute rather than window-local for now (decision 2), so a pane
-    /// hit-tests by subtracting this from [`PaneCtx::cursor`].
+    /// hit-tests by subtracting this from [`PaneFrame::cursor`].
     pub at: GumpPixel,
-    /// The pointer, in the same gump pixels [`PaneCtx::at`] is in.
+    /// The pointer, in the same gump pixels [`PaneFrame::at`] is in.
     pub cursor: GumpPixel,
-    /// Shift and Ctrl, as of this event.
-    pub modifiers: Modifiers,
-    /// Now, for every double-click pair.
-    ///
-    /// Passed rather than read from `Instant::now()` inside a pane, for the
-    /// reason the tick's `Rng` is owned rather than ambient: a pair of clicks
-    /// is a *timing* rule, and a rule that reads an ambient clock cannot be
-    /// exercised by a test.
-    pub now: Instant,
     /// What is on the cursor, if anything.
     ///
     /// Readonly, and the whole of decision 7: the hand is a **slot** and not a
@@ -140,7 +135,64 @@ pub struct PaneCtx<'a> {
     /// wearable's preview, and no pane may fill or empty it. The two halves of
     /// a transfer are two ordinary [`Effect::Net`]s, possibly from two
     /// different panes, possibly with a walk between them.
+    #[expect(
+        dead_code,
+        reason = "the container reads it for a drop onto itself at step 6, the paperdoll for a preview at step 5"
+    )]
     pub hand: Option<ItemDrag>,
+}
+
+/// Everything a pane may read while it answers one input, and nothing it may
+/// write.
+///
+/// [`PaneFrame`] and the four things that are true of an *event* rather than of
+/// a frame.
+pub struct PaneCtx<'a> {
+    /// What this pane would be packed and laid out with, were the frame being
+    /// drawn now.
+    pub frame: PaneFrame<'a>,
+    /// How this window was laid out on the last frame, or `None` for a window
+    /// that has not been drawn yet.
+    ///
+    /// **What is clicked is what was drawn.** A pane could lay itself out again
+    /// from [`PaneCtx::frame`] and hit-test that, and it would be asking the
+    /// atlas and the view a second question whose answer is free to differ from
+    /// the picture the player is pointing at — the rule
+    /// [`Windows::drawn_windows`](crate::windows::Windows::drawn_windows)
+    /// exists for, and the one that used to make a paperdoll whose two answers
+    /// disagreed a window that could not be closed.
+    pub drawn: Option<&'a Drawn>,
+    /// This window is the one the pointer is on: it covers the cursor and no
+    /// window above it does.
+    ///
+    /// The manager's answer and not the pane's, because **z-order is the
+    /// manager's** (decision 2) — a pane knows where the cursor is inside
+    /// itself and cannot know what is drawn over it. It is the same question
+    /// `App::window_under_pointer` has always asked first, handed to the pane
+    /// instead of asked again.
+    ///
+    /// A pane checks it before taking a *located* input — a press or a notch —
+    /// and ignores it for the two that are not located that way: a release
+    /// finishes a press this pane started, wherever the pointer has got to
+    /// since, and a move is offered to every window.
+    pub under_pointer: bool,
+    /// Shift and Ctrl, as of this event.
+    #[expect(
+        dead_code,
+        reason = "the container's Shift-split reads it at step 6; nothing else has a modifier"
+    )]
+    pub modifiers: Modifiers,
+    /// Now, for every double-click pair.
+    ///
+    /// Passed rather than read from `Instant::now()` inside a pane, for the
+    /// reason the tick's `Rng` is owned rather than ambient: a pair of clicks
+    /// is a *timing* rule, and a rule that reads an ambient clock cannot be
+    /// exercised by a test.
+    #[expect(
+        dead_code,
+        reason = "the container's double-click use reads it at step 6, the paperdoll's scrolls at step 5"
+    )]
+    pub now: Instant,
 }
 
 /// What a pane says about one input.
@@ -166,20 +218,6 @@ pub struct Response {
     pub out: Vec<Effect>,
 }
 
-// `consumed` and `with` are the two the router does not need yet: nothing takes
-// an event without changing anything until step 1's catalogue reaches its last
-// row, and nothing has an effect to ask for until the same step. Both are
-// exercised by this module's own tests, which is not what `dead_code` counts.
-// `cfg_attr(not(test))` because the tests below *do* use both: an `expect` that
-// held in either build would be unfulfilled in the other, and `expect` rather
-// than `allow` so that step 1 wiring them up is told to delete this.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "consumed and with are step 1's; the four corners are already tested here"
-    )
-)]
 impl Response {
     /// Not mine, and nothing changed. The pointer is somewhere else, or this is
     /// an input this kind of window has no use for.
@@ -247,12 +285,7 @@ impl Response {
 /// The rest is what only the manager can do, because it is about the window
 /// rather than about what the window is over.
 ///
-/// Every arm is performed by `panes::route`'s `App::perform` already; what is
-/// missing is a pane with something to ask for, which is step 1.
-#[expect(
-    dead_code,
-    reason = "performed by App::perform; the first pane to ask for one is step 1's vendor"
-)]
+/// Every arm is performed by `panes::route`'s `App::perform`.
 #[derive(Debug)]
 pub enum Effect {
     /// This window to the top of the pile.
@@ -267,6 +300,10 @@ pub enum Effect {
     /// decision 7 for why there is no lift/drop pair.
     Net(Outgoing),
     /// Make one of the two windows the shard does not know about exist.
+    #[expect(
+        dead_code,
+        reason = "performed by App::perform; the paperdoll's Skills button asks for one at step 5"
+    )]
     Open(LocalWindow),
 }
 
@@ -292,7 +329,31 @@ pub enum LocalWindow {
 ///
 /// Implemented once per window kind, and reached through [`AnyPane`] rather
 /// than through `dyn` — see decision 1 for why the vtable was refused.
+///
+/// The three methods are three phases of a frame, and decision 6 is that they
+/// are called in this order for *every* pane before the next one starts:
+/// [`art`](Pane::art) for all, pack once, [`layout`](Pane::layout) for all.
+/// That order is why the last two take `&self` and a *shared* atlas — a pane
+/// cannot be laid out against an atlas that is still growing.
 pub trait Pane {
+    /// The art this pane needs packed before it can be laid out.
+    ///
+    /// Asked every frame and not once at open: what a window needs depends on
+    /// what is in it, and the atlas answers a repeat with nothing — see
+    /// [`GumpAtlas::add`](openshard_client_render::gump::GumpAtlas::add), which
+    /// filters what it already holds.
+    fn art(&self, frame: &PaneFrame<'_>) -> Vec<GumpArt>;
+
+    /// Lay this pane out for this frame: the pictures the pass draws and the
+    /// pointer is tested against.
+    ///
+    /// `None` is a window with nothing to draw — a catalogue whose subject has
+    /// gone out of the view between the packet and the frame — and not an
+    /// error: it simply contributes no entry to
+    /// [`Windows::drawn_windows`](crate::windows::Windows::drawn_windows), so
+    /// nothing of it is drawn and nothing of it is clickable.
+    fn layout(&self, frame: &PaneFrame<'_>) -> Option<Drawn>;
+
     /// Offer one input. The answer says whether the pane took it, whether the
     /// frame is stale because of it, and what it is asking the manager to do.
     fn handle(&mut self, input: Input, ctx: &PaneCtx<'_>) -> Response;
@@ -316,7 +377,7 @@ pub trait Pane {
 #[derive(Debug)]
 pub enum AnyPane {
     Container(ContainerPane),
-    Vendor(VendorPane),
+    Vendor(vendor::VendorPane),
     Paperdoll(PaperdollPane),
     Dialog(DialogPane),
     Skills(SkillsPane),
@@ -325,10 +386,16 @@ pub enum AnyPane {
 
 impl AnyPane {
     /// The pane a window of this subject needs, built when the window opens.
+    ///
+    /// A kind whose subject carries a key is handed it here and keeps it: a
+    /// shop names its vendor in the `0x3B` it sends, and the pane that builds
+    /// that packet has to know which mobile it is trading with. That is not the
+    /// pane knowing it is a window — the position, the z-order and the list are
+    /// still the manager's — it is the pane knowing what it is a pane *of*.
     pub fn of(subject: WindowSubject) -> Self {
         match subject {
             WindowSubject::Container(_) => Self::Container(ContainerPane::default()),
-            WindowSubject::Vendor(_) => Self::Vendor(VendorPane::default()),
+            WindowSubject::Vendor(serial) => Self::Vendor(vendor::VendorPane::new(serial)),
             WindowSubject::Paperdoll(_) => Self::Paperdoll(PaperdollPane::default()),
             WindowSubject::Dialog(_) => Self::Dialog(DialogPane::default()),
             WindowSubject::Skills => Self::Skills(SkillsPane::default()),
@@ -340,6 +407,28 @@ impl AnyPane {
 impl Pane for AnyPane {
     /// The delegating `match` decision 1 pays for the enum with: six lines per
     /// trait method, once.
+    fn art(&self, frame: &PaneFrame<'_>) -> Vec<GumpArt> {
+        match self {
+            Self::Container(pane) => pane.art(frame),
+            Self::Vendor(pane) => pane.art(frame),
+            Self::Paperdoll(pane) => pane.art(frame),
+            Self::Dialog(pane) => pane.art(frame),
+            Self::Skills(pane) => pane.art(frame),
+            Self::Status(pane) => pane.art(frame),
+        }
+    }
+
+    fn layout(&self, frame: &PaneFrame<'_>) -> Option<Drawn> {
+        match self {
+            Self::Container(pane) => pane.layout(frame),
+            Self::Vendor(pane) => pane.layout(frame),
+            Self::Paperdoll(pane) => pane.layout(frame),
+            Self::Dialog(pane) => pane.layout(frame),
+            Self::Skills(pane) => pane.layout(frame),
+            Self::Status(pane) => pane.layout(frame),
+        }
+    }
+
     fn handle(&mut self, input: Input, ctx: &PaneCtx<'_>) -> Response {
         match self {
             Self::Container(pane) => pane.handle(input, ctx),
@@ -356,10 +445,6 @@ impl Pane for AnyPane {
 /// press that becomes either a lift or a double-click use.
 #[derive(Debug, Default)]
 pub struct ContainerPane {}
-
-/// A shop's catalogue. Step 1 moves `vendor_scrolls` and `vendor_amounts` here.
-#[derive(Debug, Default)]
-pub struct VendorPane {}
 
 /// A body's paperdoll. Step 5 moves `held_doll` and `last_scroll` here.
 #[derive(Debug, Default)]
@@ -381,13 +466,32 @@ pub struct SkillsPane {}
 #[derive(Debug, Default)]
 pub struct StatusPane {}
 
-// Every kind declines, for now. Each of these is replaced whole by the pane
-// that step moves in; until then the `App` method named in each comment still
-// answers that kind's input, and `App::deliver` calls it after the panes have
-// all passed. A shim that answered anything at all would be a second opinion
-// about the same click.
+// Every kind that has not moved in yet declines all three questions. Each of
+// these is replaced whole by the pane that step moves in; until then the `App`
+// method named in each comment still answers that kind's input, and
+// `App::deliver` calls it after the panes have all passed, while
+// `render_passes::draw_gump_windows` still packs and lays that kind out from
+// the view. A shim that answered anything at all would be a second opinion
+// about the same click, and a pane that packed its own art while the pass still
+// laid it out would be two answers about the same picture.
+//
+// Written out per kind rather than left to a defaulted trait method: a default
+// saying "no art, no layout" is exactly what a pane that has moved in and
+// forgotten to implement one would silently get, and the failure mode of that
+// is a window that draws nothing.
 
 impl Pane for ContainerPane {
+    /// Still `container::art_of`, called from `render_passes` — step 6.
+    fn art(&self, _frame: &PaneFrame<'_>) -> Vec<GumpArt> {
+        Vec::new()
+    }
+
+    /// Still `container::window_highlighted`, laid out by `render_passes` —
+    /// step 6.
+    fn layout(&self, _frame: &PaneFrame<'_>) -> Option<Drawn> {
+        None
+    }
+
     /// Still `App::press_on_own_window`, `App::release_container_item` and
     /// `App::hover_container_item` — step 6.
     fn handle(&mut self, _input: Input, _ctx: &PaneCtx<'_>) -> Response {
@@ -395,14 +499,17 @@ impl Pane for ContainerPane {
     }
 }
 
-impl Pane for VendorPane {
-    /// Still `App::press_on_own_window` and `App::scroll_vendor` — step 1.
-    fn handle(&mut self, _input: Input, _ctx: &PaneCtx<'_>) -> Response {
-        Response::ignored()
-    }
-}
-
 impl Pane for PaperdollPane {
+    /// Still `paperdoll::art_of`, called from `render_passes` — step 5.
+    fn art(&self, _frame: &PaneFrame<'_>) -> Vec<GumpArt> {
+        Vec::new()
+    }
+
+    /// Still `paperdoll::doll`, laid out by `render_passes` — step 5.
+    fn layout(&self, _frame: &PaneFrame<'_>) -> Option<Drawn> {
+        None
+    }
+
     /// Still `App::press_on_own_window`, `App::release_on_own_window` and
     /// `App::hover_paperdoll_item` — step 5.
     fn handle(&mut self, _input: Input, _ctx: &PaneCtx<'_>) -> Response {
@@ -411,6 +518,17 @@ impl Pane for PaperdollPane {
 }
 
 impl Pane for DialogPane {
+    /// Still `gump::art_of`, called from `render_passes` for every open gump in
+    /// the view rather than per window — step 4.
+    fn art(&self, _frame: &PaneFrame<'_>) -> Vec<GumpArt> {
+        Vec::new()
+    }
+
+    /// Still `gump::Dialogs::layout`, laid out by `render_passes` — step 4.
+    fn layout(&self, _frame: &PaneFrame<'_>) -> Option<Drawn> {
+        None
+    }
+
     /// Still `gump::Dialogs::press`/`release`, reached from
     /// `App::press_on_own_window` — step 4.
     fn handle(&mut self, _input: Input, _ctx: &PaneCtx<'_>) -> Response {
@@ -419,6 +537,17 @@ impl Pane for DialogPane {
 }
 
 impl Pane for SkillsPane {
+    /// The skill sheet packs nothing of its own even today: its frame is one of
+    /// the gumps the atlas is grown with elsewhere — step 2.
+    fn art(&self, _frame: &PaneFrame<'_>) -> Vec<GumpArt> {
+        Vec::new()
+    }
+
+    /// Still `skills::window`, laid out by `render_passes` — step 2.
+    fn layout(&self, _frame: &PaneFrame<'_>) -> Option<Drawn> {
+        None
+    }
+
     /// Still `App::skill_hit_under_pointer`, `App::drag_thumb` and
     /// `App::scroll_skills` — step 2.
     fn handle(&mut self, _input: Input, _ctx: &PaneCtx<'_>) -> Response {
@@ -427,6 +556,16 @@ impl Pane for SkillsPane {
 }
 
 impl Pane for StatusPane {
+    /// Step 3.
+    fn art(&self, _frame: &PaneFrame<'_>) -> Vec<GumpArt> {
+        Vec::new()
+    }
+
+    /// Still `status::window`, laid out by `render_passes` — step 3.
+    fn layout(&self, _frame: &PaneFrame<'_>) -> Option<Drawn> {
+        None
+    }
+
     /// Nothing answers this one today either: the status frame has no input at
     /// all, and step 3 is what says so in a type.
     fn handle(&mut self, _input: Input, _ctx: &PaneCtx<'_>) -> Response {
