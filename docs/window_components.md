@@ -423,11 +423,13 @@ defect this plan grew out of, stated as a type instead of as a convention.
 **A shop that is in both catalogues** (S1): what is drawn and what Confirm sends
 are now the same list; they were not.
 
-S0's four `#[expect(dead_code)]` are down to three, and each of the three still
-names the step that takes it: `PaneFrame::hand`, `PaneCtx::modifiers` and
-`PaneCtx::now` are the container's and the paperdoll's, and `Effect::Open` is the
-paperdoll's Skills button. `LocalWindow` no longer needs one — `Effect::Open`
-carries it.
+S0's four `#[expect(dead_code)]` are five, and that is the checklist getting
+*finer* rather than longer: the one that covered the whole of `PaneCtx` is now
+three, one per field still unread (`PaneFrame::hand`, `PaneCtx::modifiers`,
+`PaneCtx::now` — the container's and the paperdoll's), and the one that covered
+the whole of `Effect` is down to its `Open` arm, with `LocalWindow` beside it.
+Both of the ones S1 was owed are gone: `Response`'s, and `Effect`'s other four
+arms, which the vendor asks for.
 
 Next is S2, the skills sheet: `Windows::skills` being `Some` is what "the window
 is open" means today, and that fact becomes the pane's presence in the list.
