@@ -112,9 +112,31 @@ pub enum WindowSubject {
     /// headings were shut were one write, and four files did it. The tree is
     /// a field of `panes::skills::SkillsPane` now.
     Skills,
-    /// This character's status window. Like skills, its presence is local UI
-    /// state: `0x11` updates its values but does not ask the client to open it.
+    /// This character's status window. No key, for the skill window's reason:
+    /// a `0x11` is about the one player this connection is.
+    ///
+    /// The other of the two kinds whose *existence* is not in the view, and it
+    /// was the last field in the client that said "this window is open"
+    /// anywhere but in [`Windows::own_windows`]. `Windows::status` was that
+    /// `bool`, written by five places and read by a sixth; being in the list is
+    /// the whole of the fact now, the same as every other kind's.
     Status,
+}
+
+impl WindowSubject {
+    /// Whether this window exists because the player asked for it rather than
+    /// because the shard opened it.
+    ///
+    /// The two kinds [`open_local_window`] puts in the list and
+    /// [`reconcile_own_windows`] cannot answer for: there is no container, no
+    /// mobile and no gump in the view to hold either of them open, so the view
+    /// going away does not take them with it. Everything that has to drop
+    /// *every* window when the world ends — the disconnect — asks this instead
+    /// of naming the kinds, which is a list that would otherwise have to be
+    /// kept in step by hand.
+    pub const fn is_local(self) -> bool {
+        matches!(self, Self::Skills | Self::Status)
+    }
 }
 
 /// What the last frame drew for one window, and what it answers to.
@@ -345,11 +367,6 @@ pub struct Windows {
     /// pair has to be two clicks on the same picture of the same window
     /// rather than two clicks anywhere.
     pub last_scroll: Option<(Instant, WindowSubject, paperdoll::DollButton)>,
-    /// Whether the player's status window is open.
-    ///
-    /// A status reply refreshes numbers but does not open a window: the shard
-    /// sends one at world entry, so only the Status button may set this true.
-    pub status: bool,
     /// What every open `0xB0` dialog is holding that no packet carries: the
     /// page it is showing, the switches the player has set, what has been
     /// typed into its fields and which button the finger is on. See
@@ -396,26 +413,26 @@ pub fn open_local_window(own_windows: &mut Vec<OwnWindow>, subject: WindowSubjec
 /// `App`'s walk loop rather than driving the real thing in a test.
 ///
 /// Opens a window for everything `view` has that `own_windows` does not, and
-/// drops every window whose subject `view` (and, for the one kind it cannot
-/// answer for, `status_open`) no longer has — except a subject in
+/// drops every window whose subject `view` no longer has — except a subject in
 /// `locally_closed`, which stays dropped and stays un-reopened regardless of
 /// what `view` says, until `view` itself agrees the subject is gone. That is
 /// the reconciliation: an overlay entry survives only until the view it is
 /// ahead of catches up, the same moment `Folded::corrected` would clear a
 /// mispredicted step in `link.rs`, one layer down. A subject the view never
-/// lists in the first place (`Skills`) has nothing to reconcile against and
-/// is not put in the overlay at all.
+/// lists in the first place — the two [`WindowSubject::is_local`] kinds — has
+/// nothing to reconcile against and is not put in the overlay at all.
 ///
-/// The skill window is not passed in at all any more, in either direction:
-/// it is opened by [`open_local_window`] and closed by the `retain` in
-/// `App::close_window`, so its presence in `own_windows` *is* the fact and
-/// there is no second copy of it here to disagree. The status window still
-/// has the `bool` this one had, until step 3 of `docs/window_components.md`.
+/// **Neither local kind is passed in any more, in either direction.** Both are
+/// opened by [`open_local_window`] and closed by the `retain` in
+/// `App::close_window`, so being in `own_windows` *is* the fact and there is no
+/// second copy of it here to disagree with. This function took a `status_open`
+/// argument until step 3 of `docs/window_components.md`, and a `skills_open`
+/// beside it until step 2; what they were is a window's openness kept somewhere
+/// other than the list of open windows.
 pub fn reconcile_own_windows(
     view: &openshard_client_net::view::WorldView,
     own_windows: &mut Vec<OwnWindow>,
     locally_closed: &mut HashSet<WindowSubject>,
-    status_open: bool,
 ) {
     locally_closed.retain(|subject| match *subject {
         WindowSubject::Container(serial) => view.containers.contains_key(&serial),
@@ -443,10 +460,9 @@ pub fn reconcile_own_windows(
             // Nothing to reconcile against, and nothing to ask: the window is
             // open because it is here. `close_window`'s own `retain` is what
             // takes it away, and anything here would be a second opinion about
-            // that — the field this replaced could say the window was shut
-            // while the window was still in this list.
-            WindowSubject::Skills => true,
-            WindowSubject::Status => status_open,
+            // that — the two fields this replaced could each say the window was
+            // shut while the window was still in this list.
+            WindowSubject::Skills | WindowSubject::Status => true,
         }
     });
     // Containers first and paperdolls after, and both in the view's own
@@ -490,14 +506,12 @@ pub fn reconcile_own_windows(
             pane: crate::panes::AnyPane::of(subject),
         });
     }
-    // The status window has the skill window's ownership shape — the values
-    // are authoritative, but the decision to look at them is local, and a
-    // `0x11` is sent at entry, so opening on data would surprise every login —
-    // and it still keeps that fact in a `bool` of its own. Step 3 is where it
-    // becomes what the skill window's is: being in this list.
-    if status_open {
-        open_local_window(own_windows, WindowSubject::Status);
-    }
+    // No arm for either local kind here, and that is step 3's whole shape: the
+    // values on a status frame are authoritative, but the decision to look at
+    // them is the player's, and a `0x11` arrives at every login — so a window
+    // opened from the data would be a window nobody asked for. What opens one
+    // is `open_local_window`, called from the button that was pressed.
+    //
     // A dialog is placed where the shard asked for it, and it is the only
     // window kind that is: a `0xB0` carries a coordinate and a `0x24` does
     // not. So no cascade — two dialogs the shard put in one place are two

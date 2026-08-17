@@ -102,7 +102,7 @@ fn a_closed_paperdoll_does_not_reopen_on_an_unrelated_world_change() {
     let mut locally_closed = HashSet::new();
 
     // The window opens, same as any other frame's sync.
-    reconcile_own_windows(&view, &mut own_windows, &mut locally_closed, false);
+    reconcile_own_windows(&view, &mut own_windows, &mut locally_closed);
     assert!(
         own_windows.iter().any(|window| window.subject == subject),
         "the paperdoll opened"
@@ -118,7 +118,7 @@ fn a_closed_paperdoll_does_not_reopen_on_an_unrelated_world_change() {
     // enough — and is folded into a snapshot that is still, itself,
     // built from the link thread's pre-close copy: `view` here is
     // unchanged, standing in for exactly that clone.
-    reconcile_own_windows(&view, &mut own_windows, &mut locally_closed, false);
+    reconcile_own_windows(&view, &mut own_windows, &mut locally_closed);
     assert!(
         !own_windows.iter().any(|window| window.subject == subject),
         "the closed paperdoll must not reopen just because an unrelated \
@@ -136,7 +136,7 @@ fn a_closed_paperdoll_does_not_reopen_on_an_unrelated_world_change() {
     // never involved, and the `Command::CloseWindow` this comment used to name
     // has not existed since S2 in `docs/client_window_state.md`.
     view.paperdolls.remove(&serial);
-    reconcile_own_windows(&view, &mut own_windows, &mut locally_closed, false);
+    reconcile_own_windows(&view, &mut own_windows, &mut locally_closed);
     assert!(
         !locally_closed.contains(&subject),
         "the overlay clears once the view it was ahead of agrees"
@@ -182,7 +182,7 @@ fn a_window_carries_a_pane_of_its_own_kind_and_loses_it_with_the_window() {
     // the view asks for one — being in this list is the whole of "it is open",
     // which is what step 2 of the plan made true.
     crate::windows::open_local_window(&mut own_windows, WindowSubject::Skills);
-    reconcile_own_windows(&view, &mut own_windows, &mut locally_closed, false);
+    reconcile_own_windows(&view, &mut own_windows, &mut locally_closed);
     let paned: Vec<(WindowSubject, bool)> = own_windows
         .iter()
         .map(|window| {
@@ -206,7 +206,7 @@ fn a_window_carries_a_pane_of_its_own_kind_and_loses_it_with_the_window() {
     // `retain` that drops the window is what drops it, which is the whole point
     // of the pane living in the record.
     view.paperdolls.remove(&serial);
-    reconcile_own_windows(&view, &mut own_windows, &mut locally_closed, false);
+    reconcile_own_windows(&view, &mut own_windows, &mut locally_closed);
     assert!(
         own_windows
             .iter()
@@ -215,27 +215,75 @@ fn a_window_carries_a_pane_of_its_own_kind_and_loses_it_with_the_window() {
     );
 }
 
+/// A `0x11` opens nothing, the button opens one window, and the `retain` that
+/// closes it is the whole of closing it.
+///
+/// Step 3 of `docs/window_components.md` deleted the `bool` this used to be
+/// asked through: `reconcile_own_windows` took a `status_open` and answered
+/// with a window, which is a window's openness kept in two places that could
+/// disagree. What is left is the same three facts, said about the list itself.
 #[test]
 fn a_status_window_is_opened_by_local_intent_not_by_the_status_reply() {
     let view = bare_view();
     let mut own_windows = Vec::new();
     let mut locally_closed = HashSet::new();
 
-    reconcile_own_windows(&view, &mut own_windows, &mut locally_closed, false);
+    // Entry data. `bare_view` is a world this client is in, and a shard sends
+    // the status numbers at that moment — a reconcile over it must still put
+    // nothing on the screen.
+    reconcile_own_windows(&view, &mut own_windows, &mut locally_closed);
     assert!(own_windows.is_empty(), "entry data alone opens no local window");
 
-    reconcile_own_windows(&view, &mut own_windows, &mut locally_closed, true);
+    // The button. In the running client this is `doll_clicked`, which asks for a
+    // fresh `0x11` and calls exactly this.
+    crate::windows::open_local_window(&mut own_windows, WindowSubject::Status);
     assert_eq!(
         own_windows
             .iter()
             .map(|window| window.subject)
             .collect::<Vec<_>>(),
         vec![WindowSubject::Status],
-        "the status button's local state opens exactly one window"
+        "the button opens exactly one window"
     );
 
-    reconcile_own_windows(&view, &mut own_windows, &mut locally_closed, false);
-    assert!(own_windows.is_empty(), "closing is local too");
+    // And a second press leaves the one it finds alone, position and all —
+    // `open_local_window`'s contract, and the reason it is a door rather than a
+    // push.
+    crate::windows::open_local_window(&mut own_windows, WindowSubject::Status);
+    reconcile_own_windows(&view, &mut own_windows, &mut locally_closed);
+    assert_eq!(
+        own_windows.len(),
+        1,
+        "pressing Status again opens no second frame"
+    );
+    assert!(
+        matches!(own_windows[0].pane, crate::panes::AnyPane::Status(_)),
+        "and it kept its own pane"
+    );
+
+    // Closing is `App::close_window`'s `retain`, which nothing here has to
+    // mirror: there is no second copy of the fact for the reconcile to read.
+    own_windows.retain(|window| window.subject != WindowSubject::Status);
+    reconcile_own_windows(&view, &mut own_windows, &mut locally_closed);
+    assert!(own_windows.is_empty(), "closing is local too, and it is the list");
+}
+
+/// The two kinds the view cannot answer for, named by a predicate rather than
+/// by a list.
+///
+/// What the disconnect arm of `net_command.rs` retains by, and the reason it is
+/// a predicate: a third local kind would otherwise have to be remembered in two
+/// places, and the failure mode of forgetting is a window that survives the
+/// world it was opened in.
+#[test]
+fn a_window_is_local_exactly_when_nothing_in_the_view_holds_it_open() {
+    let serial = Serial::new(0x0000_002A).expect("a serial");
+    assert!(WindowSubject::Skills.is_local());
+    assert!(WindowSubject::Status.is_local());
+    assert!(!WindowSubject::Container(serial).is_local());
+    assert!(!WindowSubject::Vendor(serial).is_local());
+    assert!(!WindowSubject::Paperdoll(serial).is_local());
+    assert!(!WindowSubject::Dialog(openshard_protocol::gump::GumpId(3)).is_local());
 }
 
 /// A vendor's buy window is an `OpenContainer` on the vendor serial, whereas
@@ -258,7 +306,7 @@ fn a_trade_gump_and_own_paperdoll_stay_open_together() {
     let mut own_windows = Vec::new();
     let mut locally_closed = HashSet::new();
 
-    reconcile_own_windows(&view, &mut own_windows, &mut locally_closed, false);
+    reconcile_own_windows(&view, &mut own_windows, &mut locally_closed);
 
     assert_eq!(
         own_windows

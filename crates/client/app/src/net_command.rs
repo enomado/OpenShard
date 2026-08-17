@@ -181,14 +181,18 @@ impl App {
                 // Windows over a world that is gone, and the presses they were
                 // holding: the reconcile drops them from the view's side, and
                 // these are the local halves it cannot answer for.
-                // The skill sheet is not in the view for the reconcile to drop,
-                // so it goes here by name — and with it its pane, which is the
-                // tree and whatever the mouse was holding.
+                //
+                // **The local windows go by predicate and not by name.** A
+                // skill sheet and a status frame are open because the player
+                // asked, so there is nothing in the view for the reconcile to
+                // drop them by — and a list of the kinds spelled out here is a
+                // list that has to be kept in step with the one in
+                // `open_local_window`. Each goes with its pane, which is the
+                // tree, the held control and nothing else.
                 self.windows
                     .own_windows
-                    .retain(|window| window.subject != crate::windows::WindowSubject::Skills);
+                    .retain(|window| !window.subject.is_local());
                 self.windows.held_doll = None;
-                self.windows.status = false;
                 self.windows.item_drag = None;
                 self.windows.dragging = None;
                 self.tooltips.reset();

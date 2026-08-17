@@ -55,8 +55,12 @@ impl App {
         let Some(link) = self.world.shard.link() else {
             return;
         };
-        let mut opened_skills = false;
-        let mut opened_status = false;
+        // Which of the two local windows this press asks for, if either. Held
+        // as one value rather than a `bool` each: they are the same request
+        // through the same door, and the only difference between them is which
+        // subject is named — see `panes::LocalWindow`, which is the effect this
+        // becomes at step 5.
+        let mut open_local: Option<WindowSubject> = None;
         match button {
             paperdoll::DollButton::WarMode => link.war_mode(!war),
             paperdoll::DollButton::LogOut => link.log_out(),
@@ -66,12 +70,12 @@ impl App {
             // Status control must not open a misleading local window.
             paperdoll::DollButton::Status if own => {
                 link.status(mobile);
-                opened_status = true;
+                open_local = Some(WindowSubject::Status);
             }
             // Window visibility is local intent; 0x3A merely refreshes data.
             paperdoll::DollButton::Skills if own => {
                 link.skills(mobile);
-                opened_skills = true;
+                open_local = Some(WindowSubject::Skills);
             }
             paperdoll::DollButton::Virtue if paired => link.virtue(mobile),
             paperdoll::DollButton::Backpack if paired => {
@@ -81,15 +85,13 @@ impl App {
             }
             _ => {}
         }
-        if opened_skills {
-            // The same door `Effect::Open(LocalWindow::Skills)` goes through,
-            // and it will *be* that effect once the paperdoll is a pane of its
-            // own (step 5). Idempotent, so a second press leaves the sheet's
-            // scroll and shut headings where the player left them.
-            crate::windows::open_local_window(&mut self.windows.own_windows, WindowSubject::Skills);
-        }
-        if opened_status {
-            self.windows.status = true;
+        if let Some(subject) = open_local {
+            // The same door `Effect::Open(..)` goes through, and it will *be*
+            // that effect once the paperdoll is a pane of its own (step 5).
+            // Idempotent, so a second press leaves the sheet's scroll and shut
+            // headings where the player left them — and, for the status frame,
+            // leaves it where it was dragged to.
+            crate::windows::open_local_window(&mut self.windows.own_windows, subject);
         }
     }
 

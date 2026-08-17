@@ -21,13 +21,12 @@ impl App {
         let Some(view) = self.world.authoritative.view.as_ref() else {
             // No world, no windows: a map viewer has no shard to have opened
             // one, and anything left over is from a session that has ended.
-            // Including the local windows, whose state must not leak into a
-            // login — and, for the skill sheet, that is the *same* line: the
-            // tree and the press it was holding are fields of its pane, which
-            // the clear above drops with the window. Status still keeps its
-            // openness outside the list, until step 3.
+            // The local windows included, and that is now the *same* line
+            // rather than a line each: what a skill sheet or a status frame
+            // knows is a field of its pane, and the clear drops both windows
+            // and both panes. There used to be a `status = false` under this,
+            // and before step 2 a `skills = None` beside it.
             self.windows.own_windows.clear();
-            self.windows.status = false;
             self.windows.stack_pass = None;
             self.windows.split_pending = false;
             return;
@@ -40,7 +39,6 @@ impl App {
             view,
             &mut self.windows.own_windows,
             &mut self.windows.locally_closed,
-            self.windows.status,
         );
         self.advance_stack_pass();
     }

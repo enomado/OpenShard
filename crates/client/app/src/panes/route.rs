@@ -23,7 +23,7 @@
 use std::time::Instant;
 
 use crate::app::App;
-use crate::panes::{Button, Effect, Input, LocalWindow, Modifiers, Pane, PaneCtx, PaneFrame, Response};
+use crate::panes::{Button, Effect, Input, Modifiers, Pane, PaneCtx, PaneFrame, Response};
 use crate::windows::{ItemDragTransaction, WindowSubject};
 
 impl App {
@@ -200,13 +200,12 @@ impl App {
                     link.act(action);
                 }
             }
-            // Idempotent, and that is the point: pressing Skills twice must not
-            // scroll the sheet back to the top — see `open_local_window`, which
-            // leaves a window it finds alone.
-            Effect::Open(LocalWindow::Skills) => {
-                crate::windows::open_local_window(&mut self.windows.own_windows, WindowSubject::Skills);
+            // One arm for both local kinds, and idempotent — which is the point:
+            // pressing Skills twice must not scroll the sheet back to the top.
+            // See `open_local_window`, which leaves a window it finds alone.
+            Effect::Open(local) => {
+                crate::windows::open_local_window(&mut self.windows.own_windows, local.subject());
             }
-            Effect::Open(LocalWindow::Status) => self.windows.status = true,
         }
     }
 

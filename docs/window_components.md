@@ -378,11 +378,46 @@ never a half-routed frame.
       `SkillsPane::held` and an item transaction cannot be live at the same
       time. Any later kind that keeps a press of its own inherits this
       question, and S6's container is where it stops being trivially true.
-- [ ] **S3. Status.** The smallest kind, and the one that proves a pane with no
-      input at all is still a pane. S2 left it half done on purpose:
-      `open_local_window` already places it, so what is left is the layout, and
-      deleting `Windows::status` in favour of the same fact the skill sheet now
-      keeps — being in the list.
+- [x] **S3. Status.** ✅ `panes/status.rs`: `StatusPane`, a **unit struct** with
+      an `impl Pane` — the kind that proves a pane with no state and no input at
+      all is still a pane. The layout moved out of `render_passes.rs`, and
+      `Windows::status` is gone: it was the last field in the client that said
+      "this window is open" anywhere but in the list of open windows.
+      **Four things landed differently from the shape above, and one backlog
+      entry closed with the step:**
+      - **`reconcile_own_windows` has no openness argument left at all.** S2 took
+        `skills_open` and this takes `status_open`, so its signature is the view,
+        the list and the overlay — nothing else. Both local kinds answer `true`
+        in its `retain` for the same one reason, written once: *the window is
+        open because it is here*.
+      - **`WindowSubject::is_local()`, which is the Backlog entry this step was
+        told to do with itself rather than after itself.** The disconnect arm of
+        `net_command.rs` had to name `Skills` to drop it, and S3 would have added
+        `Status` beside it — two names to keep in step with
+        `open_local_window`'s. It is a predicate now: *nothing in the view holds
+        this window open*. A third local kind adds a variant to that `matches!`
+        and nothing else.
+      - **`Effect::Open` is one arm, through `LocalWindow::subject()`.** It was
+        two, and the second of them was `self.windows.status = true` — the field
+        rather than the door. Both go through `windows::open_local_window` now,
+        and so does the paperdoll's legacy button, whose two `bool`s became one
+        `Option<WindowSubject>` for the same reason: one request, one door, one
+        difference between them.
+      - **The `None` arm of this pane's layout is reachable, unlike the sheet's.**
+        The Status button asks for a fresh `0x11` and opens the window in one
+        press, so there are frames in which the window is open and this client
+        has not a single number to write on the frame. Drawing the empty gump
+        then would be a status window belonging to nobody, so the pane answers
+        `None` and the window appears with its numbers on the frame the reply
+        lands — which is a shop's shape (`render_passes.rs` keeps a reachable
+        arm for it), not a sheet's.
+
+      **One ordering changed, the same one S2 changed.** The frame used to be
+      appended by the *reconcile* on the frame after the press, because the
+      press only set a `bool`; it is appended by the press now. Two windows
+      opened on one frame can therefore cascade and stack in a different order
+      than before — which was already true of the skill sheet, and is the same
+      "position is the manager's" it always was.
 - [ ] **S4. Dialog.** `gump::Dialogs` is already close to a pane — it owns the
       page, the switches, the typed text and the held button. Mostly a move.
 - [ ] **S5. Paperdoll.** `held_doll`, `last_scroll`, `doll_clicked`, and the
@@ -465,13 +500,17 @@ never a half-routed frame.
   depends on the pointer owes a `Response::stale()`, and that needs the pane to
   remember what the tint was. Cheap, and worth doing with S5's paperdoll, which
   has the same shape and an `App::hover_paperdoll_item` to delete.
-- **A local window is closed by name in one place and by a `retain` in
-  another.** `App::close_window` drops any window with the same `retain`, and
-  the disconnect arm of `net_command.rs` has to name `WindowSubject::Skills`
-  because the view holds nothing for `reconcile_own_windows` to drop it by. S3
-  adds `Status` to that line, and two names is where it should become a
-  predicate — "every window whose existence is local" — rather than a list to
-  keep in step. Cheap, and worth doing *with* S3 rather than after it.
+- **The press that picks a window up is the manager's, and it lives in the
+  legacy chain's tail.** A press that hit no furniture ends
+  `press_on_own_window` with `raise_window` and a `dragging`, and that is what
+  moves a status frame today — the pane declines every input, exactly as
+  decision 2 says it should. But `manager_gestures` runs *ahead* of the panes,
+  and this has to run *behind* them: a shop's Confirm button and a sheet's
+  thumb have to be asked first. So S7 cannot simply move it up there; the
+  router grows a fourth rung — the manager's gestures that are the *fallback*
+  rather than the precondition — or `deliver` learns to run one after the
+  chain has passed. Worth settling when S7 writes it, and worth knowing now
+  that "delete the branches" leaves one behind that is not a branch.
 - **A scroll that could not move still asks for a frame.** `SkillsPane::wheel`
   answers `consumed` at either end, and the arrows and the track beside it
   answer `changed` unconditionally: pressing Up at the top of the list is a
@@ -479,21 +518,30 @@ never a half-routed frame.
   — it is the one whose answer decides whether the camera hears the event — and
   the buttons are the same conflation with nothing riding on it. One line each,
   and the shape is already there to copy.
-- **`Drawn` is produced by a pane but consumed by a pass that knows all six
-  kinds.** After S7 the pass's `match` is the last place with a per-kind branch.
-  It is a drawing question rather than an input one, so it is out of scope here,
-  but it is where a seventh window kind will still cost a branch.
+- **`Drawn` is produced by a pane but consumed by passes that know all six
+  kinds — and there are two of them.** `render_passes.rs` walks
+  `drawn_windows` to turn each kind's text into labels, and `presentation.rs`
+  has a second walk with the same `(WindowSubject, Drawn)` arms. **They already
+  disagree**: the vendor's arm draws its lines in one and is deliberately empty
+  in the other, with a comment explaining that the labels are drawn beside their
+  own art instead. That is `docs/parity.md`'s defect class exactly — one frame
+  assembled in more than one place, so agreement is a coincidence rather than a
+  property. After S7 these are the last per-kind branches left, and whichever
+  one is right, a seventh window kind costs two branches and a chance to forget
+  the second. A drawing question rather than an input one, so it is out of scope
+  here.
 
 ## Status
 
-**S0, S1 and S2 built** (2026-08-17). The router is real and every input the
-window layer sees goes through it. **Two kinds have moved in**: a shop owns its
-scroll position, its chosen quantities, its art, its layout and its input, and
+**S0 through S3 built** (2026-08-17). The router is real and every input the
+window layer sees goes through it. **Three kinds have moved in**: a shop owns
+its scroll position, its chosen quantities, its art, its layout and its input;
 the skill sheet owns its tree, the control the mouse is holding, its layout and
-its input. `App` no longer knows what a vendor or a skill window is except to
-close one. The other four behave exactly as they did — the third rung of
+its input; and the status frame owns its layout, which is all it has. `App` no
+longer knows what a vendor, a skill window or a status window is except to close
+one. The other three behave exactly as they did — the third rung of
 `App::deliver` is their old handlers, called only when no pane answered, and
-`render_passes.rs` still lays their four kinds out.
+`render_passes.rs` still lays their three kinds out.
 
 What this changed for a player, in one line each. **The wheel** (S0): `taken`
 rather than "did anything move" decides whether the camera hears a notch — the
@@ -501,10 +549,18 @@ defect this plan grew out of, stated as a type instead of as a convention.
 **A shop that is in both catalogues** (S1): what is drawn and what Confirm sends
 are now the same list; they were not. **Nothing at all** (S2): the skill sheet
 behaves as it did, minus a frame it used to ask for at the end of its list.
+**Nothing at all** (S3): the status frame opens on the press rather than on the
+frame after it, which is a cascade order and not a picture.
 
 The `||` chain the plan was written against is **gone**.
 `legacy_window_input`'s wheel arm has no terms left, because both windows with a
 wheel own it, and each answers the two questions as two fields.
+
+**No window's openness is kept outside the list of open windows any more.**
+`Windows::skills` went with S2 and `Windows::status` with S3, and
+`reconcile_own_windows` — which took one `bool` per local kind — now takes the
+view, the list and the overlay. The two kinds the view cannot answer for say so
+with `WindowSubject::is_local()` rather than by name.
 
 The `#[expect(dead_code)]` checklist is four: three fields nothing reads yet
 (`PaneFrame::hand`, `PaneCtx::modifiers`, `PaneCtx::now` — the container's and
@@ -512,7 +568,9 @@ the paperdoll's) and `Effect::Open` with `LocalWindow` beside it, which is
 *performed* but not yet asked for by a pane. The paperdoll asks for it at S5,
 through the same `windows::open_local_window` its legacy button already calls.
 
-Next is S3, the status frame: the smallest kind, and half of it is already done
-— `open_local_window` places it. What is left is the layout and deleting
-`Windows::status`, which is the last field that says "this window is open"
-anywhere but in the list of open windows.
+Next is S4, the `0xB0` dialog. It is the kind that is already closest to a pane
+— `gump::Dialogs` owns the page, the switches, the typed text and the held
+button, keyed by gump id — so the step is mostly a move: the entry per gump
+becomes the pane, `Dialogs::sync` becomes the `retain` that already runs, and
+`press_on_own_window`'s dialog arm (including the `{ nomove }` rule, which is a
+press that is taken and does *not* grab) becomes `DialogPane::handle`.

@@ -1025,15 +1025,18 @@ impl App {
                 self.apply_close_window(link::CloseTarget::Paperdoll(serial));
             }
             // Nothing in the view to tell and so nothing to overlay: the
-            // skills stay where they are, the way a paperdoll's equipment
-            // does. What closing takes away is the tree — which headings were
-            // shut and where the list was scrolled to — and the `retain` at
-            // the end of this is what takes it, because the tree is a field of
-            // the window's pane. That is deliberate and not a loss: the
-            // reference's window does not remember either, and a window with
-            // no memory is the backlog entry every kind here shares.
-            WindowSubject::Skills => {}
-            WindowSubject::Status => self.windows.status = false,
+            // skills and the status numbers stay where they are, the way a
+            // paperdoll's equipment does. What closing takes away is whatever
+            // the window's pane held — a tree for one kind, nothing at all for
+            // the other — and the `retain` at the end of this is what takes it.
+            // That is deliberate and not a loss: the reference's windows do not
+            // remember either, and a window with no memory is the backlog entry
+            // every kind here shares.
+            //
+            // The status arm used to be `self.windows.status = false`, which is
+            // the same close said twice: once here and once in a field. Step 3
+            // deleted the field.
+            WindowSubject::Skills | WindowSubject::Status => {}
             WindowSubject::Dialog(_) => unreachable!("answered above"),
         }
         self.windows

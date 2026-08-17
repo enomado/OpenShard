@@ -19,7 +19,7 @@ use openshard_client_render::outline::{self, Ring};
 use openshard_client_render::renderer::Target;
 use openshard_client_render::select::{self, Selection};
 use openshard_client_render::sprite::SpriteQuad;
-use openshard_client_render::{container, paperdoll, solids, status};
+use openshard_client_render::{container, paperdoll, solids};
 use openshard_protocol::containers::ContainedItem;
 use std::time::{Duration, Instant};
 
@@ -253,14 +253,12 @@ pub(crate) fn draw_gump_windows(
                     // sheet always has a layout — it draws its own frame with
                     // nothing at all in the view.
                     WindowSubject::Skills => {}
-                    WindowSubject::Status => {
-                        let (Some(status), Some(hits)) = (view.player.status.as_ref(), view.player.hits)
-                        else {
-                            continue;
-                        };
-                        drawn_windows
-                            .push((open.subject, Drawn::Status(status::window(status, hits, open.at))));
-                    }
+                    // Laid out by `panes::status::StatusPane` above, and
+                    // reaching here is the shop's case rather than the sheet's:
+                    // the Status button opens the window and asks for the
+                    // `0x11` in one press, so a frame or two can pass in which
+                    // this client has none of the numbers to write on it.
+                    WindowSubject::Status => {}
                     WindowSubject::Container(serial) => {
                         let Some(gump) = view.containers.get(&serial).copied() else {
                             continue;
