@@ -86,14 +86,18 @@ four are structural; the fifth is the one that decides it.
    and useless, because the client resolves `0x4000 | id` against its own
    `multi.mul` and has never heard of it.
 
-**A live trap found while writing this.** `CachedTerrain`
-(`movement/src/cache.rs:93`) and `LiveTerrain` (`state/src/obstruct.rs:179`) both
-wrap a `Terrain` and forward thirteen and seven methods respectively — and
-**neither forwards `multi_components`**, so both silently answer `&[]`. Housing gets away with it
-because its three readers reach `state.facet_state(facet).terrain` directly. The
-first caller to ask a *wrapped* terrain about a house's shape gets an empty list
-and no error. That is a defect independent of this plan and it is worth fixing
-whether or not any of this is built.
+**A live trap found while writing this — ~~fixed by boats B1~~.** `CachedTerrain`
+(`movement/src/cache.rs`) and `LiveTerrain` (`state/src/obstruct.rs`) both wrap a
+`Terrain` and forward its methods, and **neither forwarded `multi_components`**,
+so both silently answered `&[]`. Housing got away with it because its three
+readers reach `state.facet_state(facet).terrain` directly; the first caller to
+ask a *wrapped* terrain about a house's shape would have got an empty list and no
+error.
+
+Boats B1 was that caller, and it forwards both (`cache.rs:160`,
+`obstruct.rs:315`). The trap is closed — kept here because the shape of it is the
+lesson: a forwarding wrapper that drops one method fails silently, and this
+codebase has two of them.
 
 ## Decisions, taken here
 
@@ -451,12 +455,13 @@ rather than a hole in the shard.
 
 ## Backlog, found while planning this
 
-- **`CachedTerrain` and `LiveTerrain` drop `multi_components`.** They forward
-  thirteen and seven `Terrain` methods and not this one, so both answer `&[]`
-  with no error. Latent today only because housing's three readers reach the
-  terrain directly. Independent of this plan, and it is the shape of defect a
-  default method on a trait invites: an override that is missing looks exactly
-  like an override that was not needed.
+- ~~**`CachedTerrain` and `LiveTerrain` drop `multi_components`.**~~ **Fixed by
+  boats B1** (`cache.rs:160`, `obstruct.rs:315`). They forwarded thirteen and
+  seven `Terrain` methods and not this one, so both answered `&[]` with no error
+  — latent only because housing's three readers reach the terrain directly, and
+  B1 was the first caller that did not. It is the shape of defect a default
+  method on a trait invites: an override that is missing looks exactly like an
+  override that was not needed.
 - **`housing::place` re-reads the multi table three times** — `footprint_of`,
   `tiles_of` for the allowance, and `sign_spot`. Cheap at a click, and it becomes
   three reads of a `Vec<Component>` on the entity once designs exist, which is a

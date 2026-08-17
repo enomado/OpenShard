@@ -86,6 +86,11 @@ crate, owning its domain events:
 | `ai` | the creature brain: LOS aggro, cached-path chase, give-up, kiting, fleeing, retaliation | — |
 | `npc` | townsfolk: generated appearance and names, the greet/face/wander beat, the keyword answers, banker and vendor services, the town guards, and the creature `spawn` rule | `MobileSpawned` |
 | `crafting` | the five craft systems and their recipes, the chance curve, the workshop scan, ore smelting, and the craft window | `ItemCrafted` |
+| `quests` | the quest model, the objectives, and the quest gump | `QuestAccepted`, `QuestObjectiveUpdated`, `QuestCompleted`, … |
+| `housing` | placement and its refusals, the sign and the deed, locks and lockdowns, co-owners and friends and bans, decay, and the house design | — |
+| `boats` | a ship as a multi on the water: the berth, the `Boats` tile index, and mooring | — |
+| `guilds` | the guild, its five ranks, membership and titles | — |
+| `party` | the party, its invitations and its channel | — |
 
 The drawing/interest substrate they share (`show`, `forget`, `broadcast_move`,
 `refresh_around`, `reveal`, `mobile_incoming`, …) lives on `WorldState`, in the
@@ -95,7 +100,7 @@ rules.
 
 **Stubs** — declared so the dependency graph is visible.
 
-`housing`, `guilds`, `plugins`, `metrics`.
+`plugins`, `metrics`.
 
 **`crates/e2e/*` — tests, and the exception that proves the direction rule.**
 

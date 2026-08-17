@@ -53,7 +53,7 @@ exist (326 against 862 on one install, so the UOP wins).
 | door locks | **built** — `KeyValue`, the lock rules, and the house's own gate | — | n/a |
 | co-owners, friends, bans | **built** | n/a | n/a |
 | decay | **built** | n/a | n/a |
-| where a house may not go (`no_housing`) | **flag and data, no reader** — H6 | n/a | n/a |
+| where a house may not go (`no_housing`) | **built** — H6 gave the flag its reader, and closed 21 dungeons | n/a | n/a |
 | customisation (`0xD7` house design) | — | — | speaks it |
 
 `0x99` is the one packet that has to be written from nothing on both ends. It is
