@@ -799,6 +799,21 @@ never a half-routed frame.
   whether it is right rather than inherited. The honest fix is for a plate to be
   part of the window's picture — pixels rather than a box — which is also what
   would let it tint on hover like every other control this client draws.
+- **`Windows::world_press` is in the window layer because the hand is, and it
+  is not about a window.** An item lying on the ground is pressed exactly the
+  way an icon in a bag is — same type, same rule for what the press becomes —
+  and the manager holds it because the world has no pane. That is honest, and
+  the field is still the one thing in `Windows` that is not about a window. It
+  belongs beside the picking state, or in a `Hand`-shaped module of its own with
+  the two effects and `ItemPress::dragged`; worth deciding when S7 gives the
+  world's gestures their rung, since the two questions are the same one.
+- **A bag rebuilds its icon list two or three times a frame.** `contents()`
+  filters the view's list and projects a pending drop into it, and it is asked
+  by `art`, by `layout` and by a press on the sweep plate. Each is a `Vec` of
+  what is in the bag — small, and the same allocation the old layout made — but
+  it is a list computed from the same three inputs three times. Whether a pane
+  wants a once-a-frame scratch is a question for every kind and not just this
+  one, so it is not a container fix.
 - **A scroll that could not move still asks for a frame.** `SkillsPane::wheel`
   answers `consumed` at either end, and the arrows and the track beside it
   answer `changed` unconditionally: pressing Up at the top of the list is a
