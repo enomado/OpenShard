@@ -898,11 +898,69 @@ rebuilt whole whenever the camera walks off it, WebGL2 guarantees only 2048, and
 zooming out was already making that fire more often. N simultaneous worlds would
 turn an open question into a wall. N connections against one atlas does not.
 
+### The radar, and the three layers under it
+
+Built to the pixels, and not yet to a window. The reader, the reduction and the
+pass are in the tree; `WindowSubject::Minimap` and its input are not, and what
+is missing is named at the end of this section.
+
+**`radarcol.mul` is a flat table of `Color16` with no header and no index** —
+the offset *is* the key, the first `LAND_TILE_COUNT` are land and everything
+after is statics at `LAND_TILE_COUNT + graphic`. Neither reference server reads
+it, because both are shards and this is a render file, so the split was
+**confirmed against a real install** rather than ported: land `0x03` comes out
+green, land `0xA8` blue, static `0x0006` brown and static `0x0751` grey stone,
+and no other split produces four colours that are each the colour of the thing.
+
+**The file is not a fixed size.** The canonical table is 163,840 bytes; the
+install this was written against is **163,768** — thirty-six entries short, with
+no padding and no trailing zeroes. It simply stops. So the reader reads the
+length rather than demanding one, the split is a *position* rather than a size,
+and an id past the end is absent the same way an id inside it with no colour is.
+A reader that insisted on the canonical size would have refused the operator's
+own client and been wrong to.
+
+**One pixel per tile** (`render/src/radar.rs`) is a pure function of the map and
+that table, which is what lets the player's radar and the facet map below share
+it. Three details are each a bug: `Map::statics_at` is keyed by `(y, x)` and
+**not** sorted by z, so the highest is compared for rather than taken; the
+comparison against the land is `>=` and not `>`, because a floor lies at the
+ground's own height and `>` draws grass through marble; and a tile with no
+colour is `UNKNOWN` rather than transparent, because zero spells *absent* in
+these files and a transparent pixel is a hole in the window. The walk is
+block-major so `statics_in_block` is asked once per 8×8 rather than once per
+tile — the same cost `map.rs` records as the largest single phase of the
+lighting pass when it was asked per tile.
+
+**The radar gets its own texture and its own draw, outside `GumpAtlas`.** The
+deciding property is *mutability*, not identity: `GumpArt`'s two arms both name
+a picture in a client file and the atlas is a shelf packer for art that never
+changes, while a radar is generated and rewritten every step. It is also the
+cheaper way round — the gump atlas is 2048 square, so a corner of it for a
+256-tile radar would carry sixteen megabytes to draw a sixty-fourth of it.
+
+`radar.wgsl` has no hue (there is no ramp for a colour that was never in a
+client file) and no instances (one quad, so its place is in the uniform). **It is
+validated at pipeline creation and nowhere else**, being `include_str!`d — so
+`tests/radar_pass.rs` builds the pipeline on a real device, and earned itself
+immediately: the first draft named a uniform field `target`, which WGSL reserves.
+
+The player's marker is stamped into the bitmap rather than drawn as a second
+quad, so it rides the upload the map already costs. A cross and not a dot: at one
+pixel a tile a dot is indistinguishable from a lamp post.
+
+**What is left, and it is the window.** `WindowSubject::Minimap` beside `Skills`
+and `Status` — the two whose *existence* is local UI state rather than something
+the shard opened — its input in `own_windows/minimap.rs`, `Resources` holding
+the colour table, `Screen` holding the pass beside `gump_pass`, and the per-frame
+fill from wherever the player is standing. None of it needs a decision that has
+not been taken here.
+
 ### Where everybody is: the facet map
 
 "Control several at once" is unusable without one picture that shows all of
-them, and it is nearly free: one pixel per tile from `radarcol.mul` — still
-unread, on the missing-readers list — plus a marker per session. It is an egui
+them, and it is nearly free: one pixel per tile from `radarcol.mul` — **read
+now**, and reduced by the layer above — plus a marker per session. It is an egui
 image and shares nothing with the isometric renderer, which is what makes it
 cheap. It also answers the standing backlog item that a free camera can lose the
 character entirely, for every character at once.
@@ -1756,8 +1814,10 @@ own understanding had written.
   colours; `artLegacyMUL.uop` holds the land diamonds and the run-length encoded
   statics in one index space. `texmaps` followed, for the slopes. What is still
   missing: `unifont`, `light`, `sound`, `verdata`. `gumpart`, `anim`, `cliloc`
-  and `multi` were written for M4 and M5; `radarcol` for the radar. The first
-  picture no longer needs any of them.
+  and `multi` were written for M4 and M5; `radarcol` **is written now**, for the
+  radar — see the section above, including the install that is thirty-six
+  entries short of the canonical size. The first picture no longer needs any of
+  them.
 - **Gump art is deflated and nothing here can inflate it.** Every one of
   `gumpartLegacyMUL.uop`'s 5,556 entries has compression flag 3, where the map
   and art containers have none. `UopError::Compressed` says so rather than
