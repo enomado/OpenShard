@@ -39,7 +39,7 @@ reason.
 | `0xD8` the design itself | **sent**, on request | **drawn** | speaks it |
 | `0xBF 0x1D` the design revision | **sent**, with the draw and on commit | **cached, and asked on a miss** | speaks it |
 | a per-house component list | **nowhere it can live** — D1 | — | n/a |
-| a foundation on the ground | **refused by name** (`Refusal::NeedsCustomisation`) | would draw nothing | draws multis already |
+| a foundation on the ground | **placed, with a derived design** | **drawn** | draws multis already |
 | the design saved | — | n/a | n/a |
 | the editor | — | — | **has one** |
 
@@ -382,6 +382,43 @@ conclusion.
 `Refusal::NeedsCustomisation` goes away, replaced by C3's initial design at
 placement. The deed sells a foundation. A player can own one; it is a bare shell
 with a floor and stairs, and it draws.
+
+#### Built
+
+**The refusal did not go away, and that is the correction.** It stands wherever
+the design cannot be built — which is a shard with no client files, or an id
+inside the range whose platform this install does not hold. The design is built
+*out of* the foundation's own platform, so a foundation nobody can read is still
+a house nobody can get into, and it is still refused, for staff too.
+
+**The stair block is a derivation, which is what this phase went to find out.**
+`GetEmptyFoundation` copies the platform, grows the box one row south, lays four
+floor graphics around the perimeter and a stair along the new row. Every position
+falls out of the box. There is no per-house-type table to port.
+
+**There is one table, and it is a material rather than a house type.**
+`GetFoundationGraphics` is eight rows keyed by what the owner chose the floor to
+look like. That is the other side of the line that kept the door positions and
+the sign offsets out of this engine, so it is here — but only the reference's own
+default arm, because *which* material is the editor's question. A foundation
+placed today is dark wood and the constant says so, rather than seven rows
+nothing can reach.
+
+**The initial design is revision 1, not 0.** Zero is what `design::revision`
+answers for a house that has never been designed, so a foundation sitting at zero
+would be indistinguishable from a classic house and no client would ever be told
+its picture had arrived.
+
+**And the deed was no lines at all.** The plan called it "a line"; it turned out
+the deed hands its multi id straight to `housing::place`, which is where the
+refusal lived, so it started working the moment `place` did. That is worth a test
+rather than a claim — "it should already work" is how a path goes untested — and
+`a_deed_for_a_foundation_builds_a_house_with_a_design` crosses the deed, the
+cursor and the placement in one.
+
+**Still not reshapeable by a player.** `.hdesign` is staff-only and the editor is
+C3. A foundation stands, draws, has stairs and can be locked down in; that is the
+whole of what C2 promises.
 
 ### C3 — the session
 

@@ -15381,3 +15381,139 @@ fn a_designed_house_announces_its_revision_and_answers_the_ask() {
         "the shard sent the foundation's shape instead of the design's"
     );
 }
+
+/// **A deed for a foundation builds a designed house, through the ordinary
+/// path.**
+///
+/// C2's third step turned out to be no lines at all: the deed hands its multi
+/// id to `housing::place`, and `place` is where the foundation refusal lived.
+/// That is worth a test rather than a claim — "it should already work" is how a
+/// path goes untested, and this one crosses the deed, the cursor and the
+/// placement in one.
+#[test]
+fn a_deed_for_a_foundation_builds_a_house_with_a_design() {
+    use openshard_movement::Terrain;
+    use openshard_state::components::HouseDeed;
+    use openshard_uofiles::multi::Component;
+
+    struct Ground;
+    const FOUNDATION: u16 = 0x13EC;
+    const WALL: u16 = 0x0006;
+    impl Terrain for Ground {
+        fn can_step(&self, _from: Point, to: Point) -> Option<Point> {
+            Some(to)
+        }
+        /// A platform three tiles across. Width matters: the stair strip runs
+        /// `1..width`, so a one-tile platform gets none — which is the
+        /// reference's own arithmetic and not worth special-casing, but it does
+        /// make a degenerate fixture prove nothing.
+        fn multi_components(&self, id: u16) -> &[Component] {
+            const COMPONENTS: [Component; 3] = [
+                Component {
+                    graphic: WALL,
+                    dx: -1,
+                    dy: 0,
+                    dz: 0,
+                    flags: 1,
+                },
+                Component {
+                    graphic: WALL,
+                    dx: 0,
+                    dy: 0,
+                    dz: 0,
+                    flags: 1,
+                },
+                Component {
+                    graphic: WALL,
+                    dx: 1,
+                    dy: 0,
+                    dz: 0,
+                    flags: 1,
+                },
+            ];
+            if id == FOUNDATION { &COMPONENTS } else { &[] }
+        }
+        fn item_blocks(&self, graphic: Graphic) -> bool {
+            graphic.0 == WALL
+        }
+        fn item_height(&self, graphic: Graphic) -> u8 {
+            if graphic.0 == WALL { 20 } else { 0 }
+        }
+        fn can_fit(&self, _tile: openshard_movement::Tile, _z: i32, _height: i32) -> bool {
+            true
+        }
+    }
+
+    let now = Instant::now();
+    let mut world = world();
+    world.state.facet_state_mut(Facet(0)).terrain = Some(Box::new(Ground));
+    let connection = enter(&mut world, now);
+    let player = world.state.players[&connection];
+    let owner = world.state.registry.serial_of(player).unwrap();
+
+    gm::run(&mut world.state, player, "deed 0x13ec");
+    world.tick(now);
+    let deed = world
+        .state
+        .registry
+        .query::<HouseDeed>()
+        .map(|(entity, _)| entity)
+        .next()
+        .expect("a deed for a foundation");
+    // Into the pack: a deed on the ground is not one you hold, which the
+    // placement re-checks.
+    let backpack = items::backpack_of(&world.state, owner).expect("a backpack");
+    world.state.registry.remove::<Position>(deed);
+    world.state.registry.insert(
+        deed,
+        Contained {
+            container: backpack,
+            position: GumpPoint::new(20, 20),
+            grid: openshard_protocol::containers::GridSlot(0),
+        },
+    );
+    let deed_serial = world.state.registry.serial_of(deed).unwrap();
+    let _ = packets_for(&mut world, connection);
+
+    world.queue(Command::DoubleClick {
+        connection,
+        request: UseRequest::Use(RawSerial(deed_serial.raw())),
+    });
+    world.tick(now);
+    let raised = packets_for(&mut world, connection);
+    assert!(
+        raised.iter().any(|packet| packet[0] == 0x99),
+        "a deed for a foundation raised no cursor"
+    );
+
+    let at = Point::new(START.0 + 6, START.1 + 6, 0);
+    world.queue(Command::TargetResponse {
+        connection,
+        response: openshard_protocol::target::TargetResponse {
+            cursor_id: openshard_protocol::wire::CursorId(owner.raw()),
+            object: openshard_protocol::serial::Serial::new(0),
+            location: at,
+            graphic: None,
+            cancelled: false,
+        },
+    });
+    world.tick(now);
+
+    let house = world
+        .state
+        .registry
+        .query::<openshard_state::components::House>()
+        .map(|(entity, _)| entity)
+        .next()
+        .expect("a deed for a foundation built nothing");
+    let shape = openshard_housing::design::shape_of_house(&world.state, house)
+        .expect("a foundation placed from a deed has no design");
+    assert!(
+        shape.iter().any(|component| component.graphic == 0x0751),
+        "the house a deed built has no stairs"
+    );
+    assert!(
+        world.state.registry.entity_of(deed_serial).is_none(),
+        "the deed was not spent"
+    );
+}

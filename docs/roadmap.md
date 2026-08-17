@@ -2601,7 +2601,7 @@ Roughly in dependency order, each script-first:
   - [ ] **B3 — `0xF6`**, for the clients that can. Strictly additive.
   - [ ] **B4 — the boat as property**: the hold, the plank, the deed, decay.
     Housing's H2–H5 with a different noun.
-- [ ] `customisation` — the `0xD7` house design system. **C1 built; C2–C4
+- [ ] `customisation` — the `0xD7` house design system. **C1 and C2 built; C3–C4
   planned — see [`customisation.md`](customisation.md)**, which reverts housing's
   D7 in full. The decision it turned on was where a per-house component list
   lives: `Terrain::multi_components` cannot hold one — its only key is a `u16`,
@@ -2618,8 +2618,14 @@ Roughly in dependency order, each script-first:
     rather than a multi id (the sign, the doors, the lockdown area, the walls the
     fall-down path removes), and two of them were already wrong for a designed
     house before one could exist.
-  - [ ] **C2 — a foundation is placeable**, which is what makes
-    `Refusal::NeedsCustomisation` stop being the answer.
+  - [x] **C2 — a foundation is placeable.** Not by deleting the refusal: a
+    foundation's own component list has no stairs, so one is placed *with* the
+    initial design ServUO's `GetEmptyFoundation` derives — the platform, a floor
+    around the perimeter, and a stair strip along a row the box is grown by. The
+    refusal still stands where that design cannot be built, which is a shard with
+    no client files or an id whose platform this install does not hold. The
+    question it settled: the stair block is a **derivation**, not a per-house-type
+    table. A player can own a foundation; reshaping it is C3's.
   - [ ] **C3 — the session**: enter and leave, build and erase, floor selection,
     commit and revert. The editor itself, on the `0xD7` subcommand set.
   - [ ] **C4 — roofs, backup and restore, and the validation.** ServUO's
