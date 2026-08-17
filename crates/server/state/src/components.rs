@@ -2085,6 +2085,27 @@ pub struct Guard {
 
 /// A player's house: one entity that draws as a hundred statics.
 ///
+/// A ship on the water.
+///
+/// A [`House`]'s twin and deliberately not a variant of it: the two share the
+/// fact that they are one entity drawn as a multi, and share nothing else. A
+/// house has an access list, an age and an allowance; a boat has a heading and
+/// a tiller. Folding them together would mean every reader asking which kind it
+/// had before it could ask anything useful.
+///
+/// The **components are not here**, for [`House`]'s reason and more strongly: a
+/// boat's shape is a pure function of its multi id with no designed case at all,
+/// so it is exactly what that rule was written for. Where they *are* is
+/// [`Boats`](crate::Boats), which holds the derived answer — hull or deck, at
+/// what height — rather than the components themselves.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Boat {
+    /// Which multi it is, `0x4000` below the graphic on the wire.
+    pub multi: u16,
+    /// Who owns it.
+    pub owner: openshard_protocol::serial::Serial,
+}
+
 /// Beside a [`Position`] and a [`Drawn`] whose graphic is `0x4000 | multi`, so
 /// everything that already walks items — the sector index, the save, the `0x1A`
 /// that draws it — works on a house unchanged. What makes it a house is this

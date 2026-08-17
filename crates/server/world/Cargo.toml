@@ -23,6 +23,7 @@ openshard-ai.workspace = true
 openshard-chat.workspace = true
 openshard-combat.workspace = true
 openshard-crafting.workspace = true
+openshard-boats.workspace = true
 openshard-housing.workspace = true
 openshard-items.workspace = true
 openshard-magic.workspace = true

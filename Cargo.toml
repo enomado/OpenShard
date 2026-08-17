@@ -104,6 +104,7 @@ openshard-events = { path = "crates/common/events", version = "0.0.1" }
 openshard-gateway = { path = "crates/server/gateway", version = "0.0.1" }
 openshard-guilds = { path = "crates/server/guilds", version = "0.0.1" }
 openshard-party = { path = "crates/server/party", version = "0.0.1" }
+openshard-boats = { path = "crates/server/boats", version = "0.0.1" }
 openshard-housing = { path = "crates/server/housing", version = "0.0.1" }
 openshard-items = { path = "crates/server/items", version = "0.0.1" }
 openshard-login = { path = "crates/server/login", version = "0.0.1" }

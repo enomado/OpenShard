@@ -1,0 +1,25 @@
+[package]
+name = "openshard-boats"
+description = "Ships: placement over water, the hull that stops you and the deck that carries you."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+openshard-entities.workspace = true
+openshard-movement.workspace = true
+openshard-protocol.workspace = true
+openshard-state.workspace = true
+# A boat's shape is a multi like a house's, and this is the component type it
+# arrives as through `Terrain::multi_components`.
+openshard-uofiles.workspace = true
+
+[dev-dependencies]
+# The tests stand a bare `WorldState` up over a sea with one ship in the table.
+openshard-events.workspace = true

@@ -69,6 +69,7 @@ pub fn run(state: &mut WorldState, actor: EntityId, rest: &str) {
         "hunban" => house_list(state, actor, HouseChange::Unban),
         "hdemolish" => demolish_house(state, actor),
         "hdesign" => design_house(state, actor, &args),
+        "boat" => launch_boat(state, actor, &args),
         "admin" => crate::admin::open_menu(state, actor),
         "save" => save_world(state, actor),
         other => notify(state, actor, &format!("Unknown command '{other}'.")),
@@ -563,6 +564,37 @@ fn demolish_house(state: &mut WorldState, actor: EntityId) {
         actor,
         "The house comes down. What it held is in the crate.",
     );
+}
+
+/// `.boat <multi id>` — put a ship on the water at your feet.
+///
+/// `.house`'s shape, and the whole of B1's front door: until a shipwright sells
+/// one this is the only way a ship reaches the water at all. Staff-exempt on the
+/// judgements about the berth — a game master may moor in a fountain — but not
+/// on the arithmetic, so a hull that would land off the edge of the world is
+/// still refused. `docs/boats.md`'s B1.
+fn launch_boat(state: &mut WorldState, actor: EntityId, args: &[&str]) {
+    let Some(multi) = args.first().and_then(parse_u16) else {
+        notify(state, actor, "Usage: .boat <multi id>, e.g. .boat 0x0C");
+        return;
+    };
+    let Some(&openshard_state::components::Position(at)) =
+        state.registry.get::<openshard_state::components::Position>(actor)
+    else {
+        return;
+    };
+    let facet = state.facet_of(actor);
+    let Some(owner) = state.registry.serial_of(actor) else {
+        return;
+    };
+    match openshard_boats::place(state, actor, at, facet, multi, owner) {
+        Ok(_) => notify(
+            state,
+            actor,
+            &format!("A ship ({multi:#06x}) is moored at your feet."),
+        ),
+        Err(refusal) => notify(state, actor, refusal.message()),
+    }
 }
 
 /// `.hdesign <multi id>` — give the house you are standing in another multi's

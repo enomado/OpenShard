@@ -2535,6 +2535,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "openshard-boats"
+version = "0.0.1"
+dependencies = [
+ "openshard-entities",
+ "openshard-events",
+ "openshard-movement",
+ "openshard-protocol",
+ "openshard-state",
+ "openshard-uofiles",
+]
+
+[[package]]
 name = "openshard-chat"
 version = "0.0.1"
 dependencies = [
@@ -2921,6 +2933,7 @@ name = "openshard-world"
 version = "0.0.1"
 dependencies = [
  "openshard-ai",
+ "openshard-boats",
  "openshard-chat",
  "openshard-combat",
  "openshard-config",
