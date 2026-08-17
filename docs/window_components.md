@@ -115,13 +115,17 @@ struct PaneCtx<'a> {
     cursor: GumpPixel,          // the pointer, in gump pixels
     modifiers: Modifiers,       // shift/ctrl, for the split-drag
     now: Instant,               // for every double-click pair
+    hand: Option<ItemDrag>,     // what is on the cursor, if anything — D7
 }
 ```
 
 No `&mut App`, no `Link`, no `&mut WorldView`. `now` is passed rather than read
 from `Instant::now()` inside a pane, for the reason the tick's `Rng` is owned
 rather than ambient: a pair of clicks is a *timing* rule, and a rule read from
-an ambient clock cannot be exercised by a test.
+an ambient clock cannot be exercised by a test. `hand` is readonly for the same
+reason it is in the context at all: a pane needs it to answer "was something
+dropped on me" and to draw a wearable's preview, and no pane may fill or empty
+it — see D7.
 
 **D4. `taken` and `redraw` are two fields, because they are two questions.**
 This is the whole of the wheel defect, stated as a type instead of a comment.
@@ -143,11 +147,11 @@ enum Effect {
     Raise,                       // this pane to the top of the pile
     Close,                       // and off the list; overlay handled by the manager
     Grab(GumpPixel),             // start dragging this window, grabbed here
-    Net(Outgoing),               // the shard's half
+    Net(Outgoing),               // the shard's half — both halves of a transfer
+                                 // among them, as two ordinary effects (D7)
     Open(WindowSubject),         // a paperdoll's backpack button, say
-    Lift(ItemPress),             // D7
-    Drop(PendingDrop),           // D7
-    Prompt(SplitPrompt),         // the client-side amount dialog
+    Prompt(SplitPrompt),         // the client-side amount dialog, whose answer
+                                 // has to find its way back — see the Backlog
 }
 ```
 
@@ -162,13 +166,54 @@ and a *shared* atlas, which is only possible because packing is a separate call:
 of layout in `render_passes.rs`. The trait states that order instead of leaving
 it to the caller: `art` for every pane, pack once, then `layout` for every pane.
 
-**D7. An item drag crosses two panes, so it stays with the manager.** Lifting a
-sword out of a bag and dropping it on a paperdoll is one gesture over two
-windows and possibly the world; `ItemDragTransaction` is therefore *not* moved
-into a pane. Panes report `Effect::Lift`/`Effect::Drop` and the manager owns the
-transaction — the same shape egui uses for a drag payload, and the same reason:
-the only thing that can own a gesture spanning two components is the thing that
-contains both.
+**D7. The hand is a slot, not a gesture: a transfer is two transactions.** An
+earlier draft of this decision said that lifting a sword out of a bag and
+dropping it on a paperdoll is "one gesture over two windows", by analogy with an
+egui drag payload, and kept the transaction with the manager for that reason.
+The conclusion stands; the reason was wrong, and the reason is what decides the
+shape.
+
+Lifting and dropping are two independent requests with **server state between
+them**. `0x07` puts the item into a slot on the connection, `0x08` or `0x13`
+takes it out, and `0x27` bounces it back to where it came from. This shard's own
+server is already built exactly that way: `Connection::held: Option<HeldItem>`
+(`crates/server/state/src/connection.rs:107`) holds an item that is "in limbo
+until a `0x08` lands it", one per connection because "a cursor holds one thing",
+and a second lift is answered by bouncing the first
+(`DragCancelReason::AlreadyHolding`, `crates/server/items/src/drag.rs:31`).
+
+So the hand stays full for as long as the player likes. They can walk, open a
+third bag, close the window the item came out of, or drop the connection — which
+the server handles by name, because an item in the hand is off every sector and
+out of everyone's `seen`. The pane that sourced the item need not exist when the
+drop happens, and there is no gesture spanning anything.
+
+That splits today's `ItemDragTransaction` along the seam `owns_cursor` already
+admits — "after `Held` the shard may already have detached the item from its
+source":
+
+- `Pressed` — a press that has not moved yet and may still become a double-click
+  "use". One window, one gesture, nothing sent. **Private to the pane**, like
+  every other press-and-release pair the window layer already keeps
+  (`held_doll`, `held_skill`, `gump::Dialogs::holding`).
+- `Held` and `Dropped` — the hand, and a drop whose answer is in flight. A
+  mirror of the server's slot, so **the manager's**, and readonly in `PaneCtx`.
+
+There is one hand because the *server* has one, not because this plan picked a
+number: the invariant is `AlreadyHolding`, read off the other end of the wire.
+ClassicUO agrees about the owner — `ItemHold` is a field of `GameCursor`
+(`GameCursor.cs:144`), not of any gump, and the eight gumps that mention it only
+read it.
+
+What this buys is that there is no `Lift`/`Drop` effect *pair*. A pane emits
+`Net(Outgoing::PickUp)`; later, and possibly from another pane, some pane emits
+`Net(Outgoing::DropInto | Equip | DropOnGround)`. Two ordinary effects with
+nothing paired about them. What stays with the manager is the part that was never
+a pane's: the precondition that a press does nothing at all while the hand is
+full — today the first question `press_on_own_window` asks
+(`own_windows.rs:724`) — the local projection that subtracts the item from its
+source until the shard answers (`reproject_item_drag`), and drawing the item on
+the cursor, which is the cursor's job and not a window's.
 
 **D8. What is not a pane.** `own_windows`, `locally_closed`,
 `reconcile_own_windows` and the cascade stay where they are — they are about
@@ -201,9 +246,9 @@ never a half-routed frame.
       page, the switches, the typed text and the held button. Mostly a move.
 - [ ] **S5. Paperdoll.** `held_doll`, `last_scroll`, `doll_clicked`, and the
       seven buttons. First kind whose effects are mostly `Open` and `Net`.
-- [ ] **S6. Container.** Last, because it is the one the item drag runs through
-      — D7's `Lift`/`Drop` are exercised here for the first time against a real
-      second pane.
+- [ ] **S6. Container.** Last, because it is the one the hand runs through: the
+      first pane to own a `Pressed` of its own, to read `ctx.hand` for a drop
+      onto itself, and to emit both halves of D7's transfer as separate effects.
 - [ ] **S7. Delete the branches.** `press_on_own_window`,
       `release_on_own_window`, `scroll_vendor`, `scroll_skills`,
       `hover_container_item`, `hover_paperdoll_item` and the `WindowSubject`
@@ -227,6 +272,15 @@ never a half-routed frame.
   still reaches the camera. Panes make this a per-pane decision that is *visible*
   as a decision, but it does not settle it — somebody has to say which is right.
   ClassicUO claims the whole window.
+- **Who a modal's answer is addressed to.** D7 leaves `Pressed` inside the pane,
+  and a Shift-drag suspends exactly that state while the client's own amount
+  prompt is open: `split_pending` is set, and the answer arrives later from the
+  shell as `finish_stack_split(decision)`, which reads `item_drag` back out of
+  `Windows`. Once the press lives in a pane, that answer has to be *delivered* to
+  the pane that asked — an `Input::Answered(..)` routed by identity rather than
+  by "whoever is at the top", because the player can raise another window while
+  the prompt is up. The same question will be asked again by any other
+  client-side modal, so it is worth settling once rather than at S6.
 - **`Drawn` is produced by a pane but consumed by a pass that knows all six
   kinds.** After S7 the pass's `match` is the last place with a per-kind branch.
   It is a drawing question rather than an input one, so it is out of scope here,
