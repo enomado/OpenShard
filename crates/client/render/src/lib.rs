@@ -69,6 +69,7 @@ pub mod paperdoll;
 pub mod place;
 pub mod plan;
 pub mod png;
+pub mod radar;
 pub mod renderer;
 pub mod scene;
 pub mod select;
