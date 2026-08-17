@@ -180,6 +180,8 @@ and the two are kept in step by hand.
 | `gump::InvalidSwitchId::id` | the rejected value, carried on the error for its `Display` impl — [N8 amendment 3](#amendments-forced-by-n8-the-sweep) |
 | `context::InvalidContextMenuIndex::tag` | same | 
 | `wire::InvalidCharacterSlot::slot` | same |
+| `design::DesignTile::{dx, dy, dz}` | a signed tile displacement from a house's origin — `target.rs::offset`'s geometry, at `i8` because the wire's stair buffer gives each offset one byte |
+| `design::DesignBounds::{x_min, y_min}` | the corner the grid planes are indexed from, in that same displacement space: subtracted from one and added back to the other |
 
 `containers::ContainedItem::{x, y}` came *off* this list in N5: they are one
 `GumpPoint` now, as [N4 amendment 6](#amendments-forced-by-n4-containersrs)

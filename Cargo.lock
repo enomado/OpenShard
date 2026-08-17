@@ -2839,6 +2839,7 @@ version = "0.0.1"
 name = "openshard-protocol"
 version = "0.0.1"
 dependencies = [
+ "miniz_oxide 0.9.1",
  "serde",
 ]
 

@@ -70,6 +70,27 @@ const ALLOWLIST: &[(&str, &str, &str)] = &[
     ("world.rs", "width", "MapSize: same argument as Point"),
     ("world.rs", "height", "MapSize: same"),
     (
+        "design.rs",
+        "dx",
+        "DesignTile: a signed tile displacement from a house's origin — the same geometry \
+         target.rs's offset is, and the same reason it is not a Point. Narrower than that \
+         one at i8, because the wire's stair buffer writes each offset as a single byte and \
+         nothing wider could survive the round trip",
+    ),
+    ("design.rs", "dy", "DesignTile: same"),
+    (
+        "design.rs",
+        "dz",
+        "DesignTile: same, and it is compared against the five storey heights to pick a plane",
+    ),
+    (
+        "design.rs",
+        "x_min",
+        "DesignBounds: the corner the grid planes are indexed from, in the same displacement \
+         space as DesignTile's dx — it is subtracted from one and added back to the other",
+    ),
+    ("design.rs", "y_min", "DesignBounds: same"),
+    (
         "gump.rs",
         "x",
         "GumpPoint: the same argument in gump-space pixels, signed for negative layout offsets",

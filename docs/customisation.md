@@ -35,8 +35,8 @@ reason.
 |---|---|---|---|
 | `0xD7` header decode | **built** — `encoded.rs`, total `Other(u16)` fallthrough | sends two subcommands | speaks it |
 | the `0xD7` design subcommands | — | — | speaks them |
-| `0xD8` the design itself | **no packet at all** | **no packet at all** | speaks it |
-| `0xBF 0x1D` the design revision | **no packet at all** | **no packet at all** | speaks it |
+| `0xD8` the design itself | **built** — `design.rs`, nothing sends it yet | **built** — decodes, nothing draws it yet | speaks it |
+| `0xBF 0x1D` the design revision | **built** — `design.rs`, nothing sends it yet | **built** — decodes, nothing caches on it yet | speaks it |
 | a per-house component list | **nowhere it can live** — D1 | — | n/a |
 | a foundation on the ground | **refused by name** (`Refusal::NeedsCustomisation`) | would draw nothing | draws multis already |
 | the design saved | — | n/a | n/a |
@@ -292,9 +292,42 @@ the seam.
 1. `HouseDesign` in `openshard-state`; C2's chooser through the three readers.
 2. The design table, the restore join, schema v31.
 3. `0xBF 0x1D` and `0xD8`, both ends.
-4. `net_command::multi_pieces` answers `None` for a designed house — C8.
+4. `net_command::multi_pieces` refuses to draw a house it has no shape for — C8.
 5. `.hdesign <multi id>` — a staff verb that copies an existing multi's
    components onto a house as its design.
+
+> **Steps 3 and 4 are built, and both of C1's open questions answered yes.**
+> `openshard-protocol`'s `design` module encodes and decodes both packets, with
+> the layout read out of `HouseFoundation.cs` rather than guessed. `miniz_oxide`
+> cost the one manifest line this document predicted, and `Feature::CustomMulti`
+> was already there waiting.
+>
+> Two things the plan did not know, and they are the half worth reading:
+>
+> - **`0xD8` cannot be encoded by this crate alone.** Which plane a tile goes in
+>   turns on whether its graphic is a *floor*, and that is `tiledata`'s height —
+>   a client file `openshard-protocol` has never read and must not start. So
+>   `encode` takes the predicate and the caller, which holds a `Terrain`,
+>   supplies it. It is the same seam `Terrain::multi_components` is, one crate
+>   lower down.
+> - **Decoding needs the house's width and height, and no field carries them.**
+>   The grid stride *is* the height. A real client reads it off the foundation's
+>   own multi; ours is handed a `DesignBounds`. That is a property of the packet
+>   rather than a shortcut — the two ends have to agree on the box before a byte
+>   of it means anything.
+>
+> Why the layout is shaped that way is not obvious and is worth one line: it is a
+> **sparse encoding by elevation**. A house's tiles cluster at five `dz` values,
+> so each becomes a fixed-stride grid of `u16` graphics with zero meaning
+> "nothing here" — and deflate erases the zeroes. Everything that breaks the
+> assumption, a tile at an odd height or outside its plane's grid, falls into a
+> *stair buffer* written longhand. No tile is ever dropped for being unusual; it
+> is only ever more expensive.
+>
+> One departure from the reference, and it changes no byte on the wire: ServUO
+> writes the plane count and the buffer length as placeholders and seeks back to
+> offsets 15 and 17 to patch them. Here the planes are built first, so both are
+> known before anything goes out.
 
 **No `0xD7` at all, and that is the point.** It proves `0xD8` against a real
 client with components that came out of a file, so a bug in the packet is a bug

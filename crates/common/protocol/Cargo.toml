@@ -12,4 +12,9 @@ authors.workspace = true
 workspace = true
 
 [dependencies]
+# `0xD8` sends a house's design deflated, so the design packet needs zlib.
+# `miniz_oxide` and not `flate2` because that crate's C backend is ruled out by
+# this workspace's `unsafe_code = "deny"`; `uofiles` made the same choice for
+# gumpart and the UOP multi reader.
+miniz_oxide.workspace = true
 serde.workspace = true
