@@ -226,6 +226,20 @@ CREATE TABLE IF NOT EXISTS houses (
 -- components are saved, and the table above says why they are not saved there:
 -- a classic multi's shape is a pure function of its id, and a design is the
 -- original with nothing to go stale against. A classic house writes no rows.
+-- Every ship on the water. No component table beside it, unlike the houses: a
+-- boat's shape is a pure function of its multi id with no designed case at all,
+-- so it is exactly what that rule was written for. The hull-or-deck split is
+-- recomputed at boot from the same multi table the mooring read.
+CREATE TABLE IF NOT EXISTS boats (
+    serial INTEGER PRIMARY KEY,
+    multi  INTEGER NOT NULL,
+    x      INTEGER NOT NULL,
+    y      INTEGER NOT NULL,
+    z      INTEGER NOT NULL,
+    facet  INTEGER NOT NULL,
+    owner  INTEGER NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS house_designs (
     house    INTEGER NOT NULL,
     revision INTEGER NOT NULL,
@@ -437,6 +451,7 @@ impl Store for SqliteStore {
         let alliances = snapshot.alliances.clone();
         let houses = snapshot.houses.clone();
         let designs = snapshot.designs.clone();
+        let boats = snapshot.boats.clone();
         let world = snapshot.world;
         blocking(move || {
             let mut guard = connection
@@ -752,6 +767,27 @@ impl Store for SqliteStore {
                                 // SQLite has no unsigned 64-bit; bit-cast, and
                                 // read back the same way.
                                 row.flags.cast_signed(),
+                            ],
+                        )
+                        .map_err(database)?;
+                }
+            }
+            // The ships, replace-all like the houses: a scuttling is an absence.
+            if let Some(boats) = &boats {
+                transaction.execute("DELETE FROM boats", []).map_err(database)?;
+                for boat in boats {
+                    transaction
+                        .execute(
+                            "INSERT INTO boats (serial, multi, x, y, z, facet, owner) \
+                             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                            params![
+                                boat.serial.raw(),
+                                boat.multi,
+                                boat.x,
+                                boat.y,
+                                boat.z,
+                                boat.facet,
+                                boat.owner.raw(),
                             ],
                         )
                         .map_err(database)?;
@@ -1183,6 +1219,49 @@ impl Store for SqliteStore {
         .await
     }
 
+    async fn boats(&self) -> Result<Vec<crate::record::BoatRecord>, StoreError> {
+        let connection = Arc::clone(&self.connection);
+        blocking(move || {
+            let guard = connection.lock().expect("the sqlite mutex is never poisoned");
+            let mut statement = guard
+                .prepare("SELECT serial, multi, x, y, z, facet, owner FROM boats ORDER BY serial")
+                .map_err(database)?;
+            let rows = statement
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, u32>(0)?,
+                        row.get::<_, u16>(1)?,
+                        row.get::<_, u16>(2)?,
+                        row.get::<_, u16>(3)?,
+                        row.get::<_, i8>(4)?,
+                        row.get::<_, u8>(5)?,
+                        row.get::<_, u32>(6)?,
+                    ))
+                })
+                .map_err(database)?;
+            let mut boats = Vec::new();
+            for row in rows {
+                let (serial, multi, x, y, z, facet, owner) = row.map_err(database)?;
+                // A row this engine did not write is a missing ship, not a shard
+                // that refuses to boot — the houses reader's reasoning.
+                let (Some(serial), Some(owner)) = (Serial::new(serial), Serial::new(owner)) else {
+                    continue;
+                };
+                boats.push(crate::record::BoatRecord {
+                    serial,
+                    multi,
+                    x,
+                    y,
+                    z,
+                    facet,
+                    owner,
+                });
+            }
+            Ok(boats)
+        })
+        .await
+    }
+
     async fn houses(&self) -> Result<Vec<crate::record::HouseRecord>, StoreError> {
         let connection = Arc::clone(&self.connection);
         blocking(move || {
@@ -1462,6 +1541,7 @@ mod tests {
             alliances: None,
             houses: None,
             designs: None,
+            boats: None,
             world: None,
         }
     }
@@ -1857,6 +1937,7 @@ mod tests {
             alliances: None,
             houses: None,
             designs: None,
+            boats: None,
             world: None,
         };
         let error = store.save(&future).await.expect_err("must refuse");

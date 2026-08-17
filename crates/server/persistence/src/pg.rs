@@ -126,6 +126,18 @@ CREATE TABLE IF NOT EXISTS alliances (
 -- Every house. The components are absent on purpose: a multi's shape is a pure
 -- function of its id and lives in the client's own files, so the footprint is
 -- recomputed at boot rather than saved. See the sqlite schema's own note.
+-- Every ship on the water. See the sqlite schema for why no component table
+-- stands beside it.
+CREATE TABLE IF NOT EXISTS boats (
+    serial BIGINT PRIMARY KEY,
+    multi  INTEGER NOT NULL,
+    x      INTEGER NOT NULL,
+    y      INTEGER NOT NULL,
+    z      SMALLINT NOT NULL,
+    facet  SMALLINT NOT NULL,
+    owner  BIGINT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS houses (
     serial BIGINT PRIMARY KEY,
     multi  INTEGER NOT NULL,
@@ -600,6 +612,30 @@ impl Store for PgStore {
                     .map_err(database)?;
             }
         }
+        if let Some(boats) = &snapshot.boats {
+            transaction
+                .execute("DELETE FROM boats", &[])
+                .await
+                .map_err(database)?;
+            for boat in boats {
+                transaction
+                    .execute(
+                        "INSERT INTO boats (serial, multi, x, y, z, facet, owner) \
+                         VALUES ($1, $2, $3, $4, $5, $6, $7)",
+                        &[
+                            &i64::from(boat.serial.raw()),
+                            &i32::from(boat.multi),
+                            &i32::from(boat.x),
+                            &i32::from(boat.y),
+                            &i16::from(boat.z),
+                            &i16::from(boat.facet),
+                            &i64::from(boat.owner.raw()),
+                        ],
+                    )
+                    .await
+                    .map_err(database)?;
+            }
+        }
         if let Some(houses) = &snapshot.houses {
             transaction
                 .execute("DELETE FROM houses", &[])
@@ -836,6 +872,35 @@ impl Store for PgStore {
                     dy: i16::try_from(row.get::<_, i32>(4)).ok()?,
                     dz: i16::try_from(row.get::<_, i32>(5)).ok()?,
                     flags: row.get::<_, i64>(6).cast_unsigned(),
+                })
+            })
+            .collect())
+    }
+
+    async fn boats(&self) -> Result<Vec<crate::record::BoatRecord>, StoreError> {
+        let client = self.client.lock().await;
+        let rows = client
+            .query(
+                "SELECT serial, multi, x, y, z, facet, owner FROM boats ORDER BY serial",
+                &[],
+            )
+            .await
+            .map_err(database)?;
+        Ok(rows
+            .iter()
+            .filter_map(|row| {
+                // A row this engine did not write is a missing ship, not a shard
+                // that refuses to boot — the houses reader's reasoning.
+                let serial = Serial::new(u32::try_from(row.get::<_, i64>(0)).ok()?)?;
+                let owner = Serial::new(u32::try_from(row.get::<_, i64>(6)).ok()?)?;
+                Some(crate::record::BoatRecord {
+                    serial,
+                    multi: u16::try_from(row.get::<_, i32>(1)).ok()?,
+                    x: u16::try_from(row.get::<_, i32>(2)).ok()?,
+                    y: u16::try_from(row.get::<_, i32>(3)).ok()?,
+                    z: i8::try_from(row.get::<_, i16>(4)).ok()?,
+                    facet: u8::try_from(row.get::<_, i16>(5)).ok()?,
+                    owner,
                 })
             })
             .collect())
@@ -1342,6 +1407,7 @@ mod tests {
             alliances: None,
             houses: None,
             designs: None,
+            boats: None,
             world: None,
         }
     }
@@ -1586,6 +1652,7 @@ mod tests {
             alliances: None,
             houses: None,
             designs: None,
+            boats: None,
             world: None,
         };
         let error = store.save(&future).await.expect_err("must refuse");

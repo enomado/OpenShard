@@ -350,7 +350,13 @@ mod optional_serial {
 ///   which for a foundation is a bare platform. The shard comes up with a
 ///   customised house wearing the foundation's walls, and nothing says so. That
 ///   is worse than a house with no walls, which is at least visible.
-pub const SCHEMA_VERSION: u32 = 31;
+/// - v32: **boats**. A new table and nothing else touched, so an older *reader*
+///   is only missing ships — but an older **writer** is the problem again, and
+///   worse than v30's: it does not know the `boats` table, saves a world with
+///   none in it, and every ship on the shard is gone on the next boot along with
+///   whatever was standing on the deck's tiles. A house at least stays where it
+///   was; a fleet does not come back.
+pub const SCHEMA_VERSION: u32 = 32;
 
 /// One component of a house whose shape nobody shipped.
 ///
@@ -392,6 +398,38 @@ pub struct HouseDesignRecord {
     /// `openshard_uofiles::multi` — and the reader has already normalised both
     /// into "non-zero is drawn" by the time a design is built from one.
     pub flags: u64,
+}
+
+/// A ship, as saved.
+///
+/// **The components are not here**, and unlike a house this is not even a close
+/// call: a boat's shape is a pure function of its multi id with no designed case
+/// at all, so it is exactly what [`HouseRecord`]'s rule was written for. The
+/// derived answer — which tiles are hull and which are deck, at what height — is
+/// recomputed at boot from the same table the placement read.
+///
+/// No access lists and no age. A boat's own property rules are B4's, and adding
+/// the columns before there is anything to put in them would be guessing at
+/// their shape.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub struct BoatRecord {
+    /// Its item serial, so the ship comes back as the same thing to a client
+    /// that had it on screen.
+    #[serde(with = "serial")]
+    pub serial: Serial,
+    /// Which multi, `0x4000` below the graphic on the wire.
+    pub multi: u16,
+    /// Where its origin floats — not the corner of its box.
+    pub x: u16,
+    /// The same, south.
+    pub y: u16,
+    /// And its height, which for a moored ship is the waterline.
+    pub z: i8,
+    /// Which facet it is on.
+    pub facet: u8,
+    /// Who owns it.
+    #[serde(with = "serial")]
+    pub owner: Serial,
 }
 
 /// A player's house, as saved.

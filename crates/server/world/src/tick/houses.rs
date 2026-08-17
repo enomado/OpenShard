@@ -58,6 +58,85 @@ impl World {
             .collect()
     }
 
+    /// Every ship as a saveable record.
+    ///
+    /// No component list beside it, unlike the houses: a boat's shape is a pure
+    /// function of its multi id, so the hull-and-deck split is recomputed at
+    /// boot from the same multi table the mooring read.
+    pub(super) fn boat_records(&self) -> Vec<openshard_persistence::record::BoatRecord> {
+        self.state
+            .registry
+            .query::<openshard_state::components::Boat>()
+            .filter_map(|(entity, boat)| {
+                let serial = self.state.registry.serial_of(entity)?;
+                let &Position(at) = self.state.registry.get::<Position>(entity)?;
+                Some(openshard_persistence::record::BoatRecord {
+                    serial,
+                    multi: boat.multi,
+                    x: at.x,
+                    y: at.y,
+                    z: at.z,
+                    facet: self.state.facet_of(entity).0,
+                    owner: boat.owner,
+                })
+            })
+            .collect()
+    }
+
+    /// Put the ships back at boot.
+    ///
+    /// [`restore_houses`](Self::restore_houses)' reasoning, and not through
+    /// `openshard_boats::place`: that decides whether a ship *may* float
+    /// somewhere, and a ship that was afloat when it was launched stays afloat.
+    /// A shard that later corrected a map's water flags would otherwise sink a
+    /// fleet at the next restart.
+    pub fn restore_boats(&mut self, records: Vec<openshard_persistence::record::BoatRecord>) {
+        let mut restored = 0;
+        let mut shapeless = 0;
+        for record in records {
+            let facet = Facet(record.facet);
+            let at = Point::new(record.x, record.y, record.z);
+            let entity = self.state.registry.spawn();
+            if self.state.registry.bind_serial(entity, record.serial).is_err() {
+                warn!(serial = %record.serial, "a saved ship's serial was already taken");
+                self.state.registry.despawn(entity);
+                continue;
+            }
+            self.state.registry.insert(
+                entity,
+                Drawn {
+                    id: Graphic(openshard_boats::MULTI_FLAG | record.multi),
+                    hue: Hue(0),
+                },
+            );
+            self.state.registry.insert(entity, Position(at));
+            self.state.registry.insert(
+                entity,
+                openshard_state::components::Boat {
+                    multi: record.multi,
+                    owner: record.owner,
+                },
+            );
+            self.state.registry.insert(entity, facet);
+            self.state.facet_state_mut(facet).sectors.insert(entity, at);
+            // The hull-and-deck split, recomputed. A shard with no client files
+            // gets a ship that draws on every client and carries nobody — the
+            // same bargain a house's walls make, and for the same reason.
+            match openshard_boats::planks_of(&self.state, entity, at, facet, record.multi) {
+                Ok(berth) => self.state.facet_state_mut(facet).boats.moor(entity, berth),
+                Err(_) => shapeless += 1,
+            }
+            restored += 1;
+        }
+        if restored > 0 {
+            info!(
+                boats = restored,
+                without_shape = shapeless,
+                "ships back on the water"
+            );
+        }
+    }
+
     /// Every designed house's components, flattened into one list.
     ///
     /// One row per component of every house carrying a

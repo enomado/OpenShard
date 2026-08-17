@@ -1081,6 +1081,7 @@ mod tests {
             alliances: None,
             houses: None,
             designs: None,
+            boats: None,
             world: None,
         }
     }

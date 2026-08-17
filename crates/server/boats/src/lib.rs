@@ -82,13 +82,17 @@ type Berth = ((u16, u16), Plank);
 
 /// The tiles a boat standing at `at` would cover, and what each one is.
 ///
+/// Public because the boot path needs it without going through [`place`]'s
+/// refusals — a ship that was afloat when it was launched stays afloat, the way
+/// a house that was legal when it was built stays built.
+///
 /// A component that blocks by its tiledata is hull; everything else is deck. The
 /// split is the whole of what [`Boats`](openshard_state::Boats) needs, and it is
 /// made once here rather than per step.
 ///
 /// Undrawn components are skipped, the way a house's footprint skips them: the
 /// signature tile every multi opens with is not part of the ship.
-fn planks(
+pub fn planks_of(
     state: &WorldState,
     boat: EntityId,
     at: Point,
@@ -158,7 +162,7 @@ pub fn place(
     // The shape is derived before anything is written, so a refusal below leaves
     // nothing behind but the serial — which is the one thing that cannot be
     // taken back, and is why this is the first fallible step after it.
-    let berth = match planks(state, entity, at, facet, multi) {
+    let berth = match planks_of(state, entity, at, facet, multi) {
         Ok(berth) => berth,
         Err(refusal) => {
             state.registry.despawn(entity);

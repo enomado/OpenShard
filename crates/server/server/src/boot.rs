@@ -475,6 +475,14 @@ async fn restore_guilds(store: &dyn Store, world: &mut World) {
         }
         Err(error) => error!(%error, "could not read saved houses; starting with none"),
     }
+    // And the ships, on the same terms and for the same reason: a mooring asks
+    // the terrain which of its tiles are hull and which are deck, so it has to
+    // come after the facets. Separate from the houses because a fleet and a
+    // village fail independently.
+    match store.boats().await {
+        Ok(boats) => world.restore_boats(boats),
+        Err(error) => error!(%error, "could not read saved boats; starting with none"),
+    }
     match store.alliances().await {
         Ok(alliances) => world.restore_alliances(alliances),
         Err(error) => error!(%error, "could not read saved alliances; starting with none"),

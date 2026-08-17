@@ -67,8 +67,8 @@ use openshard_entities::EntityId;
 use openshard_protocol::serial::Serial;
 
 use crate::record::{
-    CharacterRecord, DecorationRecord, GuildRecord, HouseDesignRecord, HouseRecord, Inventory, ItemRecord,
-    MobileRecord, RegionRecord, SCHEMA_VERSION, SpawnerRecord, WorldRecord,
+    BoatRecord, CharacterRecord, DecorationRecord, GuildRecord, HouseDesignRecord, HouseRecord, Inventory,
+    ItemRecord, MobileRecord, RegionRecord, SCHEMA_VERSION, SpawnerRecord, WorldRecord,
 };
 
 /// A consistent picture of everything that changed, taken at one tick.
@@ -137,6 +137,12 @@ pub struct Snapshot {
     /// that swept no houses; empty on a shard where every house is a classic
     /// multi, which is every shard until somebody designs one.
     pub designs: Option<Vec<HouseDesignRecord>>,
+    /// Every ship on the water. `None` in a snapshot that swept no boats.
+    ///
+    /// No component list beside it, unlike the houses: a boat's shape is a pure
+    /// function of its multi id with no designed case, so it is exactly what
+    /// that rule was written for.
+    pub boats: Option<Vec<BoatRecord>>,
     /// The world's own scalars — the clock and the roll generator's position — when
     /// this snapshot swept them. `None` in a snapshot that carried only character
     /// changes; the stored row stands.
@@ -178,6 +184,7 @@ impl Snapshot {
             + self.alliances.as_ref().map_or(0, Vec::len)
             + self.houses.as_ref().map_or(0, Vec::len)
             + self.designs.as_ref().map_or(0, Vec::len)
+            + self.boats.as_ref().map_or(0, Vec::len)
     }
 }
 
@@ -344,6 +351,7 @@ impl Journal {
             alliances: None,
             houses: None,
             designs: None,
+            boats: None,
             world: None,
         })
     }

@@ -1171,3 +1171,123 @@ fn a_classic_house_writes_no_design_rows() {
         "a classic house wrote design rows"
     );
 }
+
+/// **A ship survives a restart with its deck under it.**
+///
+/// The half that is easy to leave out is the same one a house's walls are: the
+/// entity can come back perfectly and carry nobody, because the hull-and-deck
+/// split is *not* saved — a boat's shape is a pure function of its multi id, so
+/// what is saved is the id and the position and the split is recomputed. A test
+/// that only checked the `Boat` component came back would pass on a shard whose
+/// ships you fall straight through.
+#[test]
+fn a_boat_survives_a_restart_with_its_deck() {
+    use openshard_movement::{Terrain, Tile};
+    use openshard_uofiles::multi::Component;
+
+    /// A sea that knows one ship: a hull plank and a deck plank.
+    struct Sea;
+    const SLOOP: u16 = 0x0C;
+    const HULL: u16 = 0x3E4E;
+    const DECK: u16 = 0x3E4A;
+
+    impl Terrain for Sea {
+        fn can_step(&self, _from: Point, to: Point) -> Option<Point> {
+            Some(to)
+        }
+        fn land_is_water(&self, _tile: Tile) -> bool {
+            true
+        }
+        fn multi_components(&self, id: u16) -> &[Component] {
+            const COMPONENTS: [Component; 2] = [
+                Component {
+                    graphic: HULL,
+                    dx: -1,
+                    dy: 0,
+                    dz: 0,
+                    flags: 1,
+                },
+                Component {
+                    graphic: DECK,
+                    dx: 0,
+                    dy: 0,
+                    dz: 0,
+                    flags: 1,
+                },
+            ];
+            if id == SLOOP { &COMPONENTS } else { &[] }
+        }
+        fn item_blocks(&self, graphic: Graphic) -> bool {
+            graphic.0 == HULL
+        }
+        fn item_height(&self, graphic: Graphic) -> u8 {
+            match graphic.0 {
+                HULL => 10,
+                DECK => 3,
+                _ => 0,
+            }
+        }
+    }
+
+    let mut world = World::new(START).with_save_every(0);
+    world.state.facet_state_mut(Facet(0)).terrain = Some(Box::new(Sea));
+    let now = Instant::now();
+    let connection = enter(&mut world, now);
+    let player = world.state.players[&connection];
+    let owner = world.state.registry.serial_of(player).expect("a serial");
+
+    let at = Point::new(START.0 + 5, START.1 + 5, 0);
+    let boat =
+        openshard_boats::place(&mut world.state, player, at, Facet(0), SLOOP, owner).expect("open water");
+    let serial = world.state.registry.serial_of(boat).expect("a boat serial");
+
+    world.take_snapshot();
+    let snapshot = only_snapshot(&mut world).expect("a character entered");
+    let boats = snapshot.boats.expect("a full sweep carries the boats");
+    assert_eq!(boats.len(), 1);
+    assert_eq!(boats[0].serial, serial);
+    assert_eq!(boats[0].multi, SLOOP);
+    assert_eq!((boats[0].x, boats[0].y, boats[0].z), (at.x, at.y, at.z));
+    assert_eq!(boats[0].owner, owner);
+
+    // And it is not saved twice. A ship carries a `Drawn` and a `Position` like
+    // any item, so the item sweep would pick it up as ground clutter and restore
+    // a hull with no deck under whoever was standing on it — the bug this engine
+    // has already had once, with houses.
+    let ground = snapshot.ground.expect("a full sweep carries the ground");
+    assert!(
+        !ground.iter().any(|item| item.serial == serial),
+        "the ship was saved as an item as well as a boat"
+    );
+
+    // The shard comes back up on that save, with the same sea.
+    let mut restored = World::new(START);
+    restored.state.facet_state_mut(Facet(0)).terrain = Some(Box::new(Sea));
+    restored.restore_boats(boats);
+
+    let back = restored
+        .state
+        .registry
+        .entity_of(serial)
+        .expect("the ship came back under its own serial");
+    assert_eq!(
+        restored
+            .state
+            .registry
+            .get::<openshard_state::components::Boat>(back),
+        Some(&openshard_state::components::Boat { multi: SLOOP, owner }),
+    );
+
+    // And the berth is back, which is the half a `Boat` component cannot prove.
+    let index = &restored.state.facet_state(Facet(0)).boats;
+    assert_eq!(
+        index.deck_at(at.x, at.y, 0),
+        Some(3),
+        "the ship came back with nothing to stand on",
+    );
+    assert!(
+        index.hull_blocks(at.x - 1, at.y, 0),
+        "the ship came back with no hull",
+    );
+    assert_eq!(index.boat_at(at.x, at.y), Some(back));
+}

@@ -25,7 +25,7 @@ use std::path::{Path, PathBuf};
 const ALLOWLIST: &[(&str, usize, &str)] = &[
     (
         "crates/server/persistence/src/record.rs",
-        8,
+        9,
         "F2: the disk seam — a saved facet is a SQL column, not a live component",
     ),
     (
@@ -35,7 +35,7 @@ const ALLOWLIST: &[(&str, usize, &str)] = &[
     ),
     (
         "crates/server/persistence/src/pg.rs",
-        2,
+        3,
         "F2: same disk seam, the PostgreSQL row decode",
     ),
     (

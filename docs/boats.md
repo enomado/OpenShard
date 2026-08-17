@@ -264,6 +264,57 @@ walking into the hull is refused, and it is still there after a restart.
 Nothing here needs a single decision from B1, B2 or B5. That is the point of the
 boundary.
 
+#### Built
+
+All five steps, and the plan's "done when" holds: `.boat` moors a ship, both
+clients draw it, walking onto the deck lands the player on it at the right z,
+walking into the hull is refused, and it is still there after a restart.
+
+What came out differently:
+
+**The seam had a hole in it, and it was not the one B4 predicted.** `land_is_water`
+went on the terrain exactly as planned. What was not planned is that
+`LiveTerrain` — the wrapper *every running shard's movement goes through* —
+forwarded seven methods and no more, so anything asking it whether a static
+blocks, how tall it is, what it is called, what it weighs, which layer it is worn
+on, or what a multi is made of got the trait's **no-client-files default**. Those
+defaults are honest for a shard without a map and wrong for one that has a map
+and wrapped it. It stayed invisible because placement, single-click and
+encumbrance all hold the map terrain directly; a boat is the first thing that
+asks through the live one.
+
+**A `Plank` is the derived answer, not the component.** B3 said "entity → origin
+plus multi id", which would have meant walking the multi per step. The index
+holds the *split* instead — hull or deck, at what height — made once at the
+mooring. That is what makes the hot path a hash probe rather than a component
+walk, and it is why `Boats::moor` takes tiles rather than an id.
+
+**The measurement, which B3 asked for instead of an assurance.** Release, 100,000
+steps: **1.5ms with no boats, 5.5ms with one moored** — 15ns against 55ns. The
+empty case is the `is_empty` length check working. The 3.6x is stated as the
+least flattering framing available on purpose: the fixture's `can_step` is one
+integer comparison, so the probe is nearly all of the measured work, and against
+a real `MapTerrain::can_step` the same absolute 40ns is a fraction rather than a
+multiple. A per-facet bounding box would remove it; 40ns did not justify a second
+structure to keep in step.
+
+**`openshard-boats` does not depend on `openshard-housing`.** The plan said
+"`housing::place`'s shape" and that is what it is — but as siblings. The one
+thing they share is `0x4000`, which belongs to the protocol and to neither of
+them. A shared "multi placement" abstraction would have to be designed before
+either caller needed it.
+
+**Schema v32, and the bump is about the writer again.** An older reader is only
+missing ships. An older *writer* does not know the `boats` table, saves a world
+with none in it, and the fleet is gone on the next boot along with whatever was
+standing on a deck. A house at least stays where it was.
+
+**And a ship had to be excluded from the item sweep by name**, exactly as a house
+was — it carries a `Drawn` and a `Position` like any item, so without the
+exclusion it would be saved twice and restored as a hull with no deck under
+anybody. That is a bug this engine has already had once, with houses, which is
+the only reason it was looked for.
+
 ### B2 — it moves
 
 1. `Boats::step(state, boat, direction)` — decide-then-apply, `World::step`'s

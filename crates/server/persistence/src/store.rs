@@ -147,6 +147,13 @@ pub trait Store: Send + Sync {
     /// If the store cannot be read.
     async fn designs(&self) -> Result<Vec<crate::record::HouseDesignRecord>, StoreError>;
 
+    /// Every ship on the water, as last saved. The boat index is rebuilt from
+    /// these at boot, the way a house's footprint is.
+    ///
+    /// # Errors
+    /// If the store cannot be read.
+    async fn boats(&self) -> Result<Vec<crate::record::BoatRecord>, StoreError>;
+
     /// The world's own scalars, as last saved — the clock and where the roll
     /// generator got to. One read for the one row, so a scalar added to
     /// [`WorldRecord`] does not add a method here and a query to every backend.
@@ -194,6 +201,7 @@ pub struct MemoryStore {
     alliances: Mutex<HashMap<u32, crate::record::AllianceRecord>>,
     houses: Mutex<HashMap<u32, crate::record::HouseRecord>>,
     designs: Mutex<Vec<crate::record::HouseDesignRecord>>,
+    boats: Mutex<HashMap<u32, crate::record::BoatRecord>>,
     /// The world's own scalars: the clock, and where the rolls got to. `None` until
     /// a snapshot carries them.
     world: Mutex<Option<WorldRecord>>,
@@ -321,6 +329,14 @@ impl Store for MemoryStore {
             designs.clear();
             designs.extend(records.iter().copied());
         }
+        // The ships, on the houses' terms: a scuttling is an absence.
+        if let Some(records) = &snapshot.boats {
+            let mut boats = self.boats.lock().expect("the mutex is never poisoned");
+            boats.clear();
+            for record in records {
+                boats.insert(record.serial.raw(), *record);
+            }
+        }
         // And the houses, on the same terms: a demolition is an absence.
         if let Some(records) = &snapshot.houses {
             let mut houses = self.houses.lock().expect("the mutex is never poisoned");
@@ -432,6 +448,18 @@ impl Store for MemoryStore {
         Ok(designs)
     }
 
+    async fn boats(&self) -> Result<Vec<crate::record::BoatRecord>, StoreError> {
+        let mut boats: Vec<_> = self
+            .boats
+            .lock()
+            .expect("the mutex is never poisoned")
+            .values()
+            .copied()
+            .collect();
+        boats.sort_by_key(|boat| boat.serial.raw());
+        Ok(boats)
+    }
+
     async fn houses(&self) -> Result<Vec<crate::record::HouseRecord>, StoreError> {
         let mut houses: Vec<_> = self
             .houses
@@ -531,6 +559,7 @@ mod tests {
             alliances: None,
             houses: None,
             designs: None,
+            boats: None,
             world: None,
         }
     }
@@ -616,6 +645,7 @@ mod tests {
             alliances: None,
             houses: None,
             designs: None,
+            boats: None,
             world: None,
         };
         let error = store.save(&future).await.expect_err("must refuse");
@@ -707,6 +737,7 @@ mod tests {
                 alliances: None,
                 houses: None,
                 designs: None,
+                boats: None,
                 world: None,
             })
             .await
@@ -730,6 +761,7 @@ mod tests {
                 alliances: None,
                 houses: None,
                 designs: None,
+                boats: None,
                 world: None,
             })
             .await
@@ -804,6 +836,7 @@ mod tests {
                 alliances: None,
                 houses: None,
                 designs: None,
+                boats: None,
                 world: None,
             })
             .await
@@ -826,6 +859,7 @@ mod tests {
                 alliances: None,
                 houses: None,
                 designs: None,
+                boats: None,
                 world: None,
             })
             .await
@@ -863,6 +897,7 @@ mod tests {
                 alliances: None,
                 houses: None,
                 designs: None,
+                boats: None,
                 world: None,
             })
             .await
@@ -884,6 +919,7 @@ mod tests {
                 alliances: None,
                 houses: None,
                 designs: None,
+                boats: None,
                 world: None,
             })
             .await

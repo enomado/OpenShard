@@ -2580,13 +2580,27 @@ Roughly in dependency order, each script-first:
     decision about the type's shape, which is D4's lesson arriving a second time
     one level down.
 - [ ] `boats` — a multi that moves: a hull that blocks, a deck you can stand on,
-  and everyone aboard arriving with it. **Planned — see
+  and everyone aboard arriving with it. **B1 built; B2–B4 planned — see
   [`boats.md`](boats.md)**, which refuses a parent transform on the engine's own
   evidence (mounting *deletes* the mount rather than carrying it), keeps the hull
   out of `Obstructions` because that index only ever subtracts and a deck has to
   *add* a surface, and finds that `Feature::SmoothShip` already names `0xF6` and
   its 7.0.9.0 boundary with no packet behind it. It also supplies the repro the
   open pier/bridge defect below has been waiting for.
+  - [x] **B1 — a ship on the water, moored.** `openshard-boats`, `.boat <multi
+    id>`, `Terrain::land_is_water`, and the `Boats` index on `FacetState` that
+    `LiveTerrain` consults as a third source. Saved at schema v32 and the berth
+    recomputed at boot. Walking onto a deck lands you on it; walking into a hull
+    does not. What the phase found is that `LiveTerrain` forwarded seven methods
+    and answered the trait's no-client-files default for every other — a hole
+    nothing had asked through until a boat did.
+  - [ ] **B2 — it moves**: the step, the manifest of who moves with it, and the
+    forget-then-reveal the classic client needs. Owes
+    `two_boats_do_not_occupy_one_tile` against a *moving* hull; the placement
+    half of that test is built.
+  - [ ] **B3 — `0xF6`**, for the clients that can. Strictly additive.
+  - [ ] **B4 — the boat as property**: the hold, the plank, the deed, decay.
+    Housing's H2–H5 with a different noun.
 - [ ] `customisation` — the `0xD7` house design system. **C1 built; C2–C4
   planned — see [`customisation.md`](customisation.md)**, which reverts housing's
   D7 in full. The decision it turned on was where a per-house component list

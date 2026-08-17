@@ -167,6 +167,7 @@ impl World {
             alliances: None,
             houses: None,
             designs: None,
+            boats: None,
             world: None,
         });
 
@@ -226,6 +227,8 @@ impl World {
         // Beside the houses and swept on the same pass, because a design that
         // survived a save its house did not would come back attached to nothing.
         snapshot.designs = Some(self.house_design_records());
+        // And the ships, on the same pass and the same terms.
+        snapshot.boats = Some(self.boat_records());
         snapshot.world = Some(WorldRecord {
             clock_minutes: self.clock_minutes(),
             rng_state: self.rng_state(),
@@ -356,6 +359,11 @@ impl World {
                 || registry.has::<Moongate>(item)
                 || registry.has::<openshard_state::components::House>(item)
                 || registry.has::<openshard_state::components::HouseSign>(item)
+                // A ship is saved as a `BoatRecord` and restored with its berth
+                // recomputed. An item copy would come back as a hull with no
+                // deck under anybody standing on it — the house's own bug, which
+                // this engine has already had once.
+                || registry.has::<openshard_state::components::Boat>(item)
             {
                 continue;
             }
