@@ -18,7 +18,7 @@ use winit::window::WindowId;
 use crate::app::App;
 use crate::picking::SelectedIdentity;
 use crate::world::{cluttered, cluttered_with_doors_open, terrain};
-use crate::{DOUBLE_CLICK, PAGE_PIXELS, desk, keys, shell, steer};
+use crate::{DOUBLE_CLICK, PAGE_PIXELS, desk, keys, panes, shell, steer};
 
 impl ApplicationHandler<()> for App {
     /// The shard thread staged one or more updates for us.
@@ -522,11 +522,10 @@ impl ApplicationHandler<()> for App {
                     (position.y as f32 / scale) as i32,
                 );
                 let mut changed = self.control.cursor_moved(cursor);
-                changed |= self.drag_own_window();
-                changed |= self.drag_thumb();
-                changed |= self.drag_container_item();
-                changed |= self.hover_container_item();
-                changed |= self.hover_paperdoll_item();
+                // The window layer, in one call — see `panes::route`. A move is
+                // not exclusive: the camera above has already had it, and
+                // nothing in the client asks whether a window took one.
+                changed |= self.deliver(panes::Input::Move).redraw;
                 // Held, the button steers: a heading toward wherever the cursor
                 // is, by default, or a Ctrl-held move order — see
                 // `walk_toward_cursor` and `steer.rs`'s module docs for why
@@ -548,15 +547,14 @@ impl ApplicationHandler<()> for App {
                 // A left click selects the tile under the cursor for the Tile
                 // panel — reached here and not through egui, because `consumed`
                 // above already sent every click the UI wanted to it.
+                //
+                // The release goes to the window layer whatever it lands on: it
+                // ends a window drag, commits a held item to the bag under the
+                // pointer, and lets a pressed button back up. See
+                // `panes::route`.
                 if button == winit::event::MouseButton::Left && state == ElementState::Released {
-                    self.windows.dragging = None;
-                    // And a button that was pressed on a dialog is answered on
-                    // the way up, if the pointer is still on it — see
-                    // `gump::Dialogs::release`.
-                    if self.release_container_item()
-                        || self.release_container_press()
-                        || self.release_on_own_window()
-                    {
+                    let response = self.deliver(panes::Input::Release(panes::Button::Left));
+                    if response.redraw {
                         if let Some(window) = self.window.as_ref() {
                             window.window.request_redraw();
                         }
@@ -568,7 +566,7 @@ impl ApplicationHandler<()> for App {
                 // double-click pair that would use whatever is under there.
                 if button == winit::event::MouseButton::Left
                     && state == ElementState::Pressed
-                    && self.press_on_own_window()
+                    && self.deliver(panes::Input::Press(panes::Button::Left)).taken
                 {
                     if let Some(window) = self.window.as_ref() {
                         window.window.request_redraw();
@@ -656,11 +654,12 @@ impl ApplicationHandler<()> for App {
                 // world cannot be a heading into it.
                 // The two gestures are `||`-ed rather than chained because they
                 // want the same redraw; the short-circuit keeps the order, so
-                // `close_window_under_pointer` still only runs when the target
-                // cursor did not already take the press.
+                // the window layer still only sees the press when the target
+                // cursor did not already take it.
                 if button == winit::event::MouseButton::Right
                     && state == ElementState::Pressed
-                    && (self.cancel_target_cursor() || self.close_window_under_pointer())
+                    && (self.cancel_target_cursor()
+                        || self.deliver(panes::Input::Press(panes::Button::Right)).taken)
                 {
                     if let Some(window) = self.window.as_ref() {
                         window.window.request_redraw();
@@ -694,13 +693,21 @@ impl ApplicationHandler<()> for App {
                 // A list under the pointer takes the notch before the camera
                 // does: rolling a wheel over a window is scrolling that window,
                 // in this client as in every other.
-                if notches != 0.0
-                    && (self.scroll_skills(notches)
-                        || self.scroll_vendor(notches)
-                        || self.zoom(notches > 0.0))
-                {
-                    if let Some(window) = self.window.as_ref() {
-                        window.window.request_redraw();
+                //
+                // **`taken` and not `redraw` decides whether the camera hears
+                // it**, and that distinction is the whole reason `panes` exists.
+                // This used to be `scroll_skills() || scroll_vendor() ||
+                // zoom()`, where one `bool` meant both — so a catalogue already
+                // at its last row answered "nothing moved", the chain fell
+                // through, and the wheel became a map zoom under a pointer that
+                // had never left the shop window.
+                if notches != 0.0 {
+                    let response = self.deliver(panes::Input::Wheel(notches));
+                    let zoomed = !response.taken && self.zoom(notches > 0.0);
+                    if response.redraw || zoomed {
+                        if let Some(window) = self.window.as_ref() {
+                            window.window.request_redraw();
+                        }
                     }
                 }
             }

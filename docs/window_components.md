@@ -91,10 +91,18 @@ several times per frame, for a set of kinds that is known at compile time and
 has grown by three in a year.
 
 **D2. Position, z-order and the drag that moves a window belong to the manager.**
-`OwnWindow { subject, at }` stays exactly as it is. A pane reads `at` out of its
-context and **never writes it**: the cascade, `raise_window`, `dragging` and the
-close gesture are all the manager's, and a pane that wants to be moved simply
-declines the press. This is what the user asked for in the phrase this plan was
+A pane reads `at` out of its context and **never writes it**: the cascade,
+`raise_window`, `dragging` and the close gesture are all the manager's, and a
+pane that wants to be moved simply declines the press.
+
+`OwnWindow` keeps `subject` and `at` and **gains the pane beside them** —
+`OwnWindow { subject, at, pane }`, built by `reconcile_own_windows` when the
+window opens. An earlier draft of this decision said the record stays exactly as
+it is and the panes live in a list of their own; that would be a second list
+keyed by subject, and a subject in one and not the other is precisely the bug
+class this plan is closing. State that lives in the record is dropped by the
+`retain` that closes the window, which is what makes `close_window`'s manual
+`vendor_scrolls.remove` deletable at all. This is what the user asked for in the phrase this plan was
 commissioned with — *"позиция менеджится внешне"* — and it is also why a pane
 does not need to know it is a window at all.
 
@@ -149,7 +157,7 @@ enum Effect {
     Grab(GumpPixel),             // start dragging this window, grabbed here
     Net(Outgoing),               // the shard's half — both halves of a transfer
                                  // among them, as two ordinary effects (D7)
-    Open(WindowSubject),         // a paperdoll's backpack button, say
+    Open(LocalWindow),           // the skill sheet or the status frame
     Prompt(SplitPrompt),         // the client-side amount dialog, whose answer
                                  // has to find its way back — see the Backlog
 }
@@ -158,6 +166,14 @@ enum Effect {
 Reusing `Outgoing` rather than minting a pane vocabulary is deliberate: a second
 enum that means the same things is a second place to add a packet to, and the
 translation between them would be a `match` whose arms are all identities.
+
+`Open` names a `LocalWindow` — the skill sheet or the status frame — and not a
+`WindowSubject`. Those two are the only kinds whose *existence* is this client's
+own: a container or a paperdoll is open because the shard opened it, so asking
+for one is `Net(Use)` or `Net(Paperdoll)` and the window appears when the view
+grows the entry `reconcile_own_windows` turns into one. An `Open(WindowSubject)`
+would have two unanswerable arms and would read as though a pane could conjure a
+bag.
 
 **D6. Art packing is a phase of its own, before layout.** `layout` takes `&self`
 and a *shared* atlas, which is only possible because packing is a separate call:
@@ -227,11 +243,34 @@ time, and until a kind has moved, its variant delegates to the existing `App`
 method behind the same trait — so the router is real from S1 onward and there is
 never a half-routed frame.
 
-- [ ] **S0. The trait, the context, the response, the router.** `panes/mod.rs`:
-      `Pane`, `PaneCtx`, `Input`, `Response`, `Effect`, `enum Pane`, and
-      `Panes::deliver` — top-down, first `taken` wins. Every variant is a shim
-      that calls the `App` method that handles that kind today. `event_loop.rs`
-      stops chaining `||` and calls `deliver` once per input.
+- [x] **S0. The trait, the context, the response, the router.** ✅ `panes.rs`
+      and `panes/route.rs`: `Pane`, `PaneCtx`, `Input`, `Response`, `Effect`,
+      `AnyPane`, and `App::deliver` — top-down, first `taken` wins.
+      `event_loop.rs` no longer chains `||` for a window: the five `CursorMoved`
+      calls, the three-term release, the press, the right-button close and the
+      wheel are one `deliver` each. **Five things landed differently from the
+      shape above, and each is written down where it belongs:**
+      - `trait Pane` and `enum Pane` cannot both exist. The trait keeps the
+        name; the enum is `AnyPane`.
+      - The trait has **only `handle`** for now. `art` and `layout` (D6) join it
+        with the first pane that has a layout of its own — a pane with no state
+        cannot lay anything out, and `render_passes.rs` still lays out all six.
+      - `Panes::deliver` is `App::deliver`, because the router still has to
+        reach the legacy handlers and those need the whole `App`. The loop over
+        the panes itself takes nothing but the list.
+      - The panes live in `OwnWindow` (see D2), so the list *is*
+        `Windows::own_windows` and there is no second one to keep in step.
+      - A shim cannot call `press_on_own_window` from inside `handle`, because
+        the context is readonly by construction and that method is not per-kind
+        anyway — it hit-tests all six itself. So the router has **three rungs**:
+        the manager's own gestures, then the panes, then the legacy chain
+        reached only when no pane answered. The third rung is what S7 deletes,
+        and while it stands the conflation the wheel defect was made of lives in
+        one function instead of five call sites.
+
+      `Effect::Prompt` is not there yet: nothing emits it until S6, and *who a
+      modal's answer is addressed to* is a Backlog entry that has to be settled
+      first.
 - [ ] **S1. Vendor.** The kind the wheel defect was found in. `vendor_scrolls`
       and `vendor_amounts` leave `Windows` and become private fields;
       `render_passes.rs` stops entering those maps; `close_window`'s manual
@@ -288,7 +327,21 @@ never a half-routed frame.
 
 ## Status
 
-Nothing built. The wheel defect this plan grew out of is fixed on its own terms
-(`App::scroll_vendor` answers "was the notch taken", 2026-08-17) — that fix is
-the convention S0 replaces with a type, and it should not be extended to a
-third scrolling window while this plan is open.
+**S0 built** (2026-08-17). The router is real and every input the window layer
+sees goes through it; no pane has moved in yet, so all six kinds still behave
+exactly as they did — the third rung of `App::deliver` is their old handlers,
+called only when no pane answered.
+
+What S0 actually changed for a player: the wheel. `taken` rather than "did
+anything move" now decides whether the camera hears a notch, which is the defect
+this plan grew out of stated as a type instead of as a convention. The
+convention fix (`App::scroll_vendor` answering "was the notch taken",
+2026-08-17) is still in place under it and is what the vendor pane inherits at
+S1.
+
+Next is S1, the vendor: `vendor_scrolls` and `vendor_amounts` out of `Windows`
+and into `VendorPane`, `render_passes.rs` off `vendor_amounts.entry(..)`, and
+`close_window`'s two manual `remove`s deleted. It is also the step that adds
+`art` and `layout` to the trait, and the first one that constructs an `Effect` —
+so the four `#[expect(dead_code)]` in `panes.rs` are the checklist for it: each
+one fails the build when the thing it is waiting for arrives.

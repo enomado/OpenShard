@@ -75,6 +75,7 @@ mod link;
 mod movement_trace;
 mod net_command;
 mod own_windows;
+mod panes;
 mod picking;
 mod picking_query;
 mod presentation;

@@ -41,22 +41,32 @@ const CONTAINER_ORIGIN: GumpPixel = GumpPixel::new(120, 80);
 /// who opens a dozen bags does not push the last of them off the screen.
 const CONTAINER_CASCADE_LENGTH: i32 = 8;
 
-/// One of this client's own windows, and the one thing about it the shard
-/// never says.
+/// One of this client's own windows: what it is over, where it is, and the
+/// state that belongs to it alone.
 ///
 /// Neither packet carries a position: a `0x24` names a container and a gump,
 /// a `0x88` names a mobile, and where the window goes is entirely the
-/// client's — once the player has dragged one it is the player's. That is
-/// the whole of this type. Everything else about the window is looked up in
-/// the [`WorldView`](openshard_client_net::view::WorldView) by serial every
-/// frame, so a window can never hold a stale copy of what is in the bag or
-/// on the body.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+/// client's — once the player has dragged one it is the player's. What the
+/// window is *over* is looked up in the
+/// [`WorldView`](openshard_client_net::view::WorldView) by serial every frame,
+/// so a window can never hold a stale copy of what is in the bag or on the
+/// body.
+///
+/// [`pane`](OwnWindow::pane) is the third thing, and it is here rather than in
+/// a map on [`Windows`] **so that a window's private state cannot outlive the
+/// window**. A shop's scroll position used to be an entry in
+/// `Windows::vendor_scrolls` that [`crate::App::close_window`] had to remember
+/// to remove by hand; anything that lives here is dropped by the same `retain`
+/// that takes the window off the list. See `docs/window_components.md`.
+#[derive(Debug)]
 pub struct OwnWindow {
     /// What it is a window over.
     pub subject: WindowSubject,
     /// Its top-left corner on the surface.
     pub at: GumpPixel,
+    /// The window's own state and its own input handling — see
+    /// [`crate::panes`].
+    pub pane: crate::panes::AnyPane,
 }
 
 /// What a window is over: a bag's contents, a body, or a dialog the shard
@@ -455,6 +465,7 @@ pub fn reconcile_own_windows(
                 CONTAINER_ORIGIN.x + CONTAINER_CASCADE.x * step,
                 CONTAINER_ORIGIN.y + CONTAINER_CASCADE.y * step,
             ),
+            pane: crate::panes::AnyPane::of(subject),
         });
     }
     // The skill window, which nothing in the view asked for: the player did,
@@ -473,6 +484,7 @@ pub fn reconcile_own_windows(
                 CONTAINER_ORIGIN.x + CONTAINER_CASCADE.x * step,
                 CONTAINER_ORIGIN.y + CONTAINER_CASCADE.y * step,
             ),
+            pane: crate::panes::AnyPane::of(WindowSubject::Skills),
         });
     }
     // The status window has the skills window's ownership shape: the values
@@ -490,6 +502,7 @@ pub fn reconcile_own_windows(
                 CONTAINER_ORIGIN.x + CONTAINER_CASCADE.x * step,
                 CONTAINER_ORIGIN.y + CONTAINER_CASCADE.y * step,
             ),
+            pane: crate::panes::AnyPane::of(WindowSubject::Status),
         });
     }
     // A dialog is placed where the shard asked for it, and it is the only
@@ -513,6 +526,10 @@ pub fn reconcile_own_windows(
         if locally_closed.contains(&subject) {
             continue;
         }
-        own_windows.push(OwnWindow { subject, at });
+        own_windows.push(OwnWindow {
+            subject,
+            at,
+            pane: crate::panes::AnyPane::of(subject),
+        });
     }
 }

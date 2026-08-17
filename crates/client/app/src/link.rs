@@ -379,6 +379,18 @@ impl Link {
         self.send(Command::Step(facing));
     }
 
+    /// Send one action the caller has already chosen.
+    ///
+    /// The one entry point that does not name its own action, and it exists for
+    /// [`panes::Effect::Net`](crate::panes::Effect::Net): a pane hands back an
+    /// [`Outgoing`] rather than reaching for a method here, so that what a
+    /// window asks the shard for is a *value* the manager can order, log or
+    /// refuse. Every method below is this with its action spelled out, which is
+    /// what a call site with a fixed action should still read as.
+    pub fn act(&self, action: Outgoing) {
+        self.send(Command::Outgoing(action));
+    }
+
     /// Say a line, on the channel `mode` names.
     ///
     /// The mode is not decoration: `TalkMode::Guild` and `TalkMode::Alliance`

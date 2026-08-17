@@ -147,6 +147,71 @@ fn a_closed_paperdoll_does_not_reopen_on_an_unrelated_world_change() {
     );
 }
 
+/// A window's pane is its own kind's, and it is gone the moment the window is.
+///
+/// The invariant `OwnWindow::pane` exists for, and the half of
+/// `docs/window_components.md`'s "no window has private state" that S0 closes: a
+/// shop's scroll position used to be an entry in a map on `Windows` that
+/// `App::close_window` had to remember to `remove` by hand, so nothing tied it
+/// to the window's lifetime and a reopened shop could inherit the last one's
+/// scroll. Here the state travels in the record `retain` drops.
+///
+/// Exercised through `reconcile_own_windows` rather than through `App`, for the
+/// reason that function was pulled out to begin with: an `App` needs real client
+/// asset files to construct at all.
+#[test]
+fn a_window_carries_a_pane_of_its_own_kind_and_loses_it_with_the_window() {
+    let subject = doll(0x2A);
+    let WindowSubject::Paperdoll(serial) = subject else {
+        unreachable!()
+    };
+    let mut view = bare_view();
+    view.paperdolls.insert(
+        serial,
+        openshard_client_net::view::Paperdoll {
+            name: "Someone".to_string(),
+            can_lift: false,
+        },
+    );
+    let mut own_windows = Vec::new();
+    let mut locally_closed = HashSet::new();
+
+    // Opened with the skills window beside it, so that two kinds are in the
+    // list at once and each has to have got its *own* pane rather than the
+    // first kind's.
+    reconcile_own_windows(&view, &mut own_windows, &mut locally_closed, true, false);
+    let paned: Vec<(WindowSubject, bool)> = own_windows
+        .iter()
+        .map(|window| {
+            (
+                window.subject,
+                matches!(
+                    (window.subject, &window.pane),
+                    (WindowSubject::Paperdoll(_), crate::panes::AnyPane::Paperdoll(_))
+                        | (WindowSubject::Skills, crate::panes::AnyPane::Skills(_))
+                ),
+            )
+        })
+        .collect();
+    assert_eq!(paned.len(), 2, "the paperdoll and the skill window: {paned:?}");
+    assert!(
+        paned.iter().all(|(_, matched)| *matched),
+        "every window got the pane its kind names: {paned:?}"
+    );
+
+    // The shard takes the mobile away. Nothing removes the pane by name — the
+    // `retain` that drops the window is what drops it, which is the whole point
+    // of the pane living in the record.
+    view.paperdolls.remove(&serial);
+    reconcile_own_windows(&view, &mut own_windows, &mut locally_closed, true, false);
+    assert!(
+        own_windows
+            .iter()
+            .all(|window| window.subject == WindowSubject::Skills),
+        "the paperdoll's window went, and its pane with it"
+    );
+}
+
 #[test]
 fn a_status_window_is_opened_by_local_intent_not_by_the_status_reply() {
     let view = bare_view();
