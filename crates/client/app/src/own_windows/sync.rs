@@ -29,7 +29,12 @@ impl App {
             self.windows.own_windows.clear();
             self.windows.keyboard = None;
             self.windows.stack_pass = None;
-            self.windows.split_pending = false;
+            // The press no window holds, and the modal that may be standing
+            // over it: both are the manager's, so the clear that drops every
+            // window has to name them. A press a *pane* was holding went with
+            // its window in the line above.
+            self.windows.world_press = None;
+            self.windows.prompt = None;
             return;
         };
         reconcile_own_windows(

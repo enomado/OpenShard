@@ -9,21 +9,19 @@
 //! windows exist, in what order, and at what coordinate stays with the manager
 //! — see [`crate::windows`] and decisions 2 and 8.
 //!
-//! # What is here, and what is not yet
+//! # What is here
 //!
-//! The vocabulary and the router are complete; the panes are almost so. **Five
-//! kinds have moved in** — the vendor (step 1), the skill sheet (step 2), the
-//! status frame (step 3), the `0xB0` dialog (step 4) and the paperdoll
-//! (step 5) — and each owns its state, its layout and its input.
-//! The container declines every question here, and its input is still
-//! answered by the `App` methods in
-//! [`crate::own_windows`], which [`crate::app::App::deliver`] calls once every
-//! pane has passed, while `render_passes.rs` still lays it out from the view.
-//! That is the plan's own migration order: until a kind has moved, its window
-//! behaves exactly as it did before this module existed. The one exception
-//! runs the other way — a press on a worn item of the player's own doll is
-//! *declined by the paperdoll pane* so the legacy chain can answer it, because
-//! that press belongs to the hand and the hand's machinery moves at step 6.
+//! **All six kinds have moved in** — the vendor (step 1), the skill sheet
+//! (step 2), the status frame (step 3), the `0xB0` dialog (step 4), the
+//! paperdoll (step 5) and the container (step 6) — and each owns its state,
+//! its layout and its input. `App` no longer knows what any of them is, and no
+//! window's input is answered anywhere but in its own pane.
+//!
+//! What [`crate::app::App::deliver`] still reaches *after* the panes is not a
+//! window kind. It is the press that picks a window up when no pane wanted it,
+//! and the two gestures over the world that look like a window's and are not:
+//! the press on an item lying on the ground, and the drop of a held item onto
+//! it. Step 7 of the plan gives those a rung of their own.
 //!
 //! # Two names that differ from the plan's
 //!
@@ -44,8 +42,9 @@ use openshard_protocol::speech::Font;
 use openshard_protocol::wire::Hue;
 
 use crate::resources::Resources;
-use crate::windows::{Drawn, ItemDrag, WindowSubject};
+use crate::windows::{Drawn, Hand, ItemDrag, PendingDrop, WindowSubject};
 
+pub(crate) mod container;
 pub(crate) mod dialog;
 pub(crate) mod paperdoll;
 mod route;
@@ -102,6 +101,33 @@ pub enum Input {
     /// about *who a modal's answer is addressed to*, answered for the keyboard:
     /// by identity, not by z-order.
     Key(Key),
+    /// The client's own modal has been answered, for the window that asked.
+    ///
+    /// [`Input::Key`]'s routing rule for a second exclusive device: the manager
+    /// remembers which press a prompt was opened over
+    /// ([`Windows::prompt`](crate::windows::Windows::prompt)) and delivers the
+    /// answer to that window and no other. A player may raise a bag over the
+    /// prompt while it stands, so "whoever is on top" would hand the number to
+    /// the wrong presser.
+    ///
+    /// It arrives at the top of a frame rather than from the event loop — the
+    /// shell's answers are applied in `App::apply` — which changes nothing
+    /// about the walk: an input is an input, and this one is addressed.
+    Answered(Answer),
+}
+
+/// What the player said to the client's own modal.
+///
+/// One kind for now, because there is one modal: the amount picker a
+/// Shift-drag opens over a stack. The dismissal is an arm rather than an
+/// `Option` around the number, because "no amount" is a decision the presser
+/// acts on — it puts the press down — and not a missing value.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Answer {
+    /// How many of the stack to take.
+    Split(u16),
+    /// The prompt was dismissed, and the press it suspended goes with it.
+    Cancelled,
 }
 
 /// One keystroke, as a window sees it.
@@ -169,15 +195,20 @@ pub struct PaneFrame<'a> {
     pub at: GumpPixel,
     /// The pointer, in the same gump pixels [`PaneFrame::at`] is in.
     pub cursor: GumpPixel,
-    /// What is on the cursor, if anything.
+    /// What is on the cursor, if anything, and where it is on its way to.
     ///
     /// Readonly, and the whole of decision 7: the hand is a **slot** and not a
     /// gesture — one per client because the shard has one per connection — so a
-    /// pane reads it to answer "was something dropped on me" and to draw a
-    /// wearable's preview, and no pane may fill or empty it. The two halves of
-    /// a transfer are two ordinary [`Effect::Net`]s, possibly from two
-    /// different panes, possibly with a walk between them.
-    pub hand: Option<ItemDrag>,
+    /// pane reads it to answer "was something dropped on me", to draw a
+    /// wearable's preview, and to subtract a lifted icon from its own list, and
+    /// no pane may fill or empty it. The two halves of a transfer are an
+    /// [`Effect::Lift`] and an [`Effect::Drop`], possibly from two different
+    /// panes, possibly with a walk between them.
+    ///
+    /// The whole [`Hand`] and not just what is in it, because a bag has to draw
+    /// a drop it is *waiting* on: the item sits where it was let go until the
+    /// shard's answer lands, and which bag that is, is the pending drop's.
+    pub hand: Option<Hand>,
     /// The keys are coming to this window.
     ///
     /// The manager's answer and not the pane's, for
@@ -189,6 +220,15 @@ pub struct PaneFrame<'a> {
     /// field left focused in a window the player clicked away from draws no
     /// caret.
     pub has_keyboard: bool,
+    /// The client's own modal is up, and its answer is coming to this window.
+    ///
+    /// [`PaneFrame::has_keyboard`]'s shape for the prompt a Shift-drag opens:
+    /// the manager owns which press the modal suspended
+    /// ([`Asking`](crate::windows::Asking)) and the pane owns the press itself.
+    /// A pane reads this to leave that press alone — a move must not lift it
+    /// out from under the number the player is choosing, and the release that
+    /// dismissed the prompt's own window must not put it down.
+    pub has_prompt: bool,
 }
 
 /// Everything a pane may read while it answers one input, and nothing it may
@@ -226,10 +266,9 @@ pub struct PaneCtx<'a> {
     /// since, and a move is offered to every window.
     pub under_pointer: bool,
     /// Shift and Ctrl, as of this event.
-    #[expect(
-        dead_code,
-        reason = "the container's Shift-split reads it at step 6; nothing else has a modifier"
-    )]
+    ///
+    /// One reader, which is the one the field was added for: a bag's Shift-drag
+    /// divides the stack it is pulling out instead of lifting the whole pile.
     pub modifiers: Modifiers,
     /// Now, for every double-click pair.
     ///
@@ -341,9 +380,50 @@ pub enum Effect {
     Close,
     /// Start moving this window, grabbed this far into it.
     Grab(GumpPixel),
-    /// The shard's half. Both halves of a transfer are this, separately: see
-    /// decision 7 for why there is no lift/drop pair.
+    /// The shard's half, for everything that is not the hand.
+    ///
+    /// A `0x07` and a `0x08` can travel through here too, and one pair does:
+    /// the wield a double-click on a weapon is, and the sweep "Take all" is.
+    /// Neither of those ever puts anything on the *cursor* — the player sees
+    /// no icon under the pointer at any point — so neither is
+    /// [`Effect::Lift`]. That is the whole difference between the two.
     Net(Outgoing),
+    /// This goes onto the cursor: the `0x07` **and** the hand it fills.
+    ///
+    /// One effect and not a `Net` beside a hand-write, for [`Effect::Answer`]'s
+    /// reason: they are one act. A pane that could send the lift without
+    /// filling the hand would leave the shard holding an item this client draws
+    /// in a bag, and one that could fill the hand without sending would draw an
+    /// item on a cursor the shard has never heard of.
+    ///
+    /// Decision 7 is what makes this *not* half of a pair: nothing about it is
+    /// bound to the drop that eventually follows, which may come from another
+    /// pane, after a walk, with the source window closed in between.
+    Lift(ItemDrag),
+    /// And this puts it down: the `0x08`, `0x13` or `0x0F` the destination
+    /// names, and the local projection that draws it there until the shard
+    /// answers.
+    ///
+    /// The destination only — *what* is in the hand is the manager's, so a pane
+    /// says where and never what. A drop asked for while the last one is still
+    /// in flight is refused there too, which is why the pane does not have to
+    /// know the difference between a hand that is holding and one that is
+    /// waiting.
+    Drop(PendingDrop),
+    /// Put the client's own amount picker up over this window's press.
+    ///
+    /// The manager both raises it and remembers whose it is
+    /// ([`Windows::prompt`](crate::windows::Windows::prompt)), which is what
+    /// [`Input::Answered`] is later routed by.
+    Prompt(SplitPrompt),
+    /// Compact the like piles in this container, one ordinary lift-and-drop per
+    /// snapshot until nothing more merges.
+    ///
+    /// A manager machine rather than a burst of [`Effect::Net`], and the
+    /// difference is time: the pass sends one merge, asks for the container
+    /// again, and plans the next against the *answer* — so it lives across
+    /// frames, where a pane only ever sees one input. See `App::stack_pass`.
+    StackAll,
     /// This dialog is answered: the `0xB1` goes out **and the window goes off
     /// the list**.
     ///
@@ -372,6 +452,20 @@ pub enum Effect {
     ReleaseKeyboard,
     /// Make one of the two windows the shard does not know about exist.
     Open(LocalWindow),
+}
+
+/// The client's own amount picker, as a pane asks for it.
+///
+/// Its own type rather than a bare number so that the effect says what kind of
+/// prompt it is: a second modal — a confirmation, a name to type — would be a
+/// second arm of [`Effect::Prompt`] and would be routed back by the same
+/// [`Asking`](crate::windows::Asking), which is the whole point of settling
+/// who a modal's answer is addressed to once.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct SplitPrompt {
+    /// The most that may be taken: the pile less the one that stays behind.
+    /// A split that took the whole stack would be a lift with extra steps.
+    pub most: u16,
 }
 
 /// A window that is open because the player asked for it, not because the shard
@@ -494,7 +588,7 @@ pub trait Pane {
 /// to remember to remove by hand.
 #[derive(Debug)]
 pub enum AnyPane {
-    Container(ContainerPane),
+    Container(container::ContainerPane),
     Vendor(vendor::VendorPane),
     Paperdoll(paperdoll::PaperdollPane),
     Dialog(dialog::DialogPane),
@@ -512,7 +606,7 @@ impl AnyPane {
     /// still the manager's — it is the pane knowing what it is a pane *of*.
     pub fn of(subject: WindowSubject) -> Self {
         match subject {
-            WindowSubject::Container(_) => Self::Container(ContainerPane::default()),
+            WindowSubject::Container(serial) => Self::Container(container::ContainerPane::new(serial)),
             WindowSubject::Vendor(serial) => Self::Vendor(vendor::VendorPane::new(serial)),
             WindowSubject::Paperdoll(serial) => Self::Paperdoll(paperdoll::PaperdollPane::new(serial)),
             WindowSubject::Dialog(gump_id) => Self::Dialog(dialog::DialogPane::new(gump_id)),
@@ -556,39 +650,6 @@ impl Pane for AnyPane {
             Self::Skills(pane) => pane.handle(input, ctx),
             Self::Status(pane) => pane.handle(input, ctx),
         }
-    }
-}
-
-/// A bag's window. Step 6 moves `last_container_click` here, and with it the
-/// press that becomes either a lift or a double-click use.
-#[derive(Debug, Default)]
-pub struct ContainerPane {}
-
-// The one kind that has not moved in yet declines all three questions. It is
-// replaced whole by the pane its step moves in; until then the `App` methods
-// named below still answer its input, and `App::deliver` calls them after the
-// panes have all passed, while `render_passes::draw_gump_windows` still packs
-// and lays it out from the view. A shim that answered anything at all would be
-// a second opinion about the same click, and a pane that packed its own art
-// while the pass still laid it out would be two answers about the same
-// picture.
-
-impl Pane for ContainerPane {
-    /// Still `container::art_of`, called from `render_passes` — step 6.
-    fn art(&self, _frame: &PaneFrame<'_>) -> Vec<GumpArt> {
-        Vec::new()
-    }
-
-    /// Still `container::window_highlighted`, laid out by `render_passes` —
-    /// step 6.
-    fn layout(&self, _frame: &PaneFrame<'_>) -> Option<Drawn> {
-        None
-    }
-
-    /// Still `App::press_on_own_window`, `App::release_container_item` and
-    /// `App::hover_container_item` — step 6.
-    fn handle(&mut self, _input: Input, _ctx: &PaneCtx<'_>) -> Response {
-        Response::ignored()
     }
 }
 

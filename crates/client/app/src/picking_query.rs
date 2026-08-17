@@ -617,7 +617,22 @@ impl App {
     /// frames — and it is applied beside this call rather than through it.
     pub(crate) fn apply(&mut self, request: shell::Request) {
         if let Some(decision) = request.split {
-            self.finish_stack_split(decision);
+            // Through the router, because the press this answers belongs to
+            // whoever is holding it — a bag's pane, or the manager for an item
+            // lying in the world — and `Windows::prompt` is the record of
+            // which. The shell's own vocabulary stops here: `Answer` is what a
+            // window is offered, so no pane has heard of a `SplitDecision`.
+            let answer = match decision {
+                crate::shell::SplitDecision::Confirm(amount) => crate::panes::Answer::Split(amount),
+                crate::shell::SplitDecision::Cancel => crate::panes::Answer::Cancelled,
+            };
+            // The frame this arrives on is already being drawn — `apply` is the
+            // first thing a frame does — so the answer's `redraw` has nothing
+            // left to ask for.
+            let _answered = self.deliver(crate::panes::Input::Answered(answer));
+            // After the walk and not before it: the walk is what reads the
+            // record to find the addressee.
+            self.windows.prompt = None;
         }
         if request.party_add {
             if let Some(link) = self.world.shard.link() {
@@ -772,7 +787,7 @@ impl App {
     /// furniture is deliberately absent — a static is not the shard's object,
     /// has no serial, and there is nothing to ask about.
     fn tooltip_subject(&self) -> Option<Serial> {
-        if let Some(item) = self.windows.hovered_container_item {
+        if let Some(item) = self.hovered_container_item() {
             return Some(item);
         }
         if !self.world_owns_pointer() {

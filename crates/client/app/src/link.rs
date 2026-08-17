@@ -35,7 +35,6 @@ use openshard_protocol::serial::Serial;
 use openshard_protocol::speech::TalkMode;
 use openshard_protocol::target::TargetResponse;
 use openshard_protocol::version::ClientVersion;
-use openshard_protocol::wire::{Layer, RawLayer};
 use openshard_protocol::world::Point;
 use openshard_protocol::world::ResyncRequest;
 use openshard_protocol::world::StepSequence;
@@ -451,10 +450,12 @@ impl Link {
         self.send(Command::Outgoing(Outgoing::PickUp { item, amount }));
     }
 
-    /// Drop the cursor item into a container at a gump-local position.
-    pub fn drop_into(&self, item: Serial, container: Serial, at: GumpPoint) {
-        self.send(Command::Outgoing(Outgoing::DropInto { item, container, at }));
-    }
+    // No `drop_into` and no `equip`: where a held item is put down is named by
+    // a [`PendingDrop`](crate::windows::PendingDrop), and that type turns
+    // itself into the packet — one place, so a fourth destination is a compile
+    // error rather than a `match` somebody forgot. `App::perform`'s
+    // `Effect::Drop` arm sends it through [`Link::act`], the way step 1's
+    // `buy`/`sell` and step 5's six doll requests went.
 
     /// Drop a held item onto another item, allowing the shard's normal stack rule.
     pub fn drop_onto_item(&self, item: Serial, target: Serial) {
@@ -468,15 +469,6 @@ impl Link {
     /// Drop the cursor item at a world position.
     pub fn drop_on_ground(&self, item: Serial, at: Point) {
         self.send(Command::Outgoing(Outgoing::DropOnGround { item, at }));
-    }
-
-    /// Put the cursor item onto a paperdoll slot.
-    pub fn equip(&self, item: Serial, layer: Layer, mobile: Serial) {
-        self.send(Command::Outgoing(Outgoing::Equip {
-            item,
-            layer: RawLayer(layer.0),
-            mobile,
-        }));
     }
 
     // No `buy` and no `sell`: the shop's order is asked for by

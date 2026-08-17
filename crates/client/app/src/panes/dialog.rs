@@ -647,10 +647,15 @@ impl Pane for DialogPane {
                 None => Response::ignored(),
             },
             // The right button is the manager's close, which for this kind is
-            // the one close that travels — see `DialogPane::dismiss`.
-            Input::Move | Input::Wheel(_) | Input::Press(Button::Right) | Input::Release(Button::Right) => {
-                Response::ignored()
-            }
+            // the one close that travels — see `DialogPane::dismiss`. A
+            // modal's answer is the shard's dialog asking nothing of the
+            // client's own: the two are different windows, and only the one
+            // that asked is offered the number.
+            Input::Move
+            | Input::Wheel(_)
+            | Input::Press(Button::Right)
+            | Input::Release(Button::Right)
+            | Input::Answered(_) => Response::ignored(),
         }
     }
 }

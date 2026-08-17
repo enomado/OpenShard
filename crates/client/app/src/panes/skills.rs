@@ -303,10 +303,12 @@ impl Pane for SkillsPane {
             }
             // The right button is the manager's close, and a keystroke is a
             // dialog's: this sheet has nothing to type into, so it never asks
-            // for the keyboard and is never offered one.
-            Input::Press(Button::Right) | Input::Release(Button::Right) | Input::Key(_) => {
-                Response::ignored()
-            }
+            // for the keyboard and is never offered one. A modal's answer is
+            // the same shape — this window asks for none, so none arrives.
+            Input::Press(Button::Right)
+            | Input::Release(Button::Right)
+            | Input::Key(_)
+            | Input::Answered(_) => Response::ignored(),
         }
     }
 }

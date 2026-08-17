@@ -1,31 +1,44 @@
-//! The player's own gump, doll and skill windows: what the mouse is doing to
-//! them, kept apart from `ui_command.rs`'s walk and targeting even though
-//! both answer to the same click — a press on a window and a press on the
-//! ground are different subsystems that happen to share an input device.
+//! The window *manager*: which of this client's own windows exist, which one
+//! the pointer is on, which one a gesture takes down — kept apart from
+//! `ui_command.rs`'s walk and targeting even though both answer to the same
+//! click, because a press on a window and a press on the ground are different
+//! subsystems that happen to share an input device.
 //!
 //! [`App::sync_own_windows`] is the once-a-frame fold from the
 //! [`WorldView`](openshard_client_net::view::WorldView) the shard has sent;
-//! everything below it answers a press, a drag or a release against
-//! whatever that fold last laid out — see [`windows::Windows::drawn_windows`]
-//! for why the picture a click is tested against is the *last frame's*.
+//! [`App::window_under_pointer`] answers every located input against what that
+//! fold last laid out — see [`windows::Windows::drawn_windows`] for why the
+//! picture a click is tested against is the *last frame's*.
+//!
+//! # What is not here any more, and the three things that are
+//!
+//! This file used to answer every window's input. `docs/window_components.md`
+//! moved all six kinds into [`crate::panes`], one step at a time, and what is
+//! left falls into three groups:
+//!
+//! - **The manager's own**: which windows exist, the z-order, the raise, the
+//!   press that picks a window up when no pane wanted it, and the two closes.
+//! - **The world's, which no pane can answer for**: the press on an item lying
+//!   on the ground ([`App::press_world_item`]), what it becomes
+//!   ([`App::drag_world_item`]), and the drop of a held item onto a tile
+//!   ([`App::drop_hand_on_ground`]). The ground is not a window.
+//! - **The machines that run across frames**: the stack pass, which sends one
+//!   merge per authoritative snapshot and cannot live in a pane that only ever
+//!   sees one input.
 
 use std::time::Instant;
 
-use openshard_client_render::{
-    container,
-    gump::{self as gump_art, GumpPixel},
-};
+use openshard_client_render::gump::{self as gump_art, GumpPixel};
 use openshard_protocol::containers::ContainedItem;
 use openshard_protocol::gump::GumpId;
 use openshard_protocol::gump::GumpPoint;
-use openshard_protocol::mobile::Equipment;
 use openshard_protocol::serial::Serial;
 use openshard_protocol::speech::TalkMode;
-use openshard_protocol::wire::{Graphic, Layer};
+use openshard_protocol::wire::Graphic;
 
 use crate::app::App;
-use crate::windows::{Drawn, WindowSubject};
-use crate::{DOUBLE_CLICK, chat, link};
+use crate::windows::{self, Drawn, WindowSubject};
+use crate::{chat, link};
 
 mod sync;
 
@@ -37,10 +50,6 @@ struct StackStep {
     source: Serial,
     target: Serial,
     amount: u16,
-}
-
-fn split_amount(total: u16, requested: u16) -> Option<u16> {
-    (total > 1).then(|| requested.clamp(1, total - 1))
 }
 
 /// Pick one safe merge for this pass. Whole donor piles are preferred when
@@ -78,104 +87,27 @@ fn next_stack_step(items: &[ContainedItem]) -> Option<StackStep> {
 }
 
 impl App {
-    fn stack_all_button_under_pointer(&self) -> Option<Serial> {
-        let view = self.world.authoritative.view.as_ref()?;
-        let backpack = view
-            .player
-            .equipment
-            .iter()
-            .find(|item| item.layer == Layer::BACKPACK)
-            .map(|item| item.serial)?;
-        for open in self.windows.own_windows.iter().rev() {
-            if let WindowSubject::Container(serial) = open.subject {
-                if serial == backpack && !view.vendor_buys.contains_key(&serial) {
-                    if let Some(gump) = view.containers.get(&serial) {
-                        if container::stack_all_button(&self.resources.gump_atlas, *gump, open.at)
-                            .is_some_and(|button| button.contains(self.input.pointer_gump))
-                        {
-                            return Some(serial);
-                        }
-                    }
-                }
-            }
-            if self.window_under_pointer() == Some(open.subject) {
-                return None;
-            }
-        }
-        None
-    }
+    // No `stack_all_button_under_pointer`, no `take_all_button_under_pointer`
+    // and no `take_all_from_container`: both plates are a bag's own furniture
+    // and both are `panes::container::ContainerPane`'s now — the hit test, the
+    // caption drawn under the window, and the sweep the one of them performs.
+    //
+    // The walk they shared is what the plan's Backlog entry was about: each
+    // asked `window_under_pointer()` again *inside* its own loop over every
+    // window, so the answer depended on a second top-down walk taken per
+    // iteration. What that predicate was reaching for is the router's own rule
+    // — a press stops at the window it landed on — so a pane hit-tests itself
+    // and the walk is gone rather than restated.
 
-    /// The visible loot action under the pointer, if it is not covered by a
-    /// higher window. The player's own backpack and vendor catalogues never
-    /// offer it: neither is loot to sweep into the backpack.
-    fn take_all_button_under_pointer(&self) -> Option<Serial> {
-        let view = self.world.authoritative.view.as_ref()?;
-        let backpack = view
-            .player
-            .equipment
-            .iter()
-            .find(|item| item.layer == Layer::BACKPACK)
-            .map(|item| item.serial);
-        for open in self.windows.own_windows.iter().rev() {
-            if let WindowSubject::Container(serial) = open.subject {
-                if Some(serial) != backpack && !view.vendor_buys.contains_key(&serial) {
-                    if let Some(gump) = view.containers.get(&serial) {
-                        if container::take_all_button(&self.resources.gump_atlas, *gump, open.at)
-                            .is_some_and(|button| button.contains(self.input.pointer_gump))
-                        {
-                            return Some(serial);
-                        }
-                    }
-                }
-            }
-            // A real window above the action owns this press; do not let a
-            // control on a covered chest answer through its pixels.
-            if self.window_under_pointer() == Some(open.subject) {
-                return None;
-            }
-        }
-        None
-    }
-
-    /// Move every currently listed item from `container` into the player's
-    /// backpack. Each lift/drop pair stays on the ordinary, server-authoritative
-    /// drag path, preserving reach, ownership and weight checks.
-    fn take_all_from_container(&mut self, container: Serial) {
-        let Some(view) = self.world.authoritative.view.as_ref() else {
-            return;
-        };
-        let Some(backpack) = view
-            .player
-            .equipment
-            .iter()
-            .find(|item| item.layer == Layer::BACKPACK)
-            .map(|item| item.serial)
-        else {
-            return;
-        };
-        if container == backpack || view.vendor_buys.contains_key(&container) {
-            return;
-        }
-        let items = view.contents.get(&container).cloned().unwrap_or_default();
-        let Some(link) = self.world.shard.link() else {
-            return;
-        };
-        for (index, item) in items.into_iter().enumerate() {
-            // Keep the dropped icons apart. The backpack remains authoritative
-            // about their final grid slots and any stack merge.
-            let column = (index % 6) as i32;
-            let row = (index / 6) as i32;
-            link.pick_up_item(item.serial, item.amount);
-            link.drop_into(
-                item.serial,
-                backpack,
-                GumpPoint::new(20 + column * 18, 20 + row * 18),
-            );
-        }
-    }
-
-    fn start_stack_pass(&mut self, container: Serial) {
-        if self.windows.item_drag.is_some() {
+    /// Begin compacting the like piles in one container.
+    ///
+    /// Asked for by [`Effect::StackAll`](crate::panes::Effect::StackAll), and
+    /// the manager's rather than the pane's because it is a machine that runs
+    /// **across frames**: one merge is sent, the container is asked for again,
+    /// and the next merge is planned against the answer. A pane only ever sees
+    /// one input.
+    pub(crate) fn start_stack_pass(&mut self, container: Serial) {
+        if self.windows.hand.is_some() {
             return;
         }
         self.windows.stack_pass = Some(crate::windows::StackPass {
@@ -194,7 +126,7 @@ impl App {
         let Some(pass) = self.windows.stack_pass.as_ref() else {
             return;
         };
-        if self.windows.item_drag.is_some() {
+        if self.windows.hand.is_some() {
             self.windows.stack_pass = None;
             return;
         }
@@ -254,311 +186,173 @@ impl App {
         let openshard_protocol::items::WorldItemPayload::Stack(amount) = item.payload else {
             return false;
         };
-        // A ground sprite has no gump-local grab point. Once it becomes a
-        // cursor icon, anchor its visual centre to the pointer; that same
-        // offset is used if it is released into a container.
-        let grab = self
-            .resources
-            .art
-            .static_art(item.graphic)
-            .ok()
-            .flatten()
-            .map(|art| GumpPixel::new(i32::from(art.width()) / 2, i32::from(art.height()) / 2))
-            .unwrap_or_default();
-        self.windows.item_drag = Some(crate::windows::ItemDragTransaction::Pressed(
-            crate::windows::ItemPress {
-                item: ContainedItem {
-                    serial,
-                    graphic: item.graphic,
-                    amount,
-                    // A ground item has no gump position. It becomes relevant only
-                    // after a drop, which supplies a real one.
-                    at: GumpPoint::new(0, 0),
-                    grid: Default::default(),
-                    hue: item.hue,
-                },
-                origin: crate::windows::DragOrigin::Ground,
-                at: self.input.pointer_gump,
-                grab,
+        self.windows.world_press = Some(windows::ItemPress {
+            item: ContainedItem {
+                serial,
+                graphic: item.graphic,
+                amount,
+                // A ground item has no gump position. It becomes relevant only
+                // after a drop, which supplies a real one.
+                at: GumpPoint::new(0, 0),
+                grid: Default::default(),
+                hue: item.hue,
             },
-        ));
+            origin: windows::DragOrigin::Ground,
+            at: self.input.pointer_gump,
+            // A ground sprite has no gump-local grab point — see `centre_of`,
+            // which a worn item's press asks the same question of.
+            grab: windows::centre_of(item.graphic, &self.resources.art),
+        });
         true
     }
 
-    /// The container icon the pointer is directly over in the last drawn frame.
-    pub(crate) fn container_item_under_pointer(&self) -> Option<ContainedItem> {
-        let WindowSubject::Container(container) = self.window_under_pointer()? else {
-            return None;
-        };
-        // Stock icons are visual entries in a vendor window, not ordinary
-        // container items: lifting one would send `0x07`, whereas buying it
-        // must send `0x3B`.  The shop controls own those clicks.
-        if self
-            .world
-            .authoritative
-            .view
-            .as_ref()?
-            .vendor_buys
-            .contains_key(&container)
-        {
-            return None;
-        }
-        let Drawn::Container(pictures) = self.drawn(WindowSubject::Container(container))? else {
-            return None;
-        };
-        let index = gump_art::pick(pictures, self.input.pointer_gump, &self.resources.gump_atlas)?;
-        let item_index = index.position().checked_sub(1)?;
-        let contents = self.world.authoritative.view.as_ref()?.contents.get(&container)?;
-        let held = self
-            .windows
-            .item_drag
-            .and_then(crate::windows::ItemDragTransaction::drag)
-            .map(|drag| drag.item.serial);
-        contents
-            .iter()
-            // The lifter's own client removes this optimistically. The shard
-            // does not echo a `Remove` back to that same connection.
-            .filter(|item| Some(item.serial) != held)
-            .nth(item_index)
-            .copied()
-    }
-
-    /// Refresh the one-frame-later hover tint from the same pictures hit tests use.
-    pub(crate) fn hover_container_item(&mut self) -> bool {
-        let hovered = self.container_item_under_pointer().map(|item| item.serial);
-        if self.windows.hovered_container_item == hovered {
-            return false;
-        }
-        self.windows.hovered_container_item = hovered;
-        true
-    }
-
-    /// The worn item under the pointer in the paperdoll drawn last frame.
+    /// Which container icon the pointer is resting on, asked of the window it
+    /// is on.
     ///
-    /// The one paperdoll question still asked on this side of the pane
-    /// boundary, because its caller is the one paperdoll press the pane
-    /// declines: the press that starts an item transfer, which is the hand's
-    /// machinery and moves with step 6 of `docs/window_components.md`. The
-    /// hover tint that used to share this walk is `PaperdollPane`'s own now.
-    pub(crate) fn paperdoll_item_under_pointer(&self) -> Option<(Serial, Equipment)> {
-        let WindowSubject::Paperdoll(mobile) = self.window_under_pointer()? else {
-            return None;
-        };
-        let Drawn::Paperdoll(window) = self.drawn(WindowSubject::Paperdoll(mobile))? else {
-            return None;
-        };
-        let index = gump_art::pick(
-            &window.doll.pictures,
-            self.input.pointer_gump,
-            &self.resources.gump_atlas,
-        )?;
-        let layer = *window.doll.equipment_hits.get(&index)?;
-        let view = self.world.authoritative.view.as_ref()?;
-        let equipment = if view.player.serial == mobile {
-            &view.player.equipment
-        } else {
-            &view.mobiles.get(&mobile)?.equipment
-        };
-        equipment
-            .iter()
-            .find(|item| item.layer == layer)
-            .copied()
-            .map(|item| (mobile, item))
+    /// **The manager asking a pane, the way `close_window` asks a dialog for
+    /// its dismissal.** The tint and the label are `ContainerPane`'s own now —
+    /// it remembers what it drew — and this exists because one reader is not a
+    /// window at all: the tooltip pick order, which puts an icon in an open bag
+    /// in front of anything in the world behind it. Top-down and first answer
+    /// wins, so it is the same window the pointer is on.
+    pub(crate) fn hovered_container_item(&self) -> Option<Serial> {
+        self.windows.own_windows.iter().rev().find_map(|window| {
+            match &window.pane {
+                crate::panes::AnyPane::Container(pane) => pane.hovered(),
+                // Every other kind's hover is about something that is not an
+                // item the shard can be asked about.
+                _ => None,
+            }
+        })
     }
 
-    /// Turn a genuine pointer move into a lift. A press without this movement
-    /// remains a click and can therefore use the item on a double-click.
-    pub(crate) fn drag_container_item(&mut self) -> bool {
-        let Some(crate::windows::ItemDragTransaction::Pressed(press)) = self.windows.item_drag else {
+    // No `container_item_under_pointer`, no `hover_container_item` and no
+    // `paperdoll_item_under_pointer`: each was a second walk over a picture
+    // some pane had already laid out, and each is that pane's own hit test now.
+    // The container's was the worst of the three — it picked an index out of
+    // the pictures and then counted that far into a list *rebuilt* from the
+    // view, with the lifted icon filtered out again by hand, in the order the
+    // layout had filtered it. `container::Window` carries what it drew.
+
+    /// Turn a genuine pointer move into a lift, for the one press no window
+    /// holds: an item lying in the world.
+    ///
+    /// The rule itself is [`ItemPress::dragged`], which a bag's pane and a
+    /// doll's pane ask of their own presses — one policy, three holders. What
+    /// is different here is only what happens to the answer, because there is
+    /// no pane to hand an effect to.
+    pub(crate) fn drag_world_item(&mut self) -> bool {
+        let Some(press) = self.windows.world_press else {
             return false;
         };
-        const DRAG_SLOP: i32 = 3;
-        if (self.input.pointer_gump.x - press.at.x).abs() <= DRAG_SLOP
-            && (self.input.pointer_gump.y - press.at.y).abs() <= DRAG_SLOP
-        {
+        // Suspended under the amount prompt: the number the player is choosing
+        // is about this press, and lifting it now would divide nothing.
+        if self.windows.prompt.is_some() {
             return false;
         }
-        if self.input.shift_held && press.item.amount.0 > 1 {
-            if !self.windows.split_pending {
+        match press.dragged(self.input.pointer_gump, self.input.shift_held) {
+            windows::Dragged::Still => false,
+            windows::Dragged::Ask(most) => {
                 let Some(shell) = self.shell.as_mut() else {
                     return false;
                 };
-                shell.open_split(press.item.amount.0 - 1);
-                self.windows.split_pending = true;
+                shell.open_split(most);
+                self.windows.prompt = Some(windows::Asking::World);
                 self.windows.dragging = None;
+                true
             }
-            return true;
+            windows::Dragged::Lift(drag) => {
+                self.windows.world_press = None;
+                self.lift(drag);
+                self.windows.dragging = None;
+                true
+            }
         }
-        let Some(link) = self.world.shard.link() else {
-            return false;
-        };
-        link.pick_up_item(press.item.serial, press.item.amount);
-        self.windows.item_drag = Some(crate::windows::ItemDragTransaction::Held(
-            crate::windows::ItemDrag {
-                item: press.item,
-                origin: press.origin,
-                grab: press.grab,
-            },
-        ));
-        self.reproject_item_drag();
-        self.windows.hovered_container_item = None;
-        self.windows.dragging = None;
-        true
     }
 
-    /// Continue or cancel the Pressed transaction held while the amount prompt
-    /// was open. A contained stack is placed back beside its remainder so the
-    /// modal gesture finishes visibly; a ground stack remains on the cursor.
-    pub(crate) fn finish_stack_split(&mut self, decision: crate::shell::SplitDecision) {
-        self.windows.split_pending = false;
-        let Some(crate::windows::ItemDragTransaction::Pressed(press)) = self.windows.item_drag else {
-            return;
-        };
-        let crate::shell::SplitDecision::Confirm(amount) = decision else {
-            self.windows.item_drag = None;
-            return;
-        };
-        let Some(amount) = split_amount(press.item.amount.0, amount) else {
-            self.windows.item_drag = None;
-            return;
-        };
+    /// Put `drag` on the cursor: the `0x07` and the hand it fills.
+    ///
+    /// The manager's half of [`Effect::Lift`](crate::panes::Effect::Lift),
+    /// shared with it rather than restated — a pane's lift and the world's are
+    /// the same act, and there is one place that performs it.
+    /// Nothing happens without a shard to ask: the hand is a *mirror* of the
+    /// other end's slot, and one filled with no packet behind it is an item
+    /// this client has taken out of a bag nobody else knows about.
+    pub(crate) fn lift(&mut self, drag: windows::ItemDrag) {
         let Some(link) = self.world.shard.link() else {
-            self.windows.item_drag = None;
             return;
         };
-        let split_item = ContainedItem {
-            amount: openshard_protocol::items::ItemAmount(amount),
-            ..press.item
-        };
-        let drag = crate::windows::ItemDrag {
-            item: split_item,
-            origin: press.origin,
-            grab: press.grab,
-        };
-        link.pick_up_item(press.item.serial, split_item.amount);
-        self.windows.item_drag = match press.origin {
-            crate::windows::DragOrigin::Container(container) => {
-                // Finish a backpack split immediately. The lift path suppresses
-                // Remove for its own client, so leaving the part on the cursor
-                // after a modal prompt can hide the old serial indefinitely.
-                // Dropping it back produces an Add for that serial; reopening
-                // then replaces the whole list, including the new remainder.
-                let at = GumpPoint::new(press.item.at.x + 18, press.item.at.y + 18);
-                link.drop_into(split_item.serial, container, at);
-                link.use_object(container);
-                Some(crate::windows::ItemDragTransaction::Dropped {
-                    drag,
-                    destination: crate::windows::PendingDrop::Container { container, at },
-                })
-            }
-            crate::windows::DragOrigin::Ground | crate::windows::DragOrigin::Equipment { .. } => {
-                Some(crate::windows::ItemDragTransaction::Held(drag))
-            }
-        };
+        link.pick_up_item(drag.item.serial, drag.item.amount);
+        self.windows.hand = Some(windows::Hand::Held(drag));
         self.reproject_item_drag();
-        self.windows.hovered_container_item = None;
     }
 
-    /// Commit a held item to an open bag or a picked world tile. Its local
-    /// transaction stays in `Dropped` until the server confirms or rejects it.
-    pub(crate) fn release_container_item(&mut self) -> bool {
-        let Some(transaction) = self.windows.item_drag else {
+    /// The amount prompt has been answered, and the press it suspended is the
+    /// world's.
+    ///
+    /// A ground stack stays on the cursor once it is divided — there is no
+    /// window to put the remainder back into, and the shard's own `0x1A` will
+    /// show what is left lying there.
+    pub(crate) fn split_world_press(&mut self, answer: crate::panes::Answer) {
+        let Some(press) = self.windows.world_press.take() else {
+            return;
+        };
+        let crate::panes::Answer::Split(amount) = answer else {
+            return;
+        };
+        let Some(drag) = press.split(amount) else {
+            return;
+        };
+        self.lift(drag);
+    }
+
+    /// Put a held item down where no window claimed it: on the ground under
+    /// the pointer.
+    ///
+    /// Reached only after every pane has declined the release — a bag answers
+    /// a drop into itself and a doll an equip — which is why this arm is the
+    /// world's and not a `match` over window kinds. Releasing over a shop or a
+    /// skill sheet drops on the ground behind it, exactly as it did: neither
+    /// window is a place to put anything.
+    pub(crate) fn drop_hand_on_ground(&mut self) -> bool {
+        let Some(hand) = self.windows.hand else {
             return false;
         };
-        let Some(drag) = transaction.drag() else {
-            return false;
-        };
-        if transaction.pending_drop().is_some() {
-            return true;
-        }
-        let target = match self.window_under_pointer() {
-            Some(WindowSubject::Paperdoll(mobile)) => {
-                let layer = openshard_protocol::wire::Layer(
-                    self.resources.tiledata.static_tile(drag.item.graphic.0).layer,
-                );
-                // Always finish through the shard. An occupied or invalid
-                // slot is still an answer: `equip_item` sends DragCancel and
-                // restores the remembered origin. Keeping that rejection
-                // local used to strand this transaction in `Held`.
-                if let Some(link) = self.world.shard.link() {
-                    link.equip(drag.item.serial, layer, mobile);
-                    self.windows.item_drag = Some(crate::windows::ItemDragTransaction::Dropped {
-                        drag,
-                        destination: crate::windows::PendingDrop::Equipment { mobile, layer },
-                    });
-                    self.reproject_item_drag();
-                }
-                return true;
-            }
-            Some(WindowSubject::Container(serial)) => serial,
-            _ => {
-                // Outside a gump the protocol's x/y/z are world coordinates,
-                // not gump pixels. `pick_tile` already answers against the
-                // frame the player released over.
-                if let (Some(link), Some(tile)) =
-                    (self.world.shard.link(), self.pick_tile(*self.control.camera()))
-                {
-                    link.drop_on_ground(
-                        drag.item.serial,
-                        openshard_protocol::world::Point::new(tile.at.x, tile.at.y, tile.stand_z.0),
-                    );
-                    self.windows.item_drag = Some(crate::windows::ItemDragTransaction::Dropped {
-                        drag,
-                        destination: crate::windows::PendingDrop::Ground(
-                            openshard_protocol::world::Point::new(tile.at.x, tile.at.y, tile.stand_z.0),
-                        ),
-                    });
-                    self.reproject_item_drag();
-                }
-                return true;
-            }
-        };
-        let Some(at) = self
-            .windows
-            .own_windows
-            .iter()
-            .find(|window| window.subject == WindowSubject::Container(target))
-            .map(|window| {
-                GumpPoint::new(
-                    self.input.pointer_gump.x - window.at.x - drag.grab.x,
-                    self.input.pointer_gump.y - window.at.y - drag.grab.y,
-                )
-            })
-        else {
+        // A drop already in flight: the release is still the hand's — it must
+        // not walk the body — and there is nothing more to send.
+        let windows::Hand::Held(drag) = hand else {
             return true;
         };
-        if let Some(link) = self.world.shard.link() {
-            // This gesture targets the open container, never an icon drawn in
-            // it.  Otherwise a floor item released above a nested bag silently
-            // enters that bag and its coordinates are interpreted in the wrong
-            // gump. Stack merging is a separate destination gesture.
-            link.drop_into(drag.item.serial, target, at);
-            self.windows.item_drag = Some(crate::windows::ItemDragTransaction::Dropped {
+        // Outside a gump the protocol's x/y/z are world coordinates, not gump
+        // pixels. `pick_tile` already answers against the frame the player
+        // released over.
+        if let (Some(link), Some(tile)) = (self.world.shard.link(), self.pick_tile(*self.control.camera())) {
+            let at = openshard_protocol::world::Point::new(tile.at.x, tile.at.y, tile.stand_z.0);
+            link.drop_on_ground(drag.item.serial, at);
+            self.windows.hand = Some(windows::Hand::Dropped {
                 drag,
-                destination: crate::windows::PendingDrop::Container {
-                    container: target,
-                    at,
-                },
+                destination: windows::PendingDrop::Ground(at),
             });
             self.reproject_item_drag();
         }
         true
     }
 
-    /// Finish a click that never became a drag. The double-click decision was
-    /// made on press, before this window can be raised or relaid out again.
-    pub(crate) fn release_container_press(&mut self) -> bool {
-        if self.windows.split_pending {
+    /// Finish a press on a world item that never became a drag.
+    ///
+    /// The double-click decision was made on the press — see `event_loop`'s own
+    /// pairing — so there is nothing left to do but forget it.
+    pub(crate) fn release_world_press(&mut self) -> bool {
+        // Suspended under the prompt: the release that opened it must not put
+        // the press down before the number arrives. Named rather than
+        // `is_some`, because a *window's* prompt is that window's business and
+        // its pane has already answered this release.
+        if self.windows.prompt == Some(windows::Asking::World) {
             return true;
         }
-        matches!(
-            self.windows.item_drag,
-            Some(crate::windows::ItemDragTransaction::Pressed(_))
-        ) && {
-            self.windows.item_drag = None;
-            true
-        }
+        self.windows.world_press.take().is_some()
     }
+
     /// Which window the cursor is over, topmost first, or `None`.
     ///
     /// Against **every picture the window drew**, and each against its own
@@ -630,34 +424,30 @@ impl App {
         }
     }
 
-    /// A left press over one of this client's windows: raise it and take hold
-    /// of it.
+    /// A left press over one of this client's windows that no pane answered:
+    /// raise it and take hold of it.
     ///
     /// Answers whether the press belonged to a window, so the caller can leave
     /// the world's own click alone when it did — a press that raised a bag must
     /// not also select the tile behind it.
     ///
-    /// A dialog's own widgets take the press first, and take it away from the
-    /// drag: pressing a button must not also start moving the window under it.
-    /// Everything else in a dialog — its background, a `{ gumppic }`, a label —
-    /// drags it, which is how a gump is moved when it has no title bar to move
-    /// it by. See `gump::Dialogs::press`.
+    /// **All that is left of a function that used to branch on five window
+    /// kinds.** Every kind answers its own press in its own pane now, and each
+    /// of them emits [`Effect::Grab`](crate::panes::Effect::Grab) for the press
+    /// that landed on nothing in particular — so what reaches here is a press
+    /// on a kind that has *no* input of its own to speak of: a status frame,
+    /// which is a unit struct, or a window that has never been drawn and has no
+    /// layout to hit-test.
     ///
-    /// The press while the hand is full is **not** asked about here any more:
-    /// it is the manager's first question, ahead of every pane and of this —
-    /// see `App::manager_gestures` and decision 7 in
-    /// `docs/window_components.md`.
+    /// It is in the router's third rung rather than in `manager_gestures`
+    /// because it has to run **behind** the panes: a shop's Confirm button and
+    /// a sheet's thumb are asked first, and only a press none of them wanted
+    /// picks the window up. The plan's step 7 gives that a rung of its own.
+    ///
+    /// The press while the hand is full is **not** asked about here: it is the
+    /// manager's first question, ahead of every pane and of this — see
+    /// `App::manager_gestures` and decision 7 in `docs/window_components.md`.
     pub(crate) fn press_on_own_window(&mut self) -> bool {
-        if let Some(container) = self.stack_all_button_under_pointer() {
-            self.start_stack_pass(container);
-            self.windows.dragging = None;
-            return true;
-        }
-        if let Some(container) = self.take_all_button_under_pointer() {
-            self.take_all_from_container(container);
-            self.windows.dragging = None;
-            return true;
-        }
         // A press that missed every window gives the keyboard back, and that is
         // the manager's own gesture now — see `App::manager_gestures`, which
         // runs it ahead of every pane and of this.
@@ -665,123 +455,6 @@ impl App {
             return false;
         };
         self.raise_window(subject);
-        // No vendor arm: a shop answers its own press in
-        // `panes::vendor::VendorPane`, which the router offers the press to
-        // before this is reached. A vendor window that gets this far has never
-        // been drawn — there is no layout to hit-test — and the tail below
-        // picks it up by whatever the player grabbed, which is what used to
-        // happen when the hit test found nothing.
-        if let WindowSubject::Container(container) = subject {
-            if let Some(item) = self.container_item_under_pointer() {
-                let window = self
-                    .windows
-                    .own_windows
-                    .iter()
-                    .find(|window| window.subject == WindowSubject::Container(container));
-                if let Some(window) = window {
-                    let icon = window.at.offset(GumpPixel::new(item.at.x, item.at.y));
-                    let now = Instant::now();
-                    let paired = self.windows.last_container_click.is_some_and(|(then, serial)| {
-                        serial == item.serial && now.duration_since(then) <= DOUBLE_CLICK
-                    });
-                    self.windows.last_container_click = (!paired).then_some((now, item.serial));
-                    if paired {
-                        if let Some(link) = self.world.shard.link() {
-                            // A katana's ordinary double-click is a wield: lift
-                            // it and immediately place it in the tiledata slot,
-                            // exactly as a drag onto the doll does.
-                            if item.graphic == Graphic(0x13FF) {
-                                if let Some(player) = self
-                                    .world
-                                    .authoritative
-                                    .view
-                                    .as_ref()
-                                    .map(|view| view.player.serial)
-                                {
-                                    let layer = openshard_protocol::wire::Layer(
-                                        self.resources.tiledata.static_tile(item.graphic.0).layer,
-                                    );
-                                    link.pick_up_item(item.serial, item.amount);
-                                    link.equip(item.serial, layer, player);
-                                }
-                            } else {
-                                link.use_object(item.serial);
-                            }
-                        }
-                        self.windows.item_drag = None;
-                        self.windows.dragging = None;
-                        return true;
-                    }
-                    self.windows.item_drag = Some(crate::windows::ItemDragTransaction::Pressed(
-                        crate::windows::ItemPress {
-                            item,
-                            origin: crate::windows::DragOrigin::Container(container),
-                            at: self.input.pointer_gump,
-                            grab: GumpPixel::new(
-                                self.input.pointer_gump.x - icon.x,
-                                self.input.pointer_gump.y - icon.y,
-                            ),
-                        },
-                    ));
-                    self.windows.dragging = None;
-                    return true;
-                }
-            }
-        }
-        // No dialog arm either: a `0xB0` answers its own press in
-        // `panes::dialog::DialogPane`, including the `{ nomove }` rule — a press
-        // that is taken and does *not* grab — which was the one shape in this
-        // function that the tail below could not express.
-        //
-        // The paperdoll's buttons and scrolls are `panes::paperdoll`'s too.
-        // What is left of its arm is the one press that pane *declines*: a worn
-        // item on the player's own body, which is the hand's press — the start
-        // of an item transfer — and the hand's machinery is this function's and
-        // its callers' until step 6 of `docs/window_components.md` moves it.
-        if let WindowSubject::Paperdoll(_) = subject {
-            if let Some((mobile, item)) = self.paperdoll_item_under_pointer() {
-                if self
-                    .world
-                    .authoritative
-                    .view
-                    .as_ref()
-                    .is_some_and(|view| view.player.serial == mobile)
-                {
-                    self.windows.item_drag = Some(crate::windows::ItemDragTransaction::Pressed(
-                        crate::windows::ItemPress {
-                            item: ContainedItem {
-                                serial: item.serial,
-                                graphic: item.graphic,
-                                amount: openshard_protocol::items::ItemAmount(1),
-                                at: GumpPoint::new(0, 0),
-                                grid: Default::default(),
-                                hue: item.hue,
-                            },
-                            origin: crate::windows::DragOrigin::Equipment {
-                                mobile,
-                                layer: item.layer,
-                            },
-                            at: self.input.pointer_gump,
-                            grab: self
-                                .resources
-                                .art
-                                .static_art(item.graphic)
-                                .ok()
-                                .flatten()
-                                .map(|art| {
-                                    GumpPixel::new(i32::from(art.width()) / 2, i32::from(art.height()) / 2)
-                                })
-                                .unwrap_or_default(),
-                        },
-                    ));
-                    self.windows.dragging = None;
-                    return true;
-                }
-            }
-        }
-        // No skills arm either, for the vendor's reason above: the sheet
-        // answers its own press in `panes::skills::SkillsPane`, which the
-        // router offers it to before this is reached.
         let grab = self
             .windows
             .own_windows
@@ -1060,11 +733,6 @@ mod stack_tests {
         assert_eq!(step.amount, 10_000);
     }
 
-    #[test]
-    fn a_split_never_takes_none_or_the_whole_stack() {
-        assert_eq!(split_amount(10, 0), Some(1));
-        assert_eq!(split_amount(10, 4), Some(4));
-        assert_eq!(split_amount(10, 10), Some(9));
-        assert_eq!(split_amount(1, 1), None);
-    }
+    // The split's own bounds moved with the rule: `ItemPress::split` is what
+    // divides a pile now, and it is exercised beside it in `windows.rs`.
 }

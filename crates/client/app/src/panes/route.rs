@@ -13,18 +13,23 @@
 //! 2. **The panes, top down, first `taken` wins.** Painter's order is z-order,
 //!    so the last window in the list is the one drawn over the others and the
 //!    first one offered an event.
-//! 3. **The kinds that have not moved in yet.** The `App` methods in
-//!    [`crate::own_windows`], reached only when no pane answered — so they are
-//!    never a second opinion about the same click.
+//! 3. **The manager's own gestures that are a *fallback* rather than a
+//!    precondition.** The `App` methods in [`crate::own_windows`], reached only
+//!    when no pane answered — so they are never a second opinion about the same
+//!    click. No window kind is answered here any more (step 6 took the last):
+//!    what is left is the press that picks a window up, and the world's own
+//!    press and drop, which no window can answer for because the ground is not
+//!    a window.
 //!
-//! Step 3 is scaffolding and dies with step 7 of the plan. Steps 1 and 2 are
-//! the shape that stays.
+//! Step 3 is where the plan's step 7 finishes: those leftovers want a rung
+//! that is named after what they are, rather than the one the scaffolding left
+//! behind. Steps 1 and 2 are the shape that stays.
 
 use std::time::Instant;
 
 use crate::app::App;
 use crate::panes::{Button, Effect, Input, Modifiers, Pane, PaneCtx, PaneFrame, Response};
-use crate::windows::{ItemDragTransaction, WindowSubject};
+use crate::windows::{Asking, Hand, WindowSubject};
 
 impl App {
     /// Offer one input to the window layer, and carry out whatever it asked
@@ -84,27 +89,38 @@ impl App {
                 Response::stale()
             }
             // **Decision 7's precondition, and the manager's because the hand
-            // is.** Once a lift has gone to the shard this transaction *is* the
-            // cursor: a second press is choosing a destination for the item
-            // already on it, and it must not reach a window, which would answer
-            // it by starting a second source. Ahead of the panes rather than
-            // inside each of them, because a pane that forgot to ask is a pane
-            // that quietly overwrites the hand.
-            Input::Press(Button::Left)
-                if self
-                    .windows
-                    .item_drag
-                    .is_some_and(ItemDragTransaction::owns_cursor) =>
-            {
+            // is.** Once a lift has gone to the shard the hand *is* the cursor:
+            // a second press is choosing a destination for the item already on
+            // it, and it must not reach a window, which would answer it by
+            // starting a second source. Ahead of the panes rather than inside
+            // each of them, because a pane that forgot to ask is a pane that
+            // quietly overwrites the hand.
+            //
+            // It is the field being `Some` now rather than a method on it: the
+            // state that had sent nothing left this enum for the panes at step
+            // 6, so everything that is here owns the cursor by being here.
+            Input::Press(Button::Left) if self.windows.hand.is_some() => {
                 self.windows.dragging = None;
+                Response::changed()
+            }
+            // The answer to the client's own amount prompt, when the press it
+            // suspended is the *world's* — see `Asking::World`. Every other
+            // presser is a window, and the walk below delivers it there.
+            Input::Answered(answer) if self.windows.prompt == Some(Asking::World) => {
+                self.windows.prompt = None;
+                self.split_world_press(answer);
                 Response::changed()
             }
             // A keystroke is never the manager's: it is addressed to a window by
             // name, and the manager's part of that is having said which window —
-            // see `App::keyboard_window`.
-            Input::Press(_) | Input::Release(Button::Right) | Input::Wheel(_) | Input::Key(_) => {
-                Response::ignored()
-            }
+            // see `App::keyboard_window`. A modal's answer is the same, one
+            // device over, and the arm above is the one presser that has no
+            // window to be addressed by.
+            Input::Press(_)
+            | Input::Release(Button::Right)
+            | Input::Wheel(_)
+            | Input::Key(_)
+            | Input::Answered(_) => Response::ignored(),
         }
     }
 
@@ -172,9 +188,27 @@ impl App {
         // keystroke with nobody to take it means the walk offers it to no
         // window at all.
         let keyboard = self.keyboard_window();
+        // Which window is holding the press the amount prompt went up over, if
+        // one is: the same shape as the keyboard, and the same reason — one
+        // device on the screen, so the manager says whose it is.
+        let prompt = match self.windows.prompt {
+            Some(Asking::Window(subject)) => Some(subject),
+            Some(Asking::World) | None => None,
+        };
+        // **The two inputs that are not located are addressed instead**, each
+        // by the manager's own record of who owns the device: a keystroke by
+        // `Windows::keyboard`, a modal's answer by `Windows::prompt`. Neither
+        // follows the pointer, because a player may raise a bag over the window
+        // that is typing or waiting.
         let addressed = match input {
             Input::Key(_) => match keyboard {
                 Some(subject) => Some(subject),
+                None => return Response::ignored(),
+            },
+            Input::Answered(_) => match prompt {
+                Some(subject) => Some(subject),
+                // The world's own press, or none at all: `manager_gestures`
+                // above has already answered whichever it is.
                 None => return Response::ignored(),
             },
             _ => None,
@@ -198,7 +232,7 @@ impl App {
             ctrl: self.input.ctrl_held,
         };
         let now = Instant::now();
-        let hand = self.windows.item_drag.and_then(ItemDragTransaction::drag);
+        let hand = self.windows.hand;
 
         let mut response = Response::ignored();
         // Collected rather than performed inside the loop: an effect needs
@@ -217,6 +251,7 @@ impl App {
                     cursor,
                     hand,
                     has_keyboard: keyboard == Some(open.subject),
+                    has_prompt: prompt == Some(open.subject),
                 },
                 drawn: drawn_windows
                     .iter()
@@ -280,19 +315,64 @@ impl App {
             }
             Effect::TakeKeyboard => self.windows.keyboard = Some(subject),
             Effect::ReleaseKeyboard => self.windows.keyboard = None,
+            // **The wire and the mirror, in one act** — see [`Effect::Lift`],
+            // and the shard's half goes first: a hand filled with nothing on
+            // the wire behind it is an item this end has taken out of a bag
+            // nobody else knows about. The local projection follows
+            // immediately rather than on the next packet, so the icon leaves
+            // the bag on the frame the player dragged it out of.
+            Effect::Lift(drag) => self.lift(drag),
+            // The other half, and the one place that knows *what* is being put
+            // down. A pane names only the destination, so a drop asked for
+            // while the last one is still in flight is refused here — the pane
+            // cannot tell a hand that is holding from one that is waiting, and
+            // does not have to.
+            Effect::Drop(destination) => {
+                let Some(Hand::Held(drag)) = self.windows.hand else {
+                    return;
+                };
+                if let Some(link) = self.world.shard.link() {
+                    link.act(destination.packet(drag.item.serial));
+                    self.windows.hand = Some(Hand::Dropped { drag, destination });
+                    self.reproject_item_drag();
+                }
+            }
+            // Up it goes, and the manager remembers whose press it is standing
+            // over — which is what the answer is later routed by.
+            Effect::Prompt(prompt) => {
+                if let Some(shell) = self.shell.as_mut() {
+                    shell.open_split(prompt.most);
+                    self.windows.prompt = Some(Asking::Window(subject));
+                    self.windows.dragging = None;
+                }
+            }
+            Effect::StackAll => {
+                if let WindowSubject::Container(container) = subject {
+                    self.start_stack_pass(container);
+                }
+            }
         }
     }
 
-    /// The six kinds' input as it is answered today, behind the one type the
-    /// router speaks.
+    /// What is left of the chain that was in `event_loop.rs`, behind the one
+    /// type the router speaks.
     ///
-    /// Every chain here is the chain that was in `event_loop.rs`, in its order,
-    /// with one difference: what it answers is a [`Response`] and not a `bool`,
-    /// so the caller can tell "the window took it" from "the frame is stale".
-    /// The conflation the wheel defect was made of now lives in exactly one
-    /// function instead of five call sites — and this function is deleted by the
-    /// plan's step 7, one arm at a time, as each kind's pane takes its input
-    /// over.
+    /// Every chain here was that chain, in its order, with one difference: what
+    /// it answers is a [`Response`] and not a `bool`, so the caller can tell
+    /// "the window took it" from "the frame is stale". Step 6 took the last
+    /// *window kind* out of it; what remains is the manager's own leftovers,
+    /// and they are here rather than in `manager_gestures` because they have to
+    /// run **behind** the panes:
+    ///
+    /// - the press that picks a window up, which every pane that declines a
+    ///   press falls through to (a status frame is dragged this way);
+    /// - the world's own item press, and the drop of a held item onto the
+    ///   ground — the one destination that is not a window, so no pane can
+    ///   answer for it.
+    ///
+    /// The plan's step 7 gives both a rung of their own; the Backlog entry
+    /// about "the press that picks a window up is the manager's" is what that
+    /// rung is for.
     fn legacy_window_input(&mut self, input: Input) -> Response {
         match input {
             Input::Press(Button::Left) => {
@@ -302,13 +382,13 @@ impl App {
                     Response::ignored()
                 }
             }
-            // Two questions on the way up, in this order: a held item is
-            // committed to whatever is under the pointer, and a press that
-            // never became a drag is dropped. The third — a paperdoll button
-            // let back up — went with step 5: `PaperdollPane::handle` answers
-            // its own release, offered above.
+            // Two questions on the way up, in this order: a held item that no
+            // window claimed goes on the ground, and the world's own press,
+            // which never became a drag, is dropped. Both used to be asked of
+            // every window kind here; a bag answers its own drop in
+            // `panes::container` now, and a doll its own equip.
             Input::Release(Button::Left) => {
-                if self.release_container_item() || self.release_container_press() {
+                if self.drop_hand_on_ground() || self.release_world_press() {
                     Response::changed()
                 } else {
                     Response::ignored()
@@ -326,15 +406,13 @@ impl App {
                 }
             }
             Input::Release(Button::Right) => Response::ignored(),
-            // Both of these run, and neither is exclusive: an item leaving a
-            // bag and a bag's hover tint are two windows' business and the
-            // pointer moved past both. The thumb that used to be third is
-            // `SkillsPane`'s own, and the paperdoll's tint that used to be
-            // fourth is `PaperdollPane`'s — each offered above.
+            // The world's press becoming a lift, and nothing else: the bag's
+            // hover that used to stand beside it is `ContainerPane`'s, its
+            // press is too, and the skill sheet's thumb and the doll's tint
+            // went at steps 2 and 5. What is left is the one press no window
+            // holds.
             Input::Move => {
-                let mut stale = self.drag_container_item();
-                stale |= self.hover_container_item();
-                if stale {
+                if self.drag_world_item() {
                     Response::stale()
                 } else {
                     Response::ignored()
@@ -349,6 +427,10 @@ impl App {
             // business, reached only when nothing above said the notch was its.
             // No kind that is left has a wheel at all.
             Input::Wheel(_) => Response::ignored(),
+            // **Empty for the arm below's reason.** A modal's answer reaches
+            // the presser the manager named, which is either a window's pane or
+            // `manager_gestures`' own arm for the world's press.
+            Input::Answered(_) => Response::ignored(),
             // **Empty from the day it was written.** A keystroke is only ever
             // offered to the window the manager says holds the keyboard, and the
             // one kind that can hold it is a pane already.

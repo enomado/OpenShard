@@ -19,17 +19,12 @@ use openshard_client_render::outline::{self, Ring};
 use openshard_client_render::renderer::Target;
 use openshard_client_render::select::{self, Selection};
 use openshard_client_render::sprite::SpriteQuad;
-use openshard_client_render::{container, paperdoll, solids};
-use openshard_protocol::containers::ContainedItem;
+use openshard_client_render::{paperdoll, solids};
 use std::time::{Duration, Instant};
 
 use crate::frame_geometry::FrameGeometry;
 use crate::picking::{self, SelectedIdentity};
 use crate::window::Screen;
-
-fn container_hover_text(item: &ContainedItem, name: &str) -> String {
-    format!("{name} ({})", item.amount.0)
-}
 
 /// Facts from the one world-pass encoding that a GPU dump can later compare
 /// with its attachments. Keeping these numbers beside the exact frame closes
@@ -128,19 +123,13 @@ pub(crate) fn draw_gump_windows(
         // tested against next frame — see `windows::Windows::drawn_windows`.
         let mut drawn_windows: Vec<(WindowSubject, Drawn)> = Vec::new();
         if let Some(view) = world.authoritative.view.as_ref() {
-            let art_files = gump_art::ArtFiles {
-                gumps: files,
-                items: &resources.art,
-            };
-            // **Decision 6's order, for the kinds that have moved into a pane
-            // of their own:** every pane says what art it needs, all of it is
-            // packed, and only then is anything laid out. Collected into a list
+            // **Decision 6's order, and it is now every kind's:** every pane
+            // says what art it needs, all of it is packed, and only then is
+            // anything laid out. Collected into a list
             // first because a pane reads the whole of `Resources` while it
             // answers and the atlas is a field of it — packing inside the walk
             // would be growing the very thing the walk is holding.
-            let hand = windows
-                .item_drag
-                .and_then(crate::windows::ItemDragTransaction::drag);
+            let hand = windows.hand;
             let wanted: Vec<(WindowSubject, Vec<gump_art::GumpArt>)> = windows
                 .own_windows
                 .iter()
@@ -152,6 +141,7 @@ pub(crate) fn draw_gump_windows(
                         cursor,
                         hand,
                         has_keyboard: windows.keyboard == Some(open.subject),
+                        has_prompt: windows.prompt == Some(crate::windows::Asking::Window(open.subject)),
                     };
                     (open.subject, open.pane.art(&frame))
                 })
@@ -167,28 +157,10 @@ pub(crate) fn draw_gump_windows(
                     eprintln!("packing window art for {subject:?}: {error}");
                 }
             }
-            for open in &windows.own_windows {
-                let WindowSubject::Container(serial) = open.subject else {
-                    continue;
-                };
-                let Some(gump) = view.containers.get(&serial).copied() else {
-                    continue;
-                };
-                let contents_serial = view
-                    .vendor_buys
-                    .get(&serial)
-                    .map_or(serial, |catalogue| catalogue.container);
-                let contents = view
-                    .contents
-                    .get(&contents_serial)
-                    .map_or(&[] as &[ContainedItem], Vec::as_slice);
-                if let Err(error) = resources
-                    .gump_atlas
-                    .add(art_files, container::art_of(gump, contents))
-                {
-                    eprintln!("packing container art for {serial}: {error}");
-                }
-            }
+            // No container loop here any more: a bag says what art it needs in
+            // `panes::container::ContainerPane::art`, packed by the sweep
+            // above with every other kind's. It was the last window kind whose
+            // pictures this function asked for on the window's behalf.
             for open in &windows.own_windows {
                 // A kind that has moved into a pane lays itself out, and its
                 // answer is the only one — the same three rungs the input side
@@ -201,6 +173,7 @@ pub(crate) fn draw_gump_windows(
                     cursor,
                     hand,
                     has_keyboard: windows.keyboard == Some(open.subject),
+                    has_prompt: windows.prompt == Some(crate::windows::Asking::Window(open.subject)),
                 };
                 if let Some(drawn) = open.pane.layout(&frame) {
                     drawn_windows.push((open.subject, drawn));
@@ -234,52 +207,18 @@ pub(crate) fn draw_gump_windows(
                     // art at all, and this loop runs inside the `Some(files)`
                     // arm of exactly that question.
                     WindowSubject::Paperdoll(_) => {}
-                    WindowSubject::Container(serial) => {
-                        let Some(gump) = view.containers.get(&serial).copied() else {
-                            continue;
-                        };
-                        // A vendor window is keyed by the vendor mobile, while
-                        // its displayed stock lives in the crate named by the
-                        // buy catalogue.  Ordinary bags use their own serial
-                        // for both.  Draw the stock in the classic shop gump;
-                        // purchases themselves still go through the vendor
-                        // controls rather than the normal item-drag path.
-                        let contents_serial = view
-                            .vendor_buys
-                            .get(&serial)
-                            .map_or(serial, |catalogue| catalogue.container);
-                        // A successful lift is not echoed as `Remove` to the
-                        // player holding it: that client already took the icon
-                        // out of its own gump. Mirror that rule locally until
-                        // the drag is completed or refused.
-                        let transaction = windows.item_drag;
-                        let held = transaction.and_then(crate::windows::ItemDragTransaction::drag);
-                        let mut contents: Vec<ContainedItem> = view
-                            .contents
-                            .get(&contents_serial)
-                            .into_iter()
-                            .flatten()
-                            .filter(|item| Some(item.serial) != held.map(|drag| drag.item.serial))
-                            .copied()
-                            .collect();
-                        if let (Some(drag), Some(crate::windows::PendingDrop::Container { container, at })) = (
-                            held,
-                            transaction.and_then(crate::windows::ItemDragTransaction::pending_drop),
-                        ) {
-                            if container == serial {
-                                contents.push(ContainedItem { at, ..drag.item });
-                            }
-                        }
-                        drawn_windows.push((
-                            open.subject,
-                            Drawn::Container(container::window_highlighted(
-                                gump,
-                                &contents,
-                                open.at,
-                                windows.hovered_container_item,
-                            )),
-                        ));
-                    }
+                    // Laid out by `panes::container::ContainerPane` above, and
+                    // reaching here is the shop's case: the view can drop a
+                    // `0x24` between the packet that took the bag away and the
+                    // reconcile that will take the window with it.
+                    //
+                    // What used to stand here was the last window kind this
+                    // function laid out itself — the icons, the lifted one
+                    // subtracted, and a pending drop projected back in. All
+                    // three are the pane's, and the list it drew travels with
+                    // the pictures so that a click and the picture cannot
+                    // disagree about which icon is which.
+                    WindowSubject::Container(_) => {}
                 }
             }
         }
@@ -303,9 +242,9 @@ pub(crate) fn draw_gump_windows(
         // it on the cursor. It intentionally is not added to `drawn_windows`:
         // it is a cursor preview, not a window that can intercept a drop.
         if let Some(drag) = windows
-            .item_drag
-            .filter(|transaction| transaction.pending_drop().is_none())
-            .and_then(crate::windows::ItemDragTransaction::drag)
+            .hand
+            .filter(|hand| hand.pending_drop().is_none())
+            .map(crate::windows::Hand::drag)
         {
             let art_files = gump_art::ArtFiles {
                 gumps: files,
@@ -352,23 +291,6 @@ pub(crate) fn draw_gump_windows(
             pass.render_layer(&window.device, &window.queue, encoder, frame, &art);
             let mut labels = Vec::new();
             let mut cut = Vec::new();
-            let container_hover = match subject {
-                WindowSubject::Container(serial) => windows.hovered_container_item.and_then(|hovered| {
-                    let item = world
-                        .authoritative
-                        .view
-                        .as_ref()?
-                        .contents
-                        .get(serial)?
-                        .iter()
-                        .find(|item| item.serial == hovered)?;
-                    Some(container_hover_text(
-                        item,
-                        &resources.tiledata.static_tile(item.graphic.0).name,
-                    ))
-                }),
-                _ => None,
-            };
             match (subject, drawn) {
                 // A shop's arm and a status frame's, now that a dialog's
                 // captions are resolved by the pane that laid it out: this pass
@@ -403,64 +325,15 @@ pub(crate) fn draw_gump_windows(
                 (WindowSubject::Vendor(_), Drawn::Vendor(vendor)) => {
                     labels.extend(vendor.lines.iter().map(|line| line.label()));
                 }
-                (WindowSubject::Container(serial), Drawn::Container(_)) => {
-                    let backpack = world.authoritative.view.as_ref().and_then(|view| {
-                        view.player
-                            .equipment
-                            .iter()
-                            .find(|item| item.layer == openshard_protocol::wire::Layer::BACKPACK)
-                            .map(|item| item.serial)
-                    });
-                    if let (Some(view), Some(open), Some(gump)) = (
-                        world.authoritative.view.as_ref(),
-                        windows
-                            .own_windows
-                            .iter()
-                            .find(|window| window.subject == *subject),
-                        world
-                            .authoritative
-                            .view
-                            .as_ref()
-                            .and_then(|view| view.containers.get(serial)),
-                    ) {
-                        if !view.vendor_buys.contains_key(serial) {
-                            if backpack != Some(*serial) {
-                                if let Some(button) =
-                                    container::take_all_button(&resources.gump_atlas, *gump, open.at)
-                                {
-                                    labels.push(openshard_client_render::text::GumpLabel {
-                                        at: button.label_at(),
-                                        text: container::TAKE_ALL_LABEL,
-                                        font: openshard_protocol::speech::Font(1),
-                                        hue: openshard_protocol::wire::Hue::LABEL,
-                                        clip: None,
-                                    });
-                                }
-                            }
-                            if backpack == Some(*serial) {
-                                if let Some(button) =
-                                    container::stack_all_button(&resources.gump_atlas, *gump, open.at)
-                                {
-                                    labels.push(openshard_client_render::text::GumpLabel {
-                                        at: button.label_at(),
-                                        text: container::STACK_ALL_LABEL,
-                                        font: openshard_protocol::speech::Font(1),
-                                        hue: openshard_protocol::wire::Hue::LABEL,
-                                        clip: None,
-                                    });
-                                }
-                            }
-                        }
-                    }
-                    if let Some(text) = container_hover.as_deref() {
-                        labels.push(openshard_client_render::text::GumpLabel {
-                            at: cursor.offset(gump_art::GumpPixel::new(14, 18)),
-                            text,
-                            font: openshard_protocol::speech::Font(1),
-                            hue: openshard_protocol::wire::Hue::LABEL,
-                            clip: None,
-                        });
-                    }
+                // A bag's plate caption and its hover label, resolved by the
+                // pane that laid the window out — the same shape as a
+                // dialog's and a doll's. This arm used to work out both here:
+                // which of the two plates a window has, tested twice against
+                // the backpack and the vendor list, and the name of the icon
+                // under the pointer, looked up in the view a second time. Both
+                // are decided where they are drawn now.
+                (WindowSubject::Container(_), Drawn::Container(window)) => {
+                    labels.extend(window.lines.iter().map(crate::panes::Line::label));
                 }
                 _ => {}
             }
@@ -1117,26 +990,7 @@ pub(crate) fn encode_world_passes(
     audit
 }
 
-#[cfg(test)]
-mod tests {
-    use super::container_hover_text;
-    use openshard_protocol::containers::{ContainedItem, GridSlot};
-    use openshard_protocol::gump::GumpPoint;
-    use openshard_protocol::items::ItemAmount;
-    use openshard_protocol::serial::Serial;
-    use openshard_protocol::wire::{Graphic, Hue};
-
-    #[test]
-    fn a_container_hover_names_the_item_and_its_amount() {
-        let gold = ContainedItem {
-            serial: Serial::new(0x4000_0001).expect("an item serial"),
-            graphic: Graphic(0x0EED),
-            amount: ItemAmount(137),
-            at: GumpPoint::new(60, 60),
-            grid: GridSlot(0),
-            hue: Hue(0),
-        };
-
-        assert_eq!(container_hover_text(&gold, "gold coins"), "gold coins (137)");
-    }
-}
+// No tests here: the one that stood in this file measured a container's hover
+// label, and both the label and its test moved into `panes::container` with
+// the window that draws it. What is left in this module is recording, which
+// is exercised by running the client.

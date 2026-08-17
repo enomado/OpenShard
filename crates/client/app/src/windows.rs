@@ -3,17 +3,24 @@
 //!
 //! Every field here is about *this client's own* window layer rather than
 //! about the world it draws over: what is open, where each sits, what the
-//! last frame laid out for it and what a press on it is currently holding.
-//! Pulled out of [`crate::App`] for the same reason [`crate::picking::Picking`]
-//! and [`crate::input::Input`] were, and unlike those two the fields here
-//! *are* read together — `dragging` and `item_drag` are checked side by side
-//! on every press, and `own_windows` and `drawn_windows` are asked in the same
-//! breath to decide which window a click landed on.
+//! last frame laid out for it, and which of the screen's one-of-a-kind
+//! devices each window holds. Pulled out of [`crate::App`] for the same reason
+//! [`crate::picking::Picking`] and [`crate::input::Input`] were, and unlike
+//! those two the fields here *are* read together — `dragging` and `hand` are
+//! checked side by side on every press, and `own_windows` and `drawn_windows`
+//! are asked in the same breath to decide which window a click landed on.
 //!
-//! What is left here shrinks with every step of `docs/window_components.md`:
-//! anything that belongs to *one* window is a field of that window's pane, in
-//! [`OwnWindow`], and what stays is what is true of the layer — which windows
-//! exist, in what order, and which of them the mouse and the keyboard are on.
+//! `docs/window_components.md` is finished with this module: every step of it
+//! took something from here into the window it belonged to, and what is left
+//! is what is true of the *layer* rather than of one window — which windows
+//! exist, in what order, where each sits, and who holds the three things there
+//! is one of: the pointer ([`Windows::dragging`]), the keyboard
+//! ([`Windows::keyboard`]) and the cursor ([`Windows::hand`], and
+//! [`Windows::prompt`] for the press a modal is standing over).
+//!
+//! The odd one out is [`Windows::world_press`], which is not about a window at
+//! all: an item lying on the ground is pressed exactly the way an icon in a
+//! bag is, and the world has no pane to keep that press in.
 
 use std::collections::HashSet;
 use std::time::Instant;
@@ -155,8 +162,11 @@ pub enum Drawn {
     /// — see [`crate::panes::dialog::Window`], which is why this is not the
     /// render crate's `gump::Window` alone.
     Dialog(crate::panes::dialog::Window),
-    /// A container: the background and every icon in it.
-    Container(Vec<gump_art::Picture>),
+    /// A container: the background, every icon in it, and what the icons were
+    /// — see [`crate::panes::container::Window`], which carries the list the
+    /// pictures were built from so that a click maps to an item without a
+    /// second walk that is free to disagree.
+    Container(crate::panes::container::Window),
     Vendor(vendor::Window),
     /// A paperdoll: the frame, its furniture and the doll, and the text
     /// resolved over them — see [`crate::panes::paperdoll::Window`], which is
@@ -172,6 +182,14 @@ pub enum Drawn {
 /// A press on an item which becomes a drag only after the pointer actually
 /// moves. Keeping it as an explicit state lets a normal click still
 /// participate in the item's double-click "use" gesture.
+///
+/// **Held by whoever the press landed on**, which is decision 7's first half:
+/// a press on an icon is `panes::container::ContainerPane`'s, a press on a worn
+/// item is `panes::paperdoll::PaperdollPane`'s, and a press on the ground is
+/// [`Windows::world_press`] because the world has no pane. Nothing has been
+/// sent while one of these is alive — that is what makes it private to its
+/// holder — and what it *becomes* is one rule for all three:
+/// [`ItemPress::dragged`].
 #[derive(Clone, Copy, Debug)]
 pub struct ItemPress {
     pub item: ContainedItem,
@@ -179,6 +197,90 @@ pub struct ItemPress {
     pub origin: DragOrigin,
     pub at: GumpPixel,
     pub grab: GumpPixel,
+}
+
+/// How far the pointer may wander before a press stops being a click.
+///
+/// Three pixels, so that the hand shaking on a double click does not lift the
+/// item out from under the second one.
+const DRAG_SLOP: i32 = 3;
+
+/// Where the pointer takes hold of an item that has no gump position of its
+/// own.
+///
+/// A worn item and an item lying in the world are both drawn as something
+/// other than their icon — a paperdoll layer, a ground sprite — so there is no
+/// "this far into the picture" to remember. The icon's own centre goes under
+/// the pointer instead, and that same offset is what a drop into a bag is
+/// measured by, so the picture does not jump when it lands.
+///
+/// Zero for art this install does not ship, which draws the icon from its
+/// corner: a missing graphic is not a reason to refuse the drag.
+pub fn centre_of(graphic: openshard_protocol::wire::Graphic, art: &openshard_uofiles::art::Art) -> GumpPixel {
+    art.static_art(graphic)
+        .ok()
+        .flatten()
+        .map(|art| GumpPixel::new(i32::from(art.width()) / 2, i32::from(art.height()) / 2))
+        .unwrap_or_default()
+}
+
+/// What a press becomes once the pointer has moved off it.
+///
+/// One rule with three holders — a bag's pane, a doll's pane, and the manager
+/// for the world's own press — so the answer is a value they each act on rather
+/// than three copies of the same `if`. Each turns it into what it can: a pane
+/// into [`Effect`](crate::panes::Effect)s, the manager into its own writes.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Dragged {
+    /// Not far enough yet. The press is still a click, and a second one within
+    /// [`DOUBLE_CLICK`](crate::DOUBLE_CLICK) is still a use.
+    Still,
+    /// Shift, and a stack worth dividing: the client's own amount prompt goes
+    /// up and the press waits for its answer. The number is the most that can
+    /// be taken — the whole pile less the one that stays behind.
+    Ask(u16),
+    /// The lift itself: this is what goes onto the cursor.
+    Lift(ItemDrag),
+}
+
+impl ItemPress {
+    /// What this press has become, now that the pointer is at `cursor`.
+    ///
+    /// Shift is asked *after* the slop, in that order and not the other way
+    /// round: a Shift-click that never moved is still a click, and putting the
+    /// prompt in front of the slop would open one on every press of a stack.
+    pub fn dragged(self, cursor: GumpPixel, shift: bool) -> Dragged {
+        if (cursor.x - self.at.x).abs() <= DRAG_SLOP && (cursor.y - self.at.y).abs() <= DRAG_SLOP {
+            return Dragged::Still;
+        }
+        if shift && self.item.amount.0 > 1 {
+            return Dragged::Ask(self.item.amount.0 - 1);
+        }
+        Dragged::Lift(ItemDrag {
+            item: self.item,
+            origin: self.origin,
+            grab: self.grab,
+        })
+    }
+
+    /// The part of this press the player chose to take, or `None` for a stack
+    /// that cannot be divided at all.
+    ///
+    /// Clamped into `1..=total - 1`: taking none of a pile is not a split and
+    /// taking all of it is a lift, and the prompt's own bounds are the player's
+    /// rather than a promise — the pile can have changed since it went up.
+    pub fn split(self, amount: u16) -> Option<ItemDrag> {
+        let total = self.item.amount.0;
+        let amount = (total > 1).then(|| amount.clamp(1, total - 1))?;
+        Some(ItemDrag {
+            item: ContainedItem {
+                amount: openshard_protocol::items::ItemAmount(amount),
+                ..self.item
+            },
+            origin: self.origin,
+            grab: self.grab,
+        })
+    }
 }
 
 /// The source removed by a drag transaction. Rendering is a projection of the
@@ -194,7 +296,13 @@ pub enum DragOrigin {
     },
 }
 
-/// A locally projected drop while the authoritative response is in flight.
+/// Where a held item has been put, and the projection that draws it there
+/// while the authoritative answer is in flight.
+///
+/// It is also *what a pane asks for* — see
+/// [`Effect::Drop`](crate::panes::Effect::Drop) — because the three places an
+/// item can be put down are three packets and nothing else: a window says
+/// where, and [`PendingDrop::packet`] is the only translation.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum PendingDrop {
     Container {
@@ -208,8 +316,29 @@ pub enum PendingDrop {
     },
 }
 
+impl PendingDrop {
+    /// The packet that puts `item` here.
+    ///
+    /// One place, so that a fourth kind of destination is a compile error here
+    /// rather than a `match` somebody forgot in the router. Equipping is a
+    /// `0x13` and the other two are `0x08` with different coordinates — the
+    /// wire's own distinction, not this client's.
+    pub fn packet(self, item: Serial) -> openshard_client_net::action::Outgoing {
+        use openshard_client_net::action::Outgoing;
+        match self {
+            Self::Container { container, at } => Outgoing::DropInto { item, container, at },
+            Self::Ground(at) => Outgoing::DropOnGround { item, at },
+            Self::Equipment { mobile, layer } => Outgoing::Equip {
+                item,
+                layer: openshard_protocol::wire::RawLayer(layer.0),
+                mobile,
+            },
+        }
+    }
+}
+
 /// The item the client has asked the shard to put on its cursor.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct ItemDrag {
     pub item: ContainedItem,
     pub origin: DragOrigin,
@@ -217,17 +346,48 @@ pub struct ItemDrag {
     pub grab: GumpPixel,
 }
 
-/// A single item transfer, including its local projection while the shard is
-/// deciding it.  This is deliberately one state machine: an item cannot be
-/// both pressed and held, nor can a completed drop still render at its source.
+/// What is on the cursor, and where it is on its way to.
+///
+/// **The client's mirror of the shard's own slot** — `Connection::held`, one
+/// per connection, because a cursor holds one thing — which is the whole of
+/// decision 7 in `docs/window_components.md`. The press that may *become* one
+/// of these is not here: it belongs to whichever pane the press landed on (see
+/// [`ItemPress`]), because nothing has been sent while a press is only a press,
+/// and a lift is what puts the shard and this end into the same state.
+///
+/// Two states rather than three for that reason, and the pair is not a
+/// gesture: [`Held`](Hand::Held) can outlive the window the item came out of,
+/// survive a walk across the map, and be put down in a bag that was not open
+/// when it was picked up.
 #[derive(Clone, Copy, Debug)]
-pub enum ItemDragTransaction {
-    Pressed(ItemPress),
+pub enum Hand {
+    /// The shard has been asked for it and has not refused.
     Held(ItemDrag),
+    /// It has been put somewhere and the answer is still in flight. The source
+    /// stays subtracted and the destination is drawn until a packet settles it
+    /// — see `App::apply_packet`.
     Dropped {
         drag: ItemDrag,
         destination: PendingDrop,
     },
+}
+
+/// Whose press the client's own modal is standing over.
+///
+/// A prompt suspends exactly one [`ItemPress`], and the answer has to find its
+/// way back to whoever is holding it — by *identity*, never by "whichever
+/// window is on top", because the player can raise a bag over the prompt while
+/// it is up. That is decision 9 for a third exclusive device: the manager says
+/// where the answer goes, the holder says what it means.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Asking {
+    /// The press on a world item, which [`Windows::world_press`] holds.
+    World,
+    /// A press inside one of this client's own windows, which that window's
+    /// pane holds. The answer reaches it as
+    /// [`Input::Answered`](crate::panes::Input::Answered), routed the way a
+    /// keystroke is.
+    Window(WindowSubject),
 }
 
 /// A client-side multi-pass compaction of one open container.
@@ -238,27 +398,22 @@ pub struct StackPass {
     pub awaiting: Option<(Serial, Instant)>,
 }
 
-impl ItemDragTransaction {
-    /// Whether this transaction already owns the protocol cursor.
-    ///
-    /// A later mouse press must not replace either state: after `Held` the
-    /// shard may already have detached the item from its source, and after
-    /// `Dropped` its answer is still in flight. `Pressed` has sent no packet.
-    pub const fn owns_cursor(self) -> bool {
-        matches!(self, Self::Held(_) | Self::Dropped { .. })
-    }
-
-    pub fn drag(self) -> Option<ItemDrag> {
+impl Hand {
+    /// What is on the cursor. Not an `Option` any more, and that is the point:
+    /// there used to be a third state in this enum that held nothing, so every
+    /// reader had to ask twice — `owns_cursor` beside `drag` — and the answer
+    /// to "is the hand full" was a method rather than the field being `Some`.
+    pub const fn drag(self) -> ItemDrag {
         match self {
-            Self::Pressed(_) => None,
-            Self::Held(drag) | Self::Dropped { drag, .. } => Some(drag),
+            Self::Held(drag) | Self::Dropped { drag, .. } => drag,
         }
     }
 
-    pub fn pending_drop(self) -> Option<PendingDrop> {
+    /// Where it has been put, while the shard is still deciding.
+    pub const fn pending_drop(self) -> Option<PendingDrop> {
         match self {
             Self::Dropped { destination, .. } => Some(destination),
-            Self::Pressed(_) | Self::Held(_) => None,
+            Self::Held(_) => None,
         }
     }
 }
@@ -269,7 +424,7 @@ impl Drawn {
     pub fn pictures(&self) -> &[gump_art::Picture] {
         match self {
             Self::Dialog(window) => &window.art.pictures,
-            Self::Container(pictures) => pictures,
+            Self::Container(window) => &window.pictures,
             Self::Vendor(window) => &window.pictures,
             Self::Paperdoll(window) => &window.doll.pictures,
             Self::Skills(sheet) => &sheet.pictures,
@@ -335,17 +490,45 @@ pub struct Windows {
     /// reorders the list, so an index taken at the press names a different
     /// window by the time the mouse moves.
     pub dragging: Option<(WindowSubject, GumpPixel)>,
-    /// The container item currently under the pointer, tinted on the next frame.
-    pub hovered_container_item: Option<Serial>,
-    /// The one local item-transfer transaction, from mouse press through
-    /// authoritative confirmation or cancellation.
-    pub item_drag: Option<ItemDragTransaction>,
-    /// A Shift-drag is waiting for the client-side amount prompt.
-    pub split_pending: bool,
+    /// What is on the cursor, or `None` for an empty hand.
+    ///
+    /// **One resource with one owner**, decision 7 — the mirror of the shard's
+    /// own one-item slot. A pane reads it out of
+    /// [`PaneFrame::hand`](crate::panes::PaneFrame::hand) to answer "was
+    /// something dropped on me" and to draw a preview, and no pane fills or
+    /// empties it: both halves of a transfer are asked for as
+    /// [`Effect::Lift`](crate::panes::Effect::Lift) and
+    /// [`Effect::Drop`](crate::panes::Effect::Drop), which this end performs.
+    ///
+    /// It used to be `item_drag`, an `ItemDragTransaction` whose first state
+    /// was a press that had sent nothing. That state is a pane's now — see
+    /// [`ItemPress`] — which is why the field is called what it is: what is
+    /// left here is the hand.
+    pub hand: Option<Hand>,
+    /// The press on an item lying in the *world*, which no pane holds because
+    /// the ground is not a window.
+    ///
+    /// The manager's copy of what a bag's pane and a doll's pane each keep for
+    /// their own icons — one press, three possible holders, one rule for what
+    /// it becomes ([`ItemPress::dragged`]). It is here rather than beside the
+    /// picking state because the hand it turns into is here.
+    pub world_press: Option<ItemPress>,
+    /// Who the client's own amount prompt is addressed to, or `None` while no
+    /// prompt is up.
+    ///
+    /// The keyboard's shape one modal over (see [`Windows::keyboard`]): the
+    /// manager owns *which* press a modal's answer belongs to, because a player
+    /// can raise another window while the prompt stands, and the holder of that
+    /// press owns what the answer means. Without it the answer would go to
+    /// whoever happened to be on top — the plan's Backlog entry about who a
+    /// modal's answer is addressed to, settled the same way
+    /// [`Input::Key`](crate::panes::Input::Key) was.
+    ///
+    /// It replaces `split_pending`, which was a `bool` on a client that could
+    /// only ever have one presser.
+    pub prompt: Option<Asking>,
     /// An automatic sequence of ordinary lift/drop requests, one per fresh snapshot.
     pub stack_pass: Option<StackPass>,
-    /// The first click of a potential double-click use inside a container.
-    pub last_container_click: Option<(Instant, Serial)>,
     /// Which window the keys are going to, or `None` for the world.
     ///
     /// **One resource with one owner**, the shape decision 7 gives the hand and
@@ -527,5 +710,122 @@ pub fn reconcile_own_windows(
             at,
             pane: crate::panes::AnyPane::of(subject),
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use openshard_protocol::containers::GridSlot;
+    use openshard_protocol::items::ItemAmount;
+    use openshard_protocol::wire::{Graphic, Hue};
+
+    use super::*;
+
+    fn press(amount: u16) -> ItemPress {
+        ItemPress {
+            item: ContainedItem {
+                serial: Serial::new(0x4000_0001).expect("an item serial"),
+                graphic: Graphic(0x0EED),
+                amount: ItemAmount(amount),
+                at: GumpPoint::new(0, 0),
+                grid: GridSlot(0),
+                hue: Hue::NONE,
+            },
+            origin: DragOrigin::Container(Serial::new(0x4000_0100).expect("a bag serial")),
+            at: GumpPixel::new(100, 100),
+            grab: GumpPixel::new(4, 4),
+        }
+    }
+
+    /// The slop is what keeps a double click from lifting the item out from
+    /// under its own second half: a hand that shakes three pixels is still
+    /// clicking.
+    #[test]
+    fn a_press_becomes_a_lift_only_once_the_pointer_has_really_moved() {
+        let press = press(1);
+        assert_eq!(press.dragged(GumpPixel::new(103, 97), false), Dragged::Still);
+        assert!(matches!(
+            press.dragged(GumpPixel::new(104, 100), false),
+            Dragged::Lift(_)
+        ));
+        assert!(matches!(
+            press.dragged(GumpPixel::new(100, 96), false),
+            Dragged::Lift(_)
+        ));
+    }
+
+    /// Shift divides a pile and nothing else: a single item has nothing to
+    /// divide, and a Shift-press that never moved is still a click.
+    #[test]
+    fn shift_asks_for_an_amount_only_when_there_is_a_pile_to_divide() {
+        assert_eq!(
+            press(20).dragged(GumpPixel::new(200, 200), true),
+            Dragged::Ask(19),
+            "the most that can be taken is the pile less the one left behind"
+        );
+        assert!(matches!(
+            press(1).dragged(GumpPixel::new(200, 200), true),
+            Dragged::Lift(_)
+        ));
+        assert_eq!(
+            press(20).dragged(GumpPixel::new(101, 101), true),
+            Dragged::Still,
+            "the slop is asked first, so a Shift-click is a click"
+        );
+    }
+
+    /// Taking none of a pile is not a split and taking all of it is a lift, so
+    /// the answer is clamped between them — and a single item cannot be
+    /// divided at all.
+    #[test]
+    fn a_split_never_takes_none_or_the_whole_stack() {
+        let amount = |press: &ItemPress, want| press.split(want).map(|drag| drag.item.amount.0);
+        let pile = press(10);
+        assert_eq!(amount(&pile, 0), Some(1));
+        assert_eq!(amount(&pile, 4), Some(4));
+        assert_eq!(amount(&pile, 10), Some(9));
+        assert_eq!(amount(&press(1), 1), None);
+    }
+
+    /// A split keeps everything about the press but the number: the same
+    /// serial, the same source and the same grip.
+    #[test]
+    fn a_split_carries_its_press_forward() {
+        let pile = press(10);
+        let drag = pile.split(3).expect("a pile of ten divides");
+        assert_eq!(drag.item.serial, pile.item.serial);
+        assert_eq!(drag.origin, pile.origin);
+        assert_eq!(drag.grab, pile.grab);
+    }
+
+    /// Where an item is put down decides which packet says so, and there is
+    /// one place that decides it.
+    #[test]
+    fn a_destination_names_its_own_packet() {
+        use openshard_client_net::action::Outgoing;
+        let item = Serial::new(0x4000_0001).expect("an item serial");
+        let bag = Serial::new(0x4000_0100).expect("a bag serial");
+        let me = Serial::new(0x0000_002A).expect("a mobile serial");
+
+        assert!(matches!(
+            PendingDrop::Container {
+                container: bag,
+                at: GumpPoint::new(7, 9),
+            }
+            .packet(item),
+            Outgoing::DropInto { container, .. } if container == bag
+        ));
+        assert!(matches!(
+            PendingDrop::Ground(Point::new(1, 2, 3)).packet(item),
+            Outgoing::DropOnGround { .. }
+        ));
+        assert!(matches!(
+            PendingDrop::Equipment {
+                mobile: me,
+                layer: openshard_protocol::wire::Layer(5),
+            }
+            .packet(item),
+            Outgoing::Equip { mobile, layer, .. } if mobile == me && layer.0 == 5
+        ));
     }
 }

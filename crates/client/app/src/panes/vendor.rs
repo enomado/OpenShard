@@ -365,9 +365,11 @@ impl Pane for VendorPane {
             Input::Press(Button::Left) => self.press(window, ctx),
             // A keystroke among them for the skill sheet's reason: a shop has
             // nothing to type into, so it never holds the keyboard.
-            Input::Press(Button::Right) | Input::Release(_) | Input::Move | Input::Key(_) => {
-                Response::ignored()
-            }
+            Input::Press(Button::Right)
+            | Input::Release(_)
+            | Input::Move
+            | Input::Key(_)
+            | Input::Answered(_) => Response::ignored(),
         }
     }
 }

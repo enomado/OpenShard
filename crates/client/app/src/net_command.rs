@@ -195,7 +195,9 @@ impl App {
                 self.windows
                     .own_windows
                     .retain(|window| !window.subject.is_local());
-                self.windows.item_drag = None;
+                self.windows.hand = None;
+                self.windows.world_press = None;
+                self.windows.prompt = None;
                 self.windows.dragging = None;
                 self.tooltips.reset();
                 self.world.shard = crate::world::Shard::Lost(reason);
@@ -267,44 +269,35 @@ impl App {
         // A refused lift or drop bounces the server-held item back. The cursor
         // preview is purely local, so it must follow that authoritative cancel
         // instead of leaving a ghost icon under the pointer.
-        if let Some(transaction) = self.windows.item_drag {
+        if let Some(hand) = self.windows.hand {
+            let held = hand.drag().item.serial;
             let confirmed = match packet {
                 ServerPacket::DragCancel(_) => true,
                 // A script or another authoritative system may remove the
                 // cursor item instead of landing it. That is terminal too:
                 // keeping the local transaction would block every new drag.
-                ServerPacket::Remove(removed) => transaction
-                    .drag()
-                    .is_some_and(|drag| removed.serial == drag.item.serial),
+                ServerPacket::Remove(removed) => removed.serial == held,
                 ServerPacket::AddToContainer(added) => {
                     matches!(
-                        transaction.pending_drop(),
+                        hand.pending_drop(),
                         Some(crate::windows::PendingDrop::Container { .. })
-                    ) && transaction
-                        .drag()
-                        .is_some_and(|drag| added.item.serial == drag.item.serial)
+                    ) && added.item.serial == held
                 }
                 ServerPacket::WorldItem(item) => {
-                    matches!(
-                        transaction.pending_drop(),
-                        Some(crate::windows::PendingDrop::Ground(_))
-                    ) && transaction
-                        .drag()
-                        .is_some_and(|drag| item.serial == drag.item.serial)
+                    matches!(hand.pending_drop(), Some(crate::windows::PendingDrop::Ground(_)))
+                        && item.serial == held
                 }
                 ServerPacket::EquipUpdate(update) => {
                     matches!(
-                        transaction.pending_drop(),
+                        hand.pending_drop(),
                         Some(crate::windows::PendingDrop::Equipment { mobile, layer })
                             if update.mobile == mobile && update.layer == layer
-                    ) && transaction
-                        .drag()
-                        .is_some_and(|drag| update.item == drag.item.serial)
+                    ) && update.item == held
                 }
                 _ => false,
             };
             if confirmed {
-                self.windows.item_drag = None;
+                self.windows.hand = None;
             }
         }
         // Sound and music are events, not facts in `WorldView`: a second
@@ -538,10 +531,7 @@ impl App {
         self.world.presentation.items.clear();
         self.world.presentation.item_serials.clear();
         self.world.presentation.corpses.clear();
-        let transaction_drag = self
-            .windows
-            .item_drag
-            .and_then(crate::windows::ItemDragTransaction::drag);
+        let transaction_drag = self.windows.hand.map(crate::windows::Hand::drag);
         let lifted_ground = transaction_drag
             .filter(|drag| drag.origin == crate::windows::DragOrigin::Ground)
             .map(|drag| drag.item.serial);
@@ -608,8 +598,8 @@ impl App {
         // flash or gap before `WorldItem` confirms it.
         if let Some((drag, crate::windows::PendingDrop::Ground(at))) = self
             .windows
-            .item_drag
-            .and_then(|transaction| Some((transaction.drag()?, transaction.pending_drop()?)))
+            .hand
+            .and_then(|hand| Some((hand.drag(), hand.pending_drop()?)))
         {
             self.world.presentation.items.push(GroundItem {
                 at,

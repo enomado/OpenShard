@@ -9,15 +9,19 @@
 //! buttons come from says so in its own doc: [`paperdoll::DollButton`] "names
 //! windows rather than actions".
 //!
-//! # What this pane does not own: the hand
+//! # The worn item, which arrived at step 6
 //!
 //! A press on a worn item of this client's own body starts an item transfer,
-//! and the transfer machinery — the press that may become a lift, the slop
-//! that decides, the split prompt — is the hand's, which decision 7 gives to
-//! the manager and step 6 moves. This pane **declines** that one press
-//! (`Response::ignored`), so the legacy chain still answers it; every other
-//! press on the window is this pane's. The two halves meet at step 6, where
-//! the container — "the one the hand runs through" — moves in.
+//! and step 5 **declined** that one press so that the legacy chain could
+//! answer it: the machinery it needs — a press that may become a lift, and the
+//! hand it fills — moved with the container at step 6. Both halves are here
+//! now. A worn item is pressed, dragged off the doll and lifted like an icon
+//! in a bag ([`PaperdollPane::pressed`]), and an item let go over *any* doll
+//! is offered to that body's empty slot ([`Effect::Drop`]).
+//!
+//! What is still not this pane's is the hand itself: which item is on the
+//! cursor is [`Windows::hand`](crate::windows::Windows::hand), because there
+//! is one cursor and the shard has one slot — decision 7.
 
 use std::time::Instant;
 
@@ -25,6 +29,9 @@ use openshard_client_net::action::Outgoing;
 use openshard_client_render::gump::{self as gump_art, GumpArt, GumpPixel};
 use openshard_client_render::mobiles::EquipmentLayer;
 use openshard_client_render::paperdoll;
+use openshard_protocol::containers::{ContainedItem, GridSlot};
+use openshard_protocol::gump::GumpPoint;
+use openshard_protocol::items::ItemAmount;
 use openshard_protocol::mobile::Equipment;
 use openshard_protocol::serial::Serial;
 use openshard_protocol::speech::Font;
@@ -33,7 +40,7 @@ use openshard_protocol::wire::{Hue, Layer};
 use crate::DOUBLE_CLICK;
 use crate::crowd;
 use crate::panes::{Button, Effect, Input, Line, LocalWindow, Pane, PaneCtx, PaneFrame, Response};
-use crate::windows::{DragOrigin, Drawn};
+use crate::windows::{DragOrigin, Dragged, Drawn, ItemPress, PendingDrop, centre_of};
 
 /// One open paperdoll window.
 #[derive(Debug)]
@@ -88,6 +95,17 @@ pub struct PaperdollPane {
     /// again. `Windows::preview_equipment` kept a copy of the item instead,
     /// which could outlive the drag it described.
     hand_over: bool,
+    /// The press on a worn item of this body, until it becomes a lift.
+    ///
+    /// [`ContainerPane::pressed`](crate::panes::container)'s counterpart, and
+    /// the press step 5 declined for want of it. Nothing has been sent while
+    /// it is alive; the item is still worn, still drawn on the doll, and a
+    /// release without a move puts it back down without a packet.
+    ///
+    /// Only ever a press on *our own* body: a stranger's shirt is not this
+    /// client's to lift, so a press on one moves the window instead, exactly
+    /// as it did.
+    pressed: Option<ItemPress>,
 }
 
 /// A paperdoll, laid out for one frame: the doll, and what is written over it.
@@ -178,6 +196,7 @@ impl PaperdollPane {
             last_scroll: None,
             hovered: None,
             hand_over: false,
+            pressed: None,
         }
     }
 
@@ -215,8 +234,8 @@ impl PaperdollPane {
     /// Every arm that answers raises — a press on a window is what puts it on
     /// top. A button takes the press away from the drag: the column runs down
     /// the middle of the frame, and pressing one used to pick the whole doll
-    /// up. The press this pane does *not* answer is the one on a worn item of
-    /// this client's own body — that is the hand's (see the module docs).
+    /// up. A worn item of *our own* body takes it away from the drag too, and
+    /// keeps it: that press may become a lift on the next move.
     fn press(&mut self, window: &Window, ctx: &PaneCtx<'_>) -> Response {
         let raised = Response::changed().with(Effect::Raise);
         if let Some(index) = gump_art::pick(
@@ -229,11 +248,46 @@ impl PaperdollPane {
                 return raised;
             }
             // A worn item on our own body: the press that starts an item
-            // transfer, declined so the legacy chain answers it until step 6.
-            // A stranger's worn item is not liftable and falls through to the
-            // grab below, as it always has.
-            if window.doll.equipment_hits.contains_key(&index) && self.own(&ctx.frame) {
-                return Response::ignored();
+            // transfer. A stranger's is not this client's to lift and falls
+            // through to the grab below, as it always has.
+            if let Some(layer) = window.doll.equipment_hits.get(&index).copied() {
+                if self.own(&ctx.frame) {
+                    if let Some(item) = self
+                        .equipment(&ctx.frame)
+                        .iter()
+                        .find(|item| item.layer == layer)
+                        .copied()
+                    {
+                        self.pressed = Some(ItemPress {
+                            item: ContainedItem {
+                                serial: item.serial,
+                                graphic: item.graphic,
+                                // A worn item is one thing, whatever the wire
+                                // says about the pile it came out of: nothing
+                                // stacks on a body.
+                                amount: ItemAmount(1),
+                                // No gump position — it is on a body, not in a
+                                // bag. One becomes relevant only after a drop,
+                                // which supplies its own.
+                                at: GumpPoint::new(0, 0),
+                                grid: GridSlot(0),
+                                hue: item.hue,
+                            },
+                            origin: DragOrigin::Equipment {
+                                mobile: self.mobile,
+                                layer,
+                            },
+                            at: ctx.frame.cursor,
+                            // A doll's sprite has no gump-local grab point:
+                            // what is drawn there is the *paperdoll* art, and
+                            // what goes on the cursor is the item's own icon.
+                            // Anchor its centre to the pointer, and use the
+                            // same offset if it is released into a bag.
+                            grab: centre_of(item.graphic, &ctx.frame.resources.art),
+                        });
+                        return raised;
+                    }
+                }
             }
         }
         // The frame, the body, a stranger's shirt: nothing that answers, so
@@ -244,7 +298,9 @@ impl PaperdollPane {
         )))
     }
 
-    /// The release that finishes a press on one of this window's buttons.
+    /// The release that finishes whatever this window was in the middle of: a
+    /// press on one of its buttons, a press on a worn item, or an item let go
+    /// over the body.
     ///
     /// The pointer has to still be on the button it went down on: a press
     /// dragged off its button is a press taken back, in this client as in
@@ -252,6 +308,30 @@ impl PaperdollPane {
     /// press is being held — the button was drawn pressed and has to come
     /// back up.
     fn release(&mut self, ctx: &PaneCtx<'_>) -> Response {
+        // A full hand let go over this doll is an equip, and it is asked for
+        // over **any** body: whether a stranger may be dressed by this player
+        // is the shard's answer, and a refusal comes back as a `0x27` that
+        // puts the item where it came from. Keeping that judgement here used
+        // to strand the transfer with nobody to bounce it.
+        if let (Some(hand), true) = (ctx.frame.hand, ctx.under_pointer) {
+            let layer = openshard_protocol::wire::Layer(
+                ctx.frame
+                    .resources
+                    .tiledata
+                    .static_tile(hand.drag().item.graphic.0)
+                    .layer,
+            );
+            return Response::changed().with(Effect::Drop(PendingDrop::Equipment {
+                mobile: self.mobile,
+                layer,
+            }));
+        }
+        // A worn item pressed and let go without a move: put it back down.
+        // Nothing was ever sent, so there is nothing to take back and nothing
+        // new to draw.
+        if self.pressed.take().is_some() {
+            return Response::consumed();
+        }
         let Some(held) = self.held.take() else {
             return Response::ignored();
         };
@@ -294,6 +374,24 @@ impl PaperdollPane {
             backpack,
             paired,
         )
+    }
+
+    /// The move that pulls a worn item off the body, and the hover beside it.
+    ///
+    /// A worn item is never a stack, so the Shift half of the rule cannot
+    /// fire here and the answer is a lift or nothing — but it is the *same*
+    /// rule, asked of the same [`ItemPress`], because a press is a press
+    /// wherever it landed.
+    fn moved(&mut self, ctx: &PaneCtx<'_>) -> Response {
+        let mut answer = self.hover(ctx);
+        let Some(press) = self.pressed else {
+            return answer;
+        };
+        if let Dragged::Lift(drag) = press.dragged(ctx.frame.cursor, ctx.modifiers.shift) {
+            self.pressed = None;
+            answer.absorb(Response::stale().with(Effect::Lift(drag)));
+        }
+        answer
     }
 
     /// Follow the pointer with the two answers the layout will read: which
@@ -394,8 +492,8 @@ impl Pane for PaperdollPane {
         let equipment: Vec<EquipmentLayer> = crowd::worn(self.equipment(frame), &frame.resources.tiledata)
             .into_iter()
             .filter(|item| {
-                frame.hand.is_none_or(|drag| {
-                    drag.origin
+                frame.hand.is_none_or(|hand| {
+                    hand.drag().origin
                         != DragOrigin::Equipment {
                             mobile: self.mobile,
                             layer: item.layer,
@@ -420,7 +518,8 @@ impl Pane for PaperdollPane {
         // the move (see `hand_over`), and only a layer the body has empty
         // takes a preview.
         let preview = match self.hand_over {
-            true => frame.hand.and_then(|drag| {
+            true => frame.hand.and_then(|hand| {
+                let drag = hand.drag();
                 let tile = frame.resources.tiledata.static_tile(drag.item.graphic.0);
                 let layer = Layer(tile.layer);
                 (own && layer.0 > 0 && layer.0 <= 25 && !equipment.iter().any(|worn| worn.layer == layer))
@@ -473,10 +572,15 @@ impl Pane for PaperdollPane {
                 self.press(window, ctx)
             }
             Input::Release(Button::Left) => self.release(ctx),
-            Input::Move => self.hover(ctx),
-            Input::Wheel(_) | Input::Press(Button::Right) | Input::Release(Button::Right) | Input::Key(_) => {
-                Response::ignored()
-            }
+            Input::Move => self.moved(ctx),
+            // A worn item is one thing, so there is nothing here to divide and
+            // this window never asks for the amount prompt — and an answer
+            // reaches only the window that did.
+            Input::Wheel(_)
+            | Input::Press(Button::Right)
+            | Input::Release(Button::Right)
+            | Input::Key(_)
+            | Input::Answered(_) => Response::ignored(),
         }
     }
 }
