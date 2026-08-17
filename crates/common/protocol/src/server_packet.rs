@@ -140,6 +140,15 @@ pub enum ServerPacket {
     BuyList(BuyList),
     /// `0x9E` — what a vendor offers to buy from the player.
     SellList(SellList),
+    /// `0xBF` subcommand `0x1D` — which revision a designed house's picture is
+    /// at, so a client knows whether what it has cached is stale.
+    ///
+    /// Its `0xD8` answer is deliberately **not** a variant here: decoding one
+    /// needs the house's width and height, which no field on the wire carries,
+    /// and this enum's `decode(bytes, version)` has no way to supply them. It
+    /// reaches a client as `Event::Undecoded` with the bytes intact — see
+    /// [`crate::design`].
+    DesignRevision(crate::design::DesignRevision),
     /// `0xDC` — the tooltip revision for one object.
     TooltipRevision(TooltipRevision),
     /// `0xD6` — the property list itself, answering a client's batch query.
@@ -223,6 +232,7 @@ impl ServerPacket {
             Self::BuyList(_) => <BuyList as EncodePacket>::ID,
             Self::SellList(_) => <SellList as EncodePacket>::ID,
             Self::TooltipRevision(_) => <TooltipRevision as EncodePacket>::ID,
+            Self::DesignRevision(_) => <crate::design::DesignRevision as EncodePacket>::ID,
             Self::PropertyListReply(_) => <PropertyListReply as EncodePacket>::ID,
             Self::PartyMemberList(_) => <PartyMemberList as EncodePacket>::ID,
             Self::PartyRemoveMember(_) => <PartyRemoveMember as EncodePacket>::ID,
@@ -294,6 +304,7 @@ impl ServerPacket {
             Self::BuyList(_) => BuyList::LENGTH,
             Self::SellList(_) => SellList::LENGTH,
             Self::TooltipRevision(_) => TooltipRevision::LENGTH,
+            Self::DesignRevision(_) => <crate::design::DesignRevision as EncodePacket>::LENGTH,
             Self::PropertyListReply(_) => PropertyListReply::LENGTH,
             Self::PartyMemberList(_) => PartyMemberList::LENGTH,
             Self::PartyRemoveMember(_) => PartyRemoveMember::LENGTH,
@@ -367,6 +378,7 @@ impl ServerPacket {
             Self::BuyList(packet) => packet.encode_body(out, version),
             Self::SellList(packet) => packet.encode_body(out, version),
             Self::TooltipRevision(packet) => packet.encode_body(out, version),
+            Self::DesignRevision(packet) => packet.encode_body(out, version),
             Self::PropertyListReply(packet) => packet.encode_body(out, version),
             Self::PartyMemberList(packet) => packet.encode_body(out, version),
             Self::PartyRemoveMember(packet) => packet.encode_body(out, version),
@@ -425,6 +437,9 @@ fn decode_extended(packet: &[u8], version: ClientVersion) -> Result<Option<Serve
         crate::gump::CloseGump::SUBCOMMAND => decode_server(packet, version)
             .map(ServerPacket::CloseGump)
             .map_err(ServerDecodeError::CloseGump)?,
+        crate::design::DesignRevision::SUBCOMMAND => decode_server(packet, version)
+            .map(ServerPacket::DesignRevision)
+            .map_err(ServerDecodeError::DesignRevision)?,
         crate::party::SUBCOMMAND => return decode_party(packet, version),
         _ => return Ok(None),
     }))
@@ -744,6 +759,8 @@ pub enum ServerDecodeError {
     SellList(DecodeError),
     /// `0xDC` did not decode.
     TooltipRevision(DecodeError),
+    /// `0xBF 0x1D` did not decode.
+    DesignRevision(DecodeError),
     /// `0xD6` did not decode.
     PropertyListReply(DecodeError),
     /// A `0xBF` subcommand `0x06` did not decode. One variant for all four,
@@ -775,6 +792,7 @@ impl fmt::Display for ServerDecodeError {
             Self::UnicodeMessage(error) => ("0xAE unicode message", error),
             Self::GumpDisplay(error) => ("0xB0 gump display", error),
             Self::TooltipRevision(error) => ("0xDC tooltip revision", error),
+            Self::DesignRevision(error) => ("0xBF 0x1D design revision", error),
             Self::PropertyListReply(error) => ("0xD6 property list", error),
             Self::Party(error) => ("0xBF 0x06 party", error),
             Self::CloseGump(error) => ("0xBF 0x04 close gump", error),

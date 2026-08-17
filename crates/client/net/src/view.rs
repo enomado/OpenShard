@@ -426,18 +426,22 @@ pub struct WorldView {
     /// is about a thing on screen, and a serial the shard has taken away has no
     /// hover to answer.
     pub tooltips: FxHashMap<Serial, Tooltip>,
+    /// Which revision the shard last named for each **designed** house.
+    ///
+    /// [`tooltips`](Self::tooltips)' twin, one question along: a `0xBF 0x1D`
+    /// names a revision, a `0xD8` carries the shape, and asking for the second
+    /// is this end's move. A classic house never gets an entry — its picture is
+    /// in this client's own files and has no revision.
+    ///
+    /// **The shape itself is not here, and that is the layering rather than an
+    /// omission.** A design is a list of `Component`s, which is a client-file
+    /// type, and this crate is the *wire*: it has never depended on
+    /// `openshard-uofiles` and must not start. So the view holds what the
+    /// packets said, and whoever holds the client's files holds what was made of
+    /// it — the same split that keeps `WorldView` free of art.
+    pub designs: FxHashMap<Serial, u32>,
 }
 
-/// The party this client is in, if any, and the invitation it is holding.
-///
-/// # Why the roster is the leader plus the rest, and not a set
-///
-/// The order is the shard's and the client draws its rows in it, so a `Vec`
-/// rather than a set — and the first entry is the leader, which is the one thing
-/// the wire never states outright. It does not have to: a party's leader never
-/// changes, the shard writes the roster leader-first, and everything a client
-/// wants the leader *for* (whose invitation this is, who may kick) is the
-/// shard's decision anyway.
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
 pub struct Party {
     /// Everyone in it, leader first. Empty when this client is in no party.
@@ -639,6 +643,7 @@ impl WorldView {
             paperdolls: FxHashMap::default(),
             party: Party::default(),
             tooltips: FxHashMap::default(),
+            designs: FxHashMap::default(),
         }
     }
 
@@ -681,6 +686,10 @@ impl WorldView {
         // hovered any more, and a name that outlived the shard that said it is
         // the same kind of convincing wrong picture as a body left mid-stride.
         self.tooltips.clear();
+        // And the designs, for the same reason: a revision is about a house that
+        // was on screen, and one that outlived its shard would make the next
+        // shard's house at the same serial look up to date.
+        self.designs.clear();
         self.target = None;
         self.heard(Heard {
             serial: None,
@@ -1322,7 +1331,17 @@ impl WorldView {
                 // drawn, so the entry has no reader left — and keeping it would
                 // hand a stale name back if the serial were reused.
                 let had_tooltip = self.tooltips.remove(&remove.serial).is_some();
-                had_mobile || had_item || was_held || had_window || had_vendor || had_paperdoll || had_tooltip
+                // And its design revision. A house that has come down cannot be
+                // asked about, and a reused serial must not inherit its picture.
+                let had_design = self.designs.remove(&remove.serial).is_some();
+                had_mobile
+                    || had_item
+                    || was_held
+                    || had_window
+                    || had_vendor
+                    || had_paperdoll
+                    || had_tooltip
+                    || had_design
             }
             // The roster, whole. Not merged: the shard re-sends the entire list
             // on every change rather than sending deltas, so replacing is the
@@ -1392,6 +1411,17 @@ impl WorldView {
                 let entry = self.tooltips.entry(revision.serial).or_default();
                 let changed = entry.revision != Some(revision.hash);
                 entry.revision = Some(revision.hash);
+                changed
+            }
+            // The shard says this house's *picture* has a new revision. Same
+            // move as the tooltip above: it does not send the shape, and asking
+            // for it is this end's.
+            ServerPacket::DesignRevision(revision) => {
+                let Some(serial) = revision.serial.validate() else {
+                    return false;
+                };
+                let changed = self.designs.get(&serial) != Some(&revision.revision.0);
+                self.designs.insert(serial, revision.revision.0);
                 changed
             }
             // The list. Arrives either as the answer to our `0xD6` or, in the
@@ -2811,6 +2841,60 @@ mod tests {
         assert_eq!(
             open.multi, None,
             "a plain cursor kept drawing the house from the one before it"
+        );
+    }
+
+    /// A designed house announces a revision, and the view remembers which one.
+    ///
+    /// The shape itself never reaches this layer — see [`WorldView::designs`] —
+    /// so what is asserted is the cache key and nothing else. That is the whole
+    /// of what the wire told us.
+    #[test]
+    fn a_design_revision_is_remembered_by_serial() {
+        use openshard_protocol::design::{DesignRevision, Revision};
+        use openshard_protocol::serial::RawSerial;
+
+        let mut view = WorldView::entered(start());
+        let house = Serial::new(0x4000_0001).unwrap();
+
+        assert!(view.apply(&ServerPacket::DesignRevision(DesignRevision {
+            serial: RawSerial(house.raw()),
+            revision: Revision(4),
+        })));
+        assert_eq!(view.designs.get(&house), Some(&4));
+
+        // The same revision again is not a change, so nothing redraws for it.
+        assert!(!view.apply(&ServerPacket::DesignRevision(DesignRevision {
+            serial: RawSerial(house.raw()),
+            revision: Revision(4),
+        })));
+        // A newer one is.
+        assert!(view.apply(&ServerPacket::DesignRevision(DesignRevision {
+            serial: RawSerial(house.raw()),
+            revision: Revision(5),
+        })));
+        assert_eq!(view.designs.get(&house), Some(&5));
+    }
+
+    /// A house that comes down takes its revision with it. A serial the shard
+    /// reuses must not inherit the picture of what stood there before — which is
+    /// the same failure a stale tooltip would be, one layer over.
+    #[test]
+    fn a_removed_house_forgets_its_design_revision() {
+        use openshard_protocol::design::{DesignRevision, Revision};
+        use openshard_protocol::serial::RawSerial;
+
+        let mut view = WorldView::entered(start());
+        let house = Serial::new(0x4000_0001).unwrap();
+        view.apply(&ServerPacket::DesignRevision(DesignRevision {
+            serial: RawSerial(house.raw()),
+            revision: Revision(4),
+        }));
+
+        assert!(view.apply(&ServerPacket::Remove(Remove { serial: house })));
+        assert!(
+            view.designs.is_empty(),
+            "a demolished house left its revision behind"
         );
     }
 }

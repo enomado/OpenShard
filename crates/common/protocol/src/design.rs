@@ -70,8 +70,9 @@
 
 use crate::codec::{PacketReader, PacketWriter};
 use crate::error::{DecodeError, expect_id};
-use crate::packet::{PacketLength, frame_body};
+use crate::packet::{DecodePacket, EncodePacket, PacketLength, frame_body};
 use crate::serial::RawSerial;
+use crate::version::ClientVersion;
 use crate::wire::Graphic;
 
 /// Which version of a house's design this is.
@@ -127,30 +128,48 @@ impl DesignRevision {
     /// Which `0xBF` this is.
     pub const SUBCOMMAND: u16 = 0x1D;
     /// The whole framed packet, id and length included.
-    pub const LENGTH: u16 = 13;
+    pub const LENGTH_BYTES: u8 = 13;
 
     /// Encode the whole packet.
+    ///
+    /// [`EncodePacket`] rather than a bespoke writer, so this rides the same
+    /// framing every other packet does and the client can read it back out of
+    /// [`ServerPacket`](crate::server_packet::ServerPacket) rather than out of a
+    /// second reader of its own.
     #[must_use]
     pub fn encode(self) -> Vec<u8> {
-        frame_body(Self::ID, PacketLength::Variable, |out: &mut PacketWriter| {
-            out.u16(Self::SUBCOMMAND);
-            out.u32(self.serial.0);
-            out.u32(self.revision.0);
-        })
+        crate::packet::encode_packet(&self, ClientVersion::new(4, 0, 0, 0))
     }
+}
 
-    /// Read one back.
-    ///
-    /// Refuses a `0xBF` carrying a different subcommand rather than reading its
-    /// body as this one — the bytes would decode and the values would be
-    /// nonsense.
-    pub fn decode(bytes: &[u8]) -> Result<Self, DecodeError> {
-        let mut reader = expect_id(bytes, Self::ID)?;
-        let _length = reader.u16()?;
+/// Fixed despite living under `0xBF`, [`CloseGump`](crate::gump::CloseGump)'s
+/// reason exactly: the body never varies, so the constant is written by hand
+/// because `frame_body` only back-patches a length for
+/// [`PacketLength::Variable`].
+impl EncodePacket for DesignRevision {
+    const ID: u8 = 0xBF;
+    const LENGTH: PacketLength = PacketLength::Fixed(13);
+
+    fn encode_body(&self, out: &mut PacketWriter, _version: ClientVersion) {
+        out.u16(u16::from(Self::LENGTH_BYTES));
+        out.u16(Self::SUBCOMMAND);
+        out.u32(self.serial.0);
+        out.u32(self.revision.0);
+    }
+}
+
+impl DecodePacket for DesignRevision {
+    const ID: u8 = 0xBF;
+
+    /// The reader is past the length, so the body starts at the subcommand —
+    /// which is what makes every `0xBF` body uniform. Refuses a different
+    /// subcommand rather than reading its body as this one: the bytes would
+    /// decode and every field would be wrong.
+    fn decode_body(reader: &mut PacketReader<'_>, _version: ClientVersion) -> Result<Self, DecodeError> {
         let subcommand = reader.u16()?;
         if subcommand != Self::SUBCOMMAND {
             return Err(DecodeError::UnknownValue {
-                field: "design revision subcommand",
+                field: "0xBF subcommand for a design revision",
                 value: u32::from(subcommand),
             });
         }
@@ -677,11 +696,14 @@ mod tests {
         let bytes = sent.encode();
         assert_eq!(
             bytes.len(),
-            usize::from(DesignRevision::LENGTH),
+            usize::from(DesignRevision::LENGTH_BYTES),
             "the length the classic client expects is fixed"
         );
         assert_eq!(&bytes[..5], &[0xBF, 0x00, 0x0D, 0x00, 0x1D]);
-        assert_eq!(DesignRevision::decode(&bytes).unwrap(), sent);
+        assert_eq!(
+            crate::packet::decode_packet::<DesignRevision>(&bytes, ClientVersion::new(4, 0, 0, 0)).unwrap(),
+            sent
+        );
     }
 
     /// A different `0xBF` is refused rather than read as this one: its body
@@ -694,7 +716,9 @@ mod tests {
         }
         .encode();
         bytes[4] = 0x1C;
-        assert!(DesignRevision::decode(&bytes).is_err());
+        assert!(
+            crate::packet::decode_packet::<DesignRevision>(&bytes, ClientVersion::new(4, 0, 0, 0)).is_err()
+        );
     }
 
     #[test]
@@ -706,7 +730,8 @@ mod tests {
         .encode();
         for cut in 0..full.len() {
             assert!(
-                DesignRevision::decode(&full[..cut]).is_err(),
+                crate::packet::decode_packet::<DesignRevision>(&full[..cut], ClientVersion::new(4, 0, 0, 0))
+                    .is_err(),
                 "a {cut}-byte packet must not decode"
             );
         }
