@@ -41,6 +41,7 @@ fn world() -> WorldState {
             height: SIZE,
             sectors: Sectors::new(SIZE, SIZE),
             obstructions: Obstructions::default(),
+            boats: openshard_state::Boats::default(),
             regions: Regions::new(SIZE, SIZE),
             banks: Banks::default(),
         },

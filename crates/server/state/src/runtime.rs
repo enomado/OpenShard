@@ -396,6 +396,12 @@ pub struct FacetState {
     pub sectors: Sectors,
     /// What the live world has put in the way: closed doors, placed decoration.
     pub obstructions: Obstructions,
+    /// The ships moored on this facet, and the decks they put over the water.
+    ///
+    /// Beside the obstruction index rather than in it, because that index can
+    /// only ever *subtract* and a deck is somewhere to stand that the map does
+    /// not have — `docs/boats.md`'s B3.
+    pub boats: crate::boat::Boats,
     /// The named areas of this facet — towns, dungeons, guarded zones.
     pub regions: Regions,
     /// What each block of this facet's ground still has left to give: the
@@ -421,14 +427,19 @@ impl FacetState {
     /// doors in it still has doors.
     #[must_use]
     pub fn live_terrain(&self) -> LiveTerrain<'_> {
-        LiveTerrain::new(self.terrain.as_deref(), &self.obstructions, false)
+        LiveTerrain::new(self.terrain.as_deref(), &self.obstructions, &self.boats, false)
     }
 
     /// The same terrain as a door-opener plans over: closed doors do not block,
     /// because the mobile walking the route opens them on arrival.
     #[must_use]
     pub fn planning_terrain(&self, through_doors: bool) -> LiveTerrain<'_> {
-        LiveTerrain::new(self.terrain.as_deref(), &self.obstructions, through_doors)
+        LiveTerrain::new(
+            self.terrain.as_deref(),
+            &self.obstructions,
+            &self.boats,
+            through_doors,
+        )
     }
 }
 

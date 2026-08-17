@@ -144,6 +144,7 @@ fn ground_of(components: Vec<Component>, land: u16, fits: bool) -> WorldState {
             height: SIZE,
             sectors: Sectors::new(SIZE, SIZE),
             obstructions: Obstructions::default(),
+            boats: openshard_state::Boats::default(),
             regions: Regions::new(SIZE, SIZE),
             banks: Banks::default(),
         },

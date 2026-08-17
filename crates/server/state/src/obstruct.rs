@@ -140,6 +140,9 @@ impl Obstructions {
 pub struct LiveTerrain<'a> {
     map: Option<&'a (dyn Terrain + Send + Sync)>,
     obstructions: &'a Obstructions,
+    /// The ships. A third source beside the map and the obstruction index, and
+    /// the only one that can *add* somewhere to stand — see [`crate::boat`].
+    boats: &'a crate::boat::Boats,
     /// Plan as a door-opener: a closed door does not block, because the mobile
     /// walking this route will open it on arrival. Pathfinding for a creature
     /// that opens doors sets this; the actual step never does.
@@ -159,13 +162,30 @@ impl<'a> LiveTerrain<'a> {
     pub(crate) fn new(
         map: Option<&'a (dyn Terrain + Send + Sync)>,
         obstructions: &'a Obstructions,
+        boats: &'a crate::boat::Boats,
         through_doors: bool,
     ) -> Self {
         Self {
             map,
             obstructions,
+            boats,
             through_doors,
         }
+    }
+
+    /// Where a body coming from `from` would land on a deck at `to`, if a boat
+    /// covers it.
+    ///
+    /// **The one thing that can overrule the map's refusal.** Open water is not
+    /// ground, so `can_step` onto it answers `None` — correctly, because there
+    /// is nothing there. A ship makes there be something there, and no index
+    /// that only subtracts could say so.
+    fn aboard(&self, from: Point, to: Point) -> Option<Point> {
+        if self.boats.is_empty() {
+            return None;
+        }
+        let deck = self.boats.deck_at(to.x, to.y, i32::from(from.z))?;
+        Some(Point::new(to.x, to.y, i8::try_from(deck).ok()?))
     }
 
     /// What blocks `(x, y)`, if anything — so a caller can tell a door from a
@@ -179,9 +199,20 @@ impl<'a> LiveTerrain<'a> {
 impl Terrain for LiveTerrain<'_> {
     fn can_step(&self, from: Point, to: Point) -> Option<Point> {
         let landed = match self.map {
-            Some(map) => map.can_step(from, to)?,
+            Some(map) => match map.can_step(from, to) {
+                Some(landed) => landed,
+                // The map says there is nothing to stand on, which over open
+                // water is true right up until a ship is moored there.
+                None => self.aboard(from, to)?,
+            },
             None => OpenWorld.can_step(from, to)?,
         };
+        // A hull is a wall that is not in the obstruction index, so it is asked
+        // separately — and asked after the landing is known, because a gunwale
+        // seals the deck's height and not the water under the ship.
+        if !self.boats.is_empty() && self.boats.hull_blocks(to.x, to.y, i32::from(landed.z)) {
+            return None;
+        }
         // A live obstacle in the mobile's own vertical span on the destination
         // tile: a shut door yields only to a planner told it will be opened,
         // anything else stops the step. Checked at the z the mobile will stand at,
@@ -240,6 +271,16 @@ impl Terrain for LiveTerrain<'_> {
     }
 
     fn can_fit(&self, tile: Tile, z: i32, height: i32) -> bool {
+        if !self.boats.is_empty() {
+            if self.boats.hull_blocks(tile.x, tile.y, z) {
+                return false;
+            }
+            // A deck at exactly this height is a surface the map does not have,
+            // so it answers for the map rather than alongside it.
+            if self.boats.deck_at(tile.x, tile.y, z) == Some(z) {
+                return self.obstructions.blocker_at_z(tile.x, tile.y, z).is_none();
+            }
+        }
         self.map.is_none_or(|m| m.can_fit(tile, z, height))
             && self.obstructions.blocker_at_z(tile.x, tile.y, z).is_none()
     }
@@ -339,7 +380,12 @@ mod tests {
     }
 
     use super::*;
+    use crate::boat::{Boats, Plank};
     use openshard_entities::Registry;
+
+    /// A harbour with no ships in it. Most of these tests predate boats and want
+    /// exactly that; the ones that do not build their own.
+    static NO_BOATS: std::sync::LazyLock<Boats> = std::sync::LazyLock::new(Boats::default);
 
     fn an_entity() -> EntityId {
         Registry::new().spawn()
@@ -350,7 +396,7 @@ mod tests {
         let mut obstructions = Obstructions::default();
         let door = an_entity();
         obstructions.block(10, 10, door, true, 0, DOOR_HEIGHT);
-        let live = LiveTerrain::new(None, &obstructions, false);
+        let live = LiveTerrain::new(None, &obstructions, &NO_BOATS, false);
         assert!(
             live.can_step(Point::new(10, 9, 0), Point::new(10, 10, 0))
                 .is_none()
@@ -366,7 +412,7 @@ mod tests {
         let mut obstructions = Obstructions::default();
         obstructions.block(10, 10, an_entity(), true, 0, DOOR_HEIGHT);
         obstructions.block(12, 10, an_entity(), false, 0, DOOR_HEIGHT);
-        let planner = LiveTerrain::new(None, &obstructions, true);
+        let planner = LiveTerrain::new(None, &obstructions, &NO_BOATS, true);
         assert!(
             planner
                 .can_step(Point::new(10, 9, 0), Point::new(10, 10, 0))
@@ -384,17 +430,17 @@ mod tests {
         let mut obstructions = Obstructions::default();
         let door = an_entity();
         obstructions.block(10, 10, door, true, 0, DOOR_HEIGHT);
-        let live = LiveTerrain::new(None, &obstructions, false);
+        let live = LiveTerrain::new(None, &obstructions, &NO_BOATS, false);
         assert!(!live.sight_clear(Point::new(10, 8, 0), Point::new(10, 12, 0)));
         obstructions.unblock(10, 10, door);
-        let live = LiveTerrain::new(None, &obstructions, false);
+        let live = LiveTerrain::new(None, &obstructions, &NO_BOATS, false);
         assert!(live.sight_clear(Point::new(10, 8, 0), Point::new(10, 12, 0)));
     }
 
     #[test]
     fn a_diagonal_passes_an_open_corner() {
         let obstructions = Obstructions::default();
-        let live = LiveTerrain::new(None, &obstructions, false);
+        let live = LiveTerrain::new(None, &obstructions, &NO_BOATS, false);
         assert!(
             live.can_step(Point::new(10, 10, 0), Point::new(11, 11, 0))
                 .is_some(),
@@ -409,7 +455,7 @@ mod tests {
         // wide open. This is the case a server-driven creature used to exploit.
         let mut obstructions = Obstructions::default();
         obstructions.block(11, 10, an_entity(), false, 0, DOOR_HEIGHT);
-        let live = LiveTerrain::new(None, &obstructions, false);
+        let live = LiveTerrain::new(None, &obstructions, &NO_BOATS, false);
         assert!(
             live.can_step(Point::new(10, 10, 0), Point::new(11, 11, 0))
                 .is_none(),
@@ -440,7 +486,7 @@ mod tests {
         // ground level must still block. The mobile steps at z 0.
         let mut obstructions = Obstructions::default();
         obstructions.block(10, 10, an_entity(), false, 20, 20);
-        let live = LiveTerrain::new(None, &obstructions, false);
+        let live = LiveTerrain::new(None, &obstructions, &NO_BOATS, false);
         assert!(
             live.can_step(Point::new(10, 9, 0), Point::new(10, 10, 0))
                 .is_some(),
@@ -448,7 +494,7 @@ mod tests {
         );
 
         obstructions.block(11, 10, an_entity(), false, 0, 20);
-        let live = LiveTerrain::new(None, &obstructions, false);
+        let live = LiveTerrain::new(None, &obstructions, &NO_BOATS, false);
         assert!(
             live.can_step(Point::new(11, 9, 0), Point::new(11, 10, 0))
                 .is_none(),
@@ -497,7 +543,7 @@ mod tests {
     fn the_live_terrain_answers_the_map_and_not_the_trait_default() {
         let obstructions = Obstructions::default();
         let charted = Charted;
-        let live = LiveTerrain::new(Some(&charted), &obstructions, false);
+        let live = LiveTerrain::new(Some(&charted), &obstructions, &NO_BOATS, false);
 
         assert!(live.land_is_water(Tile::new(100, 5)), "the sea");
         assert!(!live.land_is_water(Tile::new(99, 5)), "and the shore");
@@ -517,8 +563,193 @@ mod tests {
     #[test]
     fn a_live_terrain_with_no_map_reports_no_water() {
         let obstructions = Obstructions::default();
-        let live = LiveTerrain::new(None, &obstructions, false);
+        let live = LiveTerrain::new(None, &obstructions, &NO_BOATS, false);
         assert!(!live.land_is_water(Tile::new(100, 5)));
         assert!(!live.item_blocks(Graphic(1)));
+    }
+
+    /// A sea with a rock in it: nothing is walkable except one strip of shore.
+    struct Sea;
+
+    impl Terrain for Sea {
+        fn can_step(&self, _from: Point, to: Point) -> Option<Point> {
+            // The shore runs along y = 0. Everything else is open water, which
+            // the map correctly says is nowhere to stand.
+            (to.y == 0).then_some(to)
+        }
+        fn land_is_water(&self, tile: Tile) -> bool {
+            tile.y != 0
+        }
+        fn can_fit(&self, tile: Tile, _z: i32, _height: i32) -> bool {
+            tile.y == 0
+        }
+    }
+
+    fn a_ship_at(boat: EntityId, x: u16, y: u16) -> Boats {
+        let mut boats = Boats::default();
+        boats.moor(
+            boat,
+            [
+                // Two deck tiles at z 2, and a hull tile beside them.
+                (
+                    (x, y),
+                    Plank {
+                        boat,
+                        z: 2,
+                        height: 3,
+                        blocks: false,
+                    },
+                ),
+                (
+                    (x, y + 1),
+                    Plank {
+                        boat,
+                        z: 2,
+                        height: 3,
+                        blocks: false,
+                    },
+                ),
+                (
+                    (x + 1, y),
+                    Plank {
+                        boat,
+                        z: 2,
+                        height: 10,
+                        blocks: true,
+                    },
+                ),
+            ],
+        );
+        boats
+    }
+
+    /// **The positive half, and the reason boats are not in `Obstructions`.**
+    ///
+    /// The map refuses a step onto open water because there is nothing there,
+    /// which is true until a ship is moored on it. No index that can only
+    /// subtract could overturn that refusal.
+    #[test]
+    fn a_deck_makes_a_step_onto_open_water_legal() {
+        let obstructions = Obstructions::default();
+        let boats = a_ship_at(an_entity(), 10, 1);
+        let live = LiveTerrain::new(Some(&Sea), &obstructions, &boats, false);
+
+        assert!(
+            live.can_step(Point::new(20, 0, 0), Point::new(20, 1, 0))
+                .is_none(),
+            "open water with no ship on it is still not walkable",
+        );
+        assert_eq!(
+            live.can_step(Point::new(10, 0, 0), Point::new(10, 1, 0)),
+            Some(Point::new(10, 1, 5)),
+            "stepping aboard from the shore lands on the deck, not in the water",
+        );
+        assert_eq!(
+            live.can_step(Point::new(10, 1, 5), Point::new(10, 2, 5)),
+            Some(Point::new(10, 2, 5)),
+            "and walking along the deck stays on it",
+        );
+    }
+
+    /// The hull is a wall that is not in the obstruction index, so it is asked
+    /// separately — and asked at the landing height, because a gunwale seals the
+    /// deck and not the sea beneath the ship.
+    #[test]
+    fn a_hull_refuses_the_step_a_deck_would_have_allowed() {
+        let obstructions = Obstructions::default();
+        let boats = a_ship_at(an_entity(), 10, 1);
+        let live = LiveTerrain::new(Some(&Sea), &obstructions, &boats, false);
+
+        assert!(
+            live.can_step(Point::new(10, 1, 5), Point::new(11, 1, 5))
+                .is_none(),
+            "walked straight through the hull",
+        );
+    }
+
+    /// With no ships anywhere the answers are exactly what they were before
+    /// boats existed. The regression that matters most, because every other
+    /// facet on every shard is this one.
+    #[test]
+    fn an_empty_harbour_changes_no_answer() {
+        let obstructions = Obstructions::default();
+        let live = LiveTerrain::new(Some(&Sea), &obstructions, &NO_BOATS, false);
+
+        assert!(
+            live.can_step(Point::new(10, 0, 0), Point::new(10, 1, 0))
+                .is_none()
+        );
+        assert_eq!(
+            live.can_step(Point::new(10, 0, 0), Point::new(11, 0, 0)),
+            Some(Point::new(11, 0, 0)),
+        );
+        assert!(!live.can_fit(Tile::new(10, 1), 5, 16));
+    }
+
+    /// **B3's owed measurement, not an assurance.**
+    ///
+    /// The boat consultation runs on every step by every mobile, and the
+    /// diagonal rule re-enters it twice more. `docs/boats.md` asked the phase
+    /// that landed it to measure rather than promise, so this walks the same
+    /// hundred thousand steps over an empty harbour and over one with a ship in
+    /// it and prints both.
+    ///
+    /// Deliberately **not** asserted. A wall-clock threshold in a test suite is
+    /// a flake generator on shared CI; what is worth having is the number, on
+    /// demand:
+    ///
+    /// ```sh
+    /// cargo test --release -p openshard-state boat_step_cost -- --nocapture --ignored
+    /// ```
+    ///
+    /// # What it measured, 2026-08-16
+    ///
+    /// Release, 100,000 steps: **1.5ms with no boats, 5.5ms with one moored** —
+    /// 15ns against 55ns a step.
+    ///
+    /// The empty case is the one that matters, because it is every facet on
+    /// every shard that has no ships, and it is the `is_empty` length check
+    /// doing its job.
+    ///
+    /// **The 3.6x is the least flattering framing available and is stated that
+    /// way on purpose.** `Sea::can_step` below is a single integer comparison,
+    /// so the boat lookup is very nearly the whole of the measured work. A real
+    /// `MapTerrain::can_step` reads map blocks, walks the statics on the tile
+    /// and computes surfaces; against that baseline the same absolute 40ns is a
+    /// small fraction rather than a multiple. What the number establishes is the
+    /// **absolute** cost of a hash probe per step, which is the thing that was
+    /// worth knowing.
+    ///
+    /// If it ever needs to be smaller, the obvious move is a bounding box per
+    /// facet — one integer range test to skip the probe for tiles nowhere near
+    /// any ship. Not done, because 40ns did not justify a second structure to
+    /// keep in step.
+    #[test]
+    #[ignore = "a measurement, not an assertion — see the doc comment"]
+    fn boat_step_cost() {
+        const STEPS: u32 = 100_000;
+        let obstructions = Obstructions::default();
+        let busy = a_ship_at(an_entity(), 500, 1);
+
+        let walk = |boats: &Boats| {
+            let live = LiveTerrain::new(Some(&Sea), &obstructions, boats, false);
+            let start = std::time::Instant::now();
+            let mut allowed = 0u32;
+            for step in 0..STEPS {
+                let x = (step % 1000) as u16;
+                if live
+                    .can_step(Point::new(x, 0, 0), Point::new(x.wrapping_add(1), 0, 0))
+                    .is_some()
+                {
+                    allowed += 1;
+                }
+            }
+            (start.elapsed(), allowed)
+        };
+
+        let (empty, _) = walk(&NO_BOATS);
+        let (with_ship, _) = walk(&busy);
+        println!("{STEPS} steps, empty harbour: {empty:?}");
+        println!("{STEPS} steps, one ship moored: {with_ship:?}");
     }
 }

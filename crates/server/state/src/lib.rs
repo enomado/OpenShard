@@ -36,6 +36,7 @@
 //! The tick that drives all this, and the systems that act on it, live above.
 
 pub mod armor;
+pub mod boat;
 pub mod components;
 pub mod connection;
 pub mod craft;
@@ -55,6 +56,7 @@ pub mod tame;
 pub mod title;
 pub mod weapon;
 
+pub use boat::{Boats, Plank};
 pub use components::{
     Access, Account, Amount, Banker, BehaviourBuff, BehaviourBuffKind, BehaviourBuffs, Body, BodyType, Brain,
     Client, Combat, Contained, Container, CorpseBody, CriminalUntil, DEFAULT_SKILL_CAP, Decays, Decoration,
