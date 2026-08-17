@@ -161,7 +161,7 @@ impl World {
         let Some(owner) = self.state.registry.serial_of(actor) else {
             return;
         };
-        match openshard_housing::place(&mut self.state, at, facet, multi.0, owner) {
+        match openshard_housing::place(&mut self.state, actor, at, facet, multi.0, owner) {
             Ok(_) => {
                 if let Some(serial) = self.state.registry.serial_of(deed) {
                     items::consume(&mut self.state, serial, 1);

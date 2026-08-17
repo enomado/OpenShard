@@ -840,8 +840,8 @@ fn a_house_survives_a_restart_with_its_walls() {
     let owner = world.state.registry.serial_of(player).expect("a serial");
 
     let at = Point::new(START.0 + 5, START.1 + 5, 0);
-    let house =
-        openshard_housing::place(&mut world.state, at, Facet(0), COTTAGE, owner).expect("a legal spot");
+    let house = openshard_housing::place(&mut world.state, player, at, Facet(0), COTTAGE, owner)
+        .expect("a legal spot");
     let serial = world.state.registry.serial_of(house).expect("a house serial");
 
     world.take_snapshot();

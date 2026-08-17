@@ -497,7 +497,7 @@ fn place_house(state: &mut WorldState, actor: EntityId, args: &[&str]) {
     let Some(owner) = state.registry.serial_of(actor) else {
         return;
     };
-    match openshard_housing::place(state, at, facet, multi, owner) {
+    match openshard_housing::place(state, actor, at, facet, multi, owner) {
         Ok(_) => notify(
             state,
             actor,

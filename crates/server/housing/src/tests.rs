@@ -198,16 +198,25 @@ fn an_item(state: &mut WorldState, at: Point, container: bool) -> EntityId {
 }
 
 fn an_owner(state: &mut WorldState) -> Serial {
-    let (_, serial) = state.registry.spawn_with_serial(SerialKind::Mobile).unwrap();
-    serial
+    an_actor(state).1
+}
+
+/// A mobile, keeping both halves.
+///
+/// `place` takes the actor as well as the owner now, and most tests want the
+/// same mobile for both — but not all of them, which is why the two are separate
+/// parameters and this hands back a pair rather than a `Serial` the caller has
+/// to look back up.
+fn an_actor(state: &mut WorldState) -> (EntityId, Serial) {
+    state.registry.spawn_with_serial(SerialKind::Mobile).unwrap()
 }
 
 #[test]
 fn a_house_is_an_item_whose_graphic_is_the_multi() {
     let mut state = world_with(cottage());
-    let owner = an_owner(&mut state);
+    let (actor, owner) = an_actor(&mut state);
     let at = Point::new(10, 10, 0);
-    let house = place(&mut state, at, Facet(0), COTTAGE, owner).expect("a legal spot");
+    let house = place(&mut state, actor, at, Facet(0), COTTAGE, owner).expect("a legal spot");
 
     assert_eq!(
         state.registry.get::<Drawn>(house).map(|drawn| drawn.id),
@@ -239,9 +248,9 @@ fn a_house_is_an_item_whose_graphic_is_the_multi() {
 #[test]
 fn the_walls_block_and_the_floor_does_not() {
     let mut state = world_with(cottage());
-    let owner = an_owner(&mut state);
+    let (actor, owner) = an_actor(&mut state);
     let at = Point::new(10, 10, 0);
-    place(&mut state, at, Facet(0), COTTAGE, owner).expect("a legal spot");
+    place(&mut state, actor, at, Facet(0), COTTAGE, owner).expect("a legal spot");
 
     let obstructions = &state.facet_state(Facet(0)).obstructions;
     for (dx, dy) in [(-1, -1), (1, -1), (-1, 1), (1, 1)] {
@@ -269,8 +278,8 @@ fn an_upper_storey_wall_leaves_the_ground_floor_open() {
     let mut components = cottage();
     components.push(component(WALL, -1, -1, 20, true));
     let mut state = world_with(components);
-    let owner = an_owner(&mut state);
-    place(&mut state, Point::new(10, 10, 0), Facet(0), COTTAGE, owner).expect("a legal spot");
+    let (actor, owner) = an_actor(&mut state);
+    place(&mut state, actor, Point::new(10, 10, 0), Facet(0), COTTAGE, owner).expect("a legal spot");
 
     let obstructions = &state.facet_state(Facet(0)).obstructions;
     // One tile, one entity, two walls: both must be there. Keyed by the entity
@@ -291,40 +300,40 @@ fn an_upper_storey_wall_leaves_the_ground_floor_open() {
 #[test]
 fn a_house_will_not_go_where_a_house_already_is() {
     let mut state = world_with(cottage());
-    let owner = an_owner(&mut state);
-    place(&mut state, Point::new(10, 10, 0), Facet(0), COTTAGE, owner).expect("a legal spot");
+    let (actor, owner) = an_actor(&mut state);
+    place(&mut state, actor, Point::new(10, 10, 0), Facet(0), COTTAGE, owner).expect("a legal spot");
     assert_eq!(
-        place(&mut state, Point::new(10, 10, 0), Facet(0), COTTAGE, owner),
+        place(&mut state, actor, Point::new(10, 10, 0), Facet(0), COTTAGE, owner),
         Err(Refusal::Occupied)
     );
     // One tile over, the rings overlap at a corner, so it is still refused.
     assert_eq!(
-        place(&mut state, Point::new(12, 10, 0), Facet(0), COTTAGE, owner),
+        place(&mut state, actor, Point::new(12, 10, 0), Facet(0), COTTAGE, owner),
         Err(Refusal::Occupied)
     );
     // Well clear, and it goes up.
-    assert!(place(&mut state, Point::new(20, 20, 0), Facet(0), COTTAGE, owner).is_ok());
+    assert!(place(&mut state, actor, Point::new(20, 20, 0), Facet(0), COTTAGE, owner).is_ok());
 }
 
 /// The four ways a placement is refused before the ground is even looked at.
 #[test]
 fn a_multi_nobody_can_build_is_refused_by_name() {
     let mut state = world_with(cottage());
-    let owner = an_owner(&mut state);
+    let (actor, owner) = an_actor(&mut state);
     let at = Point::new(10, 10, 0);
 
     assert_eq!(
-        place(&mut state, at, Facet(0), 0x0999, owner),
+        place(&mut state, actor, at, Facet(0), 0x0999, owner),
         Err(Refusal::NoSuchMulti),
         "an id the client has never heard of"
     );
     assert_eq!(
-        place(&mut state, at, Facet(0), FOUNDATION_IDS.start, owner),
+        place(&mut state, actor, at, Facet(0), FOUNDATION_IDS.start, owner),
         Err(Refusal::NeedsCustomisation),
         "a customisable foundation has no stairs without a design system"
     );
     assert_eq!(
-        place(&mut state, at, Facet(0), FOUNDATION_IDS.end - 1, owner),
+        place(&mut state, actor, at, Facet(0), FOUNDATION_IDS.end - 1, owner),
         Err(Refusal::NeedsCustomisation),
         "and the far end of the range"
     );
@@ -332,9 +341,9 @@ fn a_multi_nobody_can_build_is_refused_by_name() {
     // A multi that is in the table and blocks nothing — the treasure-site markers
     // a real file ships five of.
     let mut marker = world_with(vec![component(FLOOR, 0, 0, 0, true)]);
-    let marker_owner = an_owner(&mut marker);
+    let (marker_actor, marker_owner) = an_actor(&mut marker);
     assert_eq!(
-        place(&mut marker, at, Facet(0), COTTAGE, marker_owner),
+        place(&mut marker, marker_actor, at, Facet(0), COTTAGE, marker_owner),
         Err(Refusal::DrawsNothing)
     );
 }
@@ -344,10 +353,11 @@ fn a_multi_nobody_can_build_is_refused_by_name() {
 #[test]
 fn a_graphic_and_an_id_place_the_same_house() {
     let mut state = world_with(cottage());
-    let owner = an_owner(&mut state);
-    let from_id = place(&mut state, Point::new(5, 5, 0), Facet(0), COTTAGE, owner).expect("by id");
+    let (actor, owner) = an_actor(&mut state);
+    let from_id = place(&mut state, actor, Point::new(5, 5, 0), Facet(0), COTTAGE, owner).expect("by id");
     let from_graphic = place(
         &mut state,
+        actor,
         Point::new(20, 20, 0),
         Facet(0),
         MULTI_FLAG | COTTAGE,
@@ -365,9 +375,9 @@ fn a_graphic_and_an_id_place_the_same_house() {
 #[test]
 fn a_house_at_the_edge_does_not_wrap_around_the_world() {
     let mut state = world_with(cottage());
-    let owner = an_owner(&mut state);
+    let (actor, owner) = an_actor(&mut state);
     assert_eq!(
-        place(&mut state, Point::new(0, 0, 0), Facet(0), COTTAGE, owner),
+        place(&mut state, actor, Point::new(0, 0, 0), Facet(0), COTTAGE, owner),
         Err(Refusal::OffTheMap),
         "a wall one tile west of x=0 became a wall at 65535"
     );
@@ -378,9 +388,9 @@ fn a_house_at_the_edge_does_not_wrap_around_the_world() {
 #[test]
 fn unblocking_gives_the_ground_back() {
     let mut state = world_with(cottage());
-    let owner = an_owner(&mut state);
+    let (actor, owner) = an_actor(&mut state);
     let at = Point::new(10, 10, 0);
-    let house = place(&mut state, at, Facet(0), COTTAGE, owner).expect("a legal spot");
+    let house = place(&mut state, actor, at, Facet(0), COTTAGE, owner).expect("a legal spot");
     let footprint = footprint_of(&state, at, Facet(0), COTTAGE).expect("the same footprint");
 
     unblock(&mut state, house, Facet(0), &footprint);
@@ -394,13 +404,13 @@ fn unblocking_gives_the_ground_back() {
     // that owns a yard — and `unblock` undoes only the first. A demolition that
     // called this and stopped would leave a plot nobody could ever build on.
     assert_eq!(
-        place(&mut state, at, Facet(0), COTTAGE, owner),
+        place(&mut state, actor, at, Facet(0), COTTAGE, owner),
         Err(Refusal::TooCloseToAHouse)
     );
 
     state.registry.despawn(house);
     assert!(
-        place(&mut state, at, Facet(0), COTTAGE, owner).is_ok(),
+        place(&mut state, actor, at, Facet(0), COTTAGE, owner).is_ok(),
         "with the house gone the plot is free again"
     );
 }
@@ -412,9 +422,9 @@ fn a_house_may_not_be_built_on_a_road() {
     // The whole facet is cobbles, which is the cheapest way to put a road under
     // every footprint tile.
     let mut state = ground_of(cottage(), 0x0071, true);
-    let owner = an_owner(&mut state);
+    let (actor, owner) = an_actor(&mut state);
     assert_eq!(
-        place(&mut state, Point::new(10, 10, 0), Facet(0), COTTAGE, owner),
+        place(&mut state, actor, Point::new(10, 10, 0), Facet(0), COTTAGE, owner),
         Err(Refusal::OnARoad)
     );
 
@@ -432,9 +442,9 @@ fn a_house_may_not_be_built_on_a_road() {
 #[test]
 fn ground_that_will_not_take_a_house_refuses_one() {
     let mut state = ground_of(cottage(), 0, false);
-    let owner = an_owner(&mut state);
+    let (actor, owner) = an_actor(&mut state);
     assert_eq!(
-        place(&mut state, Point::new(10, 10, 0), Facet(0), COTTAGE, owner),
+        place(&mut state, actor, Point::new(10, 10, 0), Facet(0), COTTAGE, owner),
         Err(Refusal::BadGround)
     );
 }
@@ -444,20 +454,20 @@ fn ground_that_will_not_take_a_house_refuses_one() {
 #[test]
 fn a_house_keeps_a_yard_clear_of_other_houses() {
     let mut state = world_with(cottage());
-    let owner = an_owner(&mut state);
-    place(&mut state, Point::new(10, 10, 0), Facet(0), COTTAGE, owner).expect("the first house");
+    let (actor, owner) = an_actor(&mut state);
+    place(&mut state, actor, Point::new(10, 10, 0), Facet(0), COTTAGE, owner).expect("the first house");
 
     // The yard is measured wall to wall, not origin to origin, and that is the
     // arithmetic worth pinning. The first cottage's east wall is at x=11; a
     // second at origin 17 puts its west wall at 16, five tiles away and so
     // *inside* the yard. Origin 18 puts it at 17, six away, and clear.
     assert_eq!(
-        place(&mut state, Point::new(17, 10, 0), Facet(0), COTTAGE, owner),
+        place(&mut state, actor, Point::new(17, 10, 0), Facet(0), COTTAGE, owner),
         Err(Refusal::TooCloseToAHouse),
         "two walls five tiles apart is inside a yard of five"
     );
     assert!(
-        place(&mut state, Point::new(18, 10, 0), Facet(0), COTTAGE, owner).is_ok(),
+        place(&mut state, actor, Point::new(18, 10, 0), Facet(0), COTTAGE, owner).is_ok(),
         "a house six tiles clear of another was refused"
     );
 }
@@ -468,9 +478,9 @@ fn a_house_keeps_a_yard_clear_of_other_houses() {
 fn a_world_with_no_terrain_has_no_houses() {
     let mut state = world_with(cottage());
     state.facet_state_mut(Facet(0)).terrain = None;
-    let owner = an_owner(&mut state);
+    let (actor, owner) = an_actor(&mut state);
     assert_eq!(
-        place(&mut state, Point::new(10, 10, 0), Facet(0), COTTAGE, owner),
+        place(&mut state, actor, Point::new(10, 10, 0), Facet(0), COTTAGE, owner),
         Err(Refusal::NoSuchMulti)
     );
 }
@@ -661,14 +671,14 @@ fn a_house_adopts_the_doors_standing_inside_it() {
     use openshard_state::components::{Door, HouseDoor};
 
     let mut state = world_with(cottage());
-    let owner = an_owner(&mut state);
+    let (actor, owner) = an_actor(&mut state);
     let at = Point::new(10, 10, 0);
 
     // One door where the house will stand, and one well outside it.
     let inside = door_at(&mut state, Point::new(10, 10, 0));
     let outside = door_at(&mut state, Point::new(25, 25, 0));
 
-    let house = place(&mut state, at, Facet(0), COTTAGE, owner).expect("a legal spot");
+    let house = place(&mut state, actor, at, Facet(0), COTTAGE, owner).expect("a legal spot");
     let serial = state.registry.serial_of(house).unwrap();
 
     assert_eq!(
@@ -714,9 +724,9 @@ fn a_ban_puts_out_whoever_is_already_inside() {
     use openshard_state::components::Body;
 
     let mut state = world_with(cottage());
-    let owner = an_owner(&mut state);
+    let (actor, owner) = an_actor(&mut state);
     let at = Point::new(10, 10, 0);
-    let house = place(&mut state, at, Facet(0), COTTAGE, owner).expect("a legal spot");
+    let house = place(&mut state, actor, at, Facet(0), COTTAGE, owner).expect("a legal spot");
 
     // Three people standing in the doorway tile: the owner, a friend, and one
     // about to be banned.
@@ -769,9 +779,9 @@ fn a_ban_puts_out_whoever_is_already_inside() {
 #[test]
 fn a_house_hangs_its_sign_on_the_corner_of_its_box() {
     let mut state = world_with(cottage());
-    let owner = an_owner(&mut state);
+    let (actor, owner) = an_actor(&mut state);
     let at = Point::new(10, 10, 0);
-    let house = place(&mut state, at, Facet(0), COTTAGE, owner).expect("a legal spot");
+    let house = place(&mut state, actor, at, Facet(0), COTTAGE, owner).expect("a legal spot");
     let serial = state.registry.serial_of(house).expect("the house's serial");
 
     assert_eq!(
@@ -829,9 +839,9 @@ fn a_house_with_no_multi_table_hangs_no_sign() {
 #[test]
 fn only_a_co_owner_may_drop_a_name_from_the_window() {
     let mut state = world_with(cottage());
-    let owner = an_owner(&mut state);
+    let (actor, owner) = an_actor(&mut state);
     let at = Point::new(10, 10, 0);
-    let house = place(&mut state, at, Facet(0), COTTAGE, owner).expect("a legal spot");
+    let house = place(&mut state, actor, at, Facet(0), COTTAGE, owner).expect("a legal spot");
 
     let friend = an_owner(&mut state);
     let co_owner = an_owner(&mut state);
@@ -906,9 +916,9 @@ fn a_house_gets_its_allowance_from_its_own_footprint() {
     use crate::storage::{LOCKDOWNS_PER_TILE, allowance, allowance_for};
 
     let mut state = world_with(cottage());
-    let owner = an_owner(&mut state);
+    let (actor, owner) = an_actor(&mut state);
     let at = Point::new(10, 10, 0);
-    let house = place(&mut state, at, Facet(0), COTTAGE, owner).expect("a legal spot");
+    let house = place(&mut state, actor, at, Facet(0), COTTAGE, owner).expect("a legal spot");
 
     let tiles = tiles_of(&state, at, Facet(0), COTTAGE).len();
     assert_eq!(tiles, 5, "the cottage draws five tiles");
@@ -927,9 +937,9 @@ fn only_a_co_owner_pins_and_only_inside_the_house() {
     use crate::storage::{StorageRefusal, lock_down, locked_down, release};
 
     let mut state = world_with(cottage());
-    let owner = an_owner(&mut state);
+    let (actor, owner) = an_actor(&mut state);
     let at = Point::new(10, 10, 0);
-    let house = place(&mut state, at, Facet(0), COTTAGE, owner).expect("a legal spot");
+    let house = place(&mut state, actor, at, Facet(0), COTTAGE, owner).expect("a legal spot");
     let master = state.registry.entity_of(owner).expect("a mobile");
 
     // A chest on the house's own floor, and a barrel two tiles outside it.
@@ -987,9 +997,9 @@ fn a_full_house_takes_no_more_lockdowns() {
     use crate::storage::{StorageRefusal, allowance, lock_down};
 
     let mut state = world_with(cottage());
-    let owner = an_owner(&mut state);
+    let (actor, owner) = an_actor(&mut state);
     let at = Point::new(10, 10, 0);
-    let house = place(&mut state, at, Facet(0), COTTAGE, owner).expect("a legal spot");
+    let house = place(&mut state, actor, at, Facet(0), COTTAGE, owner).expect("a legal spot");
     let master = state.registry.entity_of(owner).expect("a mobile");
 
     let ceiling = allowance(&state, house).lockdowns;
@@ -1011,9 +1021,9 @@ fn a_secure_opens_for_the_standing_it_names() {
     use crate::storage::{lock_down, may_open};
 
     let mut state = world_with(cottage());
-    let owner = an_owner(&mut state);
+    let (actor, owner) = an_actor(&mut state);
     let at = Point::new(10, 10, 0);
-    let house = place(&mut state, at, Facet(0), COTTAGE, owner).expect("a legal spot");
+    let house = place(&mut state, actor, at, Facet(0), COTTAGE, owner).expect("a legal spot");
     let master = state.registry.entity_of(owner).expect("a mobile");
 
     let chest = an_item(&mut state, at, true);
@@ -1061,9 +1071,9 @@ fn the_storage_ceiling_counts_what_is_in_the_secures() {
     use crate::storage::{allowance, has_room_for, lock_down, stored};
 
     let mut state = world_with(cottage());
-    let owner = an_owner(&mut state);
+    let (actor, owner) = an_actor(&mut state);
     let at = Point::new(10, 10, 0);
-    let house = place(&mut state, at, Facet(0), COTTAGE, owner).expect("a legal spot");
+    let house = place(&mut state, actor, at, Facet(0), COTTAGE, owner).expect("a legal spot");
     let master = state.registry.entity_of(owner).expect("a mobile");
 
     let chest = an_item(&mut state, at, true);
@@ -1128,9 +1138,9 @@ fn the_sweep_ages_a_house_and_a_refresh_undoes_it() {
 
     let mut state = world_with(cottage());
     state.gameplay.house_decay_ticks = 1000;
-    let owner = an_owner(&mut state);
+    let (actor, owner) = an_actor(&mut state);
     let at = Point::new(10, 10, 0);
-    let house = place(&mut state, at, Facet(0), COTTAGE, owner).expect("a legal spot");
+    let house = place(&mut state, actor, at, Facet(0), COTTAGE, owner).expect("a legal spot");
 
     assert_eq!(condition(&state, house), Condition::LikeNew);
     for _ in 0..600 {
@@ -1162,9 +1172,9 @@ fn a_collapsed_house_leaves_a_crate_and_no_walls() {
 
     let mut state = world_with(cottage());
     state.gameplay.house_decay_ticks = 10;
-    let owner = an_owner(&mut state);
+    let (actor, owner) = an_actor(&mut state);
     let at = Point::new(10, 10, 0);
-    let house = place(&mut state, at, Facet(0), COTTAGE, owner).expect("a legal spot");
+    let house = place(&mut state, actor, at, Facet(0), COTTAGE, owner).expect("a legal spot");
     let master = state.registry.entity_of(owner).expect("a mobile");
     let house_serial = state.registry.serial_of(house).expect("its serial");
 
@@ -1272,9 +1282,9 @@ fn a_collapsed_house_leaves_a_crate_and_no_walls() {
 #[test]
 fn an_empty_house_leaves_no_crate() {
     let mut state = world_with(cottage());
-    let owner = an_owner(&mut state);
+    let (actor, owner) = an_actor(&mut state);
     let at = Point::new(10, 10, 0);
-    let house = place(&mut state, at, Facet(0), COTTAGE, owner).expect("a legal spot");
+    let house = place(&mut state, actor, at, Facet(0), COTTAGE, owner).expect("a legal spot");
 
     assert_eq!(crate::decay::demolish(&mut state, house), None);
     assert!(
@@ -1326,7 +1336,7 @@ fn forbid_housing(state: &mut WorldState, rect: openshard_state::RegionRect) {
 #[test]
 fn a_shipped_no_housing_region_refuses_a_house() {
     let mut state = britannia_with(cottage());
-    let owner = an_owner(&mut state);
+    let (actor, owner) = an_actor(&mut state);
     let felucca = openshard_state::region::shipped()
         .into_iter()
         .find(|set| set.facet == Facet(0))
@@ -1343,7 +1353,7 @@ fn a_shipped_no_housing_region_refuses_a_house() {
 
     let at = Point::new(inside.x + 5, inside.y + 5, 0);
     assert_eq!(
-        place(&mut state, at, Facet(0), COTTAGE, owner),
+        place(&mut state, actor, at, Facet(0), COTTAGE, owner),
         Err(Refusal::NoHousingHere)
     );
     // And nothing was left behind by the refusal — the serial is spent after the
@@ -1355,12 +1365,12 @@ fn a_shipped_no_housing_region_refuses_a_house() {
 #[test]
 fn a_house_is_refused_inside_a_no_housing_region() {
     let mut state = world_with(cottage());
-    let owner = an_owner(&mut state);
+    let (actor, owner) = an_actor(&mut state);
     let at = Point::new(10, 10, 0);
     forbid_housing(&mut state, openshard_state::RegionRect::new(5, 5, 12, 12));
 
     assert_eq!(
-        place(&mut state, at, Facet(0), COTTAGE, owner),
+        place(&mut state, actor, at, Facet(0), COTTAGE, owner),
         Err(Refusal::NoHousingHere)
     );
 }
@@ -1375,7 +1385,7 @@ fn a_house_is_refused_inside_a_no_housing_region() {
 #[test]
 fn a_house_whose_wall_reaches_a_no_housing_region_is_refused() {
     let mut state = world_with(cottage());
-    let owner = an_owner(&mut state);
+    let (actor, owner) = an_actor(&mut state);
     let at = Point::new(10, 10, 0);
     // The cottage's box runs from -1 to +1, so it covers x 9..=11. A region
     // starting at x 11 contains the east wall and not the origin.
@@ -1388,7 +1398,7 @@ fn a_house_whose_wall_reaches_a_no_housing_region_is_refused() {
         "the origin is inside the region, so this test proves nothing"
     );
     assert_eq!(
-        place(&mut state, at, Facet(0), COTTAGE, owner),
+        place(&mut state, actor, at, Facet(0), COTTAGE, owner),
         Err(Refusal::NoHousingHere),
         "the east wall stands inside a region that refuses houses"
     );
@@ -1404,7 +1414,7 @@ fn a_house_whose_wall_reaches_a_no_housing_region_is_refused() {
 #[test]
 fn a_house_is_judged_at_its_own_height_not_its_roof() {
     let mut state = world_with(cottage());
-    let owner = an_owner(&mut state);
+    let (actor, owner) = an_actor(&mut state);
     let at = Point::new(10, 10, 0);
     // A band that contains the foundation and stops well below any roof.
     forbid_housing(
@@ -1413,7 +1423,7 @@ fn a_house_is_judged_at_its_own_height_not_its_roof() {
     );
 
     assert_eq!(
-        place(&mut state, at, Facet(0), COTTAGE, owner),
+        place(&mut state, actor, at, Facet(0), COTTAGE, owner),
         Err(Refusal::NoHousingHere)
     );
 }
@@ -1427,12 +1437,12 @@ fn a_house_is_judged_at_its_own_height_not_its_roof() {
 fn the_region_refusal_comes_before_the_ground_refusal() {
     // `fits: false` makes every tile bad ground, so both rules would fire.
     let mut state = ground_of(cottage(), 0, false);
-    let owner = an_owner(&mut state);
+    let (actor, owner) = an_actor(&mut state);
     let at = Point::new(10, 10, 0);
     forbid_housing(&mut state, openshard_state::RegionRect::new(5, 5, 12, 12));
 
     assert_eq!(
-        place(&mut state, at, Facet(0), COTTAGE, owner),
+        place(&mut state, actor, at, Facet(0), COTTAGE, owner),
         Err(Refusal::NoHousingHere),
         "the ground answered first, and told the player to try a tile over"
     );
@@ -1446,7 +1456,7 @@ fn the_region_refusal_comes_before_the_ground_refusal() {
 #[test]
 fn an_ordinary_region_takes_a_house() {
     let mut state = world_with(cottage());
-    let owner = an_owner(&mut state);
+    let (actor, owner) = an_actor(&mut state);
     let at = Point::new(10, 10, 0);
     state
         .facet_state_mut(Facet(0))
@@ -1464,5 +1474,77 @@ fn an_ordinary_region_takes_a_house() {
             light: None,
         }]);
 
-    assert!(place(&mut state, at, Facet(0), COTTAGE, owner).is_ok());
+    assert!(place(&mut state, actor, at, Facet(0), COTTAGE, owner).is_ok());
+}
+
+/// Staff build where a dungeon forbids it.
+///
+/// D3 has claimed this since H1 and it was never true, because `place` had no
+/// actor to ask about. This is the only proof the exemption exists at all.
+#[test]
+fn staff_may_build_where_a_dungeon_forbids_it() {
+    let mut state = world_with(cottage());
+    let (actor, owner) = an_actor(&mut state);
+    let at = Point::new(10, 10, 0);
+    forbid_housing(&mut state, openshard_state::RegionRect::new(5, 5, 12, 12));
+
+    assert_eq!(
+        place(&mut state, actor, at, Facet(0), COTTAGE, owner),
+        Err(Refusal::NoHousingHere),
+        "the rule does not apply to a player"
+    );
+    state.registry.insert(actor, openshard_state::components::Staff);
+    assert!(
+        place(&mut state, actor, at, Facet(0), COTTAGE, owner).is_ok(),
+        "a game master could not lay out a town"
+    );
+}
+
+/// **The other half of D10, and the one a careless bypass breaks silently.**
+///
+/// The reference's exemption is a single early return. Copying that shape here
+/// would be wrong, because this engine's `Refusal` mixes judgements about the
+/// plot with facts about the id — and skipping the second kind reopens holes
+/// other decisions closed: an invisible house out of a treasure-site marker, or
+/// a foundation placed with no stairs and nobody able to get in.
+#[test]
+fn staff_are_still_refused_what_is_not_a_house() {
+    let mut state = world_with(vec![component(1, 0, 0, 0, false)]);
+    let (actor, owner) = an_actor(&mut state);
+    state.registry.insert(actor, openshard_state::components::Staff);
+    let at = Point::new(10, 10, 0);
+
+    assert_eq!(
+        place(&mut state, actor, at, Facet(0), COTTAGE, owner),
+        Err(Refusal::DrawsNothing),
+        "staff spawned an invisible house from a marker"
+    );
+    assert_eq!(
+        place(&mut state, actor, at, Facet(0), COTTAGE + 1, owner),
+        Err(Refusal::NoSuchMulti),
+        "staff placed a multi no client knows"
+    );
+    assert_eq!(
+        place(&mut state, actor, at, Facet(0), FOUNDATION_IDS.start, owner),
+        Err(Refusal::NeedsCustomisation),
+        "staff placed a foundation with no stairs — the failure that refusal exists to prevent"
+    );
+}
+
+/// Staff are exempt from the plot's judgements, not from arithmetic.
+///
+/// `OffTheMap` comes out of `footprint_of`, above the exemption, so a house whose
+/// components would land at a negative coordinate is refused whoever asks. It is
+/// in D10's second row for a reason: there is no tile there to place it on.
+#[test]
+fn staff_are_still_refused_a_house_off_the_edge_of_the_world() {
+    let mut state = world_with(cottage());
+    let (actor, owner) = an_actor(&mut state);
+    state.registry.insert(actor, openshard_state::components::Staff);
+
+    assert_eq!(
+        place(&mut state, actor, Point::new(0, 0, 0), Facet(0), COTTAGE, owner),
+        Err(Refusal::OffTheMap),
+        "the cottage's west wall would stand at x -1"
+    );
 }

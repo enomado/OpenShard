@@ -130,13 +130,44 @@ pub struct Footprint {
 /// Returns the house's entity. The caller announces it; this does not, for
 /// `spawn_item`'s reason — what a placement *is* to the world (a staff command, a
 /// deed being consumed) is the caller's business.
+///
+/// # `actor` and `owner` are two facts, not one
+///
+/// Who is *asking* and whose house it *is*. Both callers pass the same mobile
+/// today, and a game master placing a house for somebody else is the case that
+/// separates them — which is why they are two parameters rather than one read
+/// two ways. `actor` is an `EntityId` and not an `Option`: a placement always
+/// has somebody who caused it, and `style.md` says an `Option` means absent
+/// rather than unknown.
+///
+/// # What staff are exempt from, and what they are not
+///
+/// D3 has claimed "staff place anywhere" since H1 and it was never true, because
+/// there was no actor to ask about. It is true now, and it is **not** the
+/// reference's single early return — this engine's [`Refusal`] mixes two kinds
+/// of answer, and skipping both kinds would reopen a hole another decision
+/// closed:
+///
+/// | refusal | what it is | exempt |
+/// |---|---|---|
+/// | `NoHousingHere`, `Occupied`, `OnARoad`, `BadGround`, `TooCloseToAHouse` | a judgement about the plot | **yes** |
+/// | `NoSuchMulti`, `DrawsNothing`, `NeedsCustomisation`, `OffTheMap`, `NoSerials` | there is nothing to place, or the shard is broken | **no** |
+///
+/// A game master laying out a town needs the first row skipped. Nobody needs an
+/// invisible house out of a treasure-site marker, or a foundation with no
+/// stairs. See H6's D10.
 pub fn place(
     state: &mut WorldState,
+    actor: EntityId,
     at: Point,
     facet: Facet,
     multi: u16,
     owner: Serial,
 ) -> Result<EntityId, Refusal> {
+    // Once, at the top, and threaded — this crate's own idiom, the way `trust`,
+    // `distrust`, `ban`, `unban` and `standing_of` all take it rather than each
+    // asking again.
+    let staff = state.is_staff(actor);
     let multi = multi & !MULTI_FLAG;
     if FOUNDATION_IDS.contains(&multi) {
         return Err(Refusal::NeedsCustomisation);
@@ -149,17 +180,23 @@ pub fn place(
     // does the lockdown allowance below. One derivation, two readers — it was
     // already being computed here, one line further down.
     let covered = tiles_of(state, at, facet, multi);
-    // **First of the judgements**, and that ordering is the *message*. Every
-    // other refusal here means "try a tile over" — `Occupied` as much as
-    // `BadGround` — and inside Deceit that is a lie a player spends ten minutes
-    // proving. This is the only one that is a statement about the *place*. See
-    // H6's D9b.
-    check_region(state, facet, at, &covered)?;
-    if occupied_tile(state, facet, &footprint).is_some() {
-        return Err(Refusal::Occupied);
+    // The four judgements about the plot, and the one row of D10's table staff
+    // skip. Everything above this stays: those refusals are facts about the id
+    // or a shard in trouble, and a bypass that reopened `NeedsCustomisation`
+    // would undo the decision that stops a foundation going down with no stairs.
+    if !staff {
+        // **First of the judgements**, and that ordering is the *message*. Every
+        // other refusal here means "try a tile over" — `Occupied` as much as
+        // `BadGround` — and inside Deceit that is a lie a player spends ten
+        // minutes proving. This is the only one that is a statement about the
+        // *place*. See H6's D9b.
+        check_region(state, facet, at, &covered)?;
+        if occupied_tile(state, facet, &footprint).is_some() {
+            return Err(Refusal::Occupied);
+        }
+        check_ground(state, facet, &footprint)?;
+        check_yard(state, facet, &footprint)?;
     }
-    check_ground(state, facet, &footprint)?;
-    check_yard(state, facet, &footprint)?;
 
     let Ok((entity, _)) = state
         .registry

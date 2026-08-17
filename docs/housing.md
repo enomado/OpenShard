@@ -12,9 +12,11 @@ house nobody visits collapses into a crate that keeps what was inside. Each
 phase's section below records what came out differently from the plan, which is
 the half worth reading.
 
-**H6 is not**, and it is a sixth phase of a five-phase plan for a reason worth
-reading before the rest: three things this document published as *decided* were
-never built, and they are one thing — housing and regions never met.
+**H6 is a sixth phase of a five-phase plan**, for a reason worth reading before
+the rest: three things this document published as *decided* were never built, and
+they are one thing — housing and regions never met. Two of its three sub-phases
+are now in; the third turned out to need a decision rather than a session, and
+the note under D11 says which.
 
 > Read [`architecture.md`](architecture.md) for where a system crate sits and
 > what it may depend on, and [`style.md`](style.md) before writing any of it.
@@ -811,6 +813,44 @@ arriving a second time, at one level down.
 - A house's region present after placement and gone after `decay::demolish`,
   because a region outliving its house is a permanent no-recall zone in an empty
   field and nothing else would notice.
+
+#### Built: the first two, and the third is blocked
+
+**Sub-phases 1 and 2 are in.** Twenty-one dungeons are closed to building, and
+D3's staff exemption exists for the first time since it was written.
+
+Three things came out differently.
+
+**The region check is first among the judgements, not merely before the ground.**
+D9b argued the ordering from `BadGround` — "try a tile over" is a lie inside
+Deceit — and the same argument turned out to apply to `Occupied` word for word.
+Every refusal below the region check means *try a tile over*; the region one is
+the only one that is a statement about the place. So it went above all four
+rather than between two of them.
+
+**The origin argument that decided D9 was not either of the two written down.**
+The plan gave the boundary case and the floor-versus-wall case. The one that
+would have bitten first is neither: `place`'s own doc says `at` is the multi's
+*origin* and "is not the corner of its box", so a multi whose components all sit
+at positive offsets has an origin **outside its own drawn area** — an origin test
+can test a tile no wall ever stands on, with no boundary involved at all.
+
+**One test runs against the shipped dataset by name, and the rest are fixtures.**
+That split is deliberate and it is not the usual one. Every other test in
+`housing/src/tests.rs` uses a fixture because what they check is arithmetic, and
+Covetous' real rectangle is not something a reader can hold in their head. But
+the thing this phase is *about* is a flag that was plumbed from JSON through
+codegen through the save and back for five phases while nothing read it — and a
+fixture cannot say that the twenty-one real rows reach the rule. So one test
+carries a facet-sized world just to name Covetous and be refused by it.
+
+**The exemption is a row of a table, not an early return.** The reference's is
+`if (from.AccessLevel >= GameMaster) return Valid;`, and copying that shape would
+have reopened `NeedsCustomisation` — a game master placing a foundation with no
+stairs is the exact failure that refusal was written to prevent. Three tests pin
+the second row: a marker that draws nothing, an id no client knows, and a
+foundation. `OffTheMap` needed no guard at all, because it comes out of
+`footprint_of` above where the exemption starts.
 
 #### Stale text this phase corrects
 

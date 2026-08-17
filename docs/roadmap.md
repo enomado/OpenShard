@@ -2546,16 +2546,39 @@ Roughly in dependency order, each script-first:
     Saved, schema **v30** — v27's case again, a bump for the *writer*: an older
     build ignores `houses.age` and writes every house back at the default, so
     nothing on the shard ever collapses again.
-  - [ ] **H6 — the region a house stands in.** The sixth phase of a five-phase
-    plan, and half of it is a correction: `no_housing` is a `RegionFlags` field
-    with 21 shipped regions behind it and no reader, D3's staff exemption cannot
-    exist because `place` takes no actor, and D4's house-as-region was decided
-    and never assigned to a phase. All three are the same thing — housing and
-    regions never met. The rule is stated over the whole footprint rather than
-    the origin (which is not reliably part of the house at all), at the house's
-    own z rather than each component's (247 shipped rects are z-banded), and
-    before the ground refusal, because `BadGround` means "try a tile over" and
-    inside Deceit that is a lie.
+  - [x] **H6 — the region a house stands in.** The sixth phase of a five-phase
+    plan, and half of it was a correction: three things this plan published as
+    decided were never built, and they were one thing — housing and regions never
+    met.
+
+    **`no_housing` has a reader**, and twenty-one shipped dungeons close on the
+    first boot: Covetous, Deceit, Despise, Destard, Hythloth, Shame, Wrong,
+    Khaldun, Terathan Keep, Fire, Ice, the Solen Hives and nine more. The rule is
+    stated over every tile the house *covers* rather than its origin — and the
+    argument that decided it is not the boundary case but a blunter one: `at` is
+    the multi's origin and "is not the corner of its box", so a multi whose
+    components all sit at positive offsets has an origin outside its own drawn
+    area, and an origin test can test a tile no wall stands on. At the house's own
+    z rather than each component's, because 247 shipped rects carry a height band
+    and a villa's roof would otherwise read as outside the dungeon its foundation
+    is in. And **first among the judgements**, because every other refusal here
+    means "try a tile over" — `Occupied` as much as `BadGround` — and inside
+    Deceit that is a lie a player spends ten minutes proving.
+
+    **`place` takes an actor**, so D3's "staff place anywhere" is true for the
+    first time since H1. Not the reference's single early return: this engine's
+    `Refusal` mixes judgements about the plot with facts about the id, and
+    skipping the second kind would let a game master place a foundation with no
+    stairs — the exact failure `NeedsCustomisation` exists to prevent.
+
+    **D11 is blocked and stays deferred.** A house registering its own region
+    needs `Regions` to accept a runtime insert and remove, and it has neither:
+    `set` is replace-all *by design*, `RegionId` is a `Vec` index that `at()`
+    indexes unchecked, the save sweep would write the derived region and outlive
+    the house with it, and — decisively — `restore_houses` runs seven lines
+    before `restore_regions`, whose `set` would wipe it on every boot. It needs a
+    decision about the type's shape, which is D4's lesson arriving a second time
+    one level down.
 - [ ] `boats` — a multi that moves: a hull that blocks, a deck you can stand on,
   and everyone aboard arriving with it. **Planned — see
   [`boats.md`](boats.md)**, which refuses a parent transform on the engine's own
