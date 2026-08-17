@@ -105,38 +105,14 @@ pub(crate) fn draw_gump_windows(
     // eligible for the text pass) after gump assets or their GPU pass were
     // unavailable.
     if let (Some(files), Some(pass)) = (resources.gumps.as_ref(), window.gump_pass.as_mut()) {
-        // Every open dialog's art, packed before anything is laid out.
-        //
-        // Before, and not on the way, for two reasons. A `{ resizepic }`
-        // cannot be placed until its nine pieces have been packed — where
-        // its edges go is decided by how big its corners turned out to be —
-        // and a page button flips pages inside the client, so what a window
-        // needs is *every* page's art rather than the showing one's.
-        // `gump::art_of` is that list, asked for on the frame the window is
-        // drawn on because that is the frame that knows it is open at all.
-        let open = world
-            .authoritative
-            .view
-            .as_ref()
-            .map(|view| view.gumps.as_slice())
-            .unwrap_or_default();
         let mut pictures = Vec::new();
-        for gump in open {
-            let art_files = gump_art::ArtFiles {
-                gumps: files,
-                items: &resources.art,
-            };
-            if let Err(error) = resources
-                .gump_atlas
-                .add(art_files, gump_art::art_of(&gump.elements))
-            {
-                // Said once per window and then drawn without whatever is
-                // missing: a dialog with a hole in it is still a dialog the
-                // player can read, and a client that refused to draw one
-                // would take the shard's staff commands down with it.
-                eprintln!("packing gump art for {:?}: {error}", gump.gump_id);
-            }
-        }
+        // A dialog's art used to be packed here, in a loop over every gump in
+        // the *view* — one rung above the windows, so a dialog this client had
+        // closed and the view had not yet forgotten still had its pictures
+        // packed. It is `DialogPane::art` now, asked of the window, and it goes
+        // through the same three-phase order as every other kind's below: art
+        // for all, pack once, layout for all.
+        //
         // This client's own windows — a dialog, a container, a paperdoll —
         // all three through one machinery.
         //
@@ -175,6 +151,7 @@ pub(crate) fn draw_gump_windows(
                         at: open.at,
                         cursor,
                         hand,
+                        has_keyboard: windows.keyboard == Some(open.subject),
                     };
                     (open.subject, open.pane.art(&frame))
                 })
@@ -223,6 +200,7 @@ pub(crate) fn draw_gump_windows(
                     at: open.at,
                     cursor,
                     hand,
+                    has_keyboard: windows.keyboard == Some(open.subject),
                 };
                 if let Some(drawn) = open.pane.layout(&frame) {
                     drawn_windows.push((open.subject, drawn));
@@ -234,20 +212,11 @@ pub(crate) fn draw_gump_windows(
                     // between the packet and the frame, which is nothing to
                     // draw and nothing to click.
                     WindowSubject::Vendor(_) => {}
-                    WindowSubject::Dialog(gump_id) => {
-                        let Some(gump) = view.gumps.iter().find(|gump| gump.gump_id == gump_id) else {
-                            continue;
-                        };
-                        // The page, the switches and the pressed button are
-                        // the three things the wire does not carry, and all
-                        // three come out of `Dialogs` — which is also what
-                        // the press that set them wrote to, so what is drawn
-                        // pressed is what the release will act on.
-                        drawn_windows.push((
-                            open.subject,
-                            Drawn::Dialog(windows.dialogs.layout(gump, open.at, &resources.gump_atlas)),
-                        ));
-                    }
+                    // Laid out by `panes::dialog::DialogPane` above, and
+                    // reaching here is the shop's case again: the view can drop
+                    // a gump between the packet that opened the window and the
+                    // frame that would have drawn it.
+                    WindowSubject::Dialog(_) => {}
                     // Laid out by `panes::skills::SkillsPane` above, the same
                     // as a vendor's: reaching here is impossible, because a
                     // sheet always has a layout — it draws its own frame with
@@ -494,20 +463,14 @@ pub(crate) fn draw_gump_windows(
                 _ => None,
             };
             match (subject, drawn) {
-                (WindowSubject::Dialog(gump_id), Drawn::Dialog(laid_out)) => {
-                    if let Some(gump) = world
-                        .authoritative
-                        .view
-                        .as_ref()
-                        .and_then(|view| view.gumps.iter().find(|gump| gump.gump_id == *gump_id))
-                    {
-                        labels.extend(windows.dialogs.lines(
-                            gump,
-                            laid_out,
-                            &resources.font_atlas,
-                            resources.cliloc.as_ref(),
-                        ));
-                    }
+                // A shop's arm and a status frame's, now that a dialog's
+                // captions are resolved by the pane that laid it out: this pass
+                // reads what the layout produced and looks nothing up. It used
+                // to reach into a `Dialogs` for the text table, the cliloc and
+                // the typed contents of every field — the second half of the
+                // window, worked out in a different place from the first.
+                (WindowSubject::Dialog(_), Drawn::Dialog(laid_out)) => {
+                    labels.extend(laid_out.lines.iter().map(crate::panes::dialog::Line::label));
                 }
                 (WindowSubject::Paperdoll(serial), Drawn::Paperdoll(_)) => {
                     if let (Some(at), Some(doll)) = (

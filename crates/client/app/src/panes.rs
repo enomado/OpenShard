@@ -11,10 +11,11 @@
 //!
 //! # What is here, and what is not yet
 //!
-//! The vocabulary and the router are complete; the panes are not. **Three kinds
-//! have moved in** — the vendor (step 1), the skill sheet (step 2) and the
-//! status frame (step 3) — and each owns its state, its layout and its input.
-//! The other three decline every question here, and their input is still
+//! The vocabulary and the router are complete; the panes are not. **Four kinds
+//! have moved in** — the vendor (step 1), the skill sheet (step 2), the status
+//! frame (step 3) and the `0xB0` dialog (step 4) — and each owns its state, its
+//! layout and its input.
+//! The other two decline every question here, and their input is still
 //! answered by the `App` methods in
 //! [`crate::own_windows`], which [`crate::app::App::deliver`] calls once every
 //! pane has passed, while `render_passes.rs` still lays them out from the view.
@@ -32,13 +33,14 @@
 
 use std::time::Instant;
 
-use openshard_client_net::action::Outgoing;
+use openshard_client_net::action::{GumpReply, Outgoing};
 use openshard_client_net::view::WorldView;
 use openshard_client_render::gump::{GumpArt, GumpPixel};
 
 use crate::resources::Resources;
 use crate::windows::{Drawn, ItemDrag, WindowSubject};
 
+pub(crate) mod dialog;
 mod route;
 mod skills;
 mod status;
@@ -82,6 +84,39 @@ pub enum Input {
     /// A line on a wheel and a fraction of one on a touchpad — only the sign is
     /// meaningful, and how far a notch goes is the pane's own business.
     Wheel(f32),
+    /// One keystroke, for the window that holds the keyboard.
+    ///
+    /// **The one input that is not routed by the pointer.** Every other arm here
+    /// is offered to windows from the top down and stops at the one the cursor
+    /// is over; this one is offered to the window named by
+    /// [`Windows::keyboard`](crate::windows::Windows::keyboard) and to no other,
+    /// because a player typing into a field can raise a second window over it
+    /// without the keys following the pointer. That is the plan's Backlog entry
+    /// about *who a modal's answer is addressed to*, answered for the keyboard:
+    /// by identity, not by z-order.
+    Key(Key),
+}
+
+/// One keystroke, as a window sees it.
+///
+/// Three arms and not a key code, because only three things can happen to a
+/// text box: a character goes in, the last one comes out, or the player is done
+/// with it. Which physical key means which is the event loop's business — see
+/// `event_loop.rs`, where Escape and Enter both become [`Key::Done`].
+///
+/// A character rather than the `&str` the keyboard produced: a `&str` would put
+/// a lifetime on [`Input`], and an input method that produces two characters at
+/// once produces two of these in order, which appends the same text.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Key {
+    /// One character, as the keyboard layout and the input method decided it —
+    /// `winit`'s own `KeyEvent::text`, which is why this is a character and not
+    /// a key code.
+    Typed(char),
+    /// Rub out the last one.
+    Backspace,
+    /// The player is finished with the box: give the keyboard back to the world.
+    Done,
 }
 
 /// The modifier keys, as a pane sees them.
@@ -140,6 +175,17 @@ pub struct PaneFrame<'a> {
         reason = "the container reads it for a drop onto itself at step 6, the paperdoll for a preview at step 5"
     )]
     pub hand: Option<ItemDrag>,
+    /// The keys are coming to this window.
+    ///
+    /// The manager's answer and not the pane's, for
+    /// [`PaneCtx::under_pointer`]'s reason one resource over: a keyboard is
+    /// exclusive across every window on the screen, and a pane can no more know
+    /// what another pane has taken than it can know what is drawn over it. A
+    /// pane pairs it with whichever of *its own* controls the keys would land
+    /// in — see [`dialog::DialogPane`], the only kind that has one — so that a
+    /// field left focused in a window the player clicked away from draws no
+    /// caret.
+    pub has_keyboard: bool,
 }
 
 /// Everything a pane may read while it answers one input, and nothing it may
@@ -299,6 +345,32 @@ pub enum Effect {
     /// The shard's half. Both halves of a transfer are this, separately: see
     /// decision 7 for why there is no lift/drop pair.
     Net(Outgoing),
+    /// This dialog is answered: the `0xB1` goes out **and the window goes off
+    /// the list**.
+    ///
+    /// The one effect that is not decision 5's `Net` beside a `Close`, and the
+    /// reason is the first of the three things a `0xB0` does not say: nothing
+    /// ever arrives to tell this client the dialog is done. The shard sends one
+    /// `0xB0`, waits for one `0xB1` and assumes the window went down with it, so
+    /// the answer *is* the close — one act, and taking it apart into two effects
+    /// would let the close arm ask the same window for its dismissal answer and
+    /// send button zero after the button the player actually pressed.
+    Answer(GumpReply),
+    /// The keys come to this window until something else asks for them.
+    ///
+    /// The keyboard is one resource with one owner, for the reason the hand is
+    /// (decision 7): there is one of it. Which window holds it is
+    /// [`Windows::keyboard`](crate::windows::Windows::keyboard), and *what*
+    /// inside that window the keys land in stays with the pane — the same split
+    /// as z-order and a pane's own hit test.
+    TakeKeyboard,
+    /// The keys go back to the world.
+    ///
+    /// Unconditional and not "if they were mine": this is what a press that
+    /// landed on no field means, and it means it about whichever window was
+    /// typing. `Dialogs::focus = None` said exactly that, from a field one
+    /// client-wide struct kept.
+    ReleaseKeyboard,
     /// Make one of the two windows the shard does not know about exist.
     #[expect(
         dead_code,
@@ -395,7 +467,7 @@ pub enum AnyPane {
     Container(ContainerPane),
     Vendor(vendor::VendorPane),
     Paperdoll(PaperdollPane),
-    Dialog(DialogPane),
+    Dialog(dialog::DialogPane),
     Skills(skills::SkillsPane),
     Status(status::StatusPane),
 }
@@ -413,7 +485,7 @@ impl AnyPane {
             WindowSubject::Container(_) => Self::Container(ContainerPane::default()),
             WindowSubject::Vendor(serial) => Self::Vendor(vendor::VendorPane::new(serial)),
             WindowSubject::Paperdoll(_) => Self::Paperdoll(PaperdollPane::default()),
-            WindowSubject::Dialog(_) => Self::Dialog(DialogPane::default()),
+            WindowSubject::Dialog(gump_id) => Self::Dialog(dialog::DialogPane::new(gump_id)),
             WindowSubject::Skills => Self::Skills(skills::SkillsPane::default()),
             WindowSubject::Status => Self::Status(status::StatusPane),
         }
@@ -466,11 +538,6 @@ pub struct ContainerPane {}
 #[derive(Debug, Default)]
 pub struct PaperdollPane {}
 
-/// A `0xB0` dialog. Step 4 moves the entry `gump::Dialogs` keeps for this gump
-/// here — the page, the switches, the typed text and the held button.
-#[derive(Debug, Default)]
-pub struct DialogPane {}
-
 // Every kind that has not moved in yet declines all three questions. Each of
 // these is replaced whole by the pane that step moves in; until then the `App`
 // method named in each comment still answers that kind's input, and
@@ -517,25 +584,6 @@ impl Pane for PaperdollPane {
 
     /// Still `App::press_on_own_window`, `App::release_on_own_window` and
     /// `App::hover_paperdoll_item` — step 5.
-    fn handle(&mut self, _input: Input, _ctx: &PaneCtx<'_>) -> Response {
-        Response::ignored()
-    }
-}
-
-impl Pane for DialogPane {
-    /// Still `gump::art_of`, called from `render_passes` for every open gump in
-    /// the view rather than per window — step 4.
-    fn art(&self, _frame: &PaneFrame<'_>) -> Vec<GumpArt> {
-        Vec::new()
-    }
-
-    /// Still `gump::Dialogs::layout`, laid out by `render_passes` — step 4.
-    fn layout(&self, _frame: &PaneFrame<'_>) -> Option<Drawn> {
-        None
-    }
-
-    /// Still `gump::Dialogs::press`/`release`, reached from
-    /// `App::press_on_own_window` — step 4.
     fn handle(&mut self, _input: Input, _ctx: &PaneCtx<'_>) -> Response {
         Response::ignored()
     }

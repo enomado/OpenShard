@@ -71,6 +71,18 @@ impl App {
                 self.windows.dragging = None;
                 Response::ignored()
             }
+            // A press that landed on no window at all gives the keyboard back.
+            // The manager's because the keyboard is (see
+            // [`Effect::TakeKeyboard`]), and here rather than in a pane because
+            // no pane is offered a press that is not on it — a window cannot
+            // notice the player clicking somewhere else. Not `taken`: the world
+            // still gets the click that put the field down.
+            Input::Press(Button::Left)
+                if self.windows.keyboard.is_some() && self.window_under_pointer().is_none() =>
+            {
+                self.windows.keyboard = None;
+                Response::stale()
+            }
             // **Decision 7's precondition, and the manager's because the hand
             // is.** Once a lift has gone to the shard this transaction *is* the
             // cursor: a second press is choosing a destination for the item
@@ -87,8 +99,32 @@ impl App {
                 self.windows.dragging = None;
                 Response::changed()
             }
-            Input::Press(_) | Input::Release(Button::Right) | Input::Wheel(_) => Response::ignored(),
+            // A keystroke is never the manager's: it is addressed to a window by
+            // name, and the manager's part of that is having said which window —
+            // see `App::keyboard_window`.
+            Input::Press(_) | Input::Release(Button::Right) | Input::Wheel(_) | Input::Key(_) => {
+                Response::ignored()
+            }
         }
+    }
+
+    /// Which of this client's windows the keys go to, or `None` for the world.
+    ///
+    /// The field is the answer, filtered by whether that window is still open:
+    /// a dialog answered by its own button leaves the list before the next
+    /// frame's `sync_own_windows` can tidy up after it, and a keystroke in
+    /// between must not be swallowed by a window that is no longer there. Both
+    /// callers ask this rather than the field — the router below, and
+    /// `event_loop`'s question of whether a letter is a letter typed or a step
+    /// walked — and `sync_own_windows` writes it back through the same
+    /// predicate, so there is one rule and not three.
+    pub(crate) fn keyboard_window(&self) -> Option<WindowSubject> {
+        let subject = self.windows.keyboard?;
+        self.windows
+            .own_windows
+            .iter()
+            .any(|window| window.subject == subject)
+            .then_some(subject)
     }
 
     /// Offer the input to every pane from the top down, and perform what the
@@ -115,6 +151,15 @@ impl App {
     /// wherever the pointer has got to since — a paperdoll's button has to come
     /// back up even if the finger slid off the window — and a move is offered to
     /// every window so that a tint left behind can be cleared.
+    ///
+    /// # A keystroke is offered to one window by name
+    ///
+    /// [`Input::Key`] is not located at all: it goes to the window that holds
+    /// the keyboard and to nothing else, wherever that window is in the pile and
+    /// wherever the pointer is. A player typing into a `{ textentry }` can raise
+    /// a bag over it, and the letters must not follow the click. The walk below
+    /// is still the walk — one place builds a context and one place performs
+    /// what came back — with everything but the addressee skipped.
     fn offer_to_panes(&mut self, input: Input) -> Response {
         // Asked first, because it is a `&self` method and reads the whole of
         // `App`: the z-order out of `own_windows` and last frame's pictures out
@@ -122,6 +167,18 @@ impl App {
         // itself — see [`PaneCtx::under_pointer`].
         let owner = self.window_under_pointer();
         let located = matches!(input, Input::Press(_) | Input::Wheel(_));
+        // Asked here for the same reason `owner` is: both are the manager's
+        // answer about a window rather than a pane's about itself. `None` for a
+        // keystroke with nobody to take it means the walk offers it to no
+        // window at all.
+        let keyboard = self.keyboard_window();
+        let addressed = match input {
+            Input::Key(_) => match keyboard {
+                Some(subject) => Some(subject),
+                None => return Response::ignored(),
+            },
+            _ => None,
+        };
         // No world, no windows: `sync_own_windows` has already emptied the list,
         // and there is no authoritative picture to build a context out of.
         //
@@ -148,6 +205,9 @@ impl App {
         // `&mut self`, and the loop above holds half of `self` borrowed.
         let mut asked: Vec<(WindowSubject, Effect)> = Vec::new();
         for open in self.windows.own_windows.iter_mut().rev() {
+            if addressed.is_some_and(|subject| subject != open.subject) {
+                continue;
+            }
             let under_pointer = owner == Some(open.subject);
             let ctx = PaneCtx {
                 frame: PaneFrame {
@@ -156,6 +216,7 @@ impl App {
                     at: open.at,
                     cursor,
                     hand,
+                    has_keyboard: keyboard == Some(open.subject),
                 },
                 drawn: drawn_windows
                     .iter()
@@ -206,6 +267,19 @@ impl App {
             Effect::Open(local) => {
                 crate::windows::open_local_window(&mut self.windows.own_windows, local.subject());
             }
+            // The wire's half and this end's, which are one act — see
+            // [`Effect::Answer`]. The `retain` and not `close_window`: that door
+            // asks a dialog for its *dismissal* answer, and a window that has
+            // just answered with the button the player pressed must not send
+            // button zero after it.
+            Effect::Answer(reply) => {
+                self.answer_gump(reply);
+                self.windows
+                    .own_windows
+                    .retain(|window| window.subject != subject);
+            }
+            Effect::TakeKeyboard => self.windows.keyboard = Some(subject),
+            Effect::ReleaseKeyboard => self.windows.keyboard = None,
         }
     }
 
@@ -277,6 +351,10 @@ impl App {
             // business, reached only when nothing above said the notch was its.
             // No kind that is left has a wheel at all.
             Input::Wheel(_) => Response::ignored(),
+            // **Empty from the day it was written.** A keystroke is only ever
+            // offered to the window the manager says holds the keyboard, and the
+            // one kind that can hold it is a pane already.
+            Input::Key(_) => Response::ignored(),
         }
     }
 }

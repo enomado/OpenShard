@@ -29,8 +29,8 @@ that the next window kind is free to get wrong again.
 **No window has private state.** `Windows` (`crates/client/app/src/windows.rs`)
 holds `vendor_scrolls`, `vendor_amounts`, `skills`, `held_skill`, `held_doll`,
 `last_scroll`, `last_container_click` and `dialogs` as public fields. (The first
-two left with S1 and the next two with S2 — the paragraph is what the plan was
-written against, and the Steps below are what has gone.)
+two left with S1, the next two with S2 and `dialogs` with S4 — the paragraph is
+what the plan was written against, and the Steps below are what has gone.)
 `own_windows.rs` writes them from the press path, `render_passes.rs` reads
 *and* writes them while laying the frame out (`vendor_amounts.entry(..)` at
 `render_passes.rs:190`), and `close_window` has to remember `vendor_scrolls
@@ -238,6 +238,20 @@ the cursor, which is the cursor's job and not a window's.
 *which* windows exist, which is the manager's question and is already settled by
 `docs/client_window_state.md`. `Drawn` stays the layout type; panes produce it.
 
+**D9. An exclusive input device is the manager's, and what it lands on is the
+pane's.** Added by S4, and it is D2 and D7 stated once for all three: z-order,
+the hand and the keyboard are all *one of a kind on the screen*, so the manager
+owns which window has each — `dragging`, `item_drag`, `keyboard`, every one of
+them a subject — and the pane owns what that means inside itself. A pane reads
+the manager's half out of its context (`under_pointer`, `hand`,
+`has_keyboard`) and never writes it, and asks for a change with an effect.
+
+The failure this prevents is the one the plan keeps meeting: two panes each
+believing they hold the same thing. `Dialogs::focus` avoided it by being one
+field for every dialog at once, which is the map-keyed-by-window shape this
+plan exists to undo; `DialogPane::focus` avoids it by being read only when the
+manager says the keys are coming here.
+
 ## Steps
 
 Each step compiles and the client runs at the end of it. Panes move in one at a
@@ -418,8 +432,74 @@ never a half-routed frame.
       opened on one frame can therefore cascade and stack in a different order
       than before — which was already true of the skill sheet, and is the same
       "position is the manager's" it always was.
-- [ ] **S4. Dialog.** `gump::Dialogs` is already close to a pane — it owns the
-      page, the switches, the typed text and the held button. Mostly a move.
+- [x] **S4. Dialog.** ✅ `panes/dialog.rs`: `DialogPane { gump_id, page,
+      switches, entries, held, focus }`, an `impl Pane` with all three methods,
+      and `crate/gump.rs` deleted whole — `Dialogs`, its `by_dialog` map, its
+      `sync`, its `layout`, its `lines`, its `press`/`release` and its four
+      keyboard methods with it. The dialog arms went out of
+      `press_on_own_window`, out of `release_on_own_window` (which is now the
+      paperdoll's alone), out of `render_passes.rs`'s layout loop, and out of the
+      per-view art loop one rung above the windows. **Six things landed
+      differently from the shape above:**
+      - **🚨 The keyboard is a manager's slot, exactly as the hand is.**
+        `Dialogs::focus` was `(GumpId, TextEntryId)` — the window *and* the box,
+        in one field on a struct that held every dialog at once. Split by the
+        same rule D7 splits a transfer by: *which window* the keys go to is
+        `Windows::keyboard`, because a keyboard is exclusive across windows and
+        no pane can see what another has taken; *which box inside it* is
+        `DialogPane::focus`. A pane reads `PaneFrame::has_keyboard` — the
+        manager's answer, like `under_pointer` — before it draws a caret, so a
+        field left focused in a window the player clicked away from is inert
+        rather than a second opinion.
+      - **`Input::Key`, routed by identity and not by the pointer.** The router's
+        walk is otherwise top-down and stops at the window under the cursor; a
+        keystroke is offered to the window `Windows::keyboard` names and to no
+        other, because a player typing into a field can raise a bag over it and
+        the letters must not follow the click. That is this plan's own Backlog
+        entry — *who a modal's answer is addressed to* — answered for the
+        keyboard, and it is one `addressed` line inside the existing walk rather
+        than a second router. `Key` is three arms (`Typed(char)`, `Backspace`,
+        `Done`) and not a key code: which physical key means which stays in
+        `event_loop.rs`, and a character rather than the keyboard's `&str`
+        keeps `Input` free of a lifetime.
+      - **`Effect::Answer`, which is the one close that travels.** D5 lists
+        `AnswerGump` among the `Outgoing` a pane emits as `Effect::Net`, and that
+        is half of what answering a dialog is: nothing on the wire ever says the
+        window is gone, so the `0xB1` *is* the close. As `Net` beside `Close` it
+        would be two effects with a coupling — and the `Close` arm asks a dialog
+        for its **dismissal** answer, so button zero would go out behind the
+        button the player actually pressed.
+      - **Nothing is seeded, and that is what deleted `sync`.** `Dialogs::sync`
+        copied every layout's `initial` flags into a map on the first frame and
+        was careful never to do it again. Absence means the layout now, so there
+        is no first time to get right — and the *answer* is built from the
+        layout's own list of switches and fields rather than from what the map
+        happens to hold, which is what the seeding was quietly arranging in a
+        place where forgetting it would have dropped a field from the packet.
+        The rest of `sync` was a `retain` keyed by gump id, and that is
+        `reconcile_own_windows`'s, which drops the window and the pane together.
+      - **A dialog's text is resolved in the layout, so `Drawn::Dialog` carries
+        it.** A caption is a *key* — into the wire's text table or the client's
+        cliloc — and resolving one needs the `OpenGump`, the cliloc and what the
+        player has typed. The text pass used to reach into `Dialogs` for all
+        three; `Drawn::Dialog(dialog::Window { art, lines })` means both passes
+        draw a dialog's text the way they draw a shop's, out of what the layout
+        produced. **And it is what found the Backlog entry below to be wrong**:
+        the second walk had been iterating `std::iter::empty` since window text
+        moved next to its own art, so its arms were unreachable rather than
+        disagreeing. It is deleted.
+      - **`{ nomove }` is the one press that is taken and does not grab**, and
+        it could not have stayed in the tail of `press_on_own_window`: that tail
+        ends every press it reaches with a `dragging`. It is one arm of
+        `DialogPane::press` now, beside the arm that does grab.
+
+      **One ordering changed, the same one S1 and S2 changed.** A press on a
+      dialog is answered before `press_on_own_window`'s container furniture —
+      the take-all and stack-all buttons — where it used to be answered after
+      them. Both of those already bail when a window covers them, and a dialog
+      only takes a press it is the topmost window for, so the difference is a
+      button drawn outside its own bag's picture and under a dialog: the visible
+      window wins now.
 - [ ] **S5. Paperdoll.** `held_doll`, `last_scroll`, `doll_clicked`, and the
       seven buttons. First kind whose effects are mostly `Open` and `Net`.
 - [ ] **S6. Container.** Last, because it is the one the hand runs through: the
@@ -476,7 +556,10 @@ never a half-routed frame.
   what a control drawn on that window wants. Both are container furniture and go
   into `ContainerPane` at S6; whatever that predicate was meant to say has to be
   stated then, because a pane hit-tests itself and has no second walk to consult.
-- **Who a modal's answer is addressed to.** D7 leaves `Pressed` inside the pane,
+- **Who a modal's answer is addressed to.** *Half answered by S4, for the
+  keyboard: `Input::Key` is routed to the window `Windows::keyboard` names, by
+  identity and not by z-order, and the split prompt below is the same question
+  about a different answer.* D7 leaves `Pressed` inside the pane,
   and a Shift-drag suspends exactly that state while the client's own amount
   prompt is open: `split_pending` is set, and the answer arrives later from the
   shell as `finish_stack_split(decision)`, which reads `item_drag` back out of
@@ -486,12 +569,24 @@ never a half-routed frame.
   the prompt is up. The same question will be asked again by any other
   client-side modal, so it is worth settling once rather than at S6.
 - **The window under the pointer is worked out up to three times per mouse
-  move.** `offer_to_panes` asks `window_under_pointer` for every input now, and
-  the legacy `Move` arm's `hover_container_item` and `hover_paperdoll_item` each
-  ask again. It was already twice before S1, and each walk is the window list
-  against the pointer through `gump_art::pick`, which reads the atlas per texel.
-  One answer per event, worked out once, when S7 has deleted the two other
-  askers.
+  move, and now up to twice per press.** `offer_to_panes` asks
+  `window_under_pointer` for every input, and the legacy `Move` arm's
+  `hover_container_item` and `hover_paperdoll_item` each ask again — and S4's
+  keyboard release in `manager_gestures` asks it once more on a left press,
+  ahead of the walk that is about to ask it anyway. It was already twice before
+  S1, and each walk is the window list against the pointer through
+  `gump_art::pick`, which reads the atlas per texel. One answer per event,
+  worked out once, when S7 has deleted the other askers — and the manager's own
+  gestures want it handed to them rather than asked, which is what
+  `PaneCtx::under_pointer` already does for a pane.
+- **`close_window`'s dialog arm answers the same `None` to two questions.** It
+  asks the window's pane for a dismissal, and `None` means `{ noclose }` — the
+  window stays up and the press was still the window's. But the lookup that
+  finds the pane can also come back empty (no such window, or a `Dialog` subject
+  holding some other pane, which `AnyPane::of` makes impossible), and that folds
+  into the same arm. Both currently do the harmless thing; a third reason to
+  answer `None` would not. Worth splitting when S7 rewrites this door, which is
+  the last thing in `App` that knows what a dialog is.
 - **A vendor's ACCEPT and CLEAR tint on hover, and nothing asks for a frame when
   it changes.** The tint is decided in the layout from `ctx.frame.cursor`, so it
   is right whenever a frame is drawn — and what draws one is the animation
@@ -518,30 +613,37 @@ never a half-routed frame.
   — it is the one whose answer decides whether the camera hears the event — and
   the buttons are the same conflation with nothing riding on it. One line each,
   and the shape is already there to copy.
-- **`Drawn` is produced by a pane but consumed by passes that know all six
-  kinds — and there are two of them.** `render_passes.rs` walks
-  `drawn_windows` to turn each kind's text into labels, and `presentation.rs`
-  has a second walk with the same `(WindowSubject, Drawn)` arms. **They already
-  disagree**: the vendor's arm draws its lines in one and is deliberately empty
-  in the other, with a comment explaining that the labels are drawn beside their
-  own art instead. That is `docs/parity.md`'s defect class exactly — one frame
-  assembled in more than one place, so agreement is a coincidence rather than a
-  property. After S7 these are the last per-kind branches left, and whichever
-  one is right, a seventh window kind costs two branches and a chance to forget
-  the second. A drawing question rather than an input one, so it is out of scope
-  here.
+- ~~**`Drawn` is produced by a pane but consumed by passes that know all six
+  kinds — and there are two of them.**~~ **Closed by S4, and the entry was
+  wrong about how.** It said the two walks "already disagree", reading the
+  vendor's empty arm in `presentation.rs` against its filled arm in
+  `render_passes.rs`. The truth was worse and cheaper: `presentation.rs`'s walk
+  iterated `std::iter::empty::<(&WindowSubject, &Drawn)>()`, and had since
+  window text moved next to its own art — because one global text pass let a
+  lower catalogue's lines cover a later paperdoll. So every arm in it was
+  unreachable, including a dialog arm that reached into `Dialogs` for a text
+  table. S4 deleted the walk. There is one place per-kind text is turned into
+  labels, and a seventh window kind costs one branch.
+
+  *What the entry was right about stands and is worth keeping in mind:* a frame
+  assembled in more than one place makes agreement a coincidence
+  (`docs/parity.md`), and **dead code in the shape of a live branch is the same
+  defect wearing a disguise** — it reads as a second assembler, it type-checks
+  like one, and the next author keeps it in step for nothing.
 
 ## Status
 
-**S0 through S3 built** (2026-08-17). The router is real and every input the
-window layer sees goes through it. **Three kinds have moved in**: a shop owns
-its scroll position, its chosen quantities, its art, its layout and its input;
-the skill sheet owns its tree, the control the mouse is holding, its layout and
-its input; and the status frame owns its layout, which is all it has. `App` no
-longer knows what a vendor, a skill window or a status window is except to close
-one. The other three behave exactly as they did — the third rung of
-`App::deliver` is their old handlers, called only when no pane answered, and
-`render_passes.rs` still lays their three kinds out.
+**S0 through S4 built** (2026-08-17). The router is real and every input the
+window layer sees goes through it. **Four kinds have moved in**: a shop owns its
+scroll position, its chosen quantities, its art, its layout and its input; the
+skill sheet owns its tree and the control the mouse is holding; the status frame
+owns its layout, which is all it has; and a `0xB0` dialog owns its page, its
+switches, what has been typed into it, the button the finger is on and the box
+the keys are going into. `App` no longer knows what a vendor, a skill window, a
+status window or a dialog is, except to close one — and closing a dialog is
+asking its own pane what to answer with. The other two behave exactly as they
+did: the third rung of `App::deliver` is their old handlers, called only when no
+pane answered, and `render_passes.rs` still lays their two kinds out.
 
 What this changed for a player, in one line each. **The wheel** (S0): `taken`
 rather than "did anything move" decides whether the camera hears a notch — the
@@ -551,10 +653,14 @@ are now the same list; they were not. **Nothing at all** (S2): the skill sheet
 behaves as it did, minus a frame it used to ask for at the end of its list.
 **Nothing at all** (S3): the status frame opens on the press rather than on the
 frame after it, which is a cascade order and not a picture.
+**Nothing at all** (S4), with one thing that is now true by construction: a
+dialog's answer names every field the shard declared, where it used to name
+every field a sweep had copied into a map.
 
 The `||` chain the plan was written against is **gone**.
 `legacy_window_input`'s wheel arm has no terms left, because both windows with a
-wheel own it, and each answers the two questions as two fields.
+wheel own it, and each answers the two questions as two fields. Its release arm
+lost a term with S4 and is down to the container's two.
 
 **No window's openness is kept outside the list of open windows any more.**
 `Windows::skills` went with S2 and `Windows::status` with S3, and
@@ -562,15 +668,25 @@ wheel own it, and each answers the two questions as two fields.
 view, the list and the overlay. The two kinds the view cannot answer for say so
 with `WindowSubject::is_local()` rather than by name.
 
+**And no window's private state is kept in a map on `Windows` any more.**
+`Windows::dialogs` was the last of them — a `HashMap<GumpId, Sheet>` keyed by
+the window, which is what a pane in `OwnWindow` *is* — and `crate::gump` went
+with it. What is left on `Windows` is what is true of the layer rather than of
+one window: which windows exist, in what order, where each sits, what the last
+frame drew, and which window the mouse and the keyboard are on. The last two are
+one shape now: `dragging` and `keyboard`, both naming a subject, both because
+there is one pointer and one keyboard (D2, D7).
+
 The `#[expect(dead_code)]` checklist is four: three fields nothing reads yet
 (`PaneFrame::hand`, `PaneCtx::modifiers`, `PaneCtx::now` — the container's and
 the paperdoll's) and `Effect::Open` with `LocalWindow` beside it, which is
 *performed* but not yet asked for by a pane. The paperdoll asks for it at S5,
 through the same `windows::open_local_window` its legacy button already calls.
 
-Next is S4, the `0xB0` dialog. It is the kind that is already closest to a pane
-— `gump::Dialogs` owns the page, the switches, the typed text and the held
-button, keyed by gump id — so the step is mostly a move: the entry per gump
-becomes the pane, `Dialogs::sync` becomes the `retain` that already runs, and
-`press_on_own_window`'s dialog arm (including the `{ nomove }` rule, which is a
-press that is taken and does *not* grab) becomes `DialogPane::handle`.
+Next is S5, the paperdoll. It is the first kind whose effects are mostly `Open`
+and `Net`: `held_doll` and `last_scroll` become fields of the pane, the seven
+buttons and the three scrolls become its `handle`, and the Skills and Status
+buttons stop being the legacy calls to `open_local_window` that S2 and S3 left
+standing and become the `Effect::Open` that has been waiting for them. The
+Backlog entry about a hover tint that asks for no frame is worth doing with it,
+because `App::hover_paperdoll_item` is one of the two things S5 deletes.

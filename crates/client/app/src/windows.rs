@@ -7,8 +7,13 @@
 //! Pulled out of [`crate::App`] for the same reason [`crate::picking::Picking`]
 //! and [`crate::input::Input`] were, and unlike those two the fields here
 //! *are* read together — `dragging` and `held_doll` are checked side by side
-//! on every press, and `own_windows` and `dialogs` are asked in the same
-//! breath to decide which window kind a click landed on.
+//! on every press, and `own_windows` and `drawn_windows` are asked in the same
+//! breath to decide which window a click landed on.
+//!
+//! What is left here shrinks with every step of `docs/window_components.md`:
+//! anything that belongs to *one* window is a field of that window's pane, in
+//! [`OwnWindow`], and what stays is what is true of the layer — which windows
+//! exist, in what order, and which of them the mouse and the keyboard are on.
 
 use std::collections::HashSet;
 use std::time::Instant;
@@ -21,8 +26,6 @@ use openshard_protocol::containers::ContainedItem;
 use openshard_protocol::gump::{GumpId, GumpPoint};
 use openshard_protocol::serial::Serial;
 use openshard_protocol::world::Point;
-
-use crate::gump;
 
 /// Where the first container window opens, and how far each one after it is
 /// offset.
@@ -82,7 +85,8 @@ pub struct OwnWindow {
 /// The dialog is the newest of the three and the one that had to *leave*
 /// somewhere to get here: a `0xB0` was an egui window with the shard's art
 /// drawn underneath it, which is two windows' worth of frame and two
-/// opinions about where every button is. See `crate::gump`.
+/// opinions about where every button is. See [`crate::panes::dialog`], which
+/// owns everything about one that no packet carries.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum WindowSubject {
     /// A container the shard has opened, by its serial.
@@ -148,8 +152,10 @@ impl WindowSubject {
 /// is what the pointer is tested against — see
 /// [`crate::App::window_under_pointer`].
 pub enum Drawn {
-    /// A dialog: pictures, captions, hits and fields.
-    Dialog(gump_art::Window),
+    /// A dialog: the pictures, hits and boxes, and the text resolved over them
+    /// — see [`crate::panes::dialog::Window`], which is why this is not the
+    /// render crate's `gump::Window` alone.
+    Dialog(crate::panes::dialog::Window),
     /// A container: the background and every icon in it.
     Container(Vec<gump_art::Picture>),
     Vendor(vendor::Window),
@@ -261,7 +267,7 @@ impl Drawn {
     /// kind answers the same way.
     pub fn pictures(&self) -> &[gump_art::Picture] {
         match self {
-            Self::Dialog(window) => &window.pictures,
+            Self::Dialog(window) => &window.art.pictures,
             Self::Container(pictures) => pictures,
             Self::Vendor(window) => &window.pictures,
             Self::Paperdoll(doll) => &doll.pictures,
@@ -345,8 +351,9 @@ pub struct Windows {
     pub last_container_click: Option<(Instant, Serial)>,
     /// The paperdoll button the mouse went down on, and whose doll it is.
     ///
-    /// [`gump::Dialogs::holding`]'s counterpart for the one window kind that
-    /// is not a layout, and the same three things it buys: the pressed
+    /// [`DialogPane::held`](crate::panes::dialog)'s counterpart for the one
+    /// window kind that is not a layout, and the same three things it buys: the
+    /// pressed
     /// picture is drawn while the finger is down, the release acts only if
     /// the pointer is still on the *same* button, and a press on a button
     /// does not also drag the frame under it.
@@ -367,11 +374,21 @@ pub struct Windows {
     /// pair has to be two clicks on the same picture of the same window
     /// rather than two clicks anywhere.
     pub last_scroll: Option<(Instant, WindowSubject, paperdoll::DollButton)>,
-    /// What every open `0xB0` dialog is holding that no packet carries: the
-    /// page it is showing, the switches the player has set, what has been
-    /// typed into its fields and which button the finger is on. See
-    /// [`crate::gump`].
-    pub dialogs: gump::Dialogs,
+    /// Which window the keys are going to, or `None` for the world.
+    ///
+    /// **One resource with one owner**, the shape decision 7 gives the hand and
+    /// decision 2 gives z-order: there is one keyboard, so no pane can be
+    /// trusted with the question and no pane can see another's answer. What a
+    /// window does with the keys once they arrive is its own —
+    /// [`DialogPane`](crate::panes::dialog) is the only kind that has anywhere
+    /// to put them, and which of *its* boxes is a field of the pane.
+    ///
+    /// It replaces `Dialogs::focus`, which was the window *and* the field in one
+    /// tuple on a struct that held every dialog's state at once. Read through
+    /// [`App::keyboard_window`](crate::app::App::keyboard_window) rather than
+    /// directly, because a window can leave the list between the answer that
+    /// took it down and the frame that tidies up.
+    pub keyboard: Option<WindowSubject>,
 }
 
 /// Open one of the windows the shard does not know about, if it is not open

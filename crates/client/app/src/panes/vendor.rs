@@ -328,7 +328,11 @@ impl Pane for VendorPane {
                 self.wheel(notches, rows)
             }
             Input::Press(Button::Left) => self.press(window, ctx),
-            Input::Press(Button::Right) | Input::Release(_) | Input::Move => Response::ignored(),
+            // A keystroke among them for the skill sheet's reason: a shop has
+            // nothing to type into, so it never holds the keyboard.
+            Input::Press(Button::Right) | Input::Release(_) | Input::Move | Input::Key(_) => {
+                Response::ignored()
+            }
         }
     }
 }

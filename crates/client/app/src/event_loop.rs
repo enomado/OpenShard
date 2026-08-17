@@ -168,23 +168,37 @@ impl ApplicationHandler<()> for App {
                 //
                 // Escape gives the keyboard back rather than quitting the
                 // client, which is what the arm further down would do.
-                if self.windows.dialogs.typing() {
+                if self.keyboard_window().is_some() {
                     if event.state == ElementState::Pressed {
+                        // Which physical key means which of the three things a
+                        // box can be told is decided here and nowhere else — see
+                        // `panes::Key`, whose three arms are what a window
+                        // answers. A character at a time, in the order the
+                        // keyboard produced them, so that an input method that
+                        // hands over two at once appends both.
+                        let mut answer = panes::Response::ignored();
                         match code {
                             KeyCode::Escape | KeyCode::Enter | KeyCode::NumpadEnter => {
-                                self.windows.dialogs.unfocus();
+                                answer.absorb(self.deliver(panes::Input::Key(panes::Key::Done)));
                             }
                             KeyCode::Backspace => {
-                                self.windows.dialogs.backspace();
+                                answer.absorb(self.deliver(panes::Input::Key(panes::Key::Backspace)));
                             }
                             _ => {
-                                if let Some(text) = event.text.as_deref() {
-                                    self.windows.dialogs.typed(text);
+                                for character in event.text.as_deref().unwrap_or_default().chars() {
+                                    answer.absorb(
+                                        self.deliver(panes::Input::Key(panes::Key::Typed(character))),
+                                    );
                                 }
                             }
                         }
-                        if let Some(window) = self.window.as_ref() {
-                            window.window.request_redraw();
+                        // A key that changed nothing asks for no frame — the
+                        // wheel's lesson on the other input: a control character
+                        // the field refused is not a picture that moved.
+                        if answer.redraw {
+                            if let Some(window) = self.window.as_ref() {
+                                window.window.request_redraw();
+                            }
                         }
                     }
                     return;

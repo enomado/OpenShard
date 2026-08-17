@@ -27,19 +27,23 @@ impl App {
             // and both panes. There used to be a `status = false` under this,
             // and before step 2 a `skills = None` beside it.
             self.windows.own_windows.clear();
+            self.windows.keyboard = None;
             self.windows.stack_pass = None;
             self.windows.split_pending = false;
             return;
         };
-        // The state a dialog holds that no packet does, kept in step with the
-        // same list: a window the shard has taken away forgets its page, its
-        // switches and the finger on it — see `gump::Dialogs::sync`.
-        self.windows.dialogs.sync(&view.gumps);
         reconcile_own_windows(
             view,
             &mut self.windows.own_windows,
             &mut self.windows.locally_closed,
         );
+        // The keyboard belongs to a window only while that window is open, and
+        // this is the same predicate every reader of the field already applies —
+        // written back so that a dialog the shard has taken away does not leave
+        // a name behind. It replaces `Dialogs::sync`'s three lines of the same
+        // idea: what a dialog held is a field of its pane now, and the `retain`
+        // above drops both together.
+        self.windows.keyboard = self.keyboard_window();
         self.advance_stack_pass();
     }
 }

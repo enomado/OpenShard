@@ -301,8 +301,12 @@ impl Pane for SkillsPane {
                 let content = self.content(ctx.frame.resources);
                 self.wheel(notches, content)
             }
-            // The right button is the manager's close.
-            Input::Press(Button::Right) | Input::Release(Button::Right) => Response::ignored(),
+            // The right button is the manager's close, and a keystroke is a
+            // dialog's: this sheet has nothing to type into, so it never asks
+            // for the keyboard and is never offered one.
+            Input::Press(Button::Right) | Input::Release(Button::Right) | Input::Key(_) => {
+                Response::ignored()
+            }
         }
     }
 }

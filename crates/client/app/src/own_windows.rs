@@ -25,7 +25,7 @@ use openshard_protocol::wire::{Graphic, Layer};
 
 use crate::app::App;
 use crate::windows::{Drawn, WindowSubject};
-use crate::{DOUBLE_CLICK, chat, gump, link};
+use crate::{DOUBLE_CLICK, chat, link};
 
 mod paperdoll;
 mod sync;
@@ -610,7 +610,7 @@ impl App {
             // a picture, so this only matters for a field the layout hung
             // outside its own frame; asking is cheaper than being wrong there.
             if let Drawn::Dialog(laid_out) = drawn {
-                if gump_art::field(&laid_out.fields, cursor).is_some() {
+                if gump_art::field(&laid_out.art.fields, cursor).is_some() {
                     return Some(window.subject);
                 }
             }
@@ -682,10 +682,10 @@ impl App {
             self.windows.dragging = None;
             return true;
         }
+        // A press that missed every window gives the keyboard back, and that is
+        // the manager's own gesture now — see `App::manager_gestures`, which
+        // runs it ahead of every pane and of this.
         let Some(subject) = self.window_under_pointer() else {
-            // A press that missed every window gives the keyboard back: a field
-            // stays focused only while the player is still in the dialog.
-            self.windows.dialogs.unfocus();
             return false;
         };
         self.raise_window(subject);
@@ -752,41 +752,11 @@ impl App {
                 }
             }
         }
-        if let WindowSubject::Dialog(gump_id) = subject {
-            // Both halves of the question are last frame's: the window the
-            // pointer is over and the layout it was drawn as. Laying the dialog
-            // out again here would ask the atlas and the view a second time and
-            // could answer differently from what is on the screen — the rule
-            // `drawn_windows` exists for.
-            let taken = match (self.open_gump(gump_id), self.drawn(subject)) {
-                (Some(gump), Some(Drawn::Dialog(window))) => {
-                    // Cloned because `press` needs the dialogs mutably and the
-                    // window is borrowed out of `self`. A laid-out window is a
-                    // few hundred bytes and this happens once per click.
-                    let window = window.clone();
-                    let cursor = self.input.pointer_gump;
-                    let gump = gump.clone();
-                    self.windows
-                        .dialogs
-                        .press(&gump, &window, cursor, &self.resources.gump_atlas)
-                }
-                _ => false,
-            };
-            if taken {
-                self.windows.dragging = None;
-                return true;
-            }
-            // `{ nomove }`: the press is still the window's — it must not reach
-            // the world behind it — but it does not pick the window up. A shard
-            // that pins a dialog somewhere means it.
-            if self
-                .open_gump(gump_id)
-                .is_some_and(|gump| gump::flags(gump).no_move)
-            {
-                self.windows.dragging = None;
-                return true;
-            }
-        }
+        // No dialog arm either: a `0xB0` answers its own press in
+        // `panes::dialog::DialogPane`, including the `{ nomove }` rule — a press
+        // that is taken and does *not* grab — which was the one shape in this
+        // function that the tail below could not express.
+        //
         // A paperdoll's own furniture, which is the same gesture a dialog's
         // buttons have and none of the machinery: there is no layout to consult,
         // only the list this window drew and the `hits` beside it. Taking the
@@ -857,48 +827,28 @@ impl App {
         true
     }
 
-    /// The release that finishes a press on a dialog's button or a paperdoll's,
-    /// and whatever it sent.
+    /// The release that finishes a press on a paperdoll's button.
     ///
     /// Answers whether anything happened, so the caller can ask for a redraw:
-    /// the button comes back up on the way out either way, and a page button
-    /// changes what the window is showing without a packet leaving.
+    /// the button comes back up on the way out either way.
+    ///
+    /// The dialog half of this went with step 4 — `DialogPane::handle` answers
+    /// its own release, and the reply a button produces is an
+    /// [`Effect::Answer`](crate::panes::Effect::Answer), which is the `0xB1` and
+    /// the close as one act.
     pub(crate) fn release_on_own_window(&mut self) -> bool {
-        if let Some((subject, button)) = self.windows.held_doll.take() {
-            // Only if the pointer is still on the same button. A press that
-            // slid off one is not a click on it — the reference's own rule for
-            // every control it draws — and it is not a click on whatever the
-            // finger landed on either.
-            if self.doll_button_under_pointer(subject) == Some(button) {
-                self.doll_clicked(subject, button);
-            }
-            // True whatever it landed on: the button was drawn pressed and has
-            // to come back up.
-            return true;
-        }
-        let Some(gump_id) = self.windows.dialogs.holding() else {
+        let Some((subject, button)) = self.windows.held_doll.take() else {
             return false;
         };
-        let subject = WindowSubject::Dialog(gump_id);
-        let (Some(gump), Some(Drawn::Dialog(window))) = (self.open_gump(gump_id), self.drawn(subject)) else {
-            return false;
-        };
-        let window = window.clone();
-        let gump = gump.clone();
-        let cursor = self.input.pointer_gump;
-        let reply = self
-            .windows
-            .dialogs
-            .release(&gump, &window, cursor, &self.resources.gump_atlas);
-        if let Some(reply) = reply {
-            // A reply takes the window down with it: the shard sends one `0xB0`
-            // and waits for one `0xB1`, and nothing ever arrives to say the
-            // dialog is gone. `answer_gump` is what tells the view.
-            self.answer_gump(reply);
-            self.windows
-                .own_windows
-                .retain(|window| window.subject != subject);
+        // Only if the pointer is still on the same button. A press that slid off
+        // one is not a click on it — the reference's own rule for every control
+        // it draws — and it is not a click on whatever the finger landed on
+        // either.
+        if self.doll_button_under_pointer(subject) == Some(button) {
+            self.doll_clicked(subject, button);
         }
+        // True whatever it landed on: the button was drawn pressed and has to
+        // come back up.
         true
     }
 
@@ -983,7 +933,25 @@ impl App {
             let Some(gump) = self.open_gump(gump_id).cloned() else {
                 return false;
             };
-            let Some(reply) = self.windows.dialogs.dismiss(&gump) else {
+            // Asked of the window's own pane, because what a dialog answers with
+            // is made of what the player set on it. The manager still decides
+            // *that* it closes — both gestures that close one are its own, and
+            // Escape closes the topmost window without ever pointing at it — so
+            // this is the one door and the pane is the one that can fill in the
+            // packet.
+            let dismissal = self
+                .windows
+                .own_windows
+                .iter()
+                .find(|window| window.subject == subject)
+                .and_then(|window| match &window.pane {
+                    crate::panes::AnyPane::Dialog(pane) => pane.dismiss(&gump),
+                    // A dialog window always holds a dialog pane — `AnyPane::of`
+                    // is a `match` on the subject — so this is not a case, it is
+                    // the compiler being told the same thing twice.
+                    _ => None,
+                });
+            let Some(reply) = dismissal else {
                 // Answered by its own buttons or not at all. The press is still
                 // the window's — it must not steer the body — so this says the
                 // window took it.

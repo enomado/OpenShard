@@ -40,7 +40,7 @@ use openshard_client_render::outline::{self};
 use openshard_client_render::renderer::{self, Target};
 use openshard_client_render::sprite::SpriteQuad;
 use openshard_client_render::text::{self, Label};
-use openshard_client_render::{ground, light, paperdoll, statics};
+use openshard_client_render::{ground, light, statics};
 use openshard_protocol::speech::Font;
 use openshard_protocol::wire::Hue;
 use openshard_uofiles::map::Map;
@@ -55,7 +55,6 @@ use crate::picking::SelectedIdentity;
 use crate::profile;
 use crate::render_passes::{WorldPassAudit, draw_gump_windows, encode_world_passes};
 use crate::window::{prepare_composite_job, ready_atlases};
-use crate::windows::{Drawn, WindowSubject};
 use crate::world::{
     DAMAGE_NUMBER_HOLD, DAMAGE_NUMBER_RISE, PlayerMotion, SPEECH_LINE_HEIGHT, advance_presentation_to,
 };
@@ -2287,111 +2286,21 @@ impl App {
         // line in the journal to overwrite it with: a paperdoll's name plate
         // was written, cut, submitted, and then quietly replaced by the chat.
         let mut text_quads: Vec<SpriteQuad> = Vec::new();
-        // What the windows have written on them: a dialog's captions and
-        // fields, and a paperdoll's name.
+        // A second walk over `drawn_windows` used to stand here, matching the
+        // same `(WindowSubject, Drawn)` pairs `draw_gump_windows` matches, to
+        // turn each window's text into labels. **It has iterated
+        // `std::iter::empty` since window text moved next to its own art** —
+        // which it had to, because one text pass for every window drew a lower
+        // catalogue's lines over a later paperdoll — so every arm in it was
+        // unreachable, and the vendor arm's comment said as much about a walk
+        // that was not running at all.
         //
-        // A second pass over the same surface rather than more quads in the one
-        // above, because a draw call binds one texture and a glyph lives in the
-        // font atlas. After the art and therefore over it, which is the order
-        // the reference draws a window's text controls in — and after the block
-        // above rather than inside it, because that one holds the gump pass
-        // mutably and this needs the text pass.
-        //
-        // Read off `drawn_windows` — the list the frame was just drawn from and
-        // the one the pointer will be tested against — so a caption cannot end
-        // up on a window laid out differently from the pictures under it.
-        {
-            let mut labels: Vec<openshard_client_render::text::GumpLabel<'_>> = Vec::new();
-            // The lines that are cut to a box before they are drawn, already
-            // quads: they cannot travel with the labels above, because what
-            // cuts them is the window they belong to and a label does not carry
-            // one. Extended onto the same draw call, which is the point — one
-            // texture, one pass, whatever produced the quads.
-            let mut cut: Vec<SpriteQuad> = Vec::new();
-            // Window text is rendered in `draw_gump_windows` immediately
-            // after the matching frame, preserving the window stack's depth.
-            // This pass now keeps only non-window overlays below.
-            for (subject, drawn) in std::iter::empty::<(&WindowSubject, &Drawn)>() {
-                match (subject, drawn) {
-                    (WindowSubject::Dialog(gump_id), Drawn::Dialog(laid_out)) => {
-                        if let Some(gump) = self
-                            .world
-                            .authoritative
-                            .view
-                            .as_ref()
-                            .and_then(|view| view.gumps.iter().find(|gump| gump.gump_id == *gump_id))
-                        {
-                            labels.extend(self.windows.dialogs.lines(
-                                gump,
-                                laid_out,
-                                &self.resources.font_atlas,
-                                self.resources.cliloc.as_ref(),
-                            ));
-                        }
-                    }
-                    (WindowSubject::Paperdoll(serial), Drawn::Paperdoll(_)) => {
-                        // The name the `0x88` carried, which is the only place
-                        // this string exists — see `view::Paperdoll::name`. The
-                        // window's own origin comes off `own_windows` rather
-                        // than the doll, for the reason the plate is part of the
-                        // frame: it moves with the window and not with the body.
-                        let at = self
-                            .windows
-                            .own_windows
-                            .iter()
-                            .find(|window| window.subject == *subject)
-                            .map(|window| window.at);
-                        if let (Some(at), Some(doll)) = (
-                            at,
-                            self.world
-                                .authoritative
-                                .view
-                                .as_ref()
-                                .and_then(|view| view.paperdolls.get(serial)),
-                        ) {
-                            labels.push(paperdoll::name(&doll.name, at));
-                        }
-                    }
-                    // The skill window writes its own lines — a heading, a
-                    // name, a value, the total — and they are the one text in
-                    // this client that is *cut*: a row half out of the viewport
-                    // is drawn half, which is what a bar the player drags means.
-                    // Collected and cut here rather than added to `labels`,
-                    // because a glyph is a quad in the font atlas and has no
-                    // picture to carry a box on — see `Scissor::cut`.
-                    (WindowSubject::Skills, Drawn::Skills(sheet)) => {
-                        for line in &sheet.lines {
-                            let mut quads = openshard_client_render::text::collect_gump(
-                                &[line.label()],
-                                &self.resources.font_atlas,
-                            );
-                            // Its own box, and not the window's: the rows are cut
-                            // to the list and the total written under them is not
-                            // — see `skills::Line::scissor`, which is a
-                            // difference this found out by drawing it wrong.
-                            if let Some(scissor) = line.scissor {
-                                scissor.cut(&mut quads);
-                            }
-                            cut.extend(quads);
-                        }
-                    }
-                    (WindowSubject::Status, Drawn::Status(status)) => {
-                        labels.extend(status.lines.iter().map(|line| line.label()));
-                    }
-                    // Vendor labels are drawn alongside their own art in
-                    // `draw_gump_windows`: putting them in this global pass
-                    // would let text from a lower catalogue cover a later
-                    // paperdoll.
-                    (WindowSubject::Vendor(_), Drawn::Vendor(_)) => {}
-                    _ => {}
-                }
-            }
-            text_quads.extend(openshard_client_render::text::collect_gump(
-                &labels,
-                &self.resources.font_atlas,
-            ));
-            text_quads.extend(cut);
-        }
+        // It is deleted rather than kept in step. `docs/window_components.md`
+        // filed it as `docs/parity.md`'s defect class — one frame assembled in
+        // two places, so agreement is a coincidence — and the honest version of
+        // that entry is that the second place was already dead. There is one
+        // walk now, in `render_passes.rs`, and step 4 was the step that would
+        // otherwise have had to update a dialog's arm in both.
         // `draw_chat_and_speech` is a free function like its neighbours
         // above, though a plainer one: nothing it is handed is written back
         // to `self` at all, only appended to the caller's own `text_quads`.

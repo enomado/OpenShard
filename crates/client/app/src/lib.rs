@@ -67,7 +67,6 @@ mod event_loop;
 mod frame_geometry;
 mod frames;
 mod graphics;
-mod gump;
 mod input;
 mod jank;
 mod keys;
@@ -156,10 +155,6 @@ use openshard_client_render::control::Control;
 use openshard_client_render::debug::View;
 use openshard_client_render::follow::{Gaze, Rig};
 use openshard_client_render::frame::{self};
-use windows::WindowSubject;
-// `gump_art` and not `gump`: this crate has a module of that name — the egui
-// half of the same window — and the two are deliberately not merged. One
-// draws the art, the other answers the buttons.
 use openshard_client_render::gump::{GumpAtlas, GumpPixel};
 use openshard_client_render::hue::HueRamp;
 use openshard_client_render::mobiles::Mobile;
@@ -188,6 +183,7 @@ use openshard_uofiles::skills::Skills as SkillNames;
 use openshard_uofiles::texmaps::TexMaps;
 use openshard_uofiles::tiledata::TileData;
 use openshard_uofiles::ttf_font::TtfFont;
+use windows::WindowSubject;
 use winit::event_loop::{ControlFlow, EventLoop};
 
 /// Where the camera starts: Britain, by the bank.
@@ -1006,7 +1002,7 @@ pub fn run<D: Dial + Send + 'static>(
             last_container_click: None,
             held_doll: None,
             last_scroll: None,
-            dialogs: gump::Dialogs::default(),
+            keyboard: None,
         },
         tooltips: tooltips::Tooltips::default(),
         chat: Chat::default(),
