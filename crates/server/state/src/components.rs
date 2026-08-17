@@ -2106,6 +2106,32 @@ pub struct Boat {
     pub owner: openshard_protocol::serial::Serial,
 }
 
+/// A ship holding a course: it is under way, and this is where to.
+///
+/// Absent on a moored ship, which is why it is its own component rather than an
+/// `Option` on [`Boat`]: "is anything sailing" is then a query over a sparse set
+/// that is empty on every shard with no ship under way, and the tick's boat pass
+/// costs nothing on all of them.
+///
+/// **Not saved, and that is a decision.** A shard that comes back up finds its
+/// fleet at anchor. Persisting a course would mean a ship sailing on through a
+/// restart with nobody at the tiller and nobody aboard — the manifest is derived
+/// per move, so the crew logged out at the last berth and the ship would leave
+/// without them. Stopping is what the reference does too: `BaseBoat` writes its
+/// facing but not its motion.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Sailing {
+    /// Which way, one step at a time.
+    pub direction: openshard_protocol::direction::Direction,
+    /// The tick this ship may next take a step on — the cadence gate, in the
+    /// same units as [`WorldState::ticks`](crate::WorldState::ticks).
+    pub next: u64,
+    /// How many ticks apart its steps are. Stored rather than recomputed,
+    /// because `next` has already passed by the time a step is taken and the
+    /// interval cannot be read back out of it.
+    pub every: u64,
+}
+
 /// Beside a [`Position`] and a [`Drawn`] whose graphic is `0x4000 | multi`, so
 /// everything that already walks items — the sector index, the save, the `0x1A`
 /// that draws it — works on a house unchanged. What makes it a house is this

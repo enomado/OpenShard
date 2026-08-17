@@ -707,6 +707,7 @@ impl World {
         self.reap();
         items::decay(&mut self.state);
         self.collapse_houses();
+        self.sail_boats();
         items::close_doors(&mut self.state);
         // End any trade whose two parties have walked apart, died or logged out,
         // and untick both boxes if the goods moved after somebody agreed to them.

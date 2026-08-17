@@ -2580,7 +2580,8 @@ Roughly in dependency order, each script-first:
     decision about the type's shape, which is D4's lesson arriving a second time
     one level down.
 - [ ] `boats` — a multi that moves: a hull that blocks, a deck you can stand on,
-  and everyone aboard arriving with it. **B1 built; B2–B4 planned — see
+  and everyone aboard arriving with it. **B1 and B2 built; B3–B4 and the tiller
+  planned — see
   [`boats.md`](boats.md)**, which refuses a parent transform on the engine's own
   evidence (mounting *deletes* the mount rather than carrying it), keeps the hull
   out of `Obstructions` because that index only ever subtracts and a deck has to
@@ -2594,10 +2595,18 @@ Roughly in dependency order, each script-first:
     does not. What the phase found is that `LiveTerrain` forwarded seven methods
     and answered the trait's no-client-files default for every other — a hole
     nothing had asked through until a boat did.
-  - [ ] **B2 — it moves**: the step, the manifest of who moves with it, and the
-    forget-then-reveal the classic client needs. Owes
-    `two_boats_do_not_occupy_one_tile` against a *moving* hull; the placement
-    half of that test is built.
+  - [x] **B2 — it moves.** `boats::step` decides then applies, the manifest is
+    derived per move, each occupant is relocated absolutely through `move_to`,
+    and the hull is redrawn by forget-then-reveal because no packet relocates a
+    drawn item. `Sailing` holds the course, the tick's `sail_boats` steps every
+    ship whose cadence is up on the reference's own intervals, and a ship whose
+    way is blocked furls and its owner is told. `.sail <direction|stop> [fast]`
+    steers. `two_boats_do_not_occupy_one_tile_when_one_is_under_way` is built,
+    and what it caught is that the *berth* check would have refused a ship the
+    right to move at all — every step overlaps the tiles it is leaving. **A move
+    costs six packets** with one player aboard and one watching: two for the
+    hull, and a `0x20` and a `0x77` for the passenger. B6's tiller is not built;
+    `.sail` stands in for it.
   - [ ] **B3 — `0xF6`**, for the clients that can. Strictly additive.
   - [ ] **B4 — the boat as property**: the hold, the plank, the deed, decay.
     Housing's H2–H5 with a different noun.

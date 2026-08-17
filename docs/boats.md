@@ -337,6 +337,64 @@ stops everything else, and *two ships in one tile* is the failure that mechanism
 would have caught for free. The step check must ask the boat index about **other
 boats**, and the test is named `two_boats_do_not_occupy_one_tile`.
 
+#### Built
+
+Steps 1 through 5. `.sail <direction|stop> [fast]` steers the ship under your
+feet, it holds its course on a cadence, everyone standing on the deck arrives
+with it, and a ship steered into a rock stops rather than passing through.
+**Step 6, the tiller, is not built** — `.sail` stands in for it, which is
+`.hdesign`'s argument one noun over: the steering can be exercised without the
+item and the speech path existing first, so a bug in the cadence is a bug in the
+cadence.
+
+What came out differently:
+
+**The course check is not the berth check, and that is the whole of why a ship
+moves.** `check_berth` refuses a tile any boat is in — which, for a move, is the
+ship itself in the tiles it is leaving. Every step overlaps where the ship
+already is, so reusing it would have refused a ship the right to move at all.
+The two differ by one comparison, `plank.boat != boat`, and
+`a_ship_is_not_blocked_by_the_tiles_it_is_leaving` is the test that fails when
+they are folded together.
+
+**Being aboard is two questions, not one.** The plan said "who is standing on a
+tile the boat covers". That is half of it: a swimmer at the waterline and a body
+on a pier the ship is moored against are both on a covered tile and neither is a
+passenger. The manifest asks for feet on a plank as well —
+`deck_at(x, y, z) == Some(z)` — and `someone_in_the_water_beside_the_hull_is_left_behind`
+is the test.
+
+**The packets a move costs**, which this document asked for by name: **two per
+client that can see the ship** — a `0x1D` and the `0x1A`/`0xF3` that draws it
+again — plus, per occupant, **one `0x20`** to its own client and **one `0x77`**
+to each client watching it. A sloop under way with one player aboard and one
+watching from the shore is six packets a tile. The hull's two are exactly what
+B3's single `0xF6` replaces.
+
+**A ship needed somewhere to keep its course, and it is not on `Boat`.**
+`Sailing { direction, next, every }` is its own component, absent on a moored
+ship — so "is anything sailing" is a query over a sparse set that is empty on
+every shard with no ship under way, and the tick's pass costs nothing on all of
+them. It is **not saved**, deliberately: the manifest is derived per move, so a
+course that survived a restart would sail without the crew who logged out at the
+last berth. The reference writes a boat's facing and not its motion.
+
+**A blocked ship furls rather than retrying.** A hull grinding against a rock
+twenty times a second is the shape of a stuck NPC. `sail` returns the ships that
+stopped and the tick tells their owners, which is the split `collapse_houses`
+already uses — `openshard-boats` has no opinion about messages and the tick does.
+
+**The cadence is the reference's two intervals and one tile each.** ServUO's
+`BaseBoat` has `SlowInterval` 1000ms and `FastInterval` 250ms; under
+`NewBoatMovement` both move a single tile, and the older three-tiles-per-fast-interval
+arrangement is a different thing to port and not the one modern clients see. At
+twenty ticks a second that is 20 ticks and 5.
+
+**`World::step`'s tail is still not factored out, and this is now its fourth
+caller** — the point the backlog below names as when it wants a name. Each
+occupant goes through `WorldState::move_to`, which is that sequence with the
+`0x20` already in it.
+
 ### B3 — smooth, for the clients that can
 
 `0xF6`, behind `version.supports(Feature::SmoothShip)`. A High Seas client gets

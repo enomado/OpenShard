@@ -398,6 +398,32 @@ impl World {
         }
     }
 
+    /// Sail every ship whose cadence is up, and tell the crew of any that
+    /// stopped.
+    ///
+    /// Beside [`collapse_houses`](Self::collapse_houses) and `items::close_doors`
+    /// — the two passes that already do the halves of this, a multi that changes
+    /// and an item that moves on a clock, and never together. Every tick, with
+    /// the cadence inside `boats::sail`: the gate is per ship, because two ships
+    /// may be under way at different speeds.
+    ///
+    /// Whoever is told is worked out here rather than in `openshard-boats`, for
+    /// the reason the collapse above states: that crate has no opinion about
+    /// messages and this one does.
+    pub(super) fn sail_boats(&mut self) {
+        for boat in openshard_boats::sail(&mut self.state) {
+            let owner = self
+                .state
+                .registry
+                .get::<openshard_state::components::Boat>(boat)
+                .map(|entry| entry.owner);
+            if let Some(owner) = owner.and_then(|serial| self.state.registry.entity_of(serial)) {
+                self.state
+                    .system_message(owner, "The ship can go no further that way.");
+            }
+        }
+    }
+
     /// A sign was double-clicked: open its house's window.
     ///
     /// The house is looked up by serial *now*. A sign left standing over a house

@@ -14,6 +14,7 @@
 
 use openshard_entities::EntityId;
 use openshard_movement::Tile;
+use openshard_protocol::direction::Direction;
 use openshard_protocol::server_packet::ServerPacket;
 use openshard_protocol::speech::{Font, SpokenMessage, TalkMode};
 use openshard_protocol::target::{TargetCursor, TargetKind};
@@ -70,6 +71,7 @@ pub fn run(state: &mut WorldState, actor: EntityId, rest: &str) {
         "hdemolish" => demolish_house(state, actor),
         "hdesign" => design_house(state, actor, &args),
         "boat" => launch_boat(state, actor, &args),
+        "sail" => sail_boat(state, actor, &args),
         "admin" => crate::admin::open_menu(state, actor),
         "save" => save_world(state, actor),
         other => notify(state, actor, &format!("Unknown command '{other}'.")),
@@ -595,6 +597,60 @@ fn launch_boat(state: &mut WorldState, actor: EntityId, args: &[&str]) {
         ),
         Err(refusal) => notify(state, actor, refusal.message()),
     }
+}
+
+/// `.sail <direction|stop> [fast]` — steer the ship you are standing on.
+///
+/// **Not the tiller.** B6's tiller is an item a player speaks keywords to, and
+/// it is what this stands in for until it exists: the point of the verb is that
+/// the *steering* can be exercised — the cadence, the manifest, the stop against
+/// a rock — without the item and the speech path being written first, which is
+/// `.hdesign`'s argument one noun over.
+///
+/// The ship is the one under your feet, so a game master steers by standing on
+/// the deck. That is also what the tiller will do, from the other end: it will
+/// be an item on the ship rather than a serial anybody may name.
+fn sail_boat(state: &mut WorldState, actor: EntityId, args: &[&str]) {
+    let Some(&openshard_state::components::Position(at)) =
+        state.registry.get::<openshard_state::components::Position>(actor)
+    else {
+        return;
+    };
+    let facet = state.facet_of(actor);
+    let Some(boat) = openshard_boats::boat_at(state, at, facet) else {
+        notify(state, actor, "You are not aboard a ship.");
+        return;
+    };
+
+    let word = args.first().copied().unwrap_or_default();
+    if word.eq_ignore_ascii_case("stop") {
+        openshard_boats::furl(state, boat);
+        notify(state, actor, "The ship comes to a stop.");
+        return;
+    }
+    let Some(direction) = compass(word) else {
+        notify(state, actor, "Usage: .sail <n|ne|e|se|s|sw|w|nw|stop> [fast]");
+        return;
+    };
+    let fast = args.get(1).is_some_and(|word| word.eq_ignore_ascii_case("fast"));
+    openshard_boats::set_course(state, boat, direction, fast);
+    notify(state, actor, "The ship gets under way.");
+}
+
+/// A compass point as a direction, which is how a person names one and how the
+/// tiller's keywords will arrive too.
+fn compass(word: &str) -> Option<Direction> {
+    Some(match word.to_ascii_lowercase().as_str() {
+        "n" | "north" => Direction::North,
+        "ne" | "northeast" => Direction::NorthEast,
+        "e" | "east" => Direction::East,
+        "se" | "southeast" => Direction::SouthEast,
+        "s" | "south" => Direction::South,
+        "sw" | "southwest" => Direction::SouthWest,
+        "w" | "west" => Direction::West,
+        "nw" | "northwest" => Direction::NorthWest,
+        _ => return None,
+    })
 }
 
 /// `.hdesign <multi id>` — give the house you are standing in another multi's

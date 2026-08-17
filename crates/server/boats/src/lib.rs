@@ -23,11 +23,14 @@
 //!
 //! # And it sails
 //!
-//! [`step`] moves the hull a tile and takes whoever is standing on the deck with
-//! it. What is still B2's is the **wire**: nothing tells a client the ship has
-//! moved, so one that already has it on screen keeps drawing it where it was
-//! until something else refreshes that screen. Everyone aboard is redrawn
-//! correctly, because each of them is relocated through the ordinary move path.
+//! [`step`] moves the hull a tile, takes whoever is standing on the deck with
+//! it, and redraws the ship on every screen that can see it. [`set_course`] puts
+//! one under way and [`sail`] is the pass the tick runs, which steps every ship
+//! whose cadence is up and furls the ones whose way is blocked.
+//!
+//! What is still B2's is the **tiller** — the item a player speaks to. `sail` is
+//! driven from `.sail` today, which is a game master's toy rather than a ship's
+//! crew.
 
 use openshard_entities::EntityId;
 use openshard_movement::Tile;
@@ -36,7 +39,7 @@ use openshard_protocol::wire::{Graphic, Hue};
 use openshard_protocol::world::{Facet, Point};
 use openshard_state::WorldState;
 use openshard_state::boat::Plank;
-use openshard_state::components::{Boat, Drawn, Movement, Position};
+use openshard_state::components::{Boat, Drawn, Movement, Position, Sailing};
 
 /// The bit a multi's graphic carries on the wire.
 ///
@@ -241,12 +244,15 @@ fn check_berth(state: &WorldState, facet: Facet, berth: &[((u16, u16), Plank)]) 
 /// `npc::live`, `quests::advance_escorts` and the tick's own `step`, and the
 /// point `docs/boats.md:384` names as when that tail wants a name of its own.
 ///
-/// # What this does not do yet
+/// # And the hull is redrawn by forget-then-reveal
 ///
-/// **The hull is not redrawn.** A client that already has the ship on its screen
-/// keeps drawing it where it was until something else refreshes it; the
-/// forget-then-reveal that fixes it is B2's fourth step, and the number of
-/// packets a move costs is owed with it.
+/// See [`redraw`]. **The number of packets a move costs**, which `docs/boats.md`
+/// asks for by name: two per client that can see the ship — a `0x1D` and the
+/// `0x1A`/`0xF3` that draws it again — plus, per occupant, one `0x20` to its own
+/// client and one `0x77` to each client watching it. A sloop under way with one
+/// player aboard and one watching from the shore is six packets a tile, and the
+/// hull's two of those are what `Feature::SmoothShip`'s single `0xF6` replaces
+/// in B3.
 pub fn step(
     state: &mut WorldState,
     boat: EntityId,
@@ -294,8 +300,36 @@ pub fn step(
         state.disrupt(occupant);
         state.move_to(occupant, facet, Point { x, y, z: was.z });
     }
+    // Last, so the reveal below finds every screen already refreshed by the
+    // occupants' own moves and only has the hull left to say.
+    redraw(state, boat);
 
     Ok(to)
+}
+
+/// Take the hull off every screen it is on and put it back where it now is.
+///
+/// **A multi cannot be told it moved.** `0x77` moves a *mobile*; an item's
+/// position arrives with the item, in the `0x1A`/`0xF3` that draws it, and there
+/// is no packet in the classic protocol that relocates one that is already
+/// drawn. So the ship is removed and drawn again — `docs/boats.md`'s B2, and the
+/// reason `Feature::SmoothShip`'s `0xF6` exists at all for the clients that have
+/// it.
+///
+/// The order matters and is not symmetric with the forget: `forget` walks the
+/// clients that *have* the ship, and `refresh_around` then draws it for
+/// everybody in range of where it now is — which is a different set the moment
+/// the ship sails into somebody's view. Doing only the second would leave the
+/// old hull drawn on the screens that already had it, because `show` returns
+/// early for anything already seen.
+fn redraw(state: &mut WorldState, boat: EntityId) {
+    let Some(serial) = state.registry.serial_of(boat) else {
+        return;
+    };
+    for watcher in state.watchers_of(boat) {
+        state.forget(watcher, boat, serial);
+    }
+    state.refresh_around(boat);
 }
 
 /// The two questions a course has to answer: it is all sea, and no *other* ship
@@ -353,6 +387,87 @@ fn aboard(state: &WorldState, boat: EntityId, facet: Facet) -> Vec<(EntityId, Po
         .filter(|(entity, _)| state.registry.has::<Movement>(*entity))
         .filter(|&(_, at)| facet_state.boats.deck_at(at.x, at.y, i32::from(at.z)) == Some(i32::from(at.z)))
         .collect()
+}
+
+/// How many ticks between one step and the next, at each of the two speeds a
+/// ship has.
+///
+/// ServUO's `BaseBoat`: `SlowInterval` is 1000ms and `FastInterval` 250ms, and
+/// under `NewBoatMovement` both move one tile — the older two-speed arrangement
+/// moved three tiles per fast interval, which is a different thing to port and
+/// not the one modern clients see. At this engine's twenty ticks a second that
+/// is twenty ticks and five.
+pub const SLOW_TICKS: u64 = openshard_state::TICKS_PER_SECOND;
+/// See [`SLOW_TICKS`].
+pub const FAST_TICKS: u64 = openshard_state::TICKS_PER_SECOND / 4;
+
+/// Put a ship under way, or turn one that already is.
+///
+/// The first step is taken on the **next** tick rather than now, so ordering a
+/// course and holding one cost the same and a player cannot outrun the cadence
+/// by repeating the order.
+pub fn set_course(
+    state: &mut WorldState,
+    boat: EntityId,
+    direction: openshard_protocol::direction::Direction,
+    fast: bool,
+) {
+    if state.registry.get::<Boat>(boat).is_none() {
+        return;
+    }
+    let every = if fast { FAST_TICKS } else { SLOW_TICKS };
+    state.registry.insert(
+        boat,
+        Sailing {
+            direction,
+            next: state.ticks + every,
+            every,
+        },
+    );
+}
+
+/// Bring a ship to a stop. A no-op on one already moored, which is what makes
+/// "stop" safe to say twice.
+pub fn furl(state: &mut WorldState, boat: EntityId) {
+    state.registry.remove::<Sailing>(boat);
+}
+
+/// Step every ship whose cadence is up. The tick's boat pass.
+///
+/// Returns the ships that **stopped** because their way was blocked, so the
+/// caller can tell whoever is aboard — this crate has no opinion about messages
+/// and the tick does, which is where the same split already puts a house's
+/// collapse.
+///
+/// A ship refused its course furls rather than retrying: a hull grinding against
+/// a rock twenty times a second is the shape of a stuck NPC, and a ship that has
+/// stopped is a thing a player can see and correct.
+pub fn sail(state: &mut WorldState) -> Vec<EntityId> {
+    // Collected first: the step below writes positions and the index, and a
+    // query held across that borrows the registry it is about to change.
+    let due: Vec<(EntityId, Sailing)> = state
+        .registry
+        .query::<Sailing>()
+        .filter(|(_, course)| course.next <= state.ticks)
+        .map(|(entity, course)| (entity, *course))
+        .collect();
+
+    let mut stopped = Vec::new();
+    for (boat, course) in due {
+        if step(state, boat, course.direction).is_err() {
+            furl(state, boat);
+            stopped.push(boat);
+            continue;
+        }
+        state.registry.insert(
+            boat,
+            Sailing {
+                next: state.ticks + course.every,
+                ..course
+            },
+        );
+    }
+    stopped
 }
 
 /// Take a ship off the water: out of the boat index, off the sector grid, and

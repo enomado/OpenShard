@@ -458,6 +458,29 @@ fn a_ship_steered_into_the_shore_stops_and_moves_nobody() {
     );
 }
 
+/// **The hull is taken off the screens that had it.** There is no packet that
+/// relocates a drawn item, so a ship that moved and was not forgotten stays
+/// drawn where it was for everyone who could already see it — the ghost hull.
+///
+/// Only the forget half is asserted here: putting it back is `refresh_around`,
+/// which needs a watcher with a connection and is that function's own test.
+#[test]
+fn sailing_takes_the_hull_off_the_screens_that_had_it() {
+    let mut state = a_sea();
+    let (actor, owner) = a_captain(&mut state);
+    let boat = place(&mut state, actor, Point::new(20, 20, 0), Facet(0), SLOOP, owner).expect("open water");
+
+    let watcher = a_walker(&mut state, Point::new(20, 0, 0));
+    state.seen.entry(watcher).or_default().insert(boat);
+
+    step(&mut state, boat, Direction::South).expect("open water ahead");
+
+    assert!(
+        !state.seen[&watcher].contains(&boat),
+        "the ship sailed away and stayed drawn where it was",
+    );
+}
+
 /// **The test this phase owes by name, against a moving hull.** The placement
 /// half is `two_boats_do_not_occupy_one_tile` above; this is the other end of
 /// the same hole. Neither hull is in `Obstructions`, so nothing but the course
@@ -501,6 +524,106 @@ fn a_ship_is_not_blocked_by_the_tiles_it_is_leaving() {
     assert_eq!(
         state.registry.get::<Position>(boat).map(|p| p.0),
         Some(Point::new(20, 22, 0)),
+    );
+}
+
+/// A ship under way steps on its own cadence and not every tick.
+#[test]
+fn a_ship_under_way_steps_on_its_cadence() {
+    let mut state = a_sea();
+    let (actor, owner) = a_captain(&mut state);
+    let boat = place(&mut state, actor, Point::new(20, 20, 0), Facet(0), SLOOP, owner).expect("open water");
+
+    set_course(&mut state, boat, Direction::South, false);
+
+    // Every tick up to the interval: nothing, because the first step is due on
+    // `ticks + every` rather than now.
+    for _ in 0..SLOW_TICKS {
+        assert!(sail(&mut state).is_empty());
+        assert_eq!(
+            state.registry.get::<Position>(boat).map(|p| p.0),
+            Some(Point::new(20, 20, 0)),
+            "the ship moved before its cadence was up",
+        );
+        state.ticks += 1;
+    }
+
+    assert!(sail(&mut state).is_empty());
+    assert_eq!(
+        state.registry.get::<Position>(boat).map(|p| p.0),
+        Some(Point::new(20, 21, 0)),
+        "the cadence came up and the ship did not move",
+    );
+
+    // And it holds the course rather than needing to be told again.
+    state.ticks += SLOW_TICKS;
+    sail(&mut state);
+    assert_eq!(
+        state.registry.get::<Position>(boat).map(|p| p.0),
+        Some(Point::new(20, 22, 0)),
+    );
+}
+
+/// Fast is the reference's other interval and it is four times as often.
+#[test]
+fn a_fast_ship_steps_four_times_as_often() {
+    let mut state = a_sea();
+    let (actor, owner) = a_captain(&mut state);
+    let boat = place(&mut state, actor, Point::new(20, 20, 0), Facet(0), SLOOP, owner).expect("open water");
+
+    set_course(&mut state, boat, Direction::South, true);
+    state.ticks += FAST_TICKS;
+    sail(&mut state);
+
+    assert_eq!(
+        state.registry.get::<Position>(boat).map(|p| p.0),
+        Some(Point::new(20, 21, 0)),
+    );
+    assert_eq!(SLOW_TICKS, FAST_TICKS * 4);
+}
+
+/// **A ship whose way is blocked furls rather than grinding.** It is reported
+/// back so the tick can tell the owner, which is where the message belongs — the
+/// same split a collapsing house already uses.
+#[test]
+fn a_ship_that_cannot_go_on_stops_and_says_so() {
+    let mut state = a_sea();
+    let (actor, owner) = a_captain(&mut state);
+    // Bow one tile off the beach, pointed at it.
+    let boat = place(&mut state, actor, Point::new(20, 1, 0), Facet(0), SLOOP, owner).expect("open water");
+
+    set_course(&mut state, boat, Direction::North, false);
+    state.ticks += SLOW_TICKS;
+
+    assert_eq!(sail(&mut state), vec![boat], "the shore was not reported");
+    assert!(
+        state
+            .registry
+            .get::<openshard_state::components::Sailing>(boat)
+            .is_none(),
+        "the ship kept grinding against the shore",
+    );
+    assert_eq!(
+        state.registry.get::<Position>(boat).map(|p| p.0),
+        Some(Point::new(20, 1, 0)),
+    );
+}
+
+/// "Stop" is safe to say twice, and safe to say to a ship that never moved.
+#[test]
+fn furling_a_moored_ship_is_nothing() {
+    let mut state = a_sea();
+    let (actor, owner) = a_captain(&mut state);
+    let boat = place(&mut state, actor, Point::new(20, 20, 0), Facet(0), SLOOP, owner).expect("open water");
+
+    furl(&mut state, boat);
+    furl(&mut state, boat);
+
+    state.ticks += SLOW_TICKS;
+    assert!(sail(&mut state).is_empty());
+    assert_eq!(
+        state.registry.get::<Position>(boat).map(|p| p.0),
+        Some(Point::new(20, 20, 0)),
     );
 }
 
