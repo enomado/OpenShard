@@ -70,6 +70,7 @@ pub mod place;
 pub mod plan;
 pub mod png;
 pub mod radar;
+pub mod radar_pass;
 pub mod renderer;
 pub mod scene;
 pub mod select;

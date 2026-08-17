@@ -174,6 +174,40 @@ pub fn fill(
     }
 }
 
+/// Stamp a marker over a filled buffer, at the tile `column`, `row` in from its
+/// north-west corner.
+///
+/// A cross rather than a pixel, and that is not decoration. At one pixel a tile
+/// a single dot is a single pixel — indistinguishable from a lamp post, and
+/// invisible against ground of a similar colour. Five pixels in a shape nothing
+/// in `radarcol.mul` produces is the smallest thing a person can actually find.
+///
+/// Written into the bitmap rather than drawn as a second quad, so the marker
+/// travels with the upload the map already costs and the pass stays one draw.
+/// The arms clip at the edges, so a marker on the first row keeps the four
+/// pixels that are on the map instead of wrapping to the last.
+pub fn mark(into: &mut [Color16], width: u16, height: u16, at: (u16, u16), color: Color16) {
+    let (column, row) = at;
+    if column >= width || row >= height {
+        return;
+    }
+    let arms = [(0i32, 0i32), (-1, 0), (1, 0), (0, -1), (0, 1)];
+    for (dx, dy) in arms {
+        let (Ok(x), Ok(y)) = (
+            u16::try_from(i32::from(column) + dx),
+            u16::try_from(i32::from(row) + dy),
+        ) else {
+            continue;
+        };
+        if x >= width || y >= height {
+            continue;
+        }
+        if let Some(cell) = into.get_mut(usize::from(y) * usize::from(width) + usize::from(x)) {
+            *cell = color;
+        }
+    }
+}
+
 /// The colour a static of this graphic draws as, or [`UNKNOWN`] when the table
 /// has none. Named so a caller drawing a marker over the map uses the same
 /// widening as the map itself.
@@ -318,6 +352,43 @@ mod tests {
         }
         assert_eq!(pixels[8 + 1], RED, "(1, 1)");
         assert_eq!(pixels[6 * 8 + 5], WHITE, "(5, 6)");
+    }
+
+    /// A marker is five pixels, and its arms clip rather than wrap.
+    #[test]
+    fn a_marker_at_a_corner_keeps_only_the_arms_on_the_map() {
+        let mut pixels = vec![Color16::TRANSPARENT; 16];
+        mark(&mut pixels, 4, 4, (0, 0), RED);
+
+        assert_eq!(pixels[0], RED, "the centre");
+        assert_eq!(pixels[1], RED, "the arm east of it");
+        assert_eq!(pixels[4], RED, "and the one south");
+        assert_eq!(
+            pixels.iter().filter(|&&c| c == RED).count(),
+            3,
+            "the west and north arms wrapped instead of clipping",
+        );
+    }
+
+    /// Away from an edge it is the whole cross, and nothing else.
+    #[test]
+    fn a_marker_in_the_middle_is_a_cross() {
+        let mut pixels = vec![Color16::TRANSPARENT; 25];
+        mark(&mut pixels, 5, 5, (2, 2), WHITE);
+
+        for index in [12, 11, 13, 7, 17] {
+            assert_eq!(pixels[index], WHITE, "pixel {index} is part of the cross");
+        }
+        assert_eq!(pixels.iter().filter(|&&c| c == WHITE).count(), 5);
+    }
+
+    /// Off the buffer entirely is nothing, not a wrapped pixel on the far side.
+    #[test]
+    fn a_marker_off_the_map_draws_nothing() {
+        let mut pixels = vec![Color16::TRANSPARENT; 16];
+        mark(&mut pixels, 4, 4, (4, 0), RED);
+        mark(&mut pixels, 4, 4, (0, 9), RED);
+        assert!(pixels.iter().all(|&c| c == Color16::TRANSPARENT));
     }
 
     /// A rectangle that runs off the map is filled to its edge and unmapped
