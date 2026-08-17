@@ -68,6 +68,7 @@ pub fn run(state: &mut WorldState, actor: EntityId, rest: &str) {
         "hban" => house_list(state, actor, HouseChange::Ban),
         "hunban" => house_list(state, actor, HouseChange::Unban),
         "hdemolish" => demolish_house(state, actor),
+        "hdesign" => design_house(state, actor, &args),
         "admin" => crate::admin::open_menu(state, actor),
         "save" => save_world(state, actor),
         other => notify(state, actor, &format!("Unknown command '{other}'.")),
@@ -562,6 +563,55 @@ fn demolish_house(state: &mut WorldState, actor: EntityId) {
         actor,
         "The house comes down. What it held is in the crate.",
     );
+}
+
+/// `.hdesign <multi id>` — give the house you are standing in another multi's
+/// shape.
+///
+/// The whole of C1's front door, and deliberately not an editor: it proves the
+/// design *seam* — the storage, the restore, the walls, the sign, the allowance
+/// and `0xD8` — with components that came out of a client file, so a bug in any
+/// of those is a bug in that thing rather than a bug in an editor nobody has
+/// written. `docs/customisation.md`'s C1 argues the order.
+///
+/// It is also the only way a shard ships its own architecture today: a pack can
+/// give a house a shape no `multi.mul` entry has, without editing a client file.
+fn design_house(state: &mut WorldState, actor: EntityId, args: &[&str]) {
+    let Some(multi) = args.first().and_then(parse_u16) else {
+        notify(state, actor, "Usage: .hdesign <multi id>, e.g. .hdesign 0x65");
+        return;
+    };
+    let Some(&openshard_state::components::Position(at)) =
+        state.registry.get::<openshard_state::components::Position>(actor)
+    else {
+        return;
+    };
+    let facet = state.facet_of(actor);
+    let Some(house) = openshard_housing::house_at(state, at, facet) else {
+        notify(state, actor, "You are not standing in a house.");
+        return;
+    };
+    let multi = multi & !openshard_protocol::wire::MultiId::FLAG;
+    // Straight out of the client files, which is the point: a design this shard
+    // *invented* is C3's editor, and this one is a shape already known to draw.
+    let Some(components) = state
+        .facet_state(facet)
+        .terrain
+        .as_deref()
+        .map(|terrain| terrain.multi_components(multi).to_vec())
+        .filter(|components| !components.is_empty())
+    else {
+        notify(state, actor, "No multi by that id.");
+        return;
+    };
+    match openshard_housing::design::redesign(state, actor, house, components) {
+        Ok(revision) => notify(
+            state,
+            actor,
+            &format!("The house is rebuilt to {multi:#06x} (revision {revision})."),
+        ),
+        Err(refusal) => notify(state, actor, refusal.message()),
+    }
 }
 
 /// `.hfriend`, `.hcoowner`, `.hdrop`, `.hban`, `.hunban` — change the house you

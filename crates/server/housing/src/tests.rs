@@ -1548,3 +1548,214 @@ fn staff_are_still_refused_a_house_off_the_edge_of_the_world() {
         "the cottage's west wall would stand at x -1"
     );
 }
+
+// -- C1: a house that is not the shape its multi id says ---------------------
+
+/// A second shape to redesign into: one wall, far enough from the cottage's ring
+/// that "did the old walls come out" and "did the new ones go in" are two
+/// different tiles rather than one.
+fn a_lean_to() -> Vec<Component> {
+    vec![
+        component(1, 0, 0, 0, false),
+        component(WALL, 3, 3, 0, true),
+        component(FLOOR, 3, 4, 0, true),
+    ]
+}
+
+/// **The one that fails if the old walls are unblocked as the new shape.**
+///
+/// A redesign is two edits to the obstruction index and they read different
+/// shapes: out as what stood there, in as what stands there now. Getting the
+/// order right is not enough — asking the *new* design where the old walls were
+/// leaves every tile the two do not share blocked by a wall that is gone, and
+/// nothing reports it. A player finds it by walking into thin air.
+#[test]
+fn a_redesigned_house_takes_its_old_walls_out_and_puts_its_new_ones_in() {
+    let mut state = world_with(cottage());
+    let (actor, owner) = an_actor(&mut state);
+    let at = Point::new(10, 10, 0);
+    let house = place(&mut state, actor, at, Facet(0), COTTAGE, owner).expect("a legal spot");
+
+    assert!(
+        state.facet_state(Facet(0)).obstructions.is_blocked(9, 9),
+        "the cottage's north-west wall"
+    );
+
+    design::redesign(&mut state, actor, house, a_lean_to()).expect("the owner may redesign");
+
+    let obstructions = &state.facet_state(Facet(0)).obstructions;
+    assert!(
+        !obstructions.is_blocked(9, 9),
+        "a wall that is no longer part of the house is still blocking"
+    );
+    assert!(obstructions.is_blocked(13, 13), "the lean-to's wall");
+    assert!(
+        !obstructions.is_blocked(13, 14),
+        "the floor is walked over, not blocked — the same rule as before the redesign"
+    );
+}
+
+/// The sign hangs off the box's west-south corner, so a design that moves the
+/// box moves the sign. One sign, not two: the old one comes down.
+#[test]
+fn a_redesigned_house_hangs_its_sign_on_the_new_box() {
+    let mut state = world_with(cottage());
+    let (actor, owner) = an_actor(&mut state);
+    let at = Point::new(10, 10, 0);
+    let house = place(&mut state, actor, at, Facet(0), COTTAGE, owner).expect("a legal spot");
+
+    let before = sign_position(&state);
+    design::redesign(&mut state, actor, house, a_lean_to()).expect("the owner may redesign");
+    let after = sign_position(&state);
+
+    assert_ne!(before, after, "the sign is still on the old box's corner");
+    assert_eq!(
+        after,
+        // The box's west-south corner, and `bounds` takes entry zero as well as
+        // every drawn component — so a lean-to that is entirely south-east of
+        // its origin still has `min_x` of 0. The same rule the cottage's sign
+        // is placed by, which is the point of asserting it here rather than
+        // re-deriving one for designed houses.
+        Some(Point::new(10, 14, i8::try_from(SIGN_Z).unwrap())),
+        "the lean-to's west-south corner"
+    );
+}
+
+/// Every sign in the world, which is one, or the test says why not.
+fn sign_position(state: &WorldState) -> Option<Point> {
+    let signs: Vec<EntityId> = state
+        .registry
+        .query::<openshard_state::components::HouseSign>()
+        .map(|(entity, _)| entity)
+        .collect();
+    assert_eq!(signs.len(), 1, "a house has exactly one sign");
+    state.registry.get::<Position>(signs[0]).map(|p| p.0)
+}
+
+/// A design with nothing drawn in it is refused **with the house still
+/// standing** — the walls are not taken down until the new shape is known to be
+/// legal. The alternative is a house you can walk through because a bad command
+/// half-succeeded.
+#[test]
+fn a_design_that_draws_nothing_leaves_the_house_exactly_as_it_was() {
+    let mut state = world_with(cottage());
+    let (actor, owner) = an_actor(&mut state);
+    let at = Point::new(10, 10, 0);
+    let house = place(&mut state, actor, at, Facet(0), COTTAGE, owner).expect("a legal spot");
+
+    assert_eq!(
+        design::redesign(&mut state, actor, house, vec![component(1, 0, 0, 0, false)]),
+        Err(design::DesignRefusal::DrawsNothing),
+        "a design of one undrawn signature tile is not a house"
+    );
+    assert!(
+        state.facet_state(Facet(0)).obstructions.is_blocked(9, 9),
+        "the refusal took the walls down anyway"
+    );
+    assert_eq!(
+        design::revision(&state, house),
+        0,
+        "and it did not bump the revision"
+    );
+}
+
+/// A co-owner may lock things down and let people in; neither of those changes
+/// what the building *is*. Redesigning does, so it is the owner's alone.
+#[test]
+fn a_co_owner_may_not_redesign_a_house() {
+    let mut state = world_with(cottage());
+    let (actor, owner) = an_actor(&mut state);
+    let at = Point::new(10, 10, 0);
+    let house = place(&mut state, actor, at, Facet(0), COTTAGE, owner).expect("a legal spot");
+
+    let (other, other_serial) = an_actor(&mut state);
+    let entry = state.registry.get_mut::<House>(house).unwrap();
+    trust(entry, owner, other_serial, Standing::CoOwner, false).expect("the owner may co-own");
+
+    assert_eq!(
+        design::redesign(&mut state, other, house, a_lean_to()),
+        Err(design::DesignRefusal::NotYours),
+    );
+}
+
+/// The revision is what tells a client its cached picture is stale, so it goes
+/// up on every commit — including one that happens to produce the same walls.
+#[test]
+fn every_redesign_bumps_the_revision() {
+    let mut state = world_with(cottage());
+    let (actor, owner) = an_actor(&mut state);
+    let house =
+        place(&mut state, actor, Point::new(10, 10, 0), Facet(0), COTTAGE, owner).expect("a legal spot");
+
+    assert_eq!(
+        design::revision(&state, house),
+        0,
+        "an undesigned house is at zero"
+    );
+    assert_eq!(design::redesign(&mut state, actor, house, a_lean_to()), Ok(1));
+    assert_eq!(design::redesign(&mut state, actor, house, a_lean_to()), Ok(2));
+}
+
+/// The allowance is four per tile of the house's own area, and a redesign
+/// changes the area. Recounted, or a shrunken house keeps the storage of the one
+/// it used to be.
+#[test]
+fn a_redesign_recounts_the_lockdown_allowance() {
+    let mut state = world_with(cottage());
+    let (actor, owner) = an_actor(&mut state);
+    let house =
+        place(&mut state, actor, Point::new(10, 10, 0), Facet(0), COTTAGE, owner).expect("a legal spot");
+
+    // Four walls and a floor: five drawn tiles.
+    assert_eq!(
+        storage::allowance(&state, house).lockdowns,
+        5 * storage::LOCKDOWNS_PER_TILE
+    );
+
+    design::redesign(&mut state, actor, house, a_lean_to()).expect("the owner may redesign");
+
+    // One wall and one floor.
+    assert_eq!(
+        storage::allowance(&state, house).lockdowns,
+        2 * storage::LOCKDOWNS_PER_TILE
+    );
+}
+
+/// A door standing in a doorway the redesign just opened belongs to the house.
+///
+/// The reason `adopt_doors` is called again from the commit tail rather than
+/// only at placement: the walls moved, so what is "inside" moved with them.
+#[test]
+fn a_redesign_adopts_a_door_its_new_walls_now_stand_around() {
+    let mut state = world_with(cottage());
+    let (actor, owner) = an_actor(&mut state);
+    let house =
+        place(&mut state, actor, Point::new(10, 10, 0), Facet(0), COTTAGE, owner).expect("a legal spot");
+
+    // Well outside the cottage, and inside the lean-to.
+    let (door, _) = state.registry.spawn_with_serial(SerialKind::Item).unwrap();
+    state.registry.insert(door, Position(Point::new(13, 13, 0)));
+    state.registry.insert(door, Facet(0));
+    state.registry.insert(
+        door,
+        openshard_state::components::Door {
+            closed: Graphic(0x0675),
+            open: Graphic(0x0676),
+            offset_x: 0,
+            offset_y: 0,
+            is_open: false,
+            close_at: 0,
+        },
+    );
+    assert!(
+        !state.registry.has::<openshard_state::components::HouseDoor>(door),
+        "the cottage does not reach that tile"
+    );
+
+    design::redesign(&mut state, actor, house, a_lean_to()).expect("the owner may redesign");
+
+    assert!(
+        state.registry.has::<openshard_state::components::HouseDoor>(door),
+        "the lean-to stands over the door and did not adopt it"
+    );
+}

@@ -2587,14 +2587,30 @@ Roughly in dependency order, each script-first:
   *add* a surface, and finds that `Feature::SmoothShip` already names `0xF6` and
   its 7.0.9.0 boundary with no packet behind it. It also supplies the repro the
   open pier/bridge defect below has been waiting for.
-- [ ] `customisation` — the `0xD7` house design system. **Planned — see
-  [`customisation.md`](customisation.md)**, which reverts housing's D7 in full.
-  The decision it turns on is where a per-house component list lives:
-  `Terrain::multi_components` cannot hold one — its only key is a `u16`, it
-  returns a borrow out of `&self`, its store is fixed at boot, it is documented
-  as deliberately not world state, and a synthetic multi id has no picture on any
-  client. Its first phase builds the seam and no editor, which is what lets a
-  pack ship its own architecture with no client-file edit.
+- [ ] `customisation` — the `0xD7` house design system. **C1 built; C2–C4
+  planned — see [`customisation.md`](customisation.md)**, which reverts housing's
+  D7 in full. The decision it turned on was where a per-house component list
+  lives: `Terrain::multi_components` cannot hold one — its only key is a `u16`,
+  it returns a borrow out of `&self`, its store is fixed at boot, it is
+  documented as deliberately not world state, and a synthetic multi id has no
+  picture on any client. So a design is a `HouseDesign` component, saved as its
+  own table at schema v31.
+  - [x] **C1 — designs exist, and staff make them.** The seam and no editor: a
+    house can be any shape, saved and restored, with `.hdesign <multi id>`
+    copying an existing multi's components onto it. `0xBF 0x1D` and `0xD8` are
+    written on both ends — `openshard-protocol`'s `design` module, the layout
+    read out of `HouseFoundation.cs` — though nothing sends either yet. What the
+    phase found is that a house's shape is read by four things holding a *house*
+    rather than a multi id (the sign, the doors, the lockdown area, the walls the
+    fall-down path removes), and two of them were already wrong for a designed
+    house before one could exist.
+  - [ ] **C2 — a foundation is placeable**, which is what makes
+    `Refusal::NeedsCustomisation` stop being the answer.
+  - [ ] **C3 — the session**: enter and leave, build and erase, floor selection,
+    commit and revert. The editor itself, on the `0xD7` subcommand set.
+  - [ ] **C4 — roofs, backup and restore, and the validation.** ServUO's
+    `HouseFoundation.Check*`, whose support-and-reachability half is deferred by
+    name: a floating tower is cosmetic, not a hole in the shard.
 - [x] `guilds` — **built, with ServUO's five ranks.** Founding, invitations,
   leaving, dismissal, titles, promotion, leadership, disbanding, and the war and
   alliance handshake, reached from the paperdoll's Guild button (`0xD7`/`0x28`).

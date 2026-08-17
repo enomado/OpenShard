@@ -29,6 +29,7 @@
 //! hundred lookups for an answer that cannot have changed.
 
 pub mod decay;
+pub mod design;
 pub mod sign;
 pub mod storage;
 
@@ -475,7 +476,10 @@ pub fn hang_sign(
     multi: u16,
 ) -> Option<EntityId> {
     let serial = state.registry.serial_of(house)?;
-    let spot = sign_spot(state, at, facet, multi, None)?;
+    // The house's own design if it has one: the sign hangs off the box's corner
+    // and a designed house's box is not the foundation's.
+    let shape = design::shape_of_house(state, house);
+    let spot = sign_spot(state, at, facet, multi, shape.as_deref())?;
     let (sign, _) = state
         .registry
         .spawn_with_serial(openshard_protocol::serial::SerialKind::Item)
@@ -521,7 +525,13 @@ pub fn adopt_doors(state: &mut WorldState, house: EntityId, facet: Facet, at: Po
     // *doorway*, which is by construction a gap in the walls — the one place the
     // footprint does not reach. Using it here adopted nothing, which a test
     // caught rather than a player.
-    let area = tiles_of(state, at, facet, multi, None);
+    let area = tiles_of(
+        state,
+        at,
+        facet,
+        multi,
+        design::shape_of_house(state, house).as_deref(),
+    );
     let inside: Vec<EntityId> = state
         .registry
         .query::<openshard_state::components::Door>()

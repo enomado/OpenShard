@@ -242,7 +242,11 @@ pub fn demolish(state: &mut WorldState, house: EntityId) -> Option<EntityId> {
     // where it stood. A house restored with no client files has none to remove,
     // and `unblock` over an empty list is the right no-op for it.
     let multi = state.registry.get::<House>(house).map_or(0, |entry| entry.multi);
-    let footprint = crate::footprint_of(state, at, facet, multi, None).unwrap_or_default();
+    // The shape it actually has: a designed house's walls are on the entity, and
+    // unblocking the foundation's instead would leave every tile the two do not
+    // share blocked by something that is no longer there.
+    let shape = crate::design::shape_of_house(state, house);
+    let footprint = crate::footprint_of(state, at, facet, multi, shape.as_deref()).unwrap_or_default();
     crate::unblock(state, house, facet, &footprint);
     take_off_the_ground(state, house);
     crate_entity
@@ -343,7 +347,7 @@ fn forget_everywhere(state: &mut WorldState, item: EntityId) {
 /// does not depend on `openshard-items` and should not start: the dependency
 /// would be one function deep and would drag the whole drag-and-drop layer under
 /// a crate that places buildings.
-fn take_off_the_ground(state: &mut WorldState, item: EntityId) {
+pub(crate) fn take_off_the_ground(state: &mut WorldState, item: EntityId) {
     forget_everywhere(state, item);
     state.registry.despawn(item);
 }

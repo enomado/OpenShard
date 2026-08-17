@@ -339,6 +339,43 @@ block as a villa on a real client, and it is still that after a restart.
 **Useful on its own**, which is the test of a phase boundary: it is what lets a
 pack ship its own architecture without a client-file edit and without an editor.
 
+#### Built
+
+All five steps. What came out differently:
+
+**The chooser was the easy half; the *commit tail* was the phase.** C2 named
+three readers of `multi_components` and threading a `design` parameter through
+them took an afternoon. What it did not name is that a house's shape is also
+read by four things that hold a **house entity** rather than a multi id — the
+sign's tile, the door adoption, the lockdown area, and the walls the fall-down
+path removes — and every one of them was passing `None`. So the chooser has a
+second face, `design::shape_of_house`, which asks the entity rather than taking
+a parameter, and those four ask it.
+
+Two of them were already wrong for a designed house before `.hdesign` existed:
+`decay::demolish` unblocked the *foundation's* footprint, and `storage`'s
+allowance counted the foundation's area. Neither could be reached yet, which is
+exactly why they were worth finding now rather than as a bug report.
+
+**"Nothing comes down until the new shape is legal" is a rule, not an
+optimisation.** The refusal for a design that draws nothing has to happen before
+the old walls are unblocked, or a mistyped command leaves a house standing that
+you can walk straight through. `redesign` computes the new footprint first and
+refuses on it.
+
+**And the old walls come out as the old shape.** Unblocking with the *new*
+design leaves every tile the two do not share blocked forever, by an entity that
+no longer stands there — a leak nothing reports and a player finds by walking
+into thin air. It is the test the phase is worth having.
+
+**Redesigning is the owner's, not a co-owner's.** A co-owner may lock things
+down and let people in; neither changes what the building *is*. Not a decision
+this document had taken, and it follows from the same reasoning D6 uses.
+
+**The revision bumps on every commit, including one that produces identical
+walls.** It is a cache key, not a change detector — C5's argument taken to its
+conclusion.
+
 ### C2 — a foundation is placeable
 
 `Refusal::NeedsCustomisation` goes away, replaced by C3's initial design at
